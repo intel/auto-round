@@ -12,17 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-try:
-    from neural_compressor.utils.utility import LazyImport
 
-    torch = LazyImport("torch")
-    from neural_compressor.utils import logger
-except:  # pragma: no cover
-    import logging
+import logging
 
-    import torch
+logging.basicConfig(level=logging.INFO,
+                    format=('%(filename)s: '
+                            '%(levelname)s: '
+                            '%(funcName)s(): '
+                            '%(lineno)d:\t'
+                            '%(message)s')
+                    )
 
-    logger = logging.getLogger()
+import torch
+
+logger = logging.getLogger()
 
 import copy
 import time
@@ -819,6 +822,7 @@ def get_block_names(model):
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
             target_m = (n, m)
+            break ## only find the first modulelist, may be not robust
     for n, m in target_m[1].named_children():
         block_names.append(target_m[0] + "." + n)
     return block_names

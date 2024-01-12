@@ -50,8 +50,13 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --nu
 ```
 It's recommended to use `--enable_minmax_tuning`.
 
+
+detailed arguments:
+- `--model_name`: the local model path or huggingface format.
+
 ## Tips
 Consider increasing tuning steps and adjusting the learning rate based on a scaling law to achieve better results, albeit with increased tuning time. For instance, at step 800, a learning rate of 0.00125 could be employed.
+
 
 ## Known Issues
 Auto Rounding may encounter random issues with Qwen models.
