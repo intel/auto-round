@@ -51,7 +51,7 @@ if __name__ == '__main__':
     parser.add_argument("--use_quant_input", action='store_true',
                         help="whether to use the output of quantized block to tune the next block")
 
-    parser.add_argument("--lr", default=0.05, type=float,
+    parser.add_argument("--lr", default=0.005, type=float,
                         help="step size")
 
     parser.add_argument("--minmax_lr", default=None, type=float,
@@ -106,6 +106,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--output_dir", default="./tmp_signround", type=str,
                         help="Where to store the final model.")
+
 
     args = parser.parse_args()
     set_seed(args.seed)

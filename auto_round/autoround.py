@@ -16,7 +16,9 @@
 import logging
 import torch
 
+
 logger = logging.getLogger("autoround")
+logger.setLevel(logging.INFO)
 fh = logging.StreamHandler()
 fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s L%(lineno)d : %(message)s', "%Y-%m-%d %H:%M:%S")
 fh.setFormatter(fh_formatter)

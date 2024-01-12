@@ -8,7 +8,7 @@ import pprint
 import re
 import shutil
 import transformers
-
+import time
 EXT_TASKS = ['wikitext2', 'ptb', 'c4', 'ptb-new', 'c4-new']
 fewshots_dict = {}
 fewshots_dict['paper'] = {

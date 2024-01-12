@@ -65,19 +65,33 @@ ChatGlm-V1 is not supported
 
 ## Validated Models
 Mistral-7b  done
+
 LLaMAV1 done
+
 LLaMAv2 done
+
 LaMini-GPT-124M done
+
 QWEN1-8B done,but has random issue
+
 OPT-125M done
+
 Bloom-560 smoke test done
+
 falcon-7b smoke test done
+
 gpt-leo-125m smoke test done
+
 stablelm-base-alpha-3b smoke test done
+
 dolly-v2-3b smoke test done
+
 mpt-7b smoke test done
+
 gpt-j-6b smoke test done
+
 chatglm2-6b smoke test done
+
 mixstral-7Bx8 smoke test done
 
 ## Reference
