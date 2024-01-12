@@ -64,12 +64,12 @@ Auto Rounding may encounter random issues with Qwen models.
 ChatGlm-V1 is not supported
 
 ## Validated Models
+Mistral-7b  done
 LLaMAV1 done
 LLaMAv2 done
 LaMini-GPT-124M done
 QWEN1-8B done,but has random issue
 OPT-125M done
-Mistral-7b Smoke test done
 Bloom-560 smoke test done
 falcon-7b smoke test done
 gpt-leo-125m smoke test done
