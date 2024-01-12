@@ -1043,7 +1043,7 @@ class AutoRound(object):
         Returns:
         The specified optimizer.
         """
-        from sign_sgd import SGD
+        from auto_round.sign_sgd import SGD
 
         return SGD
 

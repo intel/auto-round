@@ -45,7 +45,7 @@ if __name__ == '__main__':
     parser.add_argument("--sym", action='store_true',
                          help=" sym quantization")
 
-    parser.add_argument("--iters", default=400, type=int,
+    parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
 
     parser.add_argument("--use_quant_input", action='store_true',
