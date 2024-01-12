@@ -22,7 +22,7 @@ AutoRound is an advanced weight-only quantization algorithm, based on SignRound.
     | THUDM/chatglm3-6b | 4.34/4.36 |
     | mistralai/Mistral-7B-v0.1 | 4.34/4.36 |
     
-  Please note that all experiments in the SignRound+ technical report were conducted using transformers version 4.34.1.
+Please note that all experiments in the SignRound+ technical report were conducted using transformers version 4.34.1.
 
 
 
@@ -33,6 +33,8 @@ pip install -r requirements.txt
 ```
 
 ## Usage
+cd to examples folder
+
 - **Default Settings:**
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --num_bits 4 --group_size -1 --enable_minmax_tuning --use_quant_input
@@ -51,8 +53,6 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --nu
 It's recommended to use `--enable_minmax_tuning`.
 
 
-detailed arguments:
-- `--model_name`: the local model path or huggingface format.
 
 ## Tips
 Consider increasing tuning steps and adjusting the learning rate based on a scaling law to achieve better results, albeit with increased tuning time. For instance, at step 800, a learning rate of 0.00125 could be employed.

@@ -1,7 +1,7 @@
 import argparse
 import sys
-sys.path.insert(0, './')
-from src.autoround import AutoRound, AutoAdamRound
+sys.path.insert(0, '../')
+from auto_round import AutoRound, AutoAdamRound
 
 parser = argparse.ArgumentParser()
 import torch

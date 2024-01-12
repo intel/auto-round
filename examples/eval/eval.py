@@ -3,14 +3,11 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import os.path
 import torch
-import torch.nn as nn
-from parse_results import result_parser
+from .parse_results import result_parser
 import pprint
-import json
 import re
 import shutil
 import transformers
-import time
 
 EXT_TASKS = ['wikitext2', 'ptb', 'c4', 'ptb-new', 'c4-new']
 fewshots_dict = {}
