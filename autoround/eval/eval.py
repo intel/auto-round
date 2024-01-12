@@ -64,7 +64,7 @@ def simple_evaluate(
         batch_size=None,
         max_batch_size=None,
         device=None,
-        no_cache=True,  ##changed by wenhua
+        no_cache=True,
         limit=None,
         bootstrap_iters=100000,
         description_dict=None,
@@ -72,7 +72,7 @@ def simple_evaluate(
         decontamination_ngrams_path=None,
         write_out=False,
         output_base_path=None,
-        lm=None  ##changed by wenhua
+        lm=None
 ):
     """Instantiate and evaluate a model on a list of tasks.
 
