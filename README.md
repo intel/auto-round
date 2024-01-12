@@ -33,7 +33,10 @@ pip install -r requirements.txt
 ```
 
 ## Usage
-cd to examples folder
+cd to examples folder, install lm-eval to run the evaluation
+```bash
+pip install -r requirements.txt
+```
 
 - **Default Settings:**
 ```bash
