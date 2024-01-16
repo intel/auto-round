@@ -1,13 +1,17 @@
-import os
 
+import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import os.path
 import torch
-from eval.parse_results import result_parser
+
 import pprint
 import re
 import shutil
 import transformers
+if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, './')
+from eval.parse_results import result_parser
 import time
 EXT_TASKS = ['wikitext2', 'ptb', 'c4', 'ptb-new', 'c4-new']
 fewshots_dict = {}
@@ -340,13 +344,12 @@ def eval_model(output_dir=None, model=None, tokenizer=None,
 if __name__ == "__main__":
     import time
     import argparse
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--model_name", default="/models/opt-125m"
     )
     parser.add_argument(
-        "--bs", default=1,
+        "--eval_bs", default=1,
     )
 
     args = parser.parse_args()
@@ -358,7 +361,7 @@ if __name__ == "__main__":
     excel_name = (args.model_name).split('/')[-1] + ".xlsx"
     eval_model(output_dir=args.model_name,
                tasks=test_tasks,
-               eval_bs=args.bs, eval_orig_float=True, limit=None, excel_file=excel_name)
+               eval_bs=args.eval_bs, eval_orig_float=True, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
 
