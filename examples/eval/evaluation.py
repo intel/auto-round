@@ -3,7 +3,7 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import os.path
 import torch
-from .parse_results import result_parser
+from eval.parse_results import result_parser
 import pprint
 import re
 import shutil
@@ -283,7 +283,7 @@ def eval_model(output_dir=None, model=None, tokenizer=None,
     #     model.seqlen = seqlen
 
     model.seqlen = 2048
-    from utils import get_loaders, eval_ppl_same_with_gptq
+    from eval.utils import get_loaders, eval_ppl_same_with_gptq
     for dataset in external_tasks:
         try:
             dataloader, testloader = get_loaders(
@@ -355,8 +355,6 @@ if __name__ == "__main__":
     test_tasks = ['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
                   "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte", "arc_easy",
                   "arc_challenge"]
-    test_tasks = ['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
-                  ]
     excel_name = (args.model_name).split('/')[-1] + ".xlsx"
     eval_model(output_dir=args.model_name,
                tasks=test_tasks,
