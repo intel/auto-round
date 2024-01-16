@@ -88,18 +88,18 @@ if __name__ == '__main__':
     # parser.add_argument("--tasks", default=["lambada_openai", "hellaswag", "winogrande", "piqa"],
     #                     help="lm-eval tasks")
 
-    parser.add_argument("--tasks", default=["lambada_openai","wikitext2",'hendrycksTest-*'],
-                        help="lm-eval tasks")
+    # parser.add_argument("--tasks", default=["lambada_openai","wikitext2",'hendrycksTest-*'],
+    #                     help="lm-eval tasks")
 
     # parser.add_argument("--tasks",
     #                     default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
     #                              'coqa', 'truthfulqa_mc', 'openbookqa', 'boolq', 'rte', 'arc_easy', 'arc_challenge',
     #                              'hendrycksTest-*', 'wikitext', 'drop', 'gsm8k'],##all
-    # parser.add_argument("--tasks",
-    #                     default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
-    #                              "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
-    #                              "arc_easy", "arc_challenge"],
-    #                     help="lm-eval tasks")  # "truthfulqa_gen"
+    parser.add_argument("--tasks",
+                        default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
+                                 "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
+                                 "arc_easy", "arc_challenge"],
+                        help="lm-eval tasks")
 
     # parser.add_argument("--tasks", default=["lambada_openai"],
     #                     help="lm-eval tasks")
