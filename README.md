@@ -83,6 +83,10 @@ LLaMAV1 done
 
 LLaMAv2 done
 
+PI2   done
+
+mixstral-7Bx8 done
+
 LaMini-GPT-124M done
 
 QWEN1-8B done,but has random issue
@@ -105,7 +109,7 @@ gpt-j-6b smoke test done
 
 chatglm2-6b smoke test done
 
-mixstral-7Bx8 smoke test done
+
 
 ## Reference
 If you find SignRound useful for your research, please cite our paper:

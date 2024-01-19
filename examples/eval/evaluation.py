@@ -346,7 +346,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--model_name", default="/models/opt-125m"
+        "--model_name", default="/models/opt-125m/"
     )
     parser.add_argument(
         "--eval_bs", default=1,
@@ -358,6 +358,7 @@ if __name__ == "__main__":
     test_tasks = ['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
                   "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte", "arc_easy",
                   "arc_challenge"]
+    model_name = args.model_name.rstrip('/')
     excel_name = (args.model_name).split('/')[-1] + ".xlsx"
     eval_model(output_dir=args.model_name,
                tasks=test_tasks,

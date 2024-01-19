@@ -146,6 +146,9 @@ def quant_weight(weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scal
             weight, num_bits, scheme=scheme, v=v, min_scale=min_scale, max_scale=max_scale
         )
         weight = weight.reshape(orig_shape)
+        scale = scale.reshape(weight.shape[0], -1)  ##only for linear, conv1d
+        if zp is not None:
+            zp = zp.reshape(weight.shape[0], -1)
         return weight, scale, zp
 
     else:
@@ -161,6 +164,9 @@ def quant_weight(weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scal
         weight_new = weight_new.reshape(orig_shape[0], -1)
 
         weight_new = weight_new[:, :-pad_len]
+        scale = scale.reshape(weight_new.shape[0], -1)  ##only for linear, conv1d
+        if zp is not None:
+            zp = zp.reshape(weight_new.shape[0], -1)
         return weight_new, scale, zp
 
 
@@ -499,7 +505,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
             self.max_scale = torch.tensor(0, device=device)
 
     def unwrapper(self, v, min_scale, max_scale):
-        """Unwrapper the layer to the original conv1d layer..
+        """Unwrapper the layer to the original conv1d layer.
 
         Args:
         - v (torch.Tensor): The scaling parameter for quantization.
@@ -1355,6 +1361,31 @@ class AutoRound(object):
 
         torch.cuda.empty_cache()
 
+    def export_to_autogptq(self, output_dir):
+        """
+        Export the model to autogptq format to easily leverage cuda kernel
+        """
+        model = copy.deepcopy(self.model.to("cpu"))  ##TODO avoid this deepcopy
+        quantizers = {}
+        for key in self.weight_config:
+            info = self.weight_config[key]
+            if info["bits"] > 8:
+                continue
+            quantizers[key] = (None, info['scale'], info['zp'], info['g_idx'])
+        from auto_gptq.modeling._utils import pack_model
+        if self.bits == 3:
+            pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
+                       force_layer_back_to_cpu=True)
+        else:
+            pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
+                       force_layer_back_to_cpu=True, use_triton=True)
+        from auto_round.export import save_quantized_to_autogptq
+        sym = self.scheme == "sym"
+        save_quantized_to_autogptq(model, output_dir, bits=self.bits, group_size=self.group_size, sym=sym,
+                                   iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
+                                   enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
+                                   use_safetensors=True)
+
     def quantize(self):
         """Quantize the model and return the quantized model along with weight configurations.
 
@@ -1395,6 +1426,8 @@ class AutoRound(object):
                 if hasattr(m, "scale"):
                     self.weight_config[n]["scale"] = m.scale
                     self.weight_config[n]["zp"] = m.zp
+                    self.weight_config[n]["g_idx"] = torch.tensor(
+                        [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu")
                     delattr(m, "scale")
                     delattr(m, "zp")
                 else:
@@ -1407,7 +1440,8 @@ class AutoRound(object):
 
         end_time = time.time()
         cost_time = end_time - start_time
-        logger.info(f"quantization runtime {cost_time}")
+        logger.info(f"quantization tuning time {cost_time}")
+        self.export_to_autogptq("test_export")
         return self.model, self.weight_config
 
 
