@@ -31,7 +31,7 @@ Install the necessary dependencies with the following command:
 ```bash
 pip install -r requirements.txt
 ```
-## Uasage
+## Usage
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
