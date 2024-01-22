@@ -19,10 +19,11 @@ import torch
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
 fh = logging.StreamHandler()
-fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s L%(lineno)d : %(message)s',
+fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s',
                                  "%Y-%m-%d %H:%M:%S")
 fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
+
 import copy
 import time
 from collections import UserDict
@@ -46,6 +47,7 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0):
         Quantized and dequantized weight, scale, zero-point
     """
     maxq = torch.tensor(2 ** num_bits - 1)
+    ##zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=weight.dtype)##force scale to fp16
     zeros = torch.zeros(weight.shape[0], device=weight.device)
     if isinstance(min_scale, torch.Tensor):
         wmin_tmp = torch.minimum(weight.min(1)[0], zeros)
@@ -146,6 +148,9 @@ def quant_weight(weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scal
             weight, num_bits, scheme=scheme, v=v, min_scale=min_scale, max_scale=max_scale
         )
         weight = weight.reshape(orig_shape)
+        scale = scale.reshape(weight.shape[0], -1)  ##only for linear, conv1d
+        if zp is not None:
+            zp = zp.reshape(weight.shape[0], -1)
         return weight, scale, zp
 
     else:
@@ -161,6 +166,9 @@ def quant_weight(weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scal
         weight_new = weight_new.reshape(orig_shape[0], -1)
 
         weight_new = weight_new[:, :-pad_len]
+        scale = scale.reshape(weight_new.shape[0], -1)  ##only for linear, conv1d
+        if zp is not None:
+            zp = zp.reshape(weight_new.shape[0], -1)
         return weight_new, scale, zp
 
 
@@ -499,7 +507,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
             self.max_scale = torch.tensor(0, device=device)
 
     def unwrapper(self, v, min_scale, max_scale):
-        """Unwrapper the layer to the original conv1d layer..
+        """Unwrapper the layer to the original conv1d layer.
 
         Args:
         - v (torch.Tensor): The scaling parameter for quantization.
@@ -894,7 +902,7 @@ class AutoRound(object):
 
     Args:
         model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data.
+        tokenizer: An optional tokenizer for processing input data. If none, a dataloader must be provided.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         scheme (str): The quantization scheme to be used (default is "asym").
@@ -912,7 +920,7 @@ class AutoRound(object):
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         bs (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "cuda:0").
+        device: The device to be used for tuning (default is "cuda:0").
         lr_scheduler: The learning rate scheduler to be used.
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
@@ -956,7 +964,7 @@ class AutoRound(object):
             dataset_split: str = "train",
             use_quant_input: bool = True,
             enable_minmax_tuning: bool = True,
-            lr: float = 0.005,
+            lr: float = None,
             minmax_lr: float = None,
             low_gpu_mem_usage: bool = True,
             iters: int = 200,
@@ -1020,11 +1028,17 @@ class AutoRound(object):
             )
         else:
             self.dataloader = dataloader
+        self.iters = iters
+        if self.iters <= 0:
+            logger.warning("iters must be positive, reset it to 200")
+            self.iters = 200
         self.lr = lr
+        if self.lr is None:
+            self.lr = 1.0 / self.iters
         self.minmax_lr = minmax_lr
         if self.minmax_lr is None:
             self.minmax_lr = self.lr
-        self.iters = iters
+
         self.sampler = sampler
         self.gradient_accumulate_steps = gradient_accumulate_steps
         self.not_use_mse = not_use_mse
@@ -1297,7 +1311,7 @@ class AutoRound(object):
         else:
             return None, output
 
-    def q_dq_weight_round(
+    def qdq_weight_round(
             self,
             model: torch.nn.Module,
             inputs,
@@ -1328,7 +1342,7 @@ class AutoRound(object):
         for i in range(0, len(block_names), n_blocks):
             if n_blocks == 1:
                 n = block_names[i]
-                logger.info(n)
+                logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i: i + n_blocks]
@@ -1354,6 +1368,44 @@ class AutoRound(object):
         del inputs
 
         torch.cuda.empty_cache()
+
+    def export_to_autogptq(self, output_dir, use_triton=False):
+        """
+        Export the model to autogptq format to easily leverage cuda kernel
+        """
+        if not self.quantized:
+            logger.warning("please run autoround.quantize first")
+            return
+        model = copy.deepcopy(self.model.to("cpu"))  ##TODO avoid this deepcopy
+
+        from auto_gptq.modeling._utils import pack_model
+        if self.bits == 3 or use_triton is False:
+            if self.bits == 3 and use_triton is True:
+                logger.warning("triton does not support 3 bits, reset it to False")
+            quantizers = {}
+            for key in self.weight_config:
+                info = self.weight_config[key]
+                if info["bits"] > 8:
+                    continue
+                quantizers[key] = (None, info['scale'], info['zp'], info['g_idx'])
+            pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
+                       force_layer_back_to_cpu=True, use_triton=False)
+        else:
+            quantizers = {}
+            for key in self.weight_config:
+                info = self.weight_config[key]
+                if info["bits"] > 8:
+                    continue
+                quantizers[key] = (None, info['scale'].to(torch.float32), info['zp'].to(torch.float32), info['g_idx'])
+
+            pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
+                       force_layer_back_to_cpu=True, use_triton=True)
+        from auto_round.export import save_quantized_to_autogptq
+        sym = self.scheme == "sym"
+        save_quantized_to_autogptq(model, output_dir, bits=self.bits, group_size=self.group_size, sym=sym,
+                                   iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
+                                   enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
+                                   use_safetensors=True)
 
     def quantize(self):
         """Quantize the model and return the quantized model along with weight configurations.
@@ -1383,7 +1435,7 @@ class AutoRound(object):
                 logger.warning(f"force the train batch size to {total_samples} ")
         self.model = self.model.to("cpu")
         torch.cuda.empty_cache()
-        self.q_dq_weight_round(
+        self.qdq_weight_round(
             self.model,
             inputs,
             block_names,
@@ -1395,6 +1447,8 @@ class AutoRound(object):
                 if hasattr(m, "scale"):
                     self.weight_config[n]["scale"] = m.scale
                     self.weight_config[n]["zp"] = m.zp
+                    self.weight_config[n]["g_idx"] = torch.tensor(
+                        [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu")
                     delattr(m, "scale")
                     delattr(m, "zp")
                 else:
@@ -1407,7 +1461,9 @@ class AutoRound(object):
 
         end_time = time.time()
         cost_time = end_time - start_time
-        logger.info(f"quantization runtime {cost_time}")
+        logger.info(f"quantization tuning time {cost_time}")
+        self.quantized = True
+        ##self.export_to_autogptq("test_export")
         return self.model, self.weight_config
 
 
@@ -1469,7 +1525,7 @@ class AutoOPTRound(AutoRound):
             dataset_split: str = "train",
             use_quant_input: bool = True,
             enable_minmax_tuning: bool = True,
-            lr: float = 0.005,
+            lr: float = None,
             minmax_lr: float = None,
             low_gpu_mem_usage: bool = True,
             iters: int = 200,
@@ -1617,7 +1673,7 @@ class AutoAdamRound(AutoOPTRound):
             dataset_split: str = "train",
             use_quant_input: bool = True,
             enable_minmax_tuning: bool = True,
-            lr: float = 0.01,
+            lr: float = None,
             minmax_lr: float = None,
             low_gpu_mem_usage: bool = True,
             iters: int = 200,
