@@ -1342,7 +1342,7 @@ class AutoRound(object):
         for i in range(0, len(block_names), n_blocks):
             if n_blocks == 1:
                 n = block_names[i]
-                logger.info(f"quantizing {i+1}/{len(block_names)}, {n}")
+                logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i: i + n_blocks]
@@ -1369,7 +1369,7 @@ class AutoRound(object):
 
         torch.cuda.empty_cache()
 
-    def export_to_autogptq(self, output_dir):
+    def export_to_autogptq(self, output_dir, use_triton=False):
         """
         Export the model to autogptq format to easily leverage cuda kernel
         """
@@ -1379,7 +1379,9 @@ class AutoRound(object):
         model = copy.deepcopy(self.model.to("cpu"))  ##TODO avoid this deepcopy
 
         from auto_gptq.modeling._utils import pack_model
-        if self.bits == 3:
+        if self.bits == 3 or use_triton is False:
+            if self.bits == 3 and use_triton is True:
+                logger.warning("triton does not support 3 bits, reset it to False")
             quantizers = {}
             for key in self.weight_config:
                 info = self.weight_config[key]
@@ -1387,7 +1389,7 @@ class AutoRound(object):
                     continue
                 quantizers[key] = (None, info['scale'], info['zp'], info['g_idx'])
             pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
-                       force_layer_back_to_cpu=True)
+                       force_layer_back_to_cpu=True, use_triton=False)
         else:
             quantizers = {}
             for key in self.weight_config:

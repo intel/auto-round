@@ -46,8 +46,9 @@ autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
 fake_qdq_model,weight_config = autoround.quantize() ##scale,zp info are saved in weight config dict
 
 ## export to gpu
+## please install autogptq first
 # packed_folder = "./tmp_autoround_packed"
-# autoround.export_to_autogptq(packed_folder)
+# autoround.export_to_autogptq(packed_folder, use_triton=True) ## Utilizing Triton for 2-bit and 4-bit scenarios
 
 ```
 ### Detailed Hyperparameters
