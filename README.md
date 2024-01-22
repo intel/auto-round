@@ -57,8 +57,8 @@ fake_qdq_model,weight_config = autoround.quantize() ##scale,zp info are saved in
 - `use_quant_input (bool)`: Whether to use the output of the previous quantized block as the input for the current block (default is True).
 - `enable_minmax_tuning (bool)`: Whether to enable weight min-max tuning (default is True).
 - `iters (int)`: Number of tuning iterations (default is 200).
-- `lr (float)`: The learning rate for rounding value (default is 0.005).
-- `minmax_lr (float)`: The learning rate for min-max tuning (default is None).
+- `lr (float)`: The learning rate for rounding value (default is None, it will be set to 1.0/iters automatically).
+- `minmax_lr (float)`: The learning rate for min-max tuning (default is None, it will be set to lr automatically).
 - `n_samples (int)`: Number of samples for tuning (default is 512).
 - `seqlen (int)`: Data length of the sequence for tuning.
 - `bs (int)`: Batch size for training (default is 8).
@@ -89,7 +89,7 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bi
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --low_gpu_mem_usage --train_bs 1 --gradient_accumulate_steps 8
 ```
 - **Utilizing the AdamW Optimizer:**
-Include the flag `--adam`. Note that AdamW may be  less effective than Sign gradient descent in many scenarios.
+Include the flag `--adam`. Note that AdamW is less effective than Sign gradient descent in many scenarios we tested.
 
 - **Running the Original SignRound:**
 ```bash
@@ -118,7 +118,7 @@ Random issues in tuning Qwen models. ChatGlm-V1 is not supported
 
 | W4G128                                          | MMLU  | Lamb. | Hella. | Wino. | Piqa  | Truth. | Open. | Boolq | RTE   | ARC-e | ARC-c. | AVG.  |
 |-------------------------------------------------|-------|-------|--------|-------|-------|--------|-------|-------|-------|-------|--------|-------|
-| mistralai/Mixtral-8x7B-v0.1 FP16                | 69.83 | 78.44 | 64.89  | 76.40 | 82.43 | 34.15  | 35.40 | 84.98 | 71.12 | 84.22 | 56.91  | 67.16 |
+| mistralai/Mixtral-8x7B-v0.1 BF16                | 69.83 | 78.44 | 64.89  | 76.40 | 82.43 | 34.15  | 35.40 | 84.98 | 71.12 | 84.22 | 56.91  | 67.16 |
 | mistralai/Mixtral-8x7B-v0.1  Signround+         | 68.90 | 78.11 | 64.31  | 74.27 | 82.10 | 30.97  | 34.20 | 84.57 | 67.87 | 83.96 | 56.57  | 65.98 |
 | mistralai/Mixtral-8x7B-v0.1  Signround+ iter800 | 68.84 | 77.99 | 64.18  | 75.30 | 81.82 | 31.21  | 35.80 | 85.41 | 68.95 | 83.75 | 55.38  | 66.24 |
 | microsoft/phi-2                                 | 56.40 | 62.78 | 55.83  | 75.77 | 78.67 | 31.21  | 40.40 | 83.36 | 62.45 | 80.05 | 52.90  | 61.80 |

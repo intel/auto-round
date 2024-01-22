@@ -51,11 +51,11 @@ if __name__ == '__main__':
     parser.add_argument("--use_quant_input", action='store_true',
                         help="whether to use the output of quantized block to tune the next block")
 
-    parser.add_argument("--lr", default=0.005, type=float,
-                        help="step size")
+    parser.add_argument("--lr", default=None, type=float,
+                        help="learning rate, if None, it will be set to 1.0/iters automatially")
 
     parser.add_argument("--minmax_lr", default=None, type=float,
-                        help="minmax learning rate, if None,it will set to be the same with lr")
+                        help="minmax learning rate, if None,it will beset to be the same with lr")
 
     parser.add_argument("--seed", default=42, type=int,
                         help="seed")

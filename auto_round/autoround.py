@@ -964,7 +964,7 @@ class AutoRound(object):
             dataset_split: str = "train",
             use_quant_input: bool = True,
             enable_minmax_tuning: bool = True,
-            lr: float = 0.005,
+            lr: float = None,
             minmax_lr: float = None,
             low_gpu_mem_usage: bool = True,
             iters: int = 200,
@@ -1028,11 +1028,17 @@ class AutoRound(object):
             )
         else:
             self.dataloader = dataloader
+        self.iters = iters
+        if self.iters <= 0:
+            logger.warning("iters must be positive, reset it to 200")
+            self.iters = 200
         self.lr = lr
+        if self.lr is None:
+            self.lr = 1.0 / self.iters
         self.minmax_lr = minmax_lr
         if self.minmax_lr is None:
             self.minmax_lr = self.lr
-        self.iters = iters
+
         self.sampler = sampler
         self.gradient_accumulate_steps = gradient_accumulate_steps
         self.not_use_mse = not_use_mse
@@ -1513,7 +1519,7 @@ class AutoOPTRound(AutoRound):
             dataset_split: str = "train",
             use_quant_input: bool = True,
             enable_minmax_tuning: bool = True,
-            lr: float = 0.005,
+            lr: float = None,
             minmax_lr: float = None,
             low_gpu_mem_usage: bool = True,
             iters: int = 200,
@@ -1661,7 +1667,7 @@ class AutoAdamRound(AutoOPTRound):
             dataset_split: str = "train",
             use_quant_input: bool = True,
             enable_minmax_tuning: bool = True,
-            lr: float = 0.01,
+            lr: float = None,
             minmax_lr: float = None,
             low_gpu_mem_usage: bool = True,
             iters: int = 200,
