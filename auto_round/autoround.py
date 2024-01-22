@@ -23,6 +23,7 @@ fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s L%(line
                                  "%Y-%m-%d %H:%M:%S")
 fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
+
 import copy
 import time
 from collections import UserDict
