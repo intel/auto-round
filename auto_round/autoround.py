@@ -46,6 +46,7 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0):
         Quantized and dequantized weight, scale, zero-point
     """
     maxq = torch.tensor(2 ** num_bits - 1)
+    ##zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=weight.dtype)##force scale to fp16
     zeros = torch.zeros(weight.shape[0], device=weight.device)
     if isinstance(min_scale, torch.Tensor):
         wmin_tmp = torch.minimum(weight.min(1)[0], zeros)
@@ -900,7 +901,7 @@ class AutoRound(object):
 
     Args:
         model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data.
+        tokenizer: An optional tokenizer for processing input data. If none, a dataloader must be provided.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         scheme (str): The quantization scheme to be used (default is "asym").
@@ -918,7 +919,7 @@ class AutoRound(object):
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         bs (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "cuda:0").
+        device: The device to be used for tuning (default is "cuda:0").
         lr_scheduler: The learning rate scheduler to be used.
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
@@ -1334,7 +1335,7 @@ class AutoRound(object):
         for i in range(0, len(block_names), n_blocks):
             if n_blocks == 1:
                 n = block_names[i]
-                logger.info(n)
+                logger.info(f"quantizing {i}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i: i + n_blocks]
@@ -1366,17 +1367,25 @@ class AutoRound(object):
         Export the model to autogptq format to easily leverage cuda kernel
         """
         model = copy.deepcopy(self.model.to("cpu"))  ##TODO avoid this deepcopy
-        quantizers = {}
-        for key in self.weight_config:
-            info = self.weight_config[key]
-            if info["bits"] > 8:
-                continue
-            quantizers[key] = (None, info['scale'], info['zp'], info['g_idx'])
+
         from auto_gptq.modeling._utils import pack_model
         if self.bits == 3:
+            quantizers = {}
+            for key in self.weight_config:
+                info = self.weight_config[key]
+                if info["bits"] > 8:
+                    continue
+                quantizers[key] = (None, info['scale'], info['zp'], info['g_idx'])
             pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
                        force_layer_back_to_cpu=True)
         else:
+            quantizers = {}
+            for key in self.weight_config:
+                info = self.weight_config[key]
+                if info["bits"] > 8:
+                    continue
+                quantizers[key] = (None, info['scale'].to(torch.float32), info['zp'].to(torch.float32), info['g_idx'])
+
             pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
                        force_layer_back_to_cpu=True, use_triton=True)
         from auto_round.export import save_quantized_to_autogptq
@@ -1441,7 +1450,7 @@ class AutoRound(object):
         end_time = time.time()
         cost_time = end_time - start_time
         logger.info(f"quantization tuning time {cost_time}")
-        self.export_to_autogptq("test_export")
+        ##self.export_to_autogptq("test_export")
         return self.model, self.weight_config
 
 
