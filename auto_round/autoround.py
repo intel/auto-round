@@ -19,7 +19,7 @@ import torch
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
 fh = logging.StreamHandler()
-fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s L%(lineno)d : %(message)s',
+fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s',
                                  "%Y-%m-%d %H:%M:%S")
 fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
@@ -1311,7 +1311,7 @@ class AutoRound(object):
         else:
             return None, output
 
-    def q_dq_weight_round(
+    def qdq_weight_round(
             self,
             model: torch.nn.Module,
             inputs,
@@ -1342,7 +1342,7 @@ class AutoRound(object):
         for i in range(0, len(block_names), n_blocks):
             if n_blocks == 1:
                 n = block_names[i]
-                logger.info(f"quantizing {i}/{len(block_names)}, {n}")
+                logger.info(f"quantizing {i+1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i: i + n_blocks]
@@ -1430,7 +1430,7 @@ class AutoRound(object):
                 logger.warning(f"force the train batch size to {total_samples} ")
         self.model = self.model.to("cpu")
         torch.cuda.empty_cache()
-        self.q_dq_weight_round(
+        self.qdq_weight_round(
             self.model,
             inputs,
             block_names,
