@@ -33,19 +33,21 @@ pip install -r requirements.txt
 ```
 ## Uasage
 ```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
-model_name = "facebook/opt-125m"
 
+model_name = "facebook/opt-125m"
 model = AutoModelForCausalLM.from_pretrained(
             model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
         )
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-autoround = AutoRound(model, tokenizer, num_bits=4, group_size=128, scheme="asym")
+
+autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
 fake_qdq_model,weight_config = autoround.quantize() ##scale,zp info are saved in weight config dict
 
 ## export to gpu
 # packed_folder = "./tmp_autoround_packed"
-# autoround.export_to_autogptq("packed_folder")
+# autoround.export_to_autogptq(packed_folder)
 
 ```
 ### Detailed Hyperparameters

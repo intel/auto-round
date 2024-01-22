@@ -1373,6 +1373,9 @@ class AutoRound(object):
         """
         Export the model to autogptq format to easily leverage cuda kernel
         """
+        if not self.quantized:
+            logger.warning("please run autoround.quantize first")
+            return
         model = copy.deepcopy(self.model.to("cpu"))  ##TODO avoid this deepcopy
 
         from auto_gptq.modeling._utils import pack_model
@@ -1457,6 +1460,7 @@ class AutoRound(object):
         end_time = time.time()
         cost_time = end_time - start_time
         logger.info(f"quantization tuning time {cost_time}")
+        self.quantized = True
         ##self.export_to_autogptq("test_export")
         return self.model, self.weight_config
 
