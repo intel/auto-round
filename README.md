@@ -1,7 +1,7 @@
 
 # AutoRound: Advanced Weight-Only Quantization Algorithm for LLMs
 
-AutoRound is an advanced weight-only quantization algorithm, based on SignRound. It's tailored for a wide range of models and consistently delivers noticeable improvements, often significantly outperforming SignRound. However, it comes at the cost of approximately 2.5 times the tuning runtime.
+AutoRound is an advanced weight-only quantization algorithm, based on SignRound. It's tailored for a wide range of models and consistently delivers noticeable improvements, often significantly outperforming SignRound. However, it comes at the cost of approximately 2.5 times the tuning runtime,e.g., it requires 4.3 hours to quantize LLaMA2-70B on A100.
 
 ## Prerequisites
 - Python 3.9 or higher
