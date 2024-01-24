@@ -13,7 +13,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
 from transformers import set_seed
 
-from eval.eval import eval_model
+from eval.evaluation import eval_model
 
 import re
 
@@ -27,7 +27,7 @@ if __name__ == '__main__':
         "--model_name", default="/models/opt-125m"
     )
 
-    parser.add_argument("--num_bits", default=4, type=int,
+    parser.add_argument("--bits", default=4, type=int,
                         help="number of  bits")
 
     parser.add_argument("--group_size", default=128, type=int,
@@ -51,11 +51,11 @@ if __name__ == '__main__':
     parser.add_argument("--use_quant_input", action='store_true',
                         help="whether to use the output of quantized block to tune the next block")
 
-    parser.add_argument("--lr", default=0.005, type=float,
-                        help="step size")
+    parser.add_argument("--lr", default=None, type=float,
+                        help="learning rate, if None, it will be set to 1.0/iters automatially")
 
     parser.add_argument("--minmax_lr", default=None, type=float,
-                        help="minmax learning rate, if None,it will set to be the same with lr")
+                        help="minmax learning rate, if None,it will beset to be the same with lr")
 
     parser.add_argument("--seed", default=42, type=int,
                         help="seed")
@@ -88,7 +88,7 @@ if __name__ == '__main__':
     # parser.add_argument("--tasks", default=["lambada_openai", "hellaswag", "winogrande", "piqa"],
     #                     help="lm-eval tasks")
 
-    # parser.add_argument("--tasks", default=["lambada_openai"],
+    # parser.add_argument("--tasks", default=["lambada_openai","wikitext2",'hendrycksTest-*'],
     #                     help="lm-eval tasks")
 
     # parser.add_argument("--tasks",
@@ -99,7 +99,7 @@ if __name__ == '__main__':
                         default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
                                  "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
                                  "arc_easy", "arc_challenge"],
-                        help="lm-eval tasks")  # "truthfulqa_gen"
+                        help="lm-eval tasks")
 
     # parser.add_argument("--tasks", default=["lambada_openai"],
     #                     help="lm-eval tasks")
@@ -155,7 +155,7 @@ if __name__ == '__main__':
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
 
-    excel_name = f"{model_name}_{args.num_bits}_{args.group_size}"
+    excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if args.eval_fp16_baseline:
         if not args.low_gpu_mem_usage:
             model = model.to(cuda_device)
@@ -168,7 +168,7 @@ if __name__ == '__main__':
     # if args.iters <= 0:
     #     print("eval rtn", flush=True)
     #     excel_name += "_rtn.xlsx"
-    #     q_dq_weight(model, num_bits=args.num_bits, group_size=args.group_size)
+    #     q_dq_weight(model, bits=args.bits, group_size=args.group_size)
     #     if not args.low_gpu_mem_usage:
     #         model = model.to(cuda_device)
     #     eval_model(output_dir=args.output_dir, model=model, tokenizer=tokenizer, tasks=args.tasks, \
@@ -186,7 +186,7 @@ if __name__ == '__main__':
     if args.adam:
         round = AutoAdamRound
 
-    autoround = round(model, tokenizer, args.num_bits, args.group_size, scheme, bs=args.train_bs,
+    autoround = round(model, tokenizer, args.bits, args.group_size, scheme, bs=args.train_bs,
                  seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                  minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input,
                  amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage, seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps)  ##TODO args pass
@@ -194,7 +194,7 @@ if __name__ == '__main__':
 
     torch.cuda.empty_cache()
     model.eval()
-    output_dir = args.output_dir + "_" + args.model_name.split('/')[-1] + f"_w{args.num_bits}_g{args.group_size}"
+    output_dir = args.output_dir + "_" + args.model_name.split('/')[-1] + f"_w{args.bits}_g{args.group_size}"
 
     # model.to(cuda_device)
     # eval_model(model, model_name, tokenizer, tasks=args.tasks, eval_bs=args.eval_bs)

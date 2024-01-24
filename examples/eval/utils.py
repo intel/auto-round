@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+import datasets
 def set_seed(seed):
     np.random.seed(seed)
     torch.random.manual_seed(seed)
@@ -50,13 +51,21 @@ def get_ptb(nsamples, seed, seqlen, tokenizer):
 
 def get_c4(nsamples, seed, seqlen, tokenizer):
     from datasets import load_dataset
-    traindata = load_dataset(
-        'allenai/c4', 'allenai--c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'
-    )
-    valdata = load_dataset(
-        'allenai/c4', 'allenai--c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation'
-    )
-
+    from packaging import version
+    if version.parse(datasets.__version__)>=version.parse("2.16.1"):
+        traindata = load_dataset(
+            'allenai/c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'
+        )
+        valdata = load_dataset(
+            'allenai/c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation'
+        )
+    else:
+        traindata = load_dataset(
+            'allenai/c4', 'allenai--c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'
+        )
+        valdata = load_dataset(
+            'allenai/c4', 'allenai--c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation'
+        )
 
     import random
     random.seed(seed)
@@ -115,13 +124,23 @@ def get_ptb_new(nsamples, seed, seqlen, tokenizer):
     return trainloader, testenc
 
 def get_c4_new(nsamples, seed, seqlen, tokenizer):
+
     from datasets import load_dataset
-    traindata = load_dataset(
-        'allenai/c4', 'allenai--c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'
-    )
-    valdata = load_dataset(
-        'allenai/c4', 'allenai--c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation'
-    )
+    from packaging import version
+    if version.parse(datasets.__version__)>=version.parse("2.16.1"):
+        traindata = load_dataset(
+            'allenai/c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'
+        )
+        valdata = load_dataset(
+            'allenai/c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation'
+        )
+    else:
+        traindata = load_dataset(
+            'allenai/c4', 'allenai--c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train'
+        )
+        valdata = load_dataset(
+            'allenai/c4', 'allenai--c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation'
+        )
 
     import random
     random.seed(seed)
