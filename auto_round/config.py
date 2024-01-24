@@ -15,15 +15,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Configs for Autoround quantization."""
-try:
-    from neural_compressor.utils.utility import LazyImport
-    torch = LazyImport("torch")
-    from neural_compressor.utils import logger
-except:  # pragma: no cover
-    import logging
-    import torch
-    logger = logging.getLogger()
-    
+
+import logging
+import torch
+logger = logging.getLogger()
 import copy
 import json
 import os
