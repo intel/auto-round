@@ -13,3 +13,7 @@
 # limitations under the License.
 from .autoround import AutoRound, AutoAdamRound, AutoOPTRound
 from .version import __version__
+from .export import compress_model, save_compressed_model, save_quantized_to_autogptq
+from .config import AutoroundQuantConfig
+from .model_wrapper import WeightOnlyLinear
+

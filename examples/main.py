@@ -1,7 +1,11 @@
 import argparse
 import sys
-sys.path.insert(0, '../')
-from auto_round import AutoRound, AutoAdamRound
+sys.path.insert(0, './')
+from auto_round import (AutoRound,
+                        AutoAdamRound,
+                        compress_model,
+                        save_compressed_model,
+                        AutoroundQuantConfig)
 
 parser = argparse.ArgumentParser()
 import torch
@@ -84,25 +88,18 @@ if __name__ == '__main__':
 
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="whether enable weight minmax tuning")
+    
+    parser.add_argument("--target_platform", default='cpu',
+                        help="targeted inference acceleration platform, 'cpu' or 'gpu'")
+    
+    parser.add_argument("--scale_dtype", default='fp32',
+                        help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
-    # parser.add_argument("--tasks", default=["lambada_openai", "hellaswag", "winogrande", "piqa"],
-    #                     help="lm-eval tasks")
-
-    # parser.add_argument("--tasks", default=["lambada_openai","wikitext2",'hendrycksTest-*'],
-    #                     help="lm-eval tasks")
-
-    # parser.add_argument("--tasks",
-    #                     default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
-    #                              'coqa', 'truthfulqa_mc', 'openbookqa', 'boolq', 'rte', 'arc_easy', 'arc_challenge',
-    #                              'hendrycksTest-*', 'wikitext', 'drop', 'gsm8k'],##all
     parser.add_argument("--tasks",
                         default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
                                  "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
                                  "arc_easy", "arc_challenge"],
                         help="lm-eval tasks")
-
-    # parser.add_argument("--tasks", default=["lambada_openai"],
-    #                     help="lm-eval tasks")
 
     parser.add_argument("--output_dir", default="./tmp_signround", type=str,
                         help="Where to store the final model.")
@@ -189,8 +186,17 @@ if __name__ == '__main__':
     autoround = round(model, tokenizer, args.bits, args.group_size, scheme, bs=args.train_bs,
                  seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                  minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input,
-                 amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage, seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps)  ##TODO args pass
-    autoround.quantize()
+                 amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
+                 seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps, scale_dtype=args.scale_dtype)  ##TODO args pass
+    model, q_config = autoround.quantize()
+    
+    if args.target_platform == 'cpu':
+        output_dir = args.output_dir + "/compressed_" + args.model_name.split('/')[-1] + "/"
+        compressed_model = compress_model(model, q_config)
+        quantize_config = AutoroundQuantConfig(bits=args.bits, sym=args.sym, group_size=args.group_size)
+        save_compressed_model(compressed_model, output_dir=output_dir, quantize_config=quantize_config, tokenizer=tokenizer)
+        del q_config
+        del compressed_model
 
     torch.cuda.empty_cache()
     model.eval()

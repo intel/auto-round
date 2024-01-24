@@ -8,4 +8,6 @@ sentencepiece
 einops
 accelerate
 datasets
+protobuf
+
 
