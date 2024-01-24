@@ -14,19 +14,15 @@
 
 
 import logging
-
-logging.basicConfig(level=logging.INFO,
-                    format=('%(filename)s: '
-                            '%(levelname)s: '
-                            '%(funcName)s(): '
-                            '%(lineno)d:\t'
-                            '%(message)s')
-                    )
-
 import torch
 
-logger = logging.getLogger()
 
+logger = logging.getLogger("autoround")
+logger.setLevel(logging.INFO)
+fh = logging.StreamHandler()
+fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s L%(lineno)d : %(message)s', "%Y-%m-%d %H:%M:%S")
+fh.setFormatter(fh_formatter)
+logger.addHandler(fh)
 import copy
 import time
 from collections import UserDict
@@ -1049,7 +1045,7 @@ class AutoRound(object):
         Returns:
         The specified optimizer.
         """
-        from .sign_sgd import SGD
+        from auto_round.sign_sgd import SGD
 
         return SGD
 
