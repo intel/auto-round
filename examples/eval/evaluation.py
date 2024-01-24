@@ -359,10 +359,11 @@ if __name__ == "__main__":
                   "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte", "arc_easy",
                   "arc_challenge"]
     model_name = args.model_name.rstrip('/')
-    excel_name = (args.model_name).split('/')[-1] + ".xlsx"
+    excel_name = model_name.split('/')[-1] + ".xlsx"
     eval_model(output_dir=args.model_name,
                tasks=test_tasks,
                eval_bs=args.eval_bs, eval_orig_float=True, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
+
 

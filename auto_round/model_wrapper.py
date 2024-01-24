@@ -323,13 +323,21 @@ class WeightOnlyLinear(torch.nn.Module):
         return fp32_weight
 
     def forward(self, input):
-        weight = self.recover()
-        device = self.scales.device
-        if weight.dtype == torch.float16 and device.type == "cpu":
-            weight = weight.float()
-            self.bias = self.bias.float() if self.bias is not None else None
-        input = input.type(weight.dtype)
-        return F.linear(input, weight, self.bias)
+        if not hasattr(self, "weight"):
+            weight = self.recover()
+            device = self.scales.device
+            if weight.dtype == torch.float16 and device.type == "cpu":
+                weight = weight.float()
+                self.bias = self.bias.float() if self.bias is not None else None
+        if True:  # keep reusing self.weight due to recover is too slow.
+            if not hasattr(self, "weight"):
+                self.weight = weight
+            input = input.type(self.weight.dtype)
+            logger.debug(f"Calculating {self}")
+            return F.linear(input, self.weight, self.bias)
+        else:
+            input = input.type(weight.dtype)
+            return F.linear(input, weight, self.bias)
 
     def extra_repr(self) -> str:
         tmp_str = "in_features={}, out_features={}, bits={}, group_size={}, bias={}".format(
@@ -342,4 +350,5 @@ class WeightOnlyLinear(torch.nn.Module):
         if self.use_optimum_format:
             tmp_str += ", use_optimum_format=True"
         return tmp_str
+
 

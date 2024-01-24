@@ -89,12 +89,16 @@ if __name__ == '__main__':
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="whether enable weight minmax tuning")
     
-    parser.add_argument("--target_platform", default='cpu',
-                        help="targeted inference acceleration platform, 'cpu' or 'gpu'")
+    parser.add_argument("--deployment_device", default='fake', type=str,
+                        help="targeted inference acceleration platform, 'fake', 'cpu' or 'gpu'")
     
     parser.add_argument("--scale_dtype", default='fp32',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
+    # parser.add_argument("--tasks",
+    #                     default=['lambada_openai'],
+    #                     help="lm-eval tasks")
+    
     parser.add_argument("--tasks",
                         default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
                                  "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
@@ -190,7 +194,7 @@ if __name__ == '__main__':
                  seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps, scale_dtype=args.scale_dtype)  ##TODO args pass
     model, q_config = autoround.quantize()
     
-    if args.target_platform == 'cpu':
+    if args.deployment_device == 'cpu':
         output_dir = args.output_dir + "/compressed_" + args.model_name.split('/')[-1] + "/"
         compressed_model = compress_model(model, q_config)
         quantize_config = AutoroundQuantConfig(bits=args.bits, sym=args.sym, group_size=args.group_size)

@@ -95,8 +95,7 @@ def compress_model(
         scale_dtype = v["scale_dtype"]
         m = get_module(compressed_model, k)
         fp_weight = m.weight.data
-        scale = torch.tensor(v["scale"], dtype=torch.float32)
-        
+        scale = torch.tensor(v["scale"], dtype=scale_dtype)
         zp = None if scheme == "sym" else torch.tensor(v["zp"], dtype=torch.int32)
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size)
         int_weight = int_weight.type(torch.int32)
@@ -201,3 +200,4 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
     quantization_config.model_file_base_name = model_base_name
 
     quantization_config.save_pretrained(save_dir)
+

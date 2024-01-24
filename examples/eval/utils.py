@@ -190,9 +190,10 @@ def eval_ppl_same_with_gptq(model, testenc, dev):
 
     testenc = testenc.input_ids
     nsamples = testenc.numel() // model.seqlen
-
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
+    use_cache = None
+    if hasattr(model.config, "use_cache"):
+        use_cache = model.config.use_cache
+        model.config.use_cache = False
 
     testenc = testenc.to(dev)
     nlls = []
@@ -209,6 +210,7 @@ def eval_ppl_same_with_gptq(model, testenc, dev):
         neg_log_likelihood = loss.float() * model.seqlen
         nlls.append(neg_log_likelihood)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
-
-    model.config.use_cache = use_cache
+    if hasattr(model.config, "use_cache"):
+        model.config.use_cache = use_cache
     return ppl.item()
+
