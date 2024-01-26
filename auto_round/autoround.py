@@ -173,7 +173,7 @@ class SaveInputs:
                 m.orig_forward = m.forward
                 m.forward = partial(self.get_forward_func(n), m)
                 break
-            
+
 
 class WrapperLinear(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True):
@@ -243,7 +243,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.weight.data.copy_(q_dq_weight)
         self.orig_layer.weight.grad = None  ##clear grad
         self.orig_layer.scale = scale.to("cpu")
-        self.orig_layer.zp = zp.to("cpu")  if zp is not None else None
+        self.orig_layer.zp = zp.to("cpu") if zp is not None else None
         return self.orig_layer
 
     def forward(self, x):
@@ -259,7 +259,8 @@ class WrapperLinear(torch.nn.Module):
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
         weight_q, _, _ = quant_weight(
-            weight, self.num_bits, self.group_size, self.scheme, self.value, self.min_scale, self.max_scale, self.scale_dtype
+            weight, self.num_bits, self.group_size, self.scheme, self.value, self.min_scale, self.max_scale,
+            self.scale_dtype
         )
         weight_q = weight_q.to(weight.dtype)
         return F.linear(x, weight_q, self.orig_layer.bias)
@@ -383,6 +384,7 @@ class WrapperMultiblock(torch.nn.Module):
                 hidden_states = layer_outputs[0]
         return hidden_states
 
+
 def wrapper_block(block, enable_minmax_tuning):
     """Wraps the layers in the given block with a custom Wrapper module.
 
@@ -441,8 +443,8 @@ def unwrapper_block(block, vs, min_scales, max_scales):
                 max_scale = torch.clamp(max_scale, -1, 0)
             orig_layer = m.unwrapper(v, min_scale, max_scale)
             set_module(block, n, orig_layer)
-            
-            
+
+
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
      please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
@@ -525,7 +527,7 @@ class AutoRound(object):
             not_use_best_mse: bool = False,
             dynamic_max_gap: int = -1,
             data_type: str = "int",  ##only support data_type
-            scale_dtype = "fp16",
+            scale_dtype="fp16",
             **kwargs,
     ):
         self.model = model
@@ -556,14 +558,14 @@ class AutoRound(object):
         self.train_bs = bs
         self.n_blocks = n_blocks
         self.device = device
-        
+
         if scale_dtype == 'fp16':
             self.scale_dtype = torch.float16
         elif scale_dtype == 'bf16':
             self.scale_dtype = torch.bfloat16
         else:
             self.scale_dtype = torch.float32
-            
+
         self.amp_dtype = torch.float16
         if self.model.dtype != torch.float32:
             self.amp_dtype = self.model.dtype
@@ -701,7 +703,7 @@ class AutoRound(object):
                 if "scheme" not in weight_config[n].keys():
                     weight_config[n]["scheme"] = self.scheme
             weight_config[n]["scale_dtype"] = self.scale_dtype
-            
+
             m.data_type = weight_config[n]["data_type"]
             m.bits = weight_config[n]["bits"]
             m.group_size = weight_config[n]["group_size"]
@@ -929,6 +931,14 @@ class AutoRound(object):
 
         torch.cuda.empty_cache()
 
+    def export(self, output_dir, target="itrex", **kwargs):
+        if target == "itrex":
+            self.export_to_itrex(output_dir)
+        elif target == "auto_gptq":
+            self.export_to_autogptq(output_dir, **kwargs)
+        else:
+            logger.error("export only supports itrex and auto_gptq now")
+
     def export_to_autogptq(self, output_dir, use_triton=False):
         """
         Export the model to autogptq format to easily leverage cuda kernel
@@ -966,7 +976,7 @@ class AutoRound(object):
                                    iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
                                    enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
                                    use_safetensors=True)
-        
+
     def export_to_itrex(self, output_dir):
         """Save configure file and weights for CPU backend inference."""
         from .export_to_itrex import compress_model
@@ -976,7 +986,7 @@ class AutoRound(object):
             setattr(config, "quantization_config", quantize_config.to_dict())
             config.save_pretrained(output_dir)
             quantize_config.save_pretrained(output_dir)
-            
+
         try:
             compressed_model.save_pretrained(output_dir, safe_serialization=True)
             if self.tokenizer is not None:
@@ -1300,4 +1310,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
