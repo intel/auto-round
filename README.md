@@ -33,7 +33,7 @@ autoround.export(output_dir)
 ## pip install intel-extension-for-transformers (for now, please install from source)
 from transformers import TextStreamer
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
-woq_config = WeightOnlyQuantConfig(use_autoround=True,scheme=scheme) # use_awq=True for AWQ models, and use_autoround=True for AutoRound models
+woq_config = WeightOnlyQuantConfig(use_autoround=True,scheme=scheme)
 prompt = "Once upon a time, a little girl"
 
 tokenizer = AutoTokenizer.from_pretrained(output_dir, trust_remote_code=True)
@@ -137,7 +137,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
   </tr>
 
   </tr>
-    <th>Ours iters1K, disable use_quant_inut, minmax_lr 0.002</th>
+    <th>Ours iters1K, disable use_quant_input, minmax_lr 0.002</th>
     <td>67.70</td> <! acc avg -->
     <td>60.57</td> <! MMLU -->
     <td>73.74</td> <! Lambada_openai -->
