@@ -23,7 +23,23 @@ model = AutoModelForCausalLM.from_pretrained(
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
 autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
-fake_qdq_model,weight_config = autoround.quantize() ##scale,zp info are saved in weight config dict
+fake_qdq_model, weight_config = autoround.quantize() ##scale,zp info are saved in weight config dict
+
+### export to intel-extension-for-transformers for intel cpu deployment
+# 
+output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
+autoround.export_to_itrex(output_dir=output_dir)
+# then follow itrex to run the model https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/graph
+
+
+## export to autogptq for gpu deployment
+## please install auto-gptq https://github.com/AutoGPTQ/AutoGPTQ
+# output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
+# autoround.export_to_autogptq(output_dir, use_triton=True) ## Utilizing Triton for 2-bit and 4-bit scenarios
+## then follow autogptq to load the model  
+
+
+
 
 ```
 ### Detailed Hyperparameters
@@ -52,32 +68,209 @@ fake_qdq_model,weight_config = autoround.quantize() ##scale,zp info are saved in
 
 
 ## Tips
-Consider increasing tuning steps and adjusting the learning rate based on a scaling law to achieve better results, albeit with increased tuning time. For instance, at step 800, a learning rate of 0.00125 could be employed.
+Consider increasing tuning steps to achieve better results, albeit with increased tuning time. 
 
 
 ## Known Issues
-CPU kernel will be supported soon
+Random issues in tuning Qwen models.
 
-Random issues in tuning Qwen models. ChatGlm-V1 is not supported
+ChatGlm-V1 is not supported
 
 
 
 ## Validated Models
+For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the seqence length to 2048. For lm-eval wikitext ppl, we adopt lm-eval.
+
+<table border="1">
+  <tr>
+    <th>Model</th>
+    <th>Method</th>
+    <th>Acc AVG.</th>
+    <th>MMLU</th>
+    <th>Lamb.</th>
+    <th>Hella.</th>
+    <th>Wino.</th>
+    <th>Piqa</th>
+    <th>Truth.</th>
+    <th>Open.</th>
+    <th>Boolq</th>
+    <th>RTE</th>
+    <th>ARC-e</th>
+    <th>ARC-c.</th>
+    <th>wikitext2 ppl
+    <th>ptb_new ppl</th>
+    <th>c4_new ppl</th>
+    <th>lm_eval wikitext ppl</th>
+   
+  </tr>
+
+  <tr>
+    <td rowspan="3">Intel/neural-chat-7b-v3 </td>
+    <th>FP16</th>
+    <td>67.92</td> <! acc avg -->
+    <td>61.13</td> <! MMLU -->
+    <td>73.03</td> <! Lambada_openai -->
+    <td>66.39</td> <! Hellsaswag -->
+    <td>76.40</td> <! Winogrande -->
+    <td>81.01</td> <! Piqa -->
+    <td>47.37</td> <! Truthfulqa -->
+    <td>38.8</td> <! Openbookqa -->
+    <td>86.97</td> <! Boolq -->
+    <td>75.81</td> <! RTE -->
+    <td>82.66</td> <! Arc easy -->
+    <td>57.51</td> <! Arc Challenge  -->
+    <td>6.00</td>  <! wikitext2 ppl  -->
+    <td>48.96</td> <! ptb_new ppl  -->
+    <td>9.65</td>    <! c4_new ppl  -->
+    <td>-</td> <! lm-eval wikitext ppl  -->
+  </tr>
+
+  </tr>
+    <th>Ours</th>
+    <td>66.90</td> <! acc avg -->
+    <td>60.56</td> <! MMLU -->
+    <td>72.19</td> <! Lambada_openai -->
+    <td>65.28</td> <! Hellsaswag -->
+    <td>75.37</td> <! Winogrande -->
+    <td>81.18</td> <! Piqa -->
+    <td>46.76</td> <! Truthfulqa -->
+    <td>36.0</td> <! Openbookqa -->
+    <td>86.91</td> <! Boolq -->
+    <td>73.29</td> <! RTE -->
+    <td>81.73</td> <! Arc easy -->
+    <td>56.66</td> <! Arc Challenge  -->
+    <td>6.21</td>  <! wikitext2 ppl  -->
+    <td>59.78</td> <! ptb_new ppl  -->
+    <td>10.01</td>    <! c4_new ppl  -->
+    <td>-</td> <! lm-eval wikitext ppl  -->
+  </tr>
+
+  </tr>
+    <th>Ours iters1K, disable use_quant_inut, minmax_lr 0.002</th>
+    <td>67.70</td> <! acc avg -->
+    <td>60.57</td> <! MMLU -->
+    <td>73.74</td> <! Lambada_openai -->
+    <td>65.62</td> <! Hellsaswag -->
+    <td>77.43</td> <! Winogrande -->
+    <td>80.85</td> <! Piqa -->
+    <td>47.61</td> <! Truthfulqa -->
+    <td>36.8</td> <! Openbookqa -->
+    <td>86.94</td> <! Boolq -->
+    <td>75.09</td> <! RTE -->
+    <td>82.66</td> <! Arc easy -->
+    <td>57.34</td> <! Arc Challenge  -->
+    <td>6.17</td>  <! wikitext2 ppl  -->
+    <td>59.12</td> <! ptb_new ppl  -->
+    <td>9.83</td>    <! c4_new ppl  -->
+    <td>-</td> <! lm-eval wikitext ppl  -->
+  </tr>
 
 
-| W4G128                                          | MMLU  | Lamb. | Hella. | Wino. | Piqa  | Truth. | Open. | Boolq | RTE   | ARC-e | ARC-c. | AVG.  |
-|-------------------------------------------------|-------|-------|--------|-------|-------|--------|-------|-------|-------|-------|--------|-------|
-| mistralai/Mixtral-8x7B-v0.1 BF16                | 69.83 | 78.44 | 64.89  | 76.40 | 82.43 | 34.15  | 35.40 | 84.98 | 71.12 | 84.22 | 56.91  | 67.16 |
-| mistralai/Mixtral-8x7B-v0.1   AutoRound         | 68.90 | 78.11 | 64.31  | 74.27 | 82.10 | 30.97  | 34.20 | 84.57 | 67.87 | 83.96 | 56.57  | 65.98 |
-| mistralai/Mixtral-8x7B-v0.1  AutoRound  iter800 | 68.84 | 77.99 | 64.18  | 75.30 | 81.82 | 31.21  | 35.80 | 85.41 | 68.95 | 83.75 | 55.38  | 66.24 |
-| microsoft/phi-2    FP16                         | 56.40 | 62.78 | 55.83  | 75.77 | 78.67 | 31.21  | 40.40 | 83.36 | 62.45 | 80.05 | 52.90  | 61.80 |
-| microsoft/phi-2    AutoRound                  | 54.57 | 61.32 | 55.04  | 76.48 | 78.89 | 29.74  | 40.60 | 83.24 | 66.43 | 79.76 | 52.30  | 61.67 |
+  <tr>
+    <td rowspan="3">mistralai/Mixtral-8x7B-v0.1 </td>
+    <th>BF16</th>
+   <td>67.16</td>
+    <td>69.83</td>
+    <td>78.44</td>
+    <td>64.89</td>
+    <td>76.40</td>
+    <td>82.43</td>
+    <td>34.15</td>
+    <td>35.40</td>
+    <td>84.98</td>
+    <td>71.12</td>
+    <td>84.22</td>
+    <td>56.91</td>
+    <td>3.84</td>
+    <td>19.22</td>
+    <td>7.41</td>
+    <td>-</td>
+ 
+  </tr>
+  <tr>
+    <th>Ours</th>
+    <td>65.98</td>
+    <td>68.90</td>
+    <td>78.11</td>
+    <td>64.31</td>
+    <td>74.27</td>
+    <td>82.10</td>
+    <td>30.97</td>
+    <td>34.20</td>
+    <td>84.57</td>
+    <td>67.87</td>
+    <td>83.96</td>
+    <td>56.57</td>
+    <td>4.08</td>
+    <td>354</td>
+    <td>7.56</td>
+    <td>-</td>
+  </tr>
+  <tr>
+    <th>Ours iters1K not use_quant_input 
+    <td>66.78</td>
+    <td>68.68</td>
+    <td>78.61</td>
+    <td>64.40</td>
+    <td>76.56</td>
+    <td>81.99</td>
+    <td>32.56</td>
+    <td>34.80</td>
+    <td>85.96</td>
+    <td>70.76</td>
+    <td>83.96</td>
+    <td>56.31</td>
+    <td>3.99</td>
+    <td>17.65</td>
+    <td>7.52</td>
+    <td>-</td>
+ 
+  </tr>
+  <tr>
+    <td rowspan="2">microsoft/phi-2 </td>
+    <th>FP16</th>
+    <td>61.80</td>
+    <td>56.40</td>
+    <td>62.78</td>
+    <td>55.83</td>
+    <td>75.77</td>
+    <td>78.67</td>
+    <td>31.21</td>
+    <td>40.40</td>
+    <td>83.36</td>
+    <td>62.45</td>
+    <td>80.05</td>
+    <td>52.90</td>
+    <td>9.71</td>
+    <td>18.16</td>
+    <td>14.12</td>
+    <td>11.05</td>
+
+  </tr>
+  <tr>
+    <th>AutoRound</th>
+    <td>61.67</td>
+    <td>54.57</td>
+    <td>61.32</td>
+    <td>55.04</td>
+    <td>76.48</td>
+    <td>78.89</td>
+    <td>29.74</td>
+    <td>40.60</td>
+    <td>83.24</td>
+    <td>66.43</td>
+    <td>79.76</td>
+    <td>52.30</td>
+    <td>9.98</td>
+    <td>18.67</td>
+    <td>14.39</td>
+    <td>11.37</td>
+
+  </tr>
+</table>
 
 
-
-
-
-For a fair comparison, we utilized 512 samples from Pile-10k for all methods during calibration. Due to memory constraints, we maintained the original sequence length of 512 for AWQ, while for GPTQ and our approach,  a sequence length of 2048 is used. We have enalbed act-order and true-seqential in GPTQ, and the notation GPTQ* indicates that we adjusted the random seed or data preprocessing to address issues related to the non-positive definite Hessian matrix or other issues.
+We also shows some results compared to other methods. For a fair comparison, we utilized 512 samples from Pile-10k for all methods during calibration. Due to memory constraints, we maintained the original sequence length of 512 for AWQ, while for GPTQ and our approach,  a sequence length of 2048 is used. We have enalbed act-order and true-seqential in GPTQ, and the notation GPTQ* indicates that we adjusted the random seed or data preprocessing to address issues related to the non-positive definite Hessian matrix or other issues.
 ![](./figs/W4G-1.png)
 ![](./figs/W4G128.png)
 ![](./figs/W3G128.png)
