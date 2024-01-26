@@ -25,23 +25,20 @@ scheme = "asym"
 autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme=scheme)
 autoround.quantize()
 
-
 output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
 autoround.export(output_dir)
 
 ##inference
 ## pip install intel-extension-for-transformers (for now, please install from source)
-from transformers import TextStreamer
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
-woq_config = WeightOnlyQuantConfig(use_autoround=True,scheme=scheme)
+
+woq_config = WeightOnlyQuantConfig(use_autoround=True, scheme=scheme)
 prompt = "Once upon a time, a little girl"
 
 tokenizer = AutoTokenizer.from_pretrained(output_dir, trust_remote_code=True)
 inputs = tokenizer(prompt, return_tensors="pt").input_ids
-streamer = TextStreamer(tokenizer)
 model = AutoModelForCausalLM.from_pretrained(output_dir, quantization_config=woq_config, trust_remote_code=True)
-outputs = model.generate(inputs, streamer=streamer, max_new_tokens=300)
-
+outputs = model.generate(inputs, max_new_tokens=300)
 
 ```
 ### Detailed Hyperparameters
