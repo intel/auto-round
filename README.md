@@ -38,7 +38,7 @@ fake_qdq_model,weight_config = autoround.quantize() ##scale,zp info are saved in
 - `lr (float)`: The learning rate for rounding value (default is None, it will be set to 1.0/iters automatically).
 - `minmax_lr (float)`: The learning rate for min-max tuning (default is None, it will be set to lr automatically).
 - `n_samples (int)`: Number of samples for tuning (default is 512).
-- `seqlen (int)`: Data length of the sequence for tuning.
+- `seqlen (int)`: Data length of the sequence for tuning (default is 2048).
 - `bs (int)`: Batch size for training (default is 8).
 - `amp (bool)`: Whether to use automatic mixed precision (default is True).
 - `n_blocks (int)`: Packing several blocks as one for tuning together (default is 1).
@@ -145,10 +145,8 @@ After the quantization process is complete, you can invoke the export API to per
   ## export for CPU deployment
   from auto_round import  QuantConfig, compress_model, save_compressed_model
   output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
-  compressed_model = compress_model(fake_qdq_model, weight_config)
-  quantize_config = QuantConfig(bits=4, sym=False, group_size=128)
-  save_compressed_model(compressed_model, output_dir=output_dir, 
-                        quantize_config=quantize_config, tokenizer=tokenizer)
+  save_compressed_model(fake_qdq_model, weight_config=weight_config, output_dir=output_dir, tokenizer=tokenizer)
+  del weight_config
 
   ## export for GPU deployment
   # please install auto-gptq first
@@ -170,4 +168,5 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 

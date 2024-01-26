@@ -22,6 +22,7 @@ from safetensors.torch import save_file as safe_save
 from os.path import join, isfile, isdir
 import copy
 import json
+from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear
 from ..utils import quant_weight_w_scale, get_module, set_module
 
@@ -32,7 +33,6 @@ def compress_model(
         enable_full_range=False,
         compression_dtype=torch.int32,
         compression_dim=1,
-        scale_dtype=torch.float32,
         device="cpu",
         use_optimum_format=True,
     ):
@@ -46,8 +46,6 @@ def compress_model(
                                                     Defaults to torch.int32.
         compression_dim (int, optional): Select from [0, 1], 0 is output channel,
                                             1 is input channel. Defaults to 1.
-        scale_dtype (torch.Tensor, optional): Use float32 or float16.
-                                                Defaults to torch.float32.
         device (str, optional): choose device for compression. Defaults to cpu.
         use_optimum_format (bool, optional): use the popular huggingface compression format.
             1: compression_dim: weight = 1, zeros = 0 and both are transposed.
@@ -98,20 +96,26 @@ def compress_model(
         )
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
-    return compressed_model
+    
+    quantize_config = QuantConfig(bits=num_bits, sym=(scheme=="sym"), group_size=group_size)
+    return compressed_model, quantize_config
 
 
-def save_compressed_model(model, output_dir, quantize_config=None, tokenizer=None):
+def save_compressed_model(model,
+                          weight_config:Union[str, dict],
+                          output_dir,
+                          tokenizer=None):
         """Save configure file and weights for CPU backend inference."""
         
+        compressed_model, quantize_config = compress_model(model, weight_config)
         if quantize_config is not None:
-            config = model.config
+            config = compressed_model.config
             setattr(config, "quantization_config", quantize_config.to_dict())
             config.save_pretrained(output_dir)
             quantize_config.save_pretrained(output_dir)
             
         try:
-            model.save_pretrained(output_dir, safe_serialization=True)
+            compressed_model.save_pretrained(output_dir, safe_serialization=True)
             if tokenizer is not None:
                 tokenizer.save_pretrained(output_dir)
             logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))

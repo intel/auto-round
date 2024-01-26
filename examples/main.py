@@ -1,11 +1,9 @@
 import argparse
 import sys
-sys.path.insert(0, './')
+sys.path.insert(0, '../')
 from auto_round import (AutoRound,
                         AutoAdamRound,
-                        compress_model,
-                        save_compressed_model,
-                        QuantConfig)
+                        save_compressed_model)
 
 parser = argparse.ArgumentParser()
 import torch
@@ -45,7 +43,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--device", default=0, type=str,
                         help="device gpu int number, or 'cpu' ")
-    #
+    
     parser.add_argument("--sym", action='store_true',
                          help=" sym quantization")
 
@@ -95,10 +93,6 @@ if __name__ == '__main__':
     
     parser.add_argument("--scale_dtype", default='fp32',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
-
-    # parser.add_argument("--tasks",
-    #                     default=['lambada_openai'],
-    #                     help="lm-eval tasks")
     
     parser.add_argument("--tasks",
                         default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
@@ -167,17 +161,6 @@ if __name__ == '__main__':
                    eval_orig_float=True, excel_file=excel_name)
         exit()
 
-    # if args.iters <= 0:
-    #     print("eval rtn", flush=True)
-    #     excel_name += "_rtn.xlsx"
-    #     q_dq_weight(model, bits=args.bits, group_size=args.group_size)
-    #     if not args.low_gpu_mem_usage:
-    #         model = model.to(cuda_device)
-    #     eval_model(output_dir=args.output_dir, model=model, tokenizer=tokenizer, tasks=args.tasks, \
-    #                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage, device=cuda_device,
-    #                excel_file=excel_name)
-    #     exit()
-
     if not args.low_gpu_mem_usage:
         model = model.to(cuda_device)
 
@@ -197,11 +180,8 @@ if __name__ == '__main__':
     
     export_dir = args.output_dir + "/compressed_" + args.model_name.split('/')[-1] + "/"
     if args.deployment_device == 'cpu':
-        compressed_model = compress_model(model, q_config)
-        quantize_config = QuantConfig(bits=args.bits, sym=args.sym, group_size=args.group_size)
-        save_compressed_model(compressed_model, output_dir=export_dir, quantize_config=quantize_config, tokenizer=tokenizer)
+        save_compressed_model(model, weight_config=q_config, output_dir=export_dir, tokenizer=tokenizer)
         del q_config
-        del compressed_model
     elif args.deployment_device == 'gpu':
         autoround.export_to_autogptq(export_dir, use_triton=True)
 
@@ -209,8 +189,6 @@ if __name__ == '__main__':
     model.eval()
     output_dir = args.output_dir + "_" + args.model_name.split('/')[-1] + f"_w{args.bits}_g{args.group_size}"
 
-    # model.to(cuda_device)
-    # eval_model(model, model_name, tokenizer, tasks=args.tasks, eval_bs=args.eval_bs)
     excel_name = f"{output_dir}_result.xlsx"
     output_dir += "/"
     print(excel_name, flush=True)
