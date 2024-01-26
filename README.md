@@ -315,36 +315,6 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bi
     | mistralai/Mistral-7B-v0.1 | 4.34/4.36 |
     
 
-### Deployment
-The quantized models support export to Int4 precision and can be run on Intel CPU using [neural-speed](examples/huggingface/neural_speed/runtime_acc.py), it also supports deployment on GPU using autogptq.
-
-After the quantization process is complete, you can invoke the export API to perform the conversion and save the model along with the quantization configuration file.
-```python
-  from transformers import AutoModelForCausalLM, AutoTokenizer
-  from auto_round import AutoRound
-
-  model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
-        )
-  tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-  autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
-  fake_qdq_model,weight_config = autoround.quantize() ##scale,zp info are saved in weight config dict
-
-  ## export for CPU deployment
-  output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
-  autoround.export_to_speed(output_dir=output_dir)
-  del weight_config
-
-  ## export for GPU deployment
-  # please install auto-gptq first
-  packed_folder = "./tmp_autoround_packed"
-  autoround.export_to_autogptq(packed_folder, use_triton=True) ## Utilizing Triton for 2-bit and 4-bit scenarios
-
-```
-
-
-
-
 ## Reference
 If you find SignRound useful for your research, please cite our paper:
 ```bash
