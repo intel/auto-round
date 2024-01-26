@@ -24,11 +24,12 @@ import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Tuple, Union
-from transformers import BitsAndBytesConfig, PretrainedConfig
+from transformers import PretrainedConfig
 
 QUANT_CONFIG = "quantize_config.json"
 
-class AutoroundQuantConfig(PretrainedConfig):
+class QuantConfig(PretrainedConfig):
+    """A brief quantization configuration for reference when performing model dequantization."""
     def __init__(
         self,
         bits=4,

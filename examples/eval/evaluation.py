@@ -220,14 +220,20 @@ def eval_model(output_dir=None, model=None, tokenizer=None,
 
     if os.path.exists(output_dir) and not eval_orig_float:
         shutil.rmtree(output_dir)
+    
+    if (hasattr(model, 'config') and model.config.torch_dtype is torch.bfloat16):
+        dtype = 'bfloat16'
+        pt_dtype = torch.bfloat16
+    else:
+        pt_dtype = torch.float16
+        
     if not eval_orig_float:
-        model = model.to(torch.float16)
+        model = model.to(pt_dtype)
         model = model.to("cpu")
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
 
-    if (hasattr(model, 'config') and model.config.torch_dtype is torch.bfloat16):
-        dtype = 'bfloat16'
+    
 
     external_tasks = []
     for each in EXT_TASKS:
@@ -365,5 +371,4 @@ if __name__ == "__main__":
                eval_bs=args.eval_bs, eval_orig_float=True, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
-
 

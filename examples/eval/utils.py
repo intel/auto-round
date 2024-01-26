@@ -213,4 +213,3 @@ def eval_ppl_same_with_gptq(model, testenc, dev):
     if hasattr(model.config, "use_cache"):
         model.config.use_cache = use_cache
     return ppl.item()
-

@@ -5,7 +5,7 @@ from auto_round import (AutoRound,
                         AutoAdamRound,
                         compress_model,
                         save_compressed_model,
-                        AutoroundQuantConfig)
+                        QuantConfig)
 
 parser = argparse.ArgumentParser()
 import torch
@@ -90,7 +90,8 @@ if __name__ == '__main__':
                         help="whether enable weight minmax tuning")
     
     parser.add_argument("--deployment_device", default='fake', type=str,
-                        help="targeted inference acceleration platform, 'fake', 'cpu' or 'gpu'")
+                        help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu',"
+                             "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
     
     parser.add_argument("--scale_dtype", default='fp32',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
@@ -194,13 +195,15 @@ if __name__ == '__main__':
                  seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps, scale_dtype=args.scale_dtype)  ##TODO args pass
     model, q_config = autoround.quantize()
     
+    export_dir = args.output_dir + "/compressed_" + args.model_name.split('/')[-1] + "/"
     if args.deployment_device == 'cpu':
-        output_dir = args.output_dir + "/compressed_" + args.model_name.split('/')[-1] + "/"
         compressed_model = compress_model(model, q_config)
-        quantize_config = AutoroundQuantConfig(bits=args.bits, sym=args.sym, group_size=args.group_size)
-        save_compressed_model(compressed_model, output_dir=output_dir, quantize_config=quantize_config, tokenizer=tokenizer)
+        quantize_config = QuantConfig(bits=args.bits, sym=args.sym, group_size=args.group_size)
+        save_compressed_model(compressed_model, output_dir=export_dir, quantize_config=quantize_config, tokenizer=tokenizer)
         del q_config
         del compressed_model
+    elif args.deployment_device == 'gpu':
+        autoround.export_to_autogptq(export_dir, use_triton=True)
 
     torch.cuda.empty_cache()
     model.eval()
