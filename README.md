@@ -26,10 +26,10 @@ autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
 fake_qdq_model, weight_config = autoround.quantize() ##scale,zp info are saved in weight config dict
 
 ### export to intel-extension-for-transformers for intel cpu deployment
-# 
 output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
 autoround.export_to_itrex(output_dir=output_dir)
 # then follow itrex to run the model https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/graph
+
 
 
 ## export to autogptq for gpu deployment
@@ -84,7 +84,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the seqence
 <table border="1">
   <tr>
     <th>Model</th>
-    <th>Method</th>
+    <th>Method </th>
     <th>Acc AVG.</th>
     <th>MMLU</th>
     <th>Lamb.</th>
@@ -207,7 +207,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the seqence
     <td>-</td>
   </tr>
   <tr>
-    <th>Ours iters1K not use_quant_input 
+    <th>Ours iters1K, disable use_quant_input 
     <td>66.78</td>
     <td>68.68</td>
     <td>78.61</td>
