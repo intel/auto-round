@@ -1,7 +1,7 @@
 
 # AutoRound: Advanced Weight-Only Quantization Algorithm for LLMs
 
-AutoRound is an advanced weight-only quantization algorithm, based on SignRound. It's tailored for a wide range of models and consistently delivers noticeable improvements, often significantly outperforming SignRound. However, it comes at the cost of approximately 2.5 times the tuning runtime, e.g., it requires 4.3 hours to quantize LLaMA2-70B on A100.
+AutoRound is an advanced weight-only quantization algorithm, based on SignRound. It's tailored for a wide range of models and consistently delivers noticeable improvements, often significantly outperforming SignRound with the cost of more tuning time for quantization.
 
 ## Prerequisites
 - Python 3.9 or higher
@@ -21,20 +21,27 @@ model = AutoModelForCausalLM.from_pretrained(
             model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
         )
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-
-autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
-fake_qdq_model, weight_config = autoround.quantize() ##scale,zp info are saved in weight config dict
+scheme = "asym"
+autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme=scheme)
+autoround.quantize()
 
 ### export to intel-extension-for-transformers for intel cpu deployment
 output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
-autoround.export_to_itrex(output_dir=output_dir)
-# then follow itrex to run the model https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/graph
+autoround.export(output_dir=output_dir)
 
-## export to autogptq for gpu deployment
-## please install auto-gptq https://github.com/AutoGPTQ/AutoGPTQ
-# output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
-# autoround.export_to_autogptq(output_dir, use_triton=True) ## Utilizing Triton for 2-bit and 4-bit scenarios
-## then follow autogptq to load the model  
+##inference
+## pip install intel-extension-for-transformers (for now, please install from source)
+from transformers import TextStreamer
+from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
+woq_config = WeightOnlyQuantConfig(use_autoround=True,scheme=scheme) # use_awq=True for AWQ models, and use_autoround=True for AutoRound models
+prompt = "Once upon a time, a little girl"
+
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+inputs = tokenizer(prompt, return_tensors="pt").input_ids
+streamer = TextStreamer(tokenizer)
+model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=woq_config, trust_remote_code=True)
+outputs = model.generate(inputs, streamer=streamer, max_new_tokens=300)
+
 
 ```
 ### Detailed Hyperparameters
@@ -60,17 +67,6 @@ autoround.export_to_itrex(output_dir=output_dir)
 - `dataloader`: The dataloader for tuning data.
 - `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits or mixed precision.
 - `device`: The device to be used for tuning (default is "cuda:0").
-
-
-## Tips
-Consider increasing tuning steps to achieve better results, albeit with increased tuning time. 
-
-
-## Known Issues
-Random issues in tuning Qwen models.
-
-ChatGlm-V1 is not supported
-
 
 
 ## Validated Models
@@ -270,6 +266,34 @@ We provide a comparative analysis with other methods [link](./acc_data/REAME.md)
 LaMini-GPT-124M; QWEN1-8B; OPT-125M; Bloom-560m;falcon-7b;gpt-leo-125m;stablelm-base-alpha-3b;dolly-v2-3b;mpt-7b;gpt-j-6b;chatglm2-6b
 
 
+## Tips
+1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. 
+
+2 Export to GPU
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRound
+
+model_name = "facebook/opt-125m"
+model = AutoModelForCausalLM.from_pretrained(
+            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
+        )
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+
+autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
+autoround.quantize()
+
+## export to autogptq for gpu deployment
+# please install auto-gptq https://github.com/AutoGPTQ/
+output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
+autoround.export(output_dir, target="auto_gptq", use_triton=True) ## Utilizing Triton for 2-bit and 4-bit scenarios
+# then follow auto-gptq to load the model  
+```
+
+## Known Issues
+Random issues in tuning Qwen models.
+
+ChatGlm-V1 is not supported
 ### Examples
 cd to examples folder, install lm-eval to run the evaluation
 ```bash
