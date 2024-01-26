@@ -74,7 +74,7 @@ ChatGlm-V1 is not supported
 
 
 ## Validated Models
-For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the seqence length to 2048. For lm-eval wikitext ppl, we adopt lm-eval.
+For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequence length to 2048. For lm-eval wikitext ppl, we adopt lm-eval. The quantization configure is W4G128.
 
 <table border="1">
   <tr>
