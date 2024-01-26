@@ -265,12 +265,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the seqence
 </table>
 
 
-We also shows some results compared to other methods. For a fair comparison, we utilized 512 samples from Pile-10k for all methods during calibration. Due to memory constraints, we maintained the original sequence length of 512 for AWQ, while for GPTQ and our approach,  a sequence length of 2048 is used. We have enalbed act-order and true-seqential in GPTQ, and the notation GPTQ* indicates that we adjusted the random seed or data preprocessing to address issues related to the non-positive definite Hessian matrix or other issues.
-![](./figs/W4G-1.png)
-![](./figs/W4G128.png)
-![](./figs/W3G128.png)
-![](./figs/W2G128.png)
-
+We provide a comparative analysis with other methods [link](./acc_data/REAME.md) in our accuracy data section. Notably, our approach has outperformed GPTQ with a score of 30/32 and AWQ with a score of 27/32 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, W2G128.  And the tuning costs are comparable.
 ### Modes passed smoke test
 LaMini-GPT-124M; QWEN1-8B; OPT-125M; Bloom-560m;falcon-7b;gpt-leo-125m;stablelm-base-alpha-3b;dolly-v2-3b;mpt-7b;gpt-j-6b;chatglm2-6b
 
