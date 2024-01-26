@@ -33,7 +33,7 @@ autoround.export_to_itrex(output_dir=output_dir)
 
 
 ## export to autogptq for gpu deployment
-# please install auto-gptq https://github.com/AutoGPTQ/AutoGPTQ
+## please install auto-gptq https://github.com/AutoGPTQ/AutoGPTQ
 # output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
 # autoround.export_to_autogptq(output_dir, use_triton=True) ## Utilizing Triton for 2-bit and 4-bit scenarios
 ## then follow autogptq to load the model  
