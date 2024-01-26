@@ -25,9 +25,9 @@ scheme = "asym"
 autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme=scheme)
 autoround.quantize()
 
-### export to intel-extension-for-transformers for intel cpu deployment
+
 output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
-autoround.export(output_dir=output_dir)
+autoround.export(output_dir)
 
 ##inference
 ## pip install intel-extension-for-transformers (for now, please install from source)
