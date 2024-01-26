@@ -967,9 +967,9 @@ class AutoRound(object):
                                    enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
                                    use_safetensors=True)
         
-    def export_to_speed(self, output_dir):
+    def export_to_itrex(self, output_dir):
         """Save configure file and weights for CPU backend inference."""
-        from .export_to_speed import compress_model
+        from .export_to_itrex import compress_model
         compressed_model, quantize_config = compress_model(self.model, self.weight_config)
         if quantize_config is not None:
             config = compressed_model.config

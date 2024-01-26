@@ -13,6 +13,6 @@
 # limitations under the License.
 from .autoround import AutoRound, AutoAdamRound, AutoOPTRound
 from .version import __version__
-from .export_to_speed import compress_model, QuantConfig
+from .export_to_itrex import compress_model, QuantConfig
 from .export_to_autogptq import save_quantized_to_autogptq
 
