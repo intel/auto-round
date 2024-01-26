@@ -1,7 +1,8 @@
 import argparse
 import sys
-sys.path.insert(0, '../')
-from auto_round import AutoRound, AutoAdamRound
+sys.path.insert(0, './')
+from auto_round import (AutoRound,
+                        AutoAdamRound)
 
 parser = argparse.ArgumentParser()
 import torch
@@ -41,7 +42,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--device", default=0, type=str,
                         help="device gpu int number, or 'cpu' ")
-    #
+    
     parser.add_argument("--sym", action='store_true',
                          help=" sym quantization")
 
@@ -84,25 +85,19 @@ if __name__ == '__main__':
 
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="whether enable weight minmax tuning")
-
-    # parser.add_argument("--tasks", default=["lambada_openai", "hellaswag", "winogrande", "piqa"],
-    #                     help="lm-eval tasks")
-
-    # parser.add_argument("--tasks", default=["lambada_openai","wikitext2",'hendrycksTest-*'],
-    #                     help="lm-eval tasks")
-
-    # parser.add_argument("--tasks",
-    #                     default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
-    #                              'coqa', 'truthfulqa_mc', 'openbookqa', 'boolq', 'rte', 'arc_easy', 'arc_challenge',
-    #                              'hendrycksTest-*', 'wikitext', 'drop', 'gsm8k'],##all
+    
+    parser.add_argument("--deployment_device", default='fake', type=str,
+                        help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu',"
+                             "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
+    
+    parser.add_argument("--scale_dtype", default='fp32',
+                        help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
+    
     parser.add_argument("--tasks",
                         default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
                                  "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
                                  "arc_easy", "arc_challenge"],
                         help="lm-eval tasks")
-
-    # parser.add_argument("--tasks", default=["lambada_openai"],
-    #                     help="lm-eval tasks")
 
     parser.add_argument("--output_dir", default="./tmp_signround", type=str,
                         help="Where to store the final model.")
@@ -165,17 +160,6 @@ if __name__ == '__main__':
                    eval_orig_float=True, excel_file=excel_name)
         exit()
 
-    # if args.iters <= 0:
-    #     print("eval rtn", flush=True)
-    #     excel_name += "_rtn.xlsx"
-    #     q_dq_weight(model, bits=args.bits, group_size=args.group_size)
-    #     if not args.low_gpu_mem_usage:
-    #         model = model.to(cuda_device)
-    #     eval_model(output_dir=args.output_dir, model=model, tokenizer=tokenizer, tasks=args.tasks, \
-    #                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage, device=cuda_device,
-    #                excel_file=excel_name)
-    #     exit()
-
     if not args.low_gpu_mem_usage:
         model = model.to(cuda_device)
 
@@ -189,15 +173,21 @@ if __name__ == '__main__':
     autoround = round(model, tokenizer, args.bits, args.group_size, scheme, bs=args.train_bs,
                  seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                  minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input,
-                 amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage, seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps)  ##TODO args pass
-    autoround.quantize()
+                 amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
+                 seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps, scale_dtype=args.scale_dtype)  ##TODO args pass
+    model, q_config = autoround.quantize()
+    
+    export_dir = args.output_dir + "/compressed_" + args.model_name.split('/')[-1] + "/"
+    if args.deployment_device == 'cpu':
+        autoround.export_to_speed(output_dir=export_dir)
+        del q_config
+    elif args.deployment_device == 'gpu':
+        autoround.export_to_autogptq(export_dir, use_triton=True)
 
     torch.cuda.empty_cache()
     model.eval()
     output_dir = args.output_dir + "_" + args.model_name.split('/')[-1] + f"_w{args.bits}_g{args.group_size}"
 
-    # model.to(cuda_device)
-    # eval_model(model, model_name, tokenizer, tasks=args.tasks, eval_bs=args.eval_bs)
     excel_name = f"{output_dir}_result.xlsx"
     output_dir += "/"
     print(excel_name, flush=True)

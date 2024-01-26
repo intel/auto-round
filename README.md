@@ -25,25 +25,20 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
 fake_qdq_model,weight_config = autoround.quantize() ##scale,zp info are saved in weight config dict
 
-## export to gpu
-## please install autogptq first
-# packed_folder = "./tmp_autoround_packed"
-# autoround.export_to_autogptq(packed_folder, use_triton=True) ## Utilizing Triton for 2-bit and 4-bit scenarios
-
 ```
 ### Detailed Hyperparameters
 - `model`: The PyTorch model to be quantized.
 - `tokenizer`: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
 - `bits (int)`: Number of bits for quantization (default is 4).
 - `group_size (int)`: Size of the quantization group (default is 128).
-- `scheme (str)`: The quantization scheme (symmetric/asymmetric) to be used (default is "asymmetric").
+- `scheme (str)`: The quantization scheme (symmetric/asymmetric) to be used (default is "asym").
 - `use_quant_input (bool)`: Whether to use the output of the previous quantized block as the input for the current block (default is True).
 - `enable_minmax_tuning (bool)`: Whether to enable weight min-max tuning (default is True).
 - `iters (int)`: Number of tuning iterations (default is 200).
 - `lr (float)`: The learning rate for rounding value (default is None, it will be set to 1.0/iters automatically).
 - `minmax_lr (float)`: The learning rate for min-max tuning (default is None, it will be set to lr automatically).
 - `n_samples (int)`: Number of samples for tuning (default is 512).
-- `seqlen (int)`: Data length of the sequence for tuning.
+- `seqlen (int)`: Data length of the sequence for tuning (default is 2048).
 - `bs (int)`: Batch size for training (default is 8).
 - `amp (bool)`: Whether to use automatic mixed precision (default is True).
 - `n_blocks (int)`: Packing several blocks as one for tuning together (default is 1).
@@ -132,6 +127,35 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bi
     | mistralai/Mistral-7B-v0.1 | 4.34/4.36 |
     
 
+### Deployment
+The quantized models support export to Int4 precision and can be run on Intel CPU using [neural-speed](examples/huggingface/neural_speed/runtime_acc.py), it also supports deployment on GPU using autogptq.
+
+After the quantization process is complete, you can invoke the export API to perform the conversion and save the model along with the quantization configuration file.
+```python
+  from transformers import AutoModelForCausalLM, AutoTokenizer
+  from auto_round import AutoRound
+
+  model = AutoModelForCausalLM.from_pretrained(
+            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
+        )
+  tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+  autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
+  fake_qdq_model,weight_config = autoround.quantize() ##scale,zp info are saved in weight config dict
+
+  ## export for CPU deployment
+  output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
+  autoround.export_to_speed(output_dir=output_dir)
+  del weight_config
+
+  ## export for GPU deployment
+  # please install auto-gptq first
+  packed_folder = "./tmp_autoround_packed"
+  autoround.export_to_autogptq(packed_folder, use_triton=True) ## Utilizing Triton for 2-bit and 4-bit scenarios
+
+```
+
+
+
 
 ## Reference
 If you find SignRound useful for your research, please cite our paper:
@@ -143,4 +167,5 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 

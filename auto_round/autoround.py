@@ -26,163 +26,12 @@ logger.addHandler(fh)
 
 import copy
 import time
-from collections import UserDict
-from functools import partial
-
 from torch.amp import autocast
+from functools import partial
 from torch.functional import F
-
-
-def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0):
-    """Quantizes and dequantizes weight asymmetrically.
-
-    Args:
-        weight: Tensor containing the weight to be quantized
-        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for weight
-        max_scale: Maximum scale coefficient for weight
-
-    Returns:
-        Quantized and dequantized weight, scale, zero-point
-    """
-    maxq = torch.tensor(2 ** num_bits - 1)
-    ##zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=weight.dtype)##force scale to fp16
-    zeros = torch.zeros(weight.shape[0], device=weight.device)
-    if isinstance(min_scale, torch.Tensor):
-        wmin_tmp = torch.minimum(weight.min(1)[0], zeros)
-        wmax_tmp = torch.maximum(weight.max(1)[0], zeros)
-        wmin_tmp *= min_scale + 1.0
-        wmax_tmp *= max_scale + 1.0
-        wmax = torch.maximum(wmax_tmp, wmin_tmp)
-        wmin = torch.minimum(wmax_tmp, wmin_tmp)
-    else:
-        wmin = torch.minimum(weight.min(1)[0], zeros)
-        wmax = torch.maximum(weight.max(1)[0], zeros)
-    tmp = (wmin == 0) & (wmax == 0)
-    wmin[tmp] = -1
-    wmax[tmp] = +1
-    scale = (wmax - wmin) / maxq
-    zp = round_ste(-wmin / scale)
-    scale = scale.unsqueeze(dim=-1)
-    zp = zp.unsqueeze(dim=-1)
-    int_w = round_ste(weight / scale + v)
-    q = torch.clamp(int_w + zp, 0, maxq)
-    return scale * (q - zp), scale, zp
-
-
-def quant_weight_sym(weight, num_bits=4, v=0, min_scale=0, max_scale=0):
-    """Quantizes and dequantizes weight symmetrically.
-
-    Args:
-        weight: Tensor containing the weight to be quantized
-        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for weight
-        max_scale: Maximum scale coefficient for weight
-
-    Returns:
-        Quantized and dequantized weight, scale, zero-point
-    """
-    maxq = torch.tensor(2 ** (num_bits - 1) - 1).to(weight.device)
-    minq = torch.tensor(-(2 ** (num_bits - 1))).to(weight.device)
-    if num_bits == 1:
-        maxq = torch.tensor(2 ** (num_bits - 1))
-        minq = torch.tensor(2 ** (num_bits - 1) - 1)
-
-    wmax = torch.abs(weight).max(1)[0]
-    wmax *= 1 + max_scale
-    tmp = wmax == 0
-    wmax[tmp] = +1
-    scale = wmax / ((maxq - minq) / 2)
-    scale.unsqueeze_(dim=-1)
-    q = torch.clamp(round_ste(weight / scale + v), minq, maxq)
-    return scale * q, scale, None
-
-
-def quant_weight_actor(weight, num_bits, scheme, v, min_scale, max_scale):
-    """Quantizes and dequantizes weight symmetrically or asymmetrically .
-
-    Args:
-        weight: Tensor containing the weight to be quantized
-        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        scheme: Sym or asym
-        v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for weight
-        max_scale: Maximum scale coefficient for weight
-
-    Returns:
-        Quantized and dequantized weight, scale, zero-point
-    """
-    assert num_bits > 0, "num_bits should be larger than 0"
-    if scheme == "sym":
-        return quant_weight_sym(weight, num_bits, v, min_scale, max_scale)
-    else:
-        return quant_weight_asym(weight, num_bits, v, min_scale, max_scale)
-
-
-def quant_weight(weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scale=0, max_scale=0):
-    """Quantizes and dequantizes weight, handing the group size issue .
-
-    Args:
-        weight: Tensor containing the weight to be quantized
-        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        group_size: The number of elements shares scale and zero point
-        scheme: Sym or asym
-        v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for weight
-        max_scale: Maximum scale coefficient for weight
-
-    Returns:
-        Quantized and dequantized weight, scale, zero-point
-    """
-    if group_size == -1 or weight.shape[1] < group_size:
-        return quant_weight_actor(weight, num_bits, scheme=scheme, v=v, min_scale=min_scale, max_scale=max_scale)
-    orig_shape = weight.shape
-    if weight.shape[1] % group_size == 0:
-        weight = weight.reshape(-1, group_size)
-        if isinstance(v, torch.Tensor):
-            v = v.reshape(-1, group_size)
-
-        weight, scale, zp = quant_weight_actor(
-            weight, num_bits, scheme=scheme, v=v, min_scale=min_scale, max_scale=max_scale
-        )
-        weight = weight.reshape(orig_shape)
-        scale = scale.reshape(weight.shape[0], -1)  ##only for linear, conv1d
-        if zp is not None:
-            zp = zp.reshape(weight.shape[0], -1)
-        return weight, scale, zp
-
-    else:
-        pad_len = (weight.shape[1] + group_size - 1) // group_size * group_size - weight.shape[1]
-        weight_new = torch.nn.functional.pad(weight, (0, pad_len))
-        v = torch.nn.functional.pad(v, (0, pad_len))
-        weight_new = weight_new.reshape(-1, group_size)
-        if isinstance(v, torch.Tensor):
-            v = v.reshape(-1, group_size)
-        weight_new, scale, zp = quant_weight_actor(
-            weight_new, num_bits, scheme=scheme, v=v, min_scale=min_scale, max_scale=max_scale
-        )
-        weight_new = weight_new.reshape(orig_shape[0], -1)
-
-        weight_new = weight_new[:, :-pad_len]
-        scale = scale.reshape(weight_new.shape[0], -1)  ##only for linear, conv1d
-        if zp is not None:
-            zp = zp.reshape(weight_new.shape[0], -1)
-        return weight_new, scale, zp
-
-
-def round_ste(x: torch.Tensor):
-    """Straight-Through Estimator for rounding.
-    This function is adapted from omniquant.
-
-    Args:
-        x: torch.Tensor
-
-    Returns:
-        torch.Tensor
-    """
-    return (x.round() - x).detach() + x
+from .utils import (quant_weight, set_module, get_module, get_block_names, block_forward, sampling_inputs,
+                    get_dataloader, get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
+                    collect_minmax_scale, get_batch_dim)
 
 
 class SaveInputs:
@@ -324,59 +173,7 @@ class SaveInputs:
                 m.orig_forward = m.forward
                 m.forward = partial(self.get_forward_func(n), m)
                 break
-
-
-def get_module(model, key):
-    """Get module from model by key name.
-
-    Args:
-        model (torch.nn.Module): original model
-        key (str): module name to be replaced
-    """
-    module = model
-    name_list = key.split(".")
-    for name in name_list:
-        if hasattr(module, name):
-            module = getattr(module, name)
-            module = module
-    return module
-
-
-def set_module(model, key, new_module):
-    """Set new module into model by key name.
-
-    Args:
-        model (torch.nn.Module): original model
-        key (str): module name to be replaced
-        new_module (torch.nn.Module): new module to be inserted
-    """
-    module = model
-    name_list = key.split(".")
-    for name in name_list[:-1]:
-        if hasattr(module, name):
-            module = getattr(module, name)
-        else:
-            module = module
-    setattr(module, name_list[-1], new_module)
-
-
-def get_scale_shape(weight, group_size):
-    """Computes the shape of the scale tensor for quantization based on the weight tensor and group size.
-
-    Args:
-      weight (torch.Tensor): The weight tensor of the layer.
-      group_size (int): The size of the groups for quantization.
-
-    Returns:
-      The shape of the scale tensor to be used for quantization.
-    """
-    if group_size == -1 or weight.shape[1] < group_size:
-        shape = weight.shape[0]
-    else:
-        shape = weight.shape[0] * ((weight.shape[1] + group_size - 1) // group_size)
-
-    return shape
-
+            
 
 class WrapperLinear(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True):
@@ -400,7 +197,8 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer = orig_layer
         self.num_bits = self.orig_layer.bits
         self.group_size = self.orig_layer.group_size
-        self.scheme = (self.orig_layer.scheme,)
+        self.scale_dtype = self.orig_layer.scale_dtype
+        self.scheme = self.orig_layer.scheme
         self.value = torch.nn.Parameter(
             torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device), requires_grad=True
         )
@@ -440,11 +238,12 @@ class WrapperLinear(torch.nn.Module):
             v,
             min_scale,
             max_scale,
+            self.scale_dtype,
         )
         self.orig_layer.weight.data.copy_(q_dq_weight)
         self.orig_layer.weight.grad = None  ##clear grad
         self.orig_layer.scale = scale.to("cpu")
-        self.orig_layer.zp = zp.to("cpu")
+        self.orig_layer.zp = zp.to("cpu")  if zp is not None else None
         return self.orig_layer
 
     def forward(self, x):
@@ -460,7 +259,7 @@ class WrapperLinear(torch.nn.Module):
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
         weight_q, _, _ = quant_weight(
-            weight, self.num_bits, self.group_size, self.scheme, self.value, self.min_scale, self.max_scale
+            weight, self.num_bits, self.group_size, self.scheme, self.value, self.min_scale, self.max_scale, self.scale_dtype
         )
         weight_q = weight_q.to(weight.dtype)
         return F.linear(x, weight_q, self.orig_layer.bias)
@@ -527,6 +326,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
             v,
             min_scale,
             max_scale,
+            self.scale_dtype
         )
         self.orig_layer.weight.data.copy_(weight_q.t())
         self.orig_layer.weight.grad = None
@@ -554,6 +354,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
             self.value,
             self.min_scale,
             self.max_scale,
+            self.scale_dtype
         )
         weight_q = weight_q.to(self.weight_t.dtype)
         size_out = x.size()[:-1] + (self.orig_layer.nf,)
@@ -561,6 +362,26 @@ class WrapperTransformerConv1d(torch.nn.Module):
         x = x.view(*size_out)
         return x
 
+
+class WrapperMultiblock(torch.nn.Module):
+    """A wrapper for a list of modules to be act as a single block.
+
+    Args:
+    module_list: The list of modules to wrap.
+    """
+
+    def __init__(self, module_list):
+        super(WrapperMultiblock, self).__init__()
+        self.layers = torch.nn.ModuleList(module_list)
+
+    def forward(self, x, **kwargs):
+        hidden_states = x
+        for idx, decoder_layer in enumerate(self.layers):
+            layer_outputs = decoder_layer(hidden_states, **kwargs)
+            hidden_states = layer_outputs
+            if isinstance(hidden_states, tuple) or isinstance(hidden_states, list):
+                hidden_states = layer_outputs[0]
+        return hidden_states
 
 def wrapper_block(block, enable_minmax_tuning):
     """Wraps the layers in the given block with a custom Wrapper module.
@@ -620,281 +441,8 @@ def unwrapper_block(block, vs, min_scales, max_scales):
                 max_scale = torch.clamp(max_scale, -1, 0)
             orig_layer = m.unwrapper(v, min_scale, max_scale)
             set_module(block, n, orig_layer)
-
-
-def sampling_inputs(input_ids, input_others, indices, seqlen):
-    """Samples inputs based on the given indices and sequence length.
-
-    Args:
-    input_ids: The input tensor containing IDs.
-    input_others: A dictionary containing other input data.
-    indices: The indices to sample from the input.
-    seqlen: The sequence length.
-
-    Returns:
-    current_input_ids: The sampled input IDs.
-    current_input_others: The sampled other input data.
-    """
-    if len(input_ids.shape) == 3:
-        if int(len(input_others["positional_inputs"]) > 0):
-            current_input_ids = input_ids[:, indices, :]
-        else:
-            current_input_ids = input_ids[indices, :, :]
-    else:
-        n_samples = input_ids.shape[0] // seqlen
-        current_input_ids = input_ids.view(n_samples, seqlen, -1)
-        current_input_ids = current_input_ids[indices, :, :]
-        current_input_ids = current_input_ids.reshape(-1, input.shape[-1])
-
-    current_input_others = {"positional_inputs": input_others["positional_inputs"]}
-    for key in input_others.keys():
-        if "attention_mask" in key or "alibi" in key:
-            current_input_others[key] = None
-            if input_others[key] is not None:
-                current_input_others[key] = input_others[key][indices, ...]
-        else:
-            current_input_others[key] = input_others[key]
-
-    return current_input_ids, current_input_others
-
-
-def move_input_to_device(input, device=torch.device("cpu")):
-    """Moves input data to the specified device.
-
-    Args:
-    input: The input data to be moved.
-    device: The target device.
-
-    Returns:
-    The input data on the specified device.
-    """
-    if isinstance(input, torch.Tensor):
-        return input.to(device)
-    if isinstance(input, dict) or isinstance(input, UserDict):
-        for inp in input.keys():
-            input[inp] = move_input_to_device(input[inp], device)
-    elif isinstance(input, list) or isinstance(input, tuple):
-        input_res = []
-        for inp in input:
-            input_res.append(move_input_to_device(inp, device))
-        input = input_res
-    return input
-
-
-def check_is_cpu(device):
-    """Check if the device is a CPU.
-
-    Args:
-        device: The device to be checked.
-
-    Returns:
-        bool: True if the device is a CPU, False otherwise.
-    """
-    return device == torch.device("cpu") or device == "cpu"
-
-
-def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu")):
-    """Performs a forward pass through a block with the given inputs.
-
-    Args:
-    block: The block to perform the forward pass on.
-    input_ids: The input IDs.
-    input_others: A dictionary containing other input data.
-    amp: A boolean indicating whether to use automatic mixed precision.
-    amp_dtype: The data type for automatic mixed precision.
-    device: The target device.
-
-    Returns:
-    output: The output of the forward pass.
-    """
-    if input_ids.device != device:
-        # input_ids, input_others = move_to_device(input_ids, input_others, device)
-        input_ids = move_input_to_device(input_ids, device)
-        input_others = move_input_to_device(input_others, device)
-    if "alibi" in input_others.keys():
-        attention_mask = input_others["attention_mask"]
-        alibi = input_others["alibi"]
-        if alibi is not None:
-            alibi = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
-        if amp and not check_is_cpu(device):
-            with autocast(device_type="cuda", dtype=amp_dtype):  # pragma: no cover
-                output = block(
-                    input_ids, attention_mask=attention_mask, alibi=alibi
-                )  ##TODO is this correct for all models with alibi?
-        elif amp and check_is_cpu(device):
-            with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
-                output = block(input_ids, attention_mask=attention_mask, alibi=alibi)
-        else:
-            output = block(input_ids, attention_mask=attention_mask, alibi=alibi)
-    else:
-        input_tuple = input_others.pop("positional_inputs", None)
-        if amp and not check_is_cpu(device):
-            with autocast(device_type="cuda", dtype=amp_dtype):  # pragma: no cover
-                output = block.forward(input_ids, *input_tuple, **input_others)
-        elif amp and check_is_cpu(device):
-            with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
-                output = block.forward(input_ids, *input_tuple, **input_others)
-        else:
-            output = block.forward(input_ids, *input_tuple, **input_others)
-    if isinstance(output, list) or isinstance(output, tuple):
-        output = output[0]
-    return output
-
-
-def collect_round_v(block):
-    """Collects the round values for wrapped linear modules in the given block.
-
-    Args:
-    block: The input block.
-
-    Returns:
-    vs: A dictionary of round values for the wrapped linear modules.
-    """
-    vs = {}
-    for n, m in block.named_modules():
-        if hasattr(m, "orig_layer"):
-            v = m.value.data
-            vs[n] = copy.deepcopy(v)
-    return vs
-
-
-def collect_minmax_scale(block):
-    """Collects the min-max scaling values for wrapped linear modules in the given block.
-
-    Args:
-    block: The input block.
-
-    Returns:
-    min_scales: A dictionary of minimum scaling values.
-    max_scales: A dictionary of maximum scaling values.
-    """
-    min_scales = {}
-    max_scales = {}
-    for n, m in block.named_modules():
-        if hasattr(m, "orig_layer"):
-            min_scales[n] = copy.deepcopy(torch.clamp(m.min_scale.data, -1, 0))
-            max_scales[n] = copy.deepcopy(torch.clamp(m.max_scale.data, -1, 0))
-    return min_scales, max_scales
-
-
-@torch.no_grad()
-def get_batch_dim(input_others):
-    """Gets the batch dimension based on the input positional inputs.
-
-    Args:
-    input_others: A dictionary containing input data.
-
-    Returns:
-    dim: The batch dimension.
-    """
-    dim = int(len(input_others["positional_inputs"]) > 0)
-    return dim
-
-
-class WrapperMultiblock(torch.nn.Module):
-    """A wrapper for a list of modules to be act as a single block.
-
-    Args:
-    module_list: The list of modules to wrap.
-    """
-
-    def __init__(self, module_list):
-        super(WrapperMultiblock, self).__init__()
-        self.layers = torch.nn.ModuleList(module_list)
-
-    def forward(self, x, **kwargs):
-        hidden_states = x
-        for idx, decoder_layer in enumerate(self.layers):
-            layer_outputs = decoder_layer(hidden_states, **kwargs)
-            hidden_states = layer_outputs
-            if isinstance(hidden_states, tuple) or isinstance(hidden_states, list):
-                hidden_states = layer_outputs[0]
-        return hidden_states
-
-
-def get_block_names(model):
-    """Get the block names for transformers-like networks.
-
-    Args:
-    model: The model.
-
-    Returns:
-    block_names: A list of block names.
-    """
-    block_names = []
-    target_m = None
-    for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            target_m = (n, m)
-            break  ## only find the first modulelist, may be not robust
-    for n, m in target_m[1].named_children():
-        block_names.append(target_m[0] + "." + n)
-    return block_names
-
-
-def get_tokenizer_function(tokenizer, seqlen):
-    """Returns a default tokenizer function.
-
-    Args:
-    tokenizer: The tokenizer to be used for tokenization.
-    seqlen: The maximum sequence length.
-
-    Returns: A default tokenizer function that applies the provided tokenizer with truncation and a maximum length of
-    seqlen to the "text" field of examples.
-    """
-
-    def default_tokenizer_function(examples):
-        example = tokenizer(examples["text"], truncation=True, max_length=seqlen)
-        return example
-
-    return default_tokenizer_function
-
-
-def get_dataloader(tokenizer, seqlen, data_name="NeelNanda/pile-10k", split="train", seed=42, bs=4):
-    """Returns a dataloader for the specified dataset and split.
-
-    Args:
-    tokenizer: The tokenizer to be used for tokenization.
-    seqlen: The maximum sequence length.
-    data_name: The name of the dataset.
-    split: The data split to be used (e.g., "train", "test").
-    seed: The random seed for shuffling the dataset.
-    bs: The batch size for the dataloader.
-
-    Returns:
-    A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
-    """
-    from datasets import load_dataset
-    from torch.utils.data import DataLoader
-
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
-
-    @torch.no_grad()
-    def collate_batch(batch):
-        input_ids_new = []
-        for text in batch:
-            input_ids = text["input_ids"]
-            if input_ids.shape[0] < seqlen:
-                continue
-            input_ids = input_ids[:seqlen]
-            input_ids_list = input_ids.tolist()
-            if input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
-                continue
-            input_ids_new.append(input_ids)
-        if len(input_ids_new) == 0:
-            return None
-        tmp = torch.vstack(input_ids_new)
-        res = {"input_ids": tmp}
-        return res
-
-    calib_dataset = load_dataset(data_name, split=split)
-    calib_dataset = calib_dataset.shuffle(seed=seed)
-    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
-    calib_dataset.set_format(type="torch", columns=["input_ids"])
-    calib_dataloader = DataLoader(calib_dataset, batch_size=bs, shuffle=False, collate_fn=collate_batch)
-    return calib_dataloader
-
-
+            
+            
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
      please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
@@ -902,7 +450,7 @@ class AutoRound(object):
 
     Args:
         model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data. If none, a dataloader must be provided.
+        tokenizer: Tokenizer for processing input data. Temporarily set as a mandatory parameter.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         scheme (str): The quantization scheme to be used (default is "asym").
@@ -937,7 +485,7 @@ class AutoRound(object):
         seed (int): The random seed (default is 42).
         n_blocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        not_use_mse (bool): Whether to use mean squared error (default is False).
+        not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
         **kwargs: Additional keyword arguments.
@@ -949,7 +497,7 @@ class AutoRound(object):
     def __init__(
             self,
             model,
-            tokenizer=None,
+            tokenizer,
             bits: int = 4,
             group_size: int = 128,
             scheme: str = "asym",
@@ -974,9 +522,10 @@ class AutoRound(object):
             seed: int = 42,
             n_blocks: int = 1,
             gradient_accumulate_steps: int = 1,
-            not_use_mse: bool = False,
+            not_use_best_mse: bool = False,
             dynamic_max_gap: int = -1,
             data_type: str = "int",  ##only support data_type
+            scale_dtype = "fp16",
             **kwargs,
     ):
         self.model = model
@@ -999,7 +548,7 @@ class AutoRound(object):
         except:
             pass
         self.weight_config = weight_config
-        assert dataloader is not None or tokenizer is not None
+        assert tokenizer is not None
         self.dataset_split = dataset_split
         self.seed = seed
         self.tokenizer = tokenizer
@@ -1007,6 +556,14 @@ class AutoRound(object):
         self.train_bs = bs
         self.n_blocks = n_blocks
         self.device = device
+        
+        if scale_dtype == 'fp16':
+            self.scale_dtype = torch.float16
+        elif scale_dtype == 'bf16':
+            self.scale_dtype = torch.bfloat16
+        else:
+            self.scale_dtype = torch.float32
+            
         self.amp_dtype = torch.float16
         if self.model.dtype != torch.float32:
             self.amp_dtype = self.model.dtype
@@ -1041,7 +598,7 @@ class AutoRound(object):
 
         self.sampler = sampler
         self.gradient_accumulate_steps = gradient_accumulate_steps
-        self.not_use_mse = not_use_mse
+        self.not_use_best_mse = not_use_best_mse
         self.dynamic_max_gap = dynamic_max_gap
         self.enable_full_range = enable_full_range
         assert self.enable_full_range is False, "only support enable_full_range=False currently"
@@ -1143,10 +700,13 @@ class AutoRound(object):
                     weight_config[n]["group_size"] = self.group_size
                 if "scheme" not in weight_config[n].keys():
                     weight_config[n]["scheme"] = self.scheme
+            weight_config[n]["scale_dtype"] = self.scale_dtype
+            
             m.data_type = weight_config[n]["data_type"]
             m.bits = weight_config[n]["bits"]
             m.group_size = weight_config[n]["group_size"]
             m.scheme = weight_config[n]["scheme"]
+            m.scale_dtype = weight_config[n]["scale_dtype"]
 
     def get_batch_dim(self, input_others):
         """Get the batch dimension of the input tensor.
@@ -1287,16 +847,16 @@ class AutoRound(object):
 
             if total_loss < best_loss:
                 best_loss = total_loss
-                if not self.not_use_mse:
+                if not self.not_use_best_mse:
                     # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
                     best_v = collect_round_v(block)
                     best_min_scale, best_max_scale = collect_minmax_scale(block)
                     last_best_iter = i
-            if self.not_use_mse and i == self.iters - 1:
+            if self.not_use_best_mse and i == self.iters - 1:
                 best_v = collect_round_v(block)
                 best_min_scale, best_max_scale = collect_minmax_scale(block)
 
-            if not self.not_use_mse:
+            if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
                     break
             self.step(scaler, optimizer, lr_schedule)
@@ -1400,12 +960,30 @@ class AutoRound(object):
 
             pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
                        force_layer_back_to_cpu=True, use_triton=True)
-        from auto_round.export import save_quantized_to_autogptq
+        from auto_round import save_quantized_to_autogptq
         sym = self.scheme == "sym"
         save_quantized_to_autogptq(model, output_dir, bits=self.bits, group_size=self.group_size, sym=sym,
                                    iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
                                    enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
                                    use_safetensors=True)
+        
+    def export_to_speed(self, output_dir):
+        """Save configure file and weights for CPU backend inference."""
+        from .export_to_speed import compress_model
+        compressed_model, quantize_config = compress_model(self.model, self.weight_config)
+        if quantize_config is not None:
+            config = compressed_model.config
+            setattr(config, "quantization_config", quantize_config.to_dict())
+            config.save_pretrained(output_dir)
+            quantize_config.save_pretrained(output_dir)
+            
+        try:
+            compressed_model.save_pretrained(output_dir, safe_serialization=True)
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(output_dir)
+            logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
+        except IOError as e:  # pragma: no cover
+            logger.error("Fail to save configure file and weights due to {}.".format(e))
 
     def quantize(self):
         """Quantize the model and return the quantized model along with weight configurations.
@@ -1497,7 +1075,7 @@ class AutoOPTRound(AutoRound):
         seed (int): The random seed (default is 42).
         n_blocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        not_use_mse (bool): Whether to use mean squared error (default is False).
+        not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
         optimizer: string or object
@@ -1535,7 +1113,7 @@ class AutoOPTRound(AutoRound):
             seed: int = 42,
             n_blocks: int = 1,
             gradient_accumulate_steps: int = 1,
-            not_use_mse: bool = False,
+            not_use_best_mse: bool = False,
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             optimizer="AdamW",
@@ -1568,7 +1146,7 @@ class AutoOPTRound(AutoRound):
             seed,
             n_blocks,
             gradient_accumulate_steps,
-            not_use_mse,
+            not_use_best_mse,
             dynamic_max_gap,
             data_type,
             **kwargs,
@@ -1645,7 +1223,7 @@ class AutoAdamRound(AutoOPTRound):
         seed (int): The random seed (default is 42).
         n_blocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
-        not_use_mse (bool): Whether to use mean squared error (default is False).
+        not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
         optimizer: string or object
@@ -1683,7 +1261,7 @@ class AutoAdamRound(AutoOPTRound):
             seed: int = 42,
             n_blocks: int = 1,
             gradient_accumulate_steps: int = 1,
-            not_use_mse: bool = False,
+            not_use_best_mse: bool = False,
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             optimizer="AdamW",
@@ -1716,9 +1294,10 @@ class AutoAdamRound(AutoOPTRound):
             seed,
             n_blocks,
             gradient_accumulate_steps,
-            not_use_mse,
+            not_use_best_mse,
             dynamic_max_gap,
             data_type,
             optimizer,
             **kwargs,
         )
+
