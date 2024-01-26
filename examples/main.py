@@ -1,9 +1,8 @@
 import argparse
 import sys
-sys.path.insert(0, '../')
+sys.path.insert(0, './')
 from auto_round import (AutoRound,
-                        AutoAdamRound,
-                        save_compressed_model)
+                        AutoAdamRound)
 
 parser = argparse.ArgumentParser()
 import torch
@@ -180,7 +179,7 @@ if __name__ == '__main__':
     
     export_dir = args.output_dir + "/compressed_" + args.model_name.split('/')[-1] + "/"
     if args.deployment_device == 'cpu':
-        save_compressed_model(model, weight_config=q_config, output_dir=export_dir, tokenizer=tokenizer)
+        autoround.export_to_speed(output_dir=export_dir)
         del q_config
     elif args.deployment_device == 'gpu':
         autoround.export_to_autogptq(export_dir, use_triton=True)

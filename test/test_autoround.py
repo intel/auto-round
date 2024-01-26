@@ -9,9 +9,7 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import (AutoRound, 
                         AutoAdamRound,
-                        compress_model,
-                        save_compressed_model,
-                        AutoroundQuantConfig)
+                        QuantConfig)
 
 
 class SimpleDataLoader:
@@ -60,21 +58,20 @@ class TestPytorchWeightOnlyAdaptor(unittest.TestCase):
 
     def test_autoround_int_quant(self):
         model = copy.deepcopy(self.gptj)
-        # device = "cuda:0"
         device = "cpu"
-        model=model.to(device)
-        out1 = model(self.lm_input.to(device))
+        model=model
+        out1 = model(self.lm_input)
         round = AutoRound
-        optq_1 = round(model, self.tokenizer, n_samples=20, device=device, amp=True, seqlen=10, iters=10, scale_dtype='fp16')
+        optq_1 = round(model, self.tokenizer, n_samples=20, device=device, amp=False, seqlen=10, iters=10, scale_dtype='fp32')
         q_model, weight_config1 = optq_1.quantize()
-        q_model = q_model.to(device)
-        compressed_model = compress_model(q_model, weight_config1, device=device)
-        compressed_model = compressed_model.to(device)
-        q_model = q_model.to(device)
-        model = model.to(device)
-        out2 = model(self.lm_input.to(device))
-        out3 = q_model(self.lm_input.to(q_model.device))
-        out4 = compressed_model(self.lm_input.to(compressed_model.device))
+        q_model = q_model
+        from auto_round.export_to_speed import compress_model
+        compressed_model,_ = compress_model(q_model, weight_config1)
+        q_model = q_model
+        model = model
+        out2 = model(self.lm_input)
+        out3 = q_model(self.lm_input)
+        out4 = compressed_model(self.lm_input)
         self.assertTrue(torch.all(torch.isclose(out1[0], out2[0], atol=1e-1)))
         self.assertFalse(torch.all(out1[0] == out2[0]))
         self.assertTrue(torch.all(out2[0] == out3[0]))
@@ -94,9 +91,10 @@ class TestPytorchWeightOnlyAdaptor(unittest.TestCase):
     
     
     def test_config(self):
-        config = AutoroundQuantConfig.from_pretrained("TheBloke/Llama-2-7B-Chat-GPTQ")
+        from auto_round import QuantConfig
+        config = QuantConfig.from_pretrained("TheBloke/Llama-2-7B-Chat-GPTQ")
         config.save_pretrained("quantization_config_dir")
-        loaded_config = AutoroundQuantConfig.from_pretrained("quantization_config_dir")
+        loaded_config = QuantConfig.from_pretrained("quantization_config_dir")
         self.assertEqual(config.group_size, loaded_config.group_size)
         self.assertEqual(config.true_sequential, loaded_config.true_sequential)
         
@@ -104,4 +102,5 @@ class TestPytorchWeightOnlyAdaptor(unittest.TestCase):
         
 if __name__ == "__main__":
     unittest.main()
+
 

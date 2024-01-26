@@ -31,7 +31,7 @@ fake_qdq_model,weight_config = autoround.quantize() ##scale,zp info are saved in
 - `tokenizer`: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
 - `bits (int)`: Number of bits for quantization (default is 4).
 - `group_size (int)`: Size of the quantization group (default is 128).
-- `scheme (str)`: The quantization scheme (symmetric/asymmetric) to be used (default is "asymmetric").
+- `scheme (str)`: The quantization scheme (symmetric/asymmetric) to be used (default is "asym").
 - `use_quant_input (bool)`: Whether to use the output of the previous quantized block as the input for the current block (default is True).
 - `enable_minmax_tuning (bool)`: Whether to enable weight min-max tuning (default is True).
 - `iters (int)`: Number of tuning iterations (default is 200).
@@ -143,9 +143,8 @@ After the quantization process is complete, you can invoke the export API to per
   fake_qdq_model,weight_config = autoround.quantize() ##scale,zp info are saved in weight config dict
 
   ## export for CPU deployment
-  from auto_round import  QuantConfig, compress_model, save_compressed_model
   output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
-  save_compressed_model(fake_qdq_model, weight_config=weight_config, output_dir=output_dir, tokenizer=tokenizer)
+  autoround.export_to_speed(output_dir=output_dir)
   del weight_config
 
   ## export for GPU deployment

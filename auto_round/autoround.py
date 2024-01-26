@@ -450,7 +450,7 @@ class AutoRound(object):
 
     Args:
         model: The PyTorch model to be quantized.
-        tokenizer: An optional tokenizer for processing input data. If none, a dataloader must be provided.
+        tokenizer: Tokenizer for processing input data. Temporarily set as a mandatory parameter.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         scheme (str): The quantization scheme to be used (default is "asym").
@@ -497,7 +497,7 @@ class AutoRound(object):
     def __init__(
             self,
             model,
-            tokenizer=None,
+            tokenizer,
             bits: int = 4,
             group_size: int = 128,
             scheme: str = "asym",
@@ -548,7 +548,7 @@ class AutoRound(object):
         except:
             pass
         self.weight_config = weight_config
-        assert dataloader is not None or tokenizer is not None
+        assert tokenizer is not None
         self.dataset_split = dataset_split
         self.seed = seed
         self.tokenizer = tokenizer
@@ -966,6 +966,24 @@ class AutoRound(object):
                                    iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
                                    enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
                                    use_safetensors=True)
+        
+    def export_to_speed(self, output_dir):
+        """Save configure file and weights for CPU backend inference."""
+        from .export_to_speed import compress_model
+        compressed_model, quantize_config = compress_model(self.model, self.weight_config)
+        if quantize_config is not None:
+            config = compressed_model.config
+            setattr(config, "quantization_config", quantize_config.to_dict())
+            config.save_pretrained(output_dir)
+            quantize_config.save_pretrained(output_dir)
+            
+        try:
+            compressed_model.save_pretrained(output_dir, safe_serialization=True)
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(output_dir)
+            logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
+        except IOError as e:  # pragma: no cover
+            logger.error("Fail to save configure file and weights due to {}.".format(e))
 
     def quantize(self):
         """Quantize the model and return the quantized model along with weight configurations.
@@ -1282,3 +1300,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+

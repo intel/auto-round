@@ -99,25 +99,3 @@ def compress_model(
     
     quantize_config = QuantConfig(bits=num_bits, sym=(scheme=="sym"), group_size=group_size)
     return compressed_model, quantize_config
-
-
-def save_compressed_model(model,
-                          weight_config:Union[str, dict],
-                          output_dir,
-                          tokenizer=None):
-        """Save configure file and weights for CPU backend inference."""
-        
-        compressed_model, quantize_config = compress_model(model, weight_config)
-        if quantize_config is not None:
-            config = compressed_model.config
-            setattr(config, "quantization_config", quantize_config.to_dict())
-            config.save_pretrained(output_dir)
-            quantize_config.save_pretrained(output_dir)
-            
-        try:
-            compressed_model.save_pretrained(output_dir, safe_serialization=True)
-            if tokenizer is not None:
-                tokenizer.save_pretrained(output_dir)
-            logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
-        except IOError as e:  # pragma: no cover
-            logger.error("Fail to save configure file and weights due to {}.".format(e))
