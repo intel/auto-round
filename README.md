@@ -25,10 +25,10 @@ scheme = "asym"
 autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme=scheme)
 autoround.quantize()
 
-output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
+output_dir = "/path/to/quantized_model"
 autoround.export(output_dir)
 
-##inference
+## Inference
 ## pip install intel-extension-for-transformers (for now, please install from source)
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
 
@@ -38,10 +38,12 @@ prompt = "Once upon a time, a little girl"
 tokenizer = AutoTokenizer.from_pretrained(output_dir, trust_remote_code=True)
 inputs = tokenizer(prompt, return_tensors="pt").input_ids
 model = AutoModelForCausalLM.from_pretrained(output_dir, quantization_config=woq_config, trust_remote_code=True)
-outputs = model.generate(inputs, max_new_tokens=300)
+outputs = model.generate(inputs)
 
 ```
-### Detailed Hyperparameters
+
+<details>
+  <summary>### Detailed Hyperparameters</summary>
 - `model`: The PyTorch model to be quantized.
 - `tokenizer`: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
 - `bits (int)`: Number of bits for quantization (default is 4).
@@ -64,7 +66,7 @@ outputs = model.generate(inputs, max_new_tokens=300)
 - `dataloader`: The dataloader for tuning data.
 - `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits or mixed precision.
 - `device`: The device to be used for tuning (default is "cuda:0").
-
+</details>
 
 ## Validated Models
 For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequence length to 2048. For lm-eval wikitext ppl, we adopt lm-eval. The quantization configure is W4G128.
@@ -266,7 +268,7 @@ LaMini-GPT-124M; QWEN1-8B; OPT-125M; Bloom-560m;falcon-7b;gpt-leo-125m;stablelm-
 ## Tips
 1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. 
 
-2 Export to GPU
+2 Leverage AutoGPTQ to evaluate the model on GPU
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
@@ -280,11 +282,11 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
 autoround.quantize()
 
-## export to autogptq for gpu deployment
+## export to autogptq
 # please install auto-gptq https://github.com/AutoGPTQ/
-output_dir = "/PATH/TO/SAVE/COMPRESSED/MODEL/"
-autoround.export(output_dir, target="auto_gptq", use_triton=True) ## Utilizing Triton for 2-bit and 4-bit scenarios
-# then follow auto-gptq to load the model  
+output_dir = "/path/to/quantized_model"
+autoround.export(output_dir, target="auto_gptq", use_triton=True)
+# then follow auto-gptq to load the model and inference  
 ```
 
 ## Known Issues
