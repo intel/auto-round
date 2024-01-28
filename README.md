@@ -44,6 +44,7 @@ outputs = model.generate(inputs)
 
 <details>
   <summary>Detailed Hyperparameters</summary>
+
 - `model`: The PyTorch model to be quantized.
             
 - `tokenizer`: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
