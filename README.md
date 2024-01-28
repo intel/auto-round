@@ -43,9 +43,11 @@ outputs = model.generate(inputs)
 ```
 
 <details>
-  <summary>### Detailed Hyperparameters</summary>
+  ### <summary>Detailed Hyperparameters</summary>
 - `model`: The PyTorch model to be quantized.
+            
 - `tokenizer`: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
+- 
 - `bits (int)`: Number of bits for quantization (default is 4).
 - `group_size (int)`: Size of the quantization group (default is 128).
 - `scheme (str)`: The quantization scheme (symmetric/asymmetric) to be used (default is "asym").
