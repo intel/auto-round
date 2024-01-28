@@ -43,31 +43,51 @@ outputs = model.generate(inputs)
 ```
 
 <details>
-  ### <summary>Detailed Hyperparameters</summary>
+  <summary>Detailed Hyperparameters</summary>
 - `model`: The PyTorch model to be quantized.
             
 - `tokenizer`: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
-- 
+  
 - `bits (int)`: Number of bits for quantization (default is 4).
+  
 - `group_size (int)`: Size of the quantization group (default is 128).
+
 - `scheme (str)`: The quantization scheme (symmetric/asymmetric) to be used (default is "asym").
+  
 - `use_quant_input (bool)`: Whether to use the output of the previous quantized block as the input for the current block (default is True).
+  
 - `enable_minmax_tuning (bool)`: Whether to enable weight min-max tuning (default is True).
+  
 - `iters (int)`: Number of tuning iterations (default is 200).
+  
 - `lr (float)`: The learning rate for rounding value (default is None, it will be set to 1.0/iters automatically).
+  
 - `minmax_lr (float)`: The learning rate for min-max tuning (default is None, it will be set to lr automatically).
+  
 - `n_samples (int)`: Number of samples for tuning (default is 512).
+  
 - `seqlen (int)`: Data length of the sequence for tuning (default is 2048).
+  
 - `bs (int)`: Batch size for training (default is 8).
+  
 - `amp (bool)`: Whether to use automatic mixed precision (default is True).
+  
 - `n_blocks (int)`: Packing several blocks as one for tuning together (default is 1).
+  
 - `gradient_accumulate_steps (int)`: Number of gradient accumulation steps (default is 1).
+  
 - `low_gpu_mem_usage (bool)`: Whether to save GPU memory at the cost of a little tuning time (default is True).
+  
 - `dataset_name (str)`: The default dataset name for tuning (default is "NeelNanda/pile-10k").
+  
 - `dataset_split (str)`: The split of the dataset to be used for tuning (default is "train").
+  
 - `dataloader`: The dataloader for tuning data.
+  
 - `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits or mixed precision.
+  
 - `device`: The device to be used for tuning (default is "cuda:0").
+  
 </details>
 
 ## Validated Models
