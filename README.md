@@ -313,11 +313,11 @@ autoround.export(output_dir, target="auto_gptq", use_triton=True)
 ```
 
 ## Known Issues
-Random issues in tuning Qwen models.
-
-ChatGlm-V1 is not supported
+* Random issues in tuning Qwen models
+* ChatGlm-V1 is not supported
+  
 ### Examples
-cd to examples folder, install lm-eval to run the evaluation
+Enter into the examples folder and install lm-eval to run the evaluation
 ```bash
 pip install -r requirements.txt
 ```
