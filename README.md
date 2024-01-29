@@ -21,24 +21,24 @@ model = AutoModelForCausalLM.from_pretrained(
             model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
         )
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-scheme = "asym"
-autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme=scheme)
+bits, group_size, scheme = 4, 128, "asym"
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme)
 autoround.quantize()
 
-output_dir = "/path/to/quantized_model"
-autoround.export(output_dir)
+## Intel CPU Inference, there are still some issues in cpu inference, we will fix it soon
+# output_dir = "/path/to/quantized_model"
+# autoround.export(output_dir)
 
-## Inference
-## pip install intel-extension-for-transformers (for now, please install from source)
-from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
-
-woq_config = WeightOnlyQuantConfig(use_autoround=True, scheme=scheme)
-prompt = "Once upon a time, a little girl"
-
-tokenizer = AutoTokenizer.from_pretrained(output_dir, trust_remote_code=True)
-inputs = tokenizer(prompt, return_tensors="pt").input_ids
-model = AutoModelForCausalLM.from_pretrained(output_dir, quantization_config=woq_config, trust_remote_code=True)
-outputs = model.generate(inputs)
+# ## pip install intel-extension-for-transformers (for now, please install from source)
+# from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
+# 
+# woq_config = WeightOnlyQuantConfig(group_size=group_size, scheme=scheme, use_autoround=True)
+# prompt = "Once upon a time, a little girl"
+# 
+# tokenizer = AutoTokenizer.from_pretrained(output_dir, trust_remote_code=True)
+# inputs = tokenizer(prompt, return_tensors="pt").input_ids
+# model = AutoModelForCausalLM.from_pretrained(output_dir, quantization_config=woq_config, trust_remote_code=True)
+# outputs = model.generate(inputs)
 
 ```
 
