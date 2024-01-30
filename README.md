@@ -1,5 +1,14 @@
+<div align="center">
 
-# AutoRound: Advanced Weight-Only Quantization Algorithm for LLMs
+AutoRound
+===========================
+<h3> Advanced Weight-Only Quantization Algorithm for LLMs</h3>
+
+[![python](https://img.shields.io/badge/python-3.8%2B-blue)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.1-green)](https://github.com/intel/auto-round)
+[![license](https://img.shields.io/badge/license-Apache%202-blue)](https://github.com/intel/auto-round/blob/main/LICENSE)
+---
+<div align="left">
 
 AutoRound is an advanced weight-only quantization algorithm, based on SignRound. It's tailored for a wide range of models and consistently delivers noticeable improvements, often significantly outperforming SignRound with the cost of more tuning time for quantization.
 
@@ -7,9 +16,10 @@ AutoRound is an advanced weight-only quantization algorithm, based on SignRound.
 - Python 3.9 or higher
 
 ## Installation
-Install the necessary dependencies with the following command:
+### Build from Source
 ```bash
 pip install -r requirements.txt
+python setup.py install
 ```
 ## Usage
 ```python
@@ -24,21 +34,6 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 bits, group_size, scheme = 4, 128, "asym"
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme)
 autoround.quantize()
-
-## Intel CPU Inference, there are still some issues in cpu inference, we will fix it soon
-# output_dir = "/path/to/quantized_model"
-# autoround.export(output_dir)
-
-# ## pip install intel-extension-for-transformers (for now, please install from source)
-# from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
-# 
-# woq_config = WeightOnlyQuantConfig(group_size=group_size, scheme=scheme, use_autoround=True)
-# prompt = "Once upon a time, a little girl"
-# 
-# tokenizer = AutoTokenizer.from_pretrained(output_dir, trust_remote_code=True)
-# inputs = tokenizer(prompt, return_tensors="pt").input_ids
-# model = AutoModelForCausalLM.from_pretrained(output_dir, quantization_config=woq_config, trust_remote_code=True)
-# outputs = model.generate(inputs)
 
 ```
 
@@ -284,7 +279,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
 
 
 We provide a comparative analysis with other methods [link](docs/README.md) in our accuracy data section. Notably, our approach has outperformed GPTQ with a score of 30/32 and AWQ with a score of 27/32 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, W2G128.  And the tuning costs are comparable.
-### Modes passed smoke test
+### Models passed smoke test
 LaMini-GPT-124M; QWEN1-8B; OPT-125M; Bloom-560m;falcon-7b;gpt-leo-125m;stablelm-base-alpha-3b;dolly-v2-3b;mpt-7b;gpt-j-6b;chatglm2-6b
 
 
