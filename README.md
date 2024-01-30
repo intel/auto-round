@@ -283,7 +283,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
 </table>
 
 
-We provide a comparative analysis with other methods [link](./acc_data/REAME.md) in our accuracy data section. Notably, our approach has outperformed GPTQ with a score of 30/32 and AWQ with a score of 27/32 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, W2G128.  And the tuning costs are comparable.
+We provide a comparative analysis with other methods [link](docs/README.md) in our accuracy data section. Notably, our approach has outperformed GPTQ with a score of 30/32 and AWQ with a score of 27/32 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, W2G128.  And the tuning costs are comparable.
 ### Modes passed smoke test
 LaMini-GPT-124M; QWEN1-8B; OPT-125M; Bloom-560m;falcon-7b;gpt-leo-125m;stablelm-base-alpha-3b;dolly-v2-3b;mpt-7b;gpt-j-6b;chatglm2-6b
 
