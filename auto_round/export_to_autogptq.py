@@ -42,13 +42,13 @@ import os
 from typing import Dict, List, Optional, Union
 from safetensors.torch import save_file as safe_save
 from os.path import join, isfile, isdir
-
+import copy
 
 def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym=False, iters=200, lr=5e-3,
                                minmax_lr=5e-3,
                                enable_minmax_tuning=True, use_quant_input=True, use_safetensors: bool = True,
                                safetensors_metadata: Optional[Dict[str, str]] = None):
-    """save quantized model and configs to local disk"""
+    """save quantized model and configs to local disk for cuda """
     os.makedirs(save_dir, exist_ok=True)
     model.to("cpu")
 
@@ -110,3 +110,4 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
     quantization_config.model_file_base_name = model_base_name
 
     quantization_config.save_pretrained(save_dir)
+
