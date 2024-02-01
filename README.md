@@ -28,7 +28,6 @@ python setup.py install
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRound
 
 model_name = "facebook/opt-125m"
 model = AutoModelForCausalLM.from_pretrained(
@@ -36,6 +35,10 @@ model = AutoModelForCausalLM.from_pretrained(
         )
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 bits, group_size, scheme = 4, 128, "asym"
+
+# need load model first, them import
+from auto_round import AutoRound
+
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme,
                       device="hpu", scale_dtype="bf16", amp=False)
 autoround.quantize()
