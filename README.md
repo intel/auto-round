@@ -26,7 +26,7 @@ python setup.py install
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
-model_name = "facebook/opt-125m"
+model_name = "bigscience/bloom-560m"
 model = AutoModelForCausalLM.from_pretrained(
             model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
         )
@@ -34,6 +34,11 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 bits, group_size, scheme = 4, 128, "asym"
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme)
 autoround.quantize()
+
+# Intel CPU Inference, Currently, llama, bloom, and mistral are supported.
+output_dir = "/path/to/quantized_model"
+autoround.export(output_dir)
+# then follow ITREX to load the model and do inference
 
 ```
 
@@ -48,7 +53,7 @@ autoround.quantize()
   
 - `group_size (int)`: Size of the quantization group (default is 128).
 
-- `scheme (str)`: The quantization scheme (symmetric/asymmetric) to be used (default is "asym").
+- `scheme (str)`: The quantization scheme (sym/asym) to be used (default is "asym").
   
 - `use_quant_input (bool)`: Whether to use the output of the previous quantized block as the input for the current block (default is True).
   
@@ -83,8 +88,9 @@ autoround.quantize()
 - `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits or mixed precision.
   
 - `device`: The device to be used for tuning (default is "cuda:0").
-  
+
 </details>
+
 
 ## Validated Models
 For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequence length to 2048. For lm-eval wikitext ppl, we adopt lm-eval. The quantization configure is W4G128.
@@ -277,16 +283,13 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
   </tr>
 </table>
 
-
-We provide a comparative analysis with other methods [link](docs/README.md) in our accuracy data section. Notably, our approach has outperformed GPTQ with a score of 30/32 and AWQ with a score of 27/32 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, W2G128.  And the tuning costs are comparable.
-### Models passed smoke test
-LaMini-GPT-124M; QWEN1-8B; OPT-125M; Bloom-560m;falcon-7b;gpt-leo-125m;stablelm-base-alpha-3b;dolly-v2-3b;mpt-7b;gpt-j-6b;chatglm2-6b
-
+We provide a [comparative analysis](docs/README.md) with other methods in our accuracy data section. Notably, our approach has outperformed GPTQ with a score of 30/32 and AWQ with a score of 27/32 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, W2G128.  And the tuning costs are comparable.
 
 ## Tips
 1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. 
 
 2 Leverage AutoGPTQ to evaluate the model on GPU
+
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
@@ -304,52 +307,12 @@ autoround.quantize()
 # please install auto-gptq https://github.com/AutoGPTQ/
 output_dir = "/path/to/quantized_model"
 autoround.export(output_dir, target="auto_gptq", use_triton=True)
-# then follow auto-gptq to load the model and inference  
+# then follow auto-gptq to load the model and inference
 ```
-
-## Known Issues
-* Random issues in tuning Qwen models
-* ChatGlm-V1 is not supported
   
-### Examples
-Enter into the examples folder and install lm-eval to run the evaluation
-```bash
-pip install -r requirements.txt
-```
+## Examples
+Quantization has been enabled for various large language models. Please refer to the [example readme](examples/README.md) for details.
 
-- **Default Settings:**
-```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --enable_minmax_tuning --use_quant_input
-```
-- **Reduced GPU Memory Usage and Adjusted Training Batch Size:**
-```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --low_gpu_mem_usage --train_bs 1 --gradient_accumulate_steps 8
-```
-- **Utilizing the AdamW Optimizer:**
-Include the flag `--adam`. Note that AdamW is less effective than Sign gradient descent in many scenarios we tested.
-
-- **Running the Original SignRound:**
-```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --iters 400 --lr 0.0025 --minmax_lr 0.0025
-```
- `--enable_minmax_tuning` is strongly recommended 
-
-- The transformers version required varies across different types of models. Here, the transformers version used for running models during experiments is provided as a reference.
-
-    | Model | Transformers version |
-    |  :----: | :----: |
-    | EleutherAI/gpt-j-6b | 4.28/4.30/4.34/4.36 |
-    | huggyllama/llama-7b | 4.28/4.30/4.34/4.36 |
-    | meta-llama/Llama-2-7b-hf | 4.30/4.34/4.36 |
-    | facebook/opt-6.7b | 4.28/4.30/4.34/4.36 |
-    | tiiuae/falcon-7b | 4.28/4.30/4.34/4.36 |
-    | mosaicml/mpt-7b | 4.28/4.30/4.34/4.36 |
-    | bigscience/bloom-7b1 | 4.28/4.30/4.34/4.36 |
-    | baichuan-inc/Baichuan-7B | 4.28/4.30 |
-    | Qwen/Qwen-7B | 4.28/4.30/4.34/4.36 |
-    | THUDM/chatglm3-6b | 4.34/4.36 |
-    | mistralai/Mistral-7B-v0.1 | 4.34/4.36 |
-    
 
 ## Reference
 If you find SignRound useful for your research, please cite our paper:
@@ -361,5 +324,6 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
