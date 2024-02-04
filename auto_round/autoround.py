@@ -1023,6 +1023,7 @@ class AutoRound(object):
         del save_input_actor
         if "input_ids" in inputs.keys():
             total_samples = inputs["input_ids"].shape[0]
+            self.n_samples = total_samples
             if total_samples < self.train_bs:
                 self.train_bs = total_samples
                 logger.warning(f"force the train batch size to {total_samples} ")
