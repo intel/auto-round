@@ -122,15 +122,22 @@ class SaveInputs:
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
-                input_ids = data.to(self.model.device)
+                data_new = data.to(self.model.device)
+                input_ids = data_new
             else:
-                input_ids = data["input_ids"].to(self.model.device)
-            if input_ids.shape[-1] < self.seqlen:
-                continue
+                data_new = {}
+                for key in data.keys():
+                    data_new[key] = data[key].to(self.model.device)
+                input_ids = data_new["input_ids"]
+            # if input_ids.shape[-1] < self.seqlen:
+            #     continue
             if total_cnt + input_ids.shape[0] > n_samples:
                 input_ids = input_ids[: n_samples - total_cnt, ...]
             try:
-                self.model(input_ids)
+                if isinstance(data_new, torch.Tensor):
+                    self.model(data_new)
+                elif isinstance(data_new, dict):
+                    self.model(**data_new)
             except NotImplementedError:
                 pass
             except Exception as error:
@@ -1313,4 +1320,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
