@@ -158,11 +158,6 @@ class SaveInputs:
                 f"Effective samples size:{total_cnt}, Target sample size:{n_samples}"
             )
         res = self.inputs[self.block_name]
-        if "input_ids" in res.keys():
-            total_samples = res["input_ids"].shape[0]
-            if total_samples < n_samples:
-                logger.warning("only cache {total_samples}")
-
         return res
 
     def _recover_forward(self):
