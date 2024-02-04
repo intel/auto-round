@@ -2,7 +2,7 @@ import argparse
 import random
 import sys
 
-sys.path.insert(0, '.../')
+sys.path.insert(0, '../..')
 from auto_round import (AutoRound,
                         AutoAdamRound)
 
@@ -62,19 +62,24 @@ def get_dataloader(tokenizer, seqlen, data_name="mbpp", split="train", seed=42, 
     @torch.no_grad()
     def collate_batch(batch):
         input_ids_new = []
+        attention_mask_new = []
         for text in batch:
-            input_ids = tokenizer_function(text)["input_ids"]
+            token_text = tokenizer_function(text)
+            input_ids, attention_mask = token_text["input_ids"], token_text["attention_mask"]
             if input_ids.shape[1] < seqlen:
                 continue
             input_ids = input_ids[:seqlen]
             input_ids_list = input_ids.tolist()
             if input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
                 continue
+            attention_mask = attention_mask[:seqlen]
+            attention_mask_new.append(attention_mask)
             input_ids_new.append(input_ids)
         if len(input_ids_new) == 0:
             return None
-        tmp = torch.vstack(input_ids_new)
-        res = {"input_ids": tmp}
+        input_ids_new = torch.vstack(input_ids_new)
+        attention_mask_new = torch.vstack(attention_mask_new)
+        res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
         return res
 
     samples = []
@@ -86,8 +91,6 @@ def get_dataloader(tokenizer, seqlen, data_name="mbpp", split="train", seed=42, 
     random.Random(seed).shuffle(samples)
 
     calib_dataloader = DataLoader(samples, batch_size=bs, shuffle=False, collate_fn=collate_batch)
-    for data in calib_dataloader:
-        pass
     return calib_dataloader
 
 
