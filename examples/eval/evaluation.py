@@ -264,7 +264,7 @@ def eval_model(output_dir=None, model=None, tokenizer=None,
                     tmp_eval_bs = eval_bs
                 tmp_results, lm = simple_evaluate(model=model_type, model_args=model_args, tasks=task_names,
                                                   num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
-                                                  max_batch_size=tmp_eval_bs, lm=lm)
+                                                  max_batch_size=tmp_eval_bs, lm=lm, device=str(device))
                 sub_name = f'{tmp_tasks} {shot}-shot'
                 print(f'{sub_name}: ')
                 pprint.pprint(tmp_results["results"])
