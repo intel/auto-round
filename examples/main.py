@@ -1,6 +1,6 @@
 import argparse
 import sys
-sys.path.insert(0, './')
+sys.path.insert(0, '../')
 from auto_round import (AutoRound,
                         AutoAdamRound)
 
@@ -53,7 +53,7 @@ if __name__ == '__main__':
                         help="whether to use the output of quantized block to tune the next block")
 
     parser.add_argument("--lr", default=None, type=float,
-                        help="learning rate, if None, it will be set to 1.0/iters automatially")
+                        help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     parser.add_argument("--minmax_lr", default=None, type=float,
                         help="minmax learning rate, if None,it will beset to be the same with lr")
@@ -119,11 +119,7 @@ if __name__ == '__main__':
         device_str = f"cuda:{int(args.device)}"
     torch_device = torch.device(device_str)
     is_glm = bool(re.search("chatglm", model_name.lower()))
-    is_llava = bool(re.search("llava", model_name.lower()))
-    if is_llava:
-        from transformers import LlavaForConditionalGeneration
-        model = LlavaForConditionalGeneration.from_pretrained(model_name, low_cpu_mem_usage=True, torch_dtype="auto")
-    elif is_glm:
+    if is_glm:
         model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
     else:
         model = AutoModelForCausalLM.from_pretrained(
@@ -169,7 +165,7 @@ if __name__ == '__main__':
 
     scheme = "asym"
     if args.sym:
-        scheme = "sym"
+        scheme = "sym" 
     round = AutoRound
     if args.adam:
         round = AutoAdamRound
@@ -181,18 +177,19 @@ if __name__ == '__main__':
                  seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps, scale_dtype=args.scale_dtype)  ##TODO args pass
     model, q_config = autoround.quantize()
     model_name = args.model_name.rstrip("/")
-    export_dir = args.output_dir + "/compressed_" + model_name.split('/')[-1] + "/"
+    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + "-autoround-int4"
     if args.deployment_device == 'cpu':
         autoround.export(output_dir=export_dir)
         del q_config
     elif args.deployment_device == 'gpu':
         autoround.export(export_dir, target="auto_gptq", use_triton=True)
+        
     if args.device != "cpu":
         torch.cuda.empty_cache()
     model.eval()
-    output_dir = args.output_dir + "_" + model_name.split('/')[-1] + f"_w{args.bits}_g{args.group_size}"
+    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-qdq"# + f"_w{args.bits}_g{args.group_size}"
 
-    excel_name = f"{output_dir}_result.xlsx"
+    excel_name = f"{output_dir}/result.xlsx"
     output_dir += "/"
     print(excel_name, flush=True)
     eval_model(output_dir=output_dir, model=model, tokenizer=tokenizer, tasks=args.tasks, \
