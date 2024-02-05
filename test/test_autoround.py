@@ -1,15 +1,11 @@
 import copy
-import os
 import shutil
 import unittest
 import sys
 sys.path.insert(0,".")
 import torch
 import transformers
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import (AutoRound, 
-                        AutoAdamRound,
-                        QuantConfig)
+from auto_round import (AutoRound)
 
 
 class SimpleDataLoader:
@@ -65,7 +61,7 @@ class TestPytorchWeightOnlyAdaptor(unittest.TestCase):
         optq_1 = round(model, self.tokenizer, n_samples=20, device=device, amp=False, seqlen=10, iters=10, scale_dtype='fp32')
         q_model, weight_config1 = optq_1.quantize()
         q_model = q_model
-        from auto_round.export_to_itrex import compress_model
+        from auto_round.export.export_to_itrex import compress_model
         compressed_model,_ = compress_model(q_model, weight_config1)
         q_model = q_model
         model = model

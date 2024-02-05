@@ -19,6 +19,23 @@ from torch.amp import autocast
 from collections import UserDict
 
 
+def is_optimum_habana_available():
+    import importlib
+    from transformers.utils.import_utils import is_optimum_available
+
+    return is_optimum_available() and importlib.util.find_spec("optimum.habana") != None
+
+try:
+    import habana_frameworks.torch.hpu as hthpu
+    import habana_frameworks.torch.core as htcore
+    if is_optimum_habana_available():
+        is_hpu_available = True
+    else:
+        print("Should install optimum-habana when the environment has habana frameworks")
+        is_hpu_available = False
+except ImportError:
+    is_hpu_available = False
+
 def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
     This function is adapted from omniquant.
@@ -313,67 +330,6 @@ def get_block_names(model):
     return block_names
 
 
-def get_tokenizer_function(tokenizer, seqlen):
-    """Returns a default tokenizer function.
-
-    Args:
-    tokenizer: The tokenizer to be used for tokenization.
-    seqlen: The maximum sequence length.
-
-    Returns: A default tokenizer function that applies the provided tokenizer with truncation and a maximum length of
-    seqlen to the "text" field of examples.
-    """
-
-    def default_tokenizer_function(examples):
-        example = tokenizer(examples["text"], truncation=True, max_length=seqlen)
-        return example
-
-    return default_tokenizer_function
-
-
-def get_dataloader(tokenizer, seqlen, data_name="NeelNanda/pile-10k", split="train", seed=42, bs=4):
-    """Returns a dataloader for the specified dataset and split.
-
-    Args:
-    tokenizer: The tokenizer to be used for tokenization.
-    seqlen: The maximum sequence length.
-    data_name: The name of the dataset.
-    split: The data split to be used (e.g., "train", "test").
-    seed: The random seed for shuffling the dataset.
-    bs: The batch size for the dataloader.
-
-    Returns:
-    A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
-    """
-    from datasets import load_dataset
-    from torch.utils.data import DataLoader
-
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
-
-    @torch.no_grad()
-    def collate_batch(batch):
-        input_ids_new = []
-        for text in batch:
-            input_ids = text["input_ids"]
-            if input_ids.shape[0] < seqlen:
-                continue
-            input_ids = input_ids[:seqlen]
-            input_ids_list = input_ids.tolist()
-            if input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
-                continue
-            input_ids_new.append(input_ids)
-        if len(input_ids_new) == 0:
-            return None
-        tmp = torch.vstack(input_ids_new)
-        res = {"input_ids": tmp}
-        return res
-
-    calib_dataset = load_dataset(data_name, split=split)
-    calib_dataset = calib_dataset.shuffle(seed=seed)
-    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
-    calib_dataset.set_format(type="torch", columns=["input_ids"])
-    calib_dataloader = DataLoader(calib_dataset, batch_size=bs, shuffle=False, collate_fn=collate_batch)
-    return calib_dataloader
 
 
 def collect_round_v(block):

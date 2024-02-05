@@ -30,10 +30,11 @@ from torch.amp import autocast
 from functools import partial
 from torch.functional import F
 from .utils import (quant_weight, set_module, get_module, get_block_names, block_forward, sampling_inputs,
-                    get_dataloader, get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
-                    collect_minmax_scale, get_batch_dim)
+                    get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
+                    collect_minmax_scale, get_batch_dim, is_hpu_available)
+from .calib_dataset import CALIB_DATASETS
 
-from .device_utils import *
+
 
 
 class SaveInputs:
@@ -124,15 +125,22 @@ class SaveInputs:
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
-                input_ids = data.to(self.model.device)
+                data_new = data.to(self.model.device)
+                input_ids = data_new
             else:
-                input_ids = data["input_ids"].to(self.model.device)
-            if input_ids.shape[-1] < self.seqlen:
-                continue
+                data_new = {}
+                for key in data.keys():
+                    data_new[key] = data[key].to(self.model.device)
+                input_ids = data_new["input_ids"]
+            # if input_ids.shape[-1] < self.seqlen:
+            #     continue
             if total_cnt + input_ids.shape[0] > n_samples:
                 input_ids = input_ids[: n_samples - total_cnt, ...]
             try:
-                self.model(input_ids)
+                if isinstance(data_new, torch.Tensor):
+                    self.model(data_new)
+                elif isinstance(data_new, dict):
+                    self.model(**data_new)
             except NotImplementedError:
                 pass
             except Exception as error:
@@ -153,11 +161,6 @@ class SaveInputs:
                 f"Effective samples size:{total_cnt}, Target sample size:{n_samples}"
             )
         res = self.inputs[self.block_name]
-        if "input_ids" in res.keys():
-            total_samples = res["input_ids"].shape[0]
-            if total_samples < n_samples:
-                logger.warning("only cache {total_samples}")
-
         return res
 
     def _recover_forward(self):
@@ -582,13 +585,16 @@ class AutoRound(object):
         self.dataset_name = dataset_name
 
         if dataloader is None:
+            get_dataloader = CALIB_DATASETS.get(self.dataset_name,
+                                                CALIB_DATASETS["NeelNanda/pile-10k"])
             self.dataloader = get_dataloader(
                 self.tokenizer,
                 self.seqlen,
                 seed=self.seed,
                 bs=self.train_bs,
                 split=self.dataset_split,
-                data_name=self.dataset_name,
+                dataset_name=self.dataset_name
+
             )
         else:
             self.dataloader = dataloader
@@ -989,7 +995,7 @@ class AutoRound(object):
 
     def export_to_itrex(self, output_dir):
         """Save configure file and weights for CPU backend inference."""
-        from .export_to_itrex import compress_model
+        from auto_round.export.export_to_itrex import compress_model
         compressed_model, quantize_config = compress_model(self.model, self.weight_config)
         if quantize_config is not None:
             config = compressed_model.config
@@ -1028,6 +1034,7 @@ class AutoRound(object):
         del save_input_actor
         if "input_ids" in inputs.keys():
             total_samples = inputs["input_ids"].shape[0]
+            self.n_samples = total_samples
             if total_samples < self.train_bs:
                 self.train_bs = total_samples
                 logger.warning(f"force the train batch size to {total_samples} ")
@@ -1322,4 +1329,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-

@@ -29,19 +29,22 @@ python setup.py install
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model_name = "facebook/opt-125m"
+model_name = "bigscience/bloom-560m"
 model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
-        )
+            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 bits, group_size, scheme = 4, 128, "asym"
 
-# need load model first, them import
+# need to load model first, then import
 from auto_round import AutoRound
-
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme,
                       device="hpu", scale_dtype="bf16", amp=False)
 autoround.quantize()
+
+# Intel CPU Inference, Currently, llama, bloom, and mistral are supported.
+output_dir = "/path/to/quantized_model"
+autoround.export(output_dir)
+# then follow ITREX to load the model and do inference
 
 ```
 
@@ -53,8 +56,7 @@ from auto_round import AutoRound
 
 model_name = "bigscience/bloom-560m"
 model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
-        )
+            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 bits, group_size, scheme = 4, 128, "asym"
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme)
@@ -185,7 +187,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
   </tr>
 
   </tr>
-    <th>Ours iters1K, disable use_quant_input, minmax_lr 0.002</th>
+    <th>Ours iters=1K,use_quant_input=False, minmax_lr=0.002</th>
     <td>67.70</td> <! acc avg -->
     <td>60.57</td> <! MMLU -->
     <td>73.74</td> <! Lambada_openai -->
@@ -246,7 +248,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>-</td>
   </tr>
   <tr>
-    <th>Ours iters1K, disable use_quant_input 
+    <th>Ours iters=1K,use_quant_input=False 
     <td>66.78</td>
     <td>68.68</td>
     <td>78.61</td>
@@ -266,7 +268,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
  
   </tr>
   <tr>
-    <td rowspan="2">microsoft/phi-2 </td>
+    <td rowspan="3">microsoft/phi-2 </td>
     <th>FP16</th>
     <td>61.80</td>
     <td>56.40</td>
@@ -305,6 +307,26 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>14.39</td>
     <td>11.37</td>
 
+  </tr>
+
+  </tr>
+    <th>Ours iters=1K,use_quant_input=False </th>
+    <td>61.47</td> <! acc avg -->
+    <td>55.41</td> <! MMLU -->
+    <td>61.77</td> <! Lambada_openai -->
+    <td>54.92</td> <! Hellsaswag -->
+    <td>76.40</td> <! Winogrande -->
+    <td>78.29</td> <! Piqa -->
+    <td>31.09</td> <! Truthfulqa -->
+    <td>40.0</td> <! Openbookqa -->
+    <td>83.24</td> <! Boolq -->
+    <td>63.54</td> <! RTE -->
+    <td>79.29</td> <! Arc easy -->
+    <td>52.22</td> <! Arc Challenge  -->
+    <td>9.97</td>  <! wikitext2 ppl  -->
+    <td>18.63</td> <! ptb_new ppl  -->
+    <td>14.37</td>    <! c4_new ppl  -->
+    <td>11.35</td> <! lm-eval wikitext ppl  -->
   </tr>
 </table>
 

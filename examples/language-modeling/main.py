@@ -1,6 +1,6 @@
 import argparse
 import sys
-sys.path.insert(0, '../')
+sys.path.insert(0, '../..')
 from auto_round import (AutoRound,
                         AutoAdamRound)
 
@@ -25,7 +25,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 if __name__ == '__main__':
 
     parser.add_argument(
-        "--model_name", default="/models/opt-125m"
+        "--model_name", default="facebook/opt-125m"
     )
 
     parser.add_argument("--bits", default=4, type=int,

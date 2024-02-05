@@ -1,7 +1,7 @@
 Step-by-Step
 ============
 
-This document presents step-by-step instructions for autoround.
+This document presents step-by-step instructions for auto-round.
 
 # Prerequisite
 
@@ -32,7 +32,7 @@ The transformers version required varies across different types of models. Here,
 
 ## 2. Prepare Dataset
 
-The dataset will be downloaded automatically from the datasets Hub.
+The NeelNanda/pile-10k in huggingface is adopted as the default calibration data and  will be downloaded automatically from the datasets Hub. To customize a dataset, please kindly follow our dataset code.
 See more about loading [huggingface dataset](https://huggingface.co/docs/datasets/loading_datasets.html)
 
 <br />
