@@ -1,17 +1,19 @@
 #!/bin/bash
 set -x
+device=0
+model_name="Intel/neural-chat-7b-v3"
 
-model="Intel/neural-chat-7b-v3"
-
-CUDA_VISIBLE_DEVICES=4 python3 main.py \
-        --model_name /models/${model} \
-        --bits 4 --group_size 128 \
-        --enable_minmax_tuning \
-        --use_quant_input \
-        --amp \
-        --iters 200 \
-        --deployment_device 'cpu' \
-        --scale_dtype 'fp32' \
-        --eval_bs 16 \
-        --output_dir "./tmp_signround"
+CUDA_VISIBLE_DEVICES=$device \
+python3 main.py \
+--model_name $model_name \
+--bits 4 \
+--group_size 128 \
+--enable_minmax_tuning \
+--use_quant_input \
+--amp \
+--iters 200 \
+--deployment_device 'cpu' \
+--scale_dtype 'fp32' \
+--eval_bs 32 \
+--output_dir "./tmp_signround"
 

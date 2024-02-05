@@ -1,6 +1,6 @@
-device=0
 #!/bin/bash
 set -x
+device=0
 model_name="Salesforce/codegen25-7b-multi"
 
 CUDA_VISIBLE_DEVICES=$device \

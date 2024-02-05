@@ -48,7 +48,7 @@ autoround.export(output_dir)
 
 ```
 
-### On GPU
+### On CPU/GPU
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
