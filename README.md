@@ -35,7 +35,7 @@ model = AutoModelForCausalLM.from_pretrained(
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 bits, group_size, scheme = 4, 128, "asym"
 
-# need to load model first, them import
+# need to load model first, then import
 from auto_round import AutoRound
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme,
                       device="hpu", scale_dtype="bf16", amp=False)
