@@ -289,7 +289,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
 
   </tr>
   <tr>
-    <th>AutoRound</th>
+    <th>Ours</th>
     <td>61.67</td>
     <td>54.57</td>
     <td>61.32</td>
@@ -335,7 +335,7 @@ We provide a [comprehensive analysis](docs/README.md) with other methods in our 
 ## Tips
 1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. 
 
-2 Leverage AutoGPTQ to evaluate the model on GPU
+2 Leverage AutoGPTQ to run the model on GPU
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
