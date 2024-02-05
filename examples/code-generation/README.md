@@ -33,6 +33,22 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Salesforce/codegen25-7b-mult
 
 ## 4. Evaluation
 Please follow https://github.com/bigcode-project/bigcode-evaluation-harness to eval the model, currently we only support fake model evaluation.
+<table border="1">
+  <tr>
+    <th>Model</th>
+    <th>Method</th>
+    <th>HumanEval top1 t=0.2 n_samples=20</th>
+  </tr>
+  <tr>
+    <th rowspan="2">Salesforce/codegen25-7b-multi</th>
+    <th>FP16 </th>
+    <th>0.2854</th>
+  </tr>
+  <tr>
+    <th>AutoRound use_quant_input=False</th>
+    <th>0.2841</th>
+  </tr>
+</table>
 
 
 

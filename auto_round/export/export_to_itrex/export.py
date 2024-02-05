@@ -24,7 +24,7 @@ import copy
 import json
 from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear
-from ..utils import quant_weight_w_scale, get_module, set_module
+from auto_round.utils import quant_weight_w_scale, get_module, set_module
 
 
 def compress_model(

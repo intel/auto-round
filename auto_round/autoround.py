@@ -30,10 +30,11 @@ from torch.amp import autocast
 from functools import partial
 from torch.functional import F
 from .utils import (quant_weight, set_module, get_module, get_block_names, block_forward, sampling_inputs,
-                    get_dataloader, get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
-                    collect_minmax_scale, get_batch_dim)
+                    get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
+                    collect_minmax_scale, get_batch_dim, is_hpu_available)
+from .calib_dataset import CALIB_DATASETS
 
-from .device_utils import *
+
 
 
 class SaveInputs:
@@ -584,13 +585,16 @@ class AutoRound(object):
         self.dataset_name = dataset_name
 
         if dataloader is None:
+            get_dataloader = CALIB_DATASETS.get(self.dataset_name,
+                                                CALIB_DATASETS["NeelNanda/pile-10k"])
             self.dataloader = get_dataloader(
                 self.tokenizer,
                 self.seqlen,
                 seed=self.seed,
                 bs=self.train_bs,
                 split=self.dataset_split,
-                data_name=self.dataset_name,
+                dataset_name=self.dataset_name
+
             )
         else:
             self.dataloader = dataloader
@@ -991,7 +995,7 @@ class AutoRound(object):
 
     def export_to_itrex(self, output_dir):
         """Save configure file and weights for CPU backend inference."""
-        from .export_to_itrex import compress_model
+        from auto_round.export.export_to_itrex import compress_model
         compressed_model, quantize_config = compress_model(self.model, self.weight_config)
         if quantize_config is not None:
             config = compressed_model.config

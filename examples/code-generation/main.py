@@ -21,83 +21,11 @@ import re
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-def get_tokenizer_function(tokenizer, seqlen):
-    """Returns a default tokenizer function.
-
-    Args:
-    tokenizer: The tokenizer to be used for tokenization.
-    seqlen: The maximum sequence length.
-
-    Returns: A default tokenizer function that applies the provided tokenizer with truncation and a maximum length of
-    seqlen to the "text" field of examples.
-    """
-
-    def default_tokenizer_function(examples):
-        example = tokenizer(examples, truncation=True, max_length=seqlen, return_tensors="pt")
-        # example = tokenizer(examples, return_tensors="pt")
-        return example
-
-    return default_tokenizer_function
-
-
-def get_dataloader(tokenizer, seqlen, data_name="mbpp", split="train", seed=42, bs=4):
-    """Returns a dataloader for the specified dataset and split.
-
-    Args:
-    tokenizer: The tokenizer to be used for tokenization.
-    seqlen: The maximum sequence length.
-    data_name: The name of the dataset.
-    split: The data split to be used (e.g., "train", "test").
-    seed: The random seed for shuffling the dataset.
-    bs: The batch size for the dataloader.
-
-    Returns:
-    A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
-    """
-    from datasets import load_dataset
-    from torch.utils.data import DataLoader
-
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
-
-    @torch.no_grad()
-    def collate_batch(batch):
-        input_ids_new = []
-        attention_mask_new = []
-        for text in batch:
-            token_text = tokenizer_function(text)
-            input_ids, attention_mask = token_text["input_ids"], token_text["attention_mask"]
-            if input_ids.shape[1] < seqlen:
-                continue
-            input_ids = input_ids[:seqlen]
-            input_ids_list = input_ids.tolist()
-            if input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
-                continue
-            attention_mask = attention_mask[:seqlen]
-            attention_mask_new.append(attention_mask)
-            input_ids_new.append(input_ids)
-        if len(input_ids_new) == 0:
-            return None
-        input_ids_new = torch.vstack(input_ids_new)
-        attention_mask_new = torch.vstack(attention_mask_new)
-        res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
-        return res
-
-    samples = []
-    splits = ['train', 'validation', 'test']
-    for split in splits:
-        dataset = load_dataset(data_name, split=split)
-        for data in dataset:
-            samples.append(data["text"] + data["code"])
-    random.Random(seed).shuffle(samples)
-
-    calib_dataloader = DataLoader(samples, batch_size=bs, shuffle=False, collate_fn=collate_batch)
-    return calib_dataloader
-
 
 if __name__ == '__main__':
 
     parser.add_argument(
-        "--model_name", default="/models/opt-125m"
+        "--model_name", default="facebook/opt-125m"
     )
 
     parser.add_argument("--bits", default=4, type=int,
@@ -139,7 +67,7 @@ if __name__ == '__main__':
     parser.add_argument("--adam", action='store_true',
                         help="adam")
 
-    parser.add_argument("--seqlen", default=2048, type=int,
+    parser.add_argument("--seqlen", default=128, type=int,
                         help="sequence length")
 
     parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
@@ -223,7 +151,6 @@ if __name__ == '__main__':
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
 
-    get_dataloader(tokenizer, args.seqlen)
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
 
     if not args.low_gpu_mem_usage:
@@ -235,13 +162,12 @@ if __name__ == '__main__':
     round = AutoRound
     if args.adam:
         round = AutoAdamRound
-    dataloader = get_dataloader(tokenizer, args.seqlen)
-    autoround = round(model, tokenizer, args.bits, args.group_size, scheme, dataloader=dataloader, bs=args.train_bs,
+    autoround = round(model, tokenizer, args.bits, args.group_size, scheme, bs=args.train_bs,
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
                       amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype)  ##TODO args pass
+                      scale_dtype=args.scale_dtype, dataset_name="mbpp", dataset_split=['train', 'validation', 'test'])  ##TODO args pass
     model, q_config = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     export_dir = args.output_dir + "/compressed_" + model_name.split('/')[-1] + "/"
