@@ -221,11 +221,16 @@ def eval_model(output_dir=None, model=None, tokenizer=None,
     if os.path.exists(output_dir) and not eval_orig_float:
         shutil.rmtree(output_dir)
     
-    if (hasattr(model, 'config') and model.config.torch_dtype is torch.bfloat16):
+    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
         dtype = 'bfloat16'
         pt_dtype = torch.bfloat16
     else:
-        pt_dtype = torch.float16
+        if str(device) != "cpu":
+            pt_dtype = torch.float16
+            dtype = 'float16'
+        else:
+            pt_dtype = torch.float32
+            dtype = 'float32'
         
     if not eval_orig_float:
         model = model.to(pt_dtype)
@@ -371,4 +376,5 @@ if __name__ == "__main__":
                eval_bs=args.eval_bs, eval_orig_float=True, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
+
 

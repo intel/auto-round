@@ -33,6 +33,8 @@ from .utils import (quant_weight, set_module, get_module, get_block_names, block
                     get_dataloader, get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
                     collect_minmax_scale, get_batch_dim)
 
+from .device_utils import *
+
 
 class SaveInputs:
     """Cache the inputs of the first block."""
@@ -643,6 +645,8 @@ class AutoRound(object):
         """
         scale_loss = loss * 1000
         scale_loss.backward()
+        if is_hpu_available:
+            htcore.mark_step()
         return scale_loss
 
     def step(self, scaler, optimizer, lr_schedule):
@@ -657,6 +661,9 @@ class AutoRound(object):
         None
         """
         optimizer.step()
+        # for hpu
+        if is_hpu_available:
+            htcore.mark_step()
         optimizer.zero_grad()
         lr_schedule.step()
 
@@ -1189,12 +1196,12 @@ class AutoOPTRound(AutoRound):
 
     def scale_loss_and_backward(self, scaler, loss):
         if scaler is not None:
-            scale_loss = scaler.scale(loss)
-            scale_loss.backward()
-            return scale_loss
-        else:
-            loss.backward()
-            return loss
+            loss = scaler.scale(loss)
+
+        loss.backward()
+        if is_hpu_available:
+            htcore.mark_step()
+        return loss
 
     def step(self, scaler, optimizer, lr_schedule):
         if scaler is not None:
@@ -1206,6 +1213,8 @@ class AutoOPTRound(AutoRound):
             optimizer.step()
             optimizer.zero_grad()
             lr_schedule.step()
+        if is_hpu_available:
+            htcore.mark_step()
 
 
 class AutoAdamRound(AutoOPTRound):

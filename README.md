@@ -22,6 +22,31 @@ pip install -r requirements.txt
 python setup.py install
 ```
 ## Usage
+
+
+### On Intel Gaudi2
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_name = "facebook/opt-125m"
+model = AutoModelForCausalLM.from_pretrained(
+            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
+        )
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+bits, group_size, scheme = 4, 128, "asym"
+
+# need load model first, them import
+from auto_round import AutoRound
+
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme,
+                      device="hpu", scale_dtype="bf16", amp=False)
+autoround.quantize()
+
+```
+
+### On GPU
+
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
