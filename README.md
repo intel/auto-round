@@ -24,12 +24,46 @@ python setup.py install
 ## Usage
 
 
-### On Intel Gaudi2
+
+
+### On CPU/GPU
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRound
+
+model_name = "meta-llama/Llama-2-7b-hf"
+model = AutoModelForCausalLM.from_pretrained(
+            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+bits, group_size, scheme = 4, 128, "asym"
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme)
+autoround.quantize()
+
+# Intel CPU Inference, For now only support llama, mistral and gpt-j.
+# then follow ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to load the model and do inference
+# currently please install neural-speed (https://github.com/intel/neural-speed) from source
+output_dir = "./tmp_autoround"
+autoround.export(output_dir)
+
+from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
+
+woq_config = WeightOnlyQuantConfig(group_size=group_size, scheme=scheme, use_autoround=True)  ##only supports 4 bits currently
+prompt = "Once upon a time, a little girl"
+
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+inputs = tokenizer(prompt, return_tensors="pt").input_ids
+model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=woq_config, trust_remote_code=True,device="cpu")
+outputs = model.generate(inputs, max_new_tokens=30)
+```
+
+
+### Tuning on Intel Gaudi2
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model_name = "bigscience/bloom-560m"
+model_name = "meta-llama/Llama-2-7b-hf"
 model = AutoModelForCausalLM.from_pretrained(
             model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -45,29 +79,8 @@ autoround.quantize()
 output_dir = "/path/to/quantized_model"
 autoround.export(output_dir)
 # then follow ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to load the model and do inference
-
 ```
 
-### On CPU/GPU
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRound
-
-model_name = "bigscience/bloom-560m"
-model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-bits, group_size, scheme = 4, 128, "asym"
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme)
-autoround.quantize()
-
-# Intel CPU Inference, Currently, llama, bloom, and mistral are supported.
-output_dir = "/path/to/quantized_model"
-autoround.export(output_dir)
-# then follow ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to load the model and do inference
-
-```
 
 <details>
   <summary>Detailed Hyperparameters</summary>
