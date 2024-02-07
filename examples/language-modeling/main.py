@@ -177,7 +177,7 @@ if __name__ == '__main__':
                  seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps, scale_dtype=args.scale_dtype)  ##TODO args pass
     model, q_config = autoround.quantize()
     model_name = args.model_name.rstrip("/")
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + "-autoround-int4"
+    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     if args.deployment_device == 'cpu':
         autoround.export(output_dir=export_dir)
         del q_config

@@ -44,7 +44,7 @@ autoround.quantize()
 # Intel CPU Inference, Currently, llama, bloom, and mistral are supported.
 output_dir = "/path/to/quantized_model"
 autoround.export(output_dir)
-# then follow ITREX to load the model and do inference
+# then follow ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to load the model and do inference
 
 ```
 
@@ -65,7 +65,7 @@ autoround.quantize()
 # Intel CPU Inference, Currently, llama, bloom, and mistral are supported.
 output_dir = "/path/to/quantized_model"
 autoround.export(output_dir)
-# then follow ITREX to load the model and do inference
+# then follow ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to load the model and do inference
 
 ```
 
@@ -333,7 +333,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
 We provide a [comprehensive analysis](docs/README.md) with other methods in our accuracy data section. Notably, our approach has outperformed GPTQ with a score of 30/32 and AWQ with a score of 27/32 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, W2G128.  And the tuning costs are comparable.
 
 ## Tips
-1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. 
+1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. Additionally, setting 'use_quant_input' to False or adjusting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
 2 Leverage AutoGPTQ to run the model on GPU
 
