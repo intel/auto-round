@@ -187,7 +187,7 @@ if __name__ == '__main__':
     if args.device != "cpu":
         torch.cuda.empty_cache()
     model.eval()
-    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-qdq"# + f"_w{args.bits}_g{args.group_size}"
+    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
     excel_name = f"{output_dir}/result.xlsx"
     output_dir += "/"
