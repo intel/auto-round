@@ -74,11 +74,6 @@ from auto_round import AutoRound
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme,
                       device="hpu", scale_dtype="bf16", amp=False)
 autoround.quantize()
-
-# Intel CPU Inference, Currently, llama, bloom, and mistral are supported.
-output_dir = "/path/to/quantized_model"
-autoround.export(output_dir)
-# then follow ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to load the model and do inference
 ```
 
 
