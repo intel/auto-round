@@ -17,7 +17,7 @@ def fetch_requirements(path):
 
 if __name__ == "__main__":
     setup(
-        name="auto_around",
+        name="auto_round",
         author="Intel AIPT Team",
         version=__version__,
         author_email="wenhua.cheng@intel.com, weiwei1.zhang@intel.com",
