@@ -154,7 +154,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
   </tr>
 
   <tr>
-    <td rowspan="3">Intel/neural-chat-7b-v3 </td>
+    <td rowspan="3">Intel/neural-chat-7b-v3-3 </td>
     <th>FP16</th>
     <td>67.92</td> <! acc avg -->
     <td>61.13</td> <! MMLU -->

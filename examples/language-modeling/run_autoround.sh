@@ -1,7 +1,7 @@
 #!/bin/bash
 set -x
 device=0
-model_name="Intel/neural-chat-7b-v3"
+model_name="Intel/neural-chat-7b-v3-3"
 
 CUDA_VISIBLE_DEVICES=$device \
 python3 main.py \
@@ -15,5 +15,5 @@ python3 main.py \
 --deployment_device 'cpu' \
 --scale_dtype 'fp32' \
 --eval_bs 32 \
---output_dir "./tmp_signround"
+--output_dir "./tmp_autoround"
 
