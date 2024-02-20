@@ -102,7 +102,6 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
         model_save_name = model_base_name + ".bin"
         torch.save(model.state_dict(), join(save_dir, model_save_name))
 
-    model.config.save_pretrained(save_dir)
     from auto_gptq.modeling._base import BaseQuantizeConfig
 
     quantization_config = BaseQuantizeConfig(bits=bits, group_size=group_size, desc_act=False, sym=sym,
@@ -121,6 +120,10 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
 
     with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
         json.dump(config_dict, f, indent=2)
+
+    config_dict["quant_method"] = "gptq" ##hf transformers could only recognize this value
+    model.config.quantization_config = config_dict
+    model.config.save_pretrained(save_dir)
 
 
 
