@@ -175,7 +175,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
   </tr>
 
   </tr>
-    <th>Ours</th>
+    <th>Ours  </th>
     <td>66.90</td> <! acc avg -->
     <td>60.56</td> <! MMLU -->
     <td>72.19</td> <! Lambada_openai -->
@@ -195,7 +195,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
   </tr>
 
   </tr>
-    <th>Ours iters=1K,use_quant_input=False, minmax_lr=0.002</th>
+    <th>Ours <a href=https://huggingface.co/Intel/neural-chat-v3-3-int4-inc> hf_model_card</a>  iters=1K,use_quant_input=False, minmax_lr=0.002</th>
     <td>67.70</td> <! acc avg -->
     <td>60.57</td> <! MMLU -->
     <td>73.74</td> <! Lambada_openai -->
@@ -344,7 +344,7 @@ We provide a [comprehensive analysis](docs/README.md) with other methods in our 
 1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. Additionally, setting 'use_quant_input' to False or adjusting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
 2 Leverage AutoGPTQ to run the model on GPU
-
+please install auto-gptq https://github.com/AutoGPTQ/ from source first
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
@@ -357,12 +357,15 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
 autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
 autoround.quantize()
-
-## export to autogptq
-# please install auto-gptq https://github.com/AutoGPTQ/
-output_dir = "/path/to/quantized_model"
+output_dir = "./tmp_autoround"
 autoround.export(output_dir, target="auto_gptq", use_triton=True)
-# then follow auto-gptq to load the model and inference
+
+# then follow auto-gptq or transformers to load the model and inference
+model = AutoModelForCausalLM.from_pretrained(output_dir, device_map="auto",
+                                             trust_remote_code=False)
+print(tokenizer.decode(
+    model.generate(**tokenizer("There is a girl who likes adventure,", return_tensors="pt").to(model.device),
+                   max_new_tokens=50)[0]))
 ```
   
 ## Examples

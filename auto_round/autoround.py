@@ -962,6 +962,8 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
+        if self.tokenizer is not None:
+            self.tokenizer.save_pretrained(output_dir)
         model = copy.deepcopy(self.model.to("cpu"))  ##TODO avoid this deepcopy
 
         from auto_gptq.modeling._utils import pack_model
@@ -1068,7 +1070,6 @@ class AutoRound(object):
         cost_time = end_time - start_time
         logger.info(f"quantization tuning time {cost_time}")
         self.quantized = True
-        ##self.export_to_autogptq("test_export")
         return self.model, self.weight_config
 
 

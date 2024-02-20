@@ -42,7 +42,7 @@ import os
 from typing import Dict, List, Optional, Union
 from safetensors.torch import save_file as safe_save
 from os.path import join, isfile, isdir
-import copy
+import json
 
 def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym=False, iters=200, lr=5e-3,
                                minmax_lr=5e-3,
@@ -52,7 +52,7 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
     os.makedirs(save_dir, exist_ok=True)
     model.to("cpu")
 
-    model_base_name = f"autoround-model-{str(bits)}bit-{str(group_size)}g"
+    model_base_name = f"model"
     if use_safetensors:
         model_save_name = model_base_name + ".safetensors"
         state_dict = model.state_dict()
@@ -89,7 +89,7 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
 
         # Store the quantization configuration as safetensors metadata
         from auto_round import __version__
-        safetensors_metadata['auto_round_version'] = str(__version__)
+        safetensors_metadata['version'] = str(__version__)
         safetensors_metadata['bits'] = str(bits)
         safetensors_metadata['group_size'] = str(group_size)
         safetensors_metadata['iters'] = str(iters)
@@ -104,10 +104,24 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
 
     model.config.save_pretrained(save_dir)
     from auto_gptq.modeling._base import BaseQuantizeConfig
+
     quantization_config = BaseQuantizeConfig(bits=bits, group_size=group_size, desc_act=False, sym=sym,
                                              true_sequential=False, static_groups=False,
                                              model_file_base_name=model_base_name)
     quantization_config.model_file_base_name = model_base_name
 
-    quantization_config.save_pretrained(save_dir)
+    config_dict = quantization_config.to_dict()
+    config_dict["quant_method"] = "intel/auto-round"
+    config_dict['version'] = __version__
+    config_dict['iters'] = iters
+    config_dict['lr'] = lr
+    config_dict['minmax_lr'] = minmax_lr
+    config_dict['enable_minmax_tuning'] = enable_minmax_tuning
+    config_dict['use_quant_input'] = use_quant_input
+
+    with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
+        json.dump(config_dict, f, indent=2)
+
+
+
 
