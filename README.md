@@ -44,7 +44,7 @@ else:
     autoround.export(output_dir, target="auto_gptq", use_triton=True) ##export to autogptq format
 ```
 
-### Tuning on Intel Gaudi2
+### On Intel Gaudi2
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -226,7 +226,7 @@ The lm-eval-harness git id we used in the following is 008fc2a23245c40384f231271
   </tr>
 
   </tr>
-    <th>Ours <a href=https://huggingface.co/Intel/neural-chat-v3-3-int4-inc> hf_model_card</a>  iters=1K,use_quant_input=False, minmax_lr=0.002</th>
+    <th>Ours iters=1K,use_quant_input=False, minmax_lr=0.002</th>
     <td>67.70</td> <! acc avg -->
     <td>60.57</td> <! MMLU -->
     <td>73.74</td> <! Lambada_openai -->
