@@ -11,6 +11,7 @@ import os
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
+import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
 from transformers import set_seed
@@ -98,7 +99,7 @@ if __name__ == '__main__':
                                  "arc_easy", "arc_challenge"],
                         help="lm-eval tasks")
 
-    parser.add_argument("--output_dir", default="./tmp_signround", type=str,
+    parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
                         help="Where to store the final model.")
 
     args = parser.parse_args()
@@ -168,15 +169,25 @@ if __name__ == '__main__':
     if args.adam:
         round = AutoAdamRound
 
+    weight_config = {}
+    if args.deployment_device == 'gpu':
+        for n, m in model.named_modules():
+            if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
+                if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
+                    weight_config[n] = {"data_type": "fp"}
+                    print(
+                        f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
+
     autoround = round(model, tokenizer, args.bits, args.group_size, scheme, bs=args.train_bs,
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
                       amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype)  ##TODO args pass
+                      scale_dtype=args.scale_dtype, weight_config=weight_config)  ##TODO args pass
     model, q_config = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
+
     if args.deployment_device == 'cpu':
         export_dir += "-cpu"
         autoround.export(output_dir=export_dir)
@@ -184,7 +195,7 @@ if __name__ == '__main__':
     elif args.deployment_device == 'gpu':
         export_dir += "-gpu"
         autoround.export(export_dir, target="auto_gptq", use_triton=True)
-        tokenizer.save_pretrained(export_dir)
+        model = model.eval()
 
     if args.device != "cpu":
         torch.cuda.empty_cache()

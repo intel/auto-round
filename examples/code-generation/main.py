@@ -96,7 +96,7 @@ if __name__ == '__main__':
                                  "arc_easy", "arc_challenge"],
                         help="lm-eval tasks")
 
-    parser.add_argument("--output_dir", default="./tmp_signround", type=str,
+    parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
                         help="Where to store the final model.")
 
     args = parser.parse_args()
