@@ -44,6 +44,7 @@ from safetensors.torch import save_file as safe_save
 from os.path import join, isfile, isdir
 import json
 
+
 def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym=False, iters=200, lr=5e-3,
                                minmax_lr=5e-3,
                                enable_minmax_tuning=True, use_quant_input=True, use_safetensors: bool = True,
@@ -121,10 +122,6 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
     with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
         json.dump(config_dict, f, indent=2)
 
-    config_dict["quant_method"] = "gptq" ##hf transformers could only recognize this value
+    config_dict["quant_method"] = "gptq"  ##hf transformers could only recognize this value
     model.config.quantization_config = config_dict
     model.config.save_pretrained(save_dir)
-
-
-
-
