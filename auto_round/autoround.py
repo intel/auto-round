@@ -964,10 +964,10 @@ class AutoRound(object):
             self.tokenizer.save_pretrained(output_dir)
         ##check module quantized in block, this may have bug for mixed precision quantization
         block_name = get_block_names(self.model)[0]
-        m = get_module(self.model, block_name)
+        first_block = get_module(self.model, block_name)
         all_to_quantized = True
         modules_in_block_to_quantize = []
-        for n, m in m.named_modules():
+        for n, m in first_block.named_modules():
             is_supported_type = False
             for supported_type in self.supported_types:
                 if isinstance(m, supported_type):
@@ -977,8 +977,8 @@ class AutoRound(object):
                 continue
             if not check_to_quantized(m):
                 all_to_quantized = False
-                break
-            modules_in_block_to_quantize.append(n)
+            else:
+                modules_in_block_to_quantize.append(n)
         modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
         if all_to_quantized:
             modules_in_block_to_quantize = None
