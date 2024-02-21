@@ -963,6 +963,27 @@ class AutoRound(object):
         logger.info("Saving quantized model to autogptq format, this may take a while...")
         if self.tokenizer is not None:
             self.tokenizer.save_pretrained(output_dir)
+        ##check module quantized in block, this may have bug for mixed precision quantization
+        block_name = get_block_names(self.model)[0]
+        m = get_module(self.model, block_name)
+        all_to_quantized = True
+        modules_in_block_to_quantize = []
+        for n, m in m.named_modules():
+            is_supported_type = False
+            for supported_type in self.supported_types:
+                if isinstance(m, supported_type):
+                    is_supported_type = True
+                    break
+            if not is_supported_type:
+                continue
+            if not check_to_quantized(m):
+                all_to_quantized = False
+                break
+            modules_in_block_to_quantize.append(n)
+        modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
+        if all_to_quantized:
+            modules_in_block_to_quantize = None
+
         model = copy.deepcopy(self.model.to("cpu"))  ##TODO avoid this deepcopy
 
         from auto_gptq.modeling._utils import pack_model
@@ -992,7 +1013,7 @@ class AutoRound(object):
         save_quantized_to_autogptq(model, output_dir, bits=self.bits, group_size=self.group_size, sym=sym,
                                    iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
                                    enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
-                                   use_safetensors=True)
+                                   use_safetensors=True, modules_in_block_to_quantize=modules_in_block_to_quantize)
 
     def export_to_itrex(self, output_dir):
         """Save configure file and weights for CPU backend inference."""

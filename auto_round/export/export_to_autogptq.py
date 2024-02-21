@@ -48,7 +48,7 @@ import json
 def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym=False, iters=200, lr=5e-3,
                                minmax_lr=5e-3,
                                enable_minmax_tuning=True, use_quant_input=True, use_safetensors: bool = True,
-                               safetensors_metadata: Optional[Dict[str, str]] = None):
+                               safetensors_metadata: Optional[Dict[str, str]] = None, modules_in_block_to_quantize=None):
     """save quantized model and configs to local disk for cuda """
     os.makedirs(save_dir, exist_ok=True)
     model.to("cpu")
@@ -90,7 +90,7 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
 
         # Store the quantization configuration as safetensors metadata
         from auto_round import __version__
-        safetensors_metadata['version'] = str(__version__)
+        safetensors_metadata['autoround_version'] = str(__version__)
         safetensors_metadata['bits'] = str(bits)
         safetensors_metadata['group_size'] = str(group_size)
         safetensors_metadata['iters'] = str(iters)
@@ -118,6 +118,8 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
     config_dict['minmax_lr'] = minmax_lr
     config_dict['enable_minmax_tuning'] = enable_minmax_tuning
     config_dict['use_quant_input'] = use_quant_input
+    if modules_in_block_to_quantize is not None:
+        config_dict["modules_in_block_to_quantize"] = modules_in_block_to_quantize
 
     with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
         json.dump(config_dict, f, indent=2)
