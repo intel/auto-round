@@ -553,7 +553,6 @@ class AutoRound(object):
         except:
             pass
         self.weight_config = weight_config
-        assert tokenizer is not None
         self.dataset_split = dataset_split
         self.seed = seed
         self.tokenizer = tokenizer
