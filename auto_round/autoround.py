@@ -31,10 +31,8 @@ from functools import partial
 from torch.functional import F
 from .utils import (quant_weight, set_module, get_module, get_block_names, block_forward, sampling_inputs,
                     get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
-                    collect_minmax_scale, get_batch_dim, is_hpu_available)
+                    collect_minmax_scale, get_batch_dim, is_hpu_available,check_to_quantized)
 from .calib_dataset import CALIB_DATASETS
-
-
 
 
 class SaveInputs:
@@ -403,7 +401,7 @@ def wrapper_block(block, enable_minmax_tuning):
     names = []
     for n, m in block.named_modules():
         if isinstance(m, torch.nn.Linear):
-            if "fp" in m.data_type or "float" in m.data_type:
+            if not check_to_quantized(m):
                 continue
             new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning)
             set_module(block, n, new_m)
@@ -413,7 +411,7 @@ def wrapper_block(block, enable_minmax_tuning):
             import transformers
 
             if isinstance(m, transformers.modeling_utils.Conv1D):
-                if "fp" in m.data_type or "float" in m.data_type:
+                if not check_to_quantized(m):
                     continue
                 new_m = WrapperTransformerConv1d(m, enable_minmax_tuning=enable_minmax_tuning)
                 set_module(block, n, new_m)
@@ -955,6 +953,8 @@ class AutoRound(object):
         else:
             logger.error("export only supports itrex and auto_gptq now")
 
+
+
     def export_to_autogptq(self, output_dir, use_triton=False):
         """
         Export the model to autogptq format to easily leverage cuda kernel
@@ -962,6 +962,7 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
+        logger.info("Saving quantized model to autogptq format, this may take a while...")
         if self.tokenizer is not None:
             self.tokenizer.save_pretrained(output_dir)
         model = copy.deepcopy(self.model.to("cpu"))  ##TODO avoid this deepcopy
@@ -973,7 +974,7 @@ class AutoRound(object):
             quantizers = {}
             for key in self.weight_config:
                 info = self.weight_config[key]
-                if info["bits"] > 8:
+                if not check_to_quantized(info):
                     continue
                 quantizers[key] = (None, info['scale'], info['zp'], info['g_idx'])
             pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
@@ -982,7 +983,7 @@ class AutoRound(object):
             quantizers = {}
             for key in self.weight_config:
                 info = self.weight_config[key]
-                if info["bits"] > 8:
+                if not check_to_quantized(info):
                     continue
                 quantizers[key] = (None, info['scale'].to(torch.float32), info['zp'].to(torch.float32), info['g_idx'])
 

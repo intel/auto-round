@@ -464,3 +464,14 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
     if isinstance(output, list) or isinstance(output, tuple):
         output = output[0]
     return output
+
+
+def check_to_quantized(config):
+    if isinstance(config, dict):
+        if config["bits"] > 8 or "fp" in config["data_type"] or "float" in config["data_type"]:
+            return False
+        return True
+    else:
+        if config.bits > 8 or "fp" in config.data_type or "float" in config.data_type:
+            return False
+        return True

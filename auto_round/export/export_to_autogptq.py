@@ -111,7 +111,7 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
 
     config_dict = quantization_config.to_dict()
     config_dict["quant_method"] = "intel/auto-round"
-    config_dict['version'] = __version__
+    config_dict['autoround_version'] = __version__
     config_dict['iters'] = iters
     config_dict['lr'] = lr
     config_dict['minmax_lr'] = minmax_lr

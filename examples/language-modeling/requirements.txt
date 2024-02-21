@@ -9,4 +9,5 @@ einops
 accelerate
 datasets
 protobuf
+auto-gptq
 
