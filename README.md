@@ -21,44 +21,30 @@ AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inf
 pip install -r requirements.txt
 python setup.py install
 ```
-## Usage
-
-
-
+## Usage of Tuning
 
 ### On CPU/GPU
-
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
 model_name = "meta-llama/Llama-2-7b-hf"
-model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 bits, group_size, scheme = 4, 128, "asym"
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme)
+tuning_device = "cuda:0" ## or "cpu"
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device=tuning_device)
 autoround.quantize()
 
-# Intel CPU Inference, For now only support llama, mistral and gpt-j.
-# then follow ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to load the model and do inference
-# currently please install neural-speed (https://github.com/intel/neural-speed) from source
 output_dir = "./tmp_autoround"
-autoround.export(output_dir)
-
-from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
-
-woq_config = WeightOnlyQuantConfig(group_size=group_size, scheme=scheme, use_autoround=True)  ##only supports 4 bits currently
-prompt = "Once upon a time, a little girl"
-
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-inputs = tokenizer(prompt, return_tensors="pt").input_ids
-model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=woq_config, trust_remote_code=True,device="cpu")
-outputs = model.generate(inputs, max_new_tokens=30)
+deployment_device = "cpu" ## or gpu
+if deployment_device=="cpu":
+    autoround.export(output_dir, target="itrex") ## export to itrex format
+else:
+    autoround.export(output_dir, target="auto_gptq", use_triton=True) ##export to autogptq format
 ```
 
-
-### Tuning on Intel Gaudi2
+### On Intel Gaudi2
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -126,9 +112,57 @@ autoround.quantize()
 
 </details>
 
+## Model inference
+Please run the tuning code first
+
+
+
+### Intel CPU
+```python
+# Please read ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to understand the details
+# currently please install neural-speed (https://github.com/intel/neural-speed) from source
+from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
+
+quantized_model_path = "./tmp_autoround"
+woq_config = WeightOnlyQuantConfig(group_size=group_size, scheme=scheme, use_autoround=True)  ##only supports 4 bits currently
+prompt = "There is a girl who likes adventure,"
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, trust_remote_code=True)
+inputs = tokenizer(prompt, return_tensors="pt").input_ids
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, quantization_config=woq_config, trust_remote_code=True,device="cpu")
+outputs = model.generate(inputs, max_new_tokens=50)
+
+```
+### GPU
+```python
+# follow auto-gptq or transformers to load the model and inference
+quantized_model_path = "./tmp_autoround"
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
+                                             trust_remote_code=False)
+prompt = "There is a girl who likes adventure,"
+inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+print(tokenizer.decode(
+    model.generate(**tokenizer(prompt, return_tensors="pt").to(model.device),max_new_tokens=50)[0]))
+```
+## Huggingface Model cards
+### AutoGPTQ format
+[Intel/neural-chat-7b-v3-3-int4-inc](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc)
+
+[Intel/neural-chat-7b-v3-1-int4-inc](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc)
+
+[Intel/Mistral-7B-v0.1-int4-inc](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc)
+
+[Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) coming soon
+
+[Intel/Mixtral-8x7B-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) coming soon
+
+### Itrex format
+
+Please stay tuned
 
 ## Validated Models
 For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequence length to 2048. For lm-eval wikitext ppl, we adopt lm-eval. The quantization configure is W4G128.
+
+The lm-eval-harness git id we used in the following is 008fc2a23245c40384f2312718433eeb1e0f87a9 and we evaluated on qdq fake model.
 
 <table border="1">
   <tr>
@@ -195,7 +229,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
   </tr>
 
   </tr>
-    <th>Ours <a href=https://huggingface.co/Intel/neural-chat-v3-3-int4-inc> hf_model_card</a>  iters=1K,use_quant_input=False, minmax_lr=0.002</th>
+    <th>Ours iters=1K,use_quant_input=False, minmax_lr=0.002</th>
     <td>67.70</td> <! acc avg -->
     <td>60.57</td> <! MMLU -->
     <td>73.74</td> <! Lambada_openai -->
@@ -341,32 +375,12 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
 We provide a [comprehensive analysis](docs/README.md) with other methods in our accuracy data section. Notably, our approach has outperformed GPTQ with a score of 30/32 and AWQ with a score of 27/32 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, W2G128.  And the tuning costs are comparable.
 
 ## Tips
-1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. Additionally, setting 'use_quant_input' to False or adjusting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
+1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. 
 
-2 Leverage AutoGPTQ to run the model on GPU
-please install auto-gptq https://github.com/AutoGPTQ/ from source first
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRound
+2 Setting 'use_quant_input' to False has been observed to occasionally yield improved results.
 
-model_name = "facebook/opt-125m"
-model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
-        )
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
-autoround = AutoRound(model, tokenizer, bits=4, group_size=128, scheme="asym")
-autoround.quantize()
-output_dir = "./tmp_autoround"
-autoround.export(output_dir, target="auto_gptq", use_triton=True)
-
-# then follow auto-gptq or transformers to load the model and inference
-model = AutoModelForCausalLM.from_pretrained(output_dir, device_map="auto",
-                                             trust_remote_code=False)
-print(tokenizer.decode(
-    model.generate(**tokenizer("There is a girl who likes adventure,", return_tensors="pt").to(model.device),
-                   max_new_tokens=50)[0]))
-```
   
 ## Examples
 Quantization has been enabled for various large language models. Please refer to the [example readme](examples/README.md) for details.
