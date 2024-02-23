@@ -1,9 +1,7 @@
-### Comparison with other methods
+## Comparison with other methods
+To ensure a fair comparison as much as possible and alleviate overfitting in perplexity evaluation on Wikitext or C4, we utilized 512 samples from NeelNanda/pile-10k for all methods during calibration. Due to memory constraints, we maintained the original sequence length of 512 for AWQ, while for GPTQ and our approach, a sequence length of 2048 is used. We have enalbed act-order and true-seqential in GPTQ, and also activated static group in scenarios where group_size!=-1.  The notation GPTQ* indicates that we adjusted the random seed or data preprocessing to address issues related to the non-positive definite Hessian matrix or other issues. With these configurations, the tuning costs for GPTQ, AWQ, and ours are comparable.
 
 For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequence length to 2048. For lm-eval wikitext ppl, we adopt lm-eval. The lm-eval-harness git id we used in the following is 008fc2a23245c40384f2312718433eeb1e0f87a9 and we evaluated on qdq fake model.
-
-
-To ensure an equitable comparison and alleviate overfitting in perplexity evaluation on Wikitext or C4, we utilized 512 samples from NeelNanda/pile-10k for all methods during calibration. Due to memory constraints, we maintained the original sequence length of 512 for AWQ, while for GPTQ and our approach, a sequence length of 2048 is used. We have enalbed act-order and true-seqential in GPTQ, and also activated static group in scenarios where group_size!=-1.  The notation GPTQ* indicates that we adjusted the random seed or data preprocessing to address issues related to the non-positive definite Hessian matrix or other issues. With these configurations, the tuning costs for GPTQ, AWQ, and ours are comparable.
 
 </br>
 
@@ -1899,7 +1897,7 @@ To ensure an equitable comparison and alleviate overfitting in perplexity evalua
 
 </br>
 
-### Others. Accuracies $\uparrow$ across 11 tasks(0-shot) of LLaMA and Mistral models at W2G128.
+### 4. Accuracies $\uparrow$ across 11 tasks(0-shot) of LLaMA and Mistral models at W2G128.
 
 <table border="1">
     <tr>
@@ -2531,7 +2529,7 @@ To ensure an equitable comparison and alleviate overfitting in perplexity evalua
 
 
 
-
+## Other data
 <table border="1">
   <tr>
     <th>Model</th>
