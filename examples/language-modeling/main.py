@@ -190,11 +190,11 @@ if __name__ == '__main__':
 
     if args.deployment_device == 'cpu':
         export_dir += "-cpu"
-        autoround.export(output_dir=export_dir)
+        autoround.save_quantized(output_dir=export_dir)
         del q_config
     elif args.deployment_device == 'gpu':
         export_dir += "-gpu"
-        autoround.export(export_dir, target="auto_gptq", use_triton=True)
+        autoround.save_quantized(export_dir, format="auto_gptq", use_triton=True)
         model = model.eval()
 
     if args.device != "cpu":
