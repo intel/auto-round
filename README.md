@@ -120,6 +120,7 @@ Please run the tuning code first
 
 ### Intel CPU
 ```python
+# save_quantized to itrex format first
 # Please read ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to understand the details
 # currently please install neural-speed (https://github.com/intel/neural-speed) from source
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
@@ -136,7 +137,7 @@ outputs = model.generate(inputs, max_new_tokens=50)
 ```
 ### GPU
 ```python
-# follow transformers or auto-gptq to load the model and inference
+# save_quantized to autogptq format first and then follow transformers or auto-gptq to load the model and inference
 from transformers import AutoModelForCausalLM, AutoTokenizer
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
