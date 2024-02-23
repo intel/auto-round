@@ -39,9 +39,9 @@ autoround.quantize()
 output_dir = "./tmp_autoround"
 deployment_device = "cpu" ## or gpu
 if deployment_device=="cpu":
-    autoround.export(output_dir, target="itrex") ## export to itrex format
+    autoround.save_quantized(output_dir, format="itrex") ## export to itrex format
 else:
-    autoround.export(output_dir, target="auto_gptq", use_triton=True) ##export to autogptq format
+    autoround.save_quantized(output_dir, format="auto_gptq", use_triton=True) ##export to autogptq format
 ```
 
 
@@ -156,6 +156,8 @@ print(tokenizer.decode(
 [Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) coming soon
 
 [Intel/Mixtral-8x7B-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) coming soon
+
+[Intel/phi-2-int4-inc](https://huggingface.co/Intel/phi-2-int4-inc) comming soon
 
 ### Itrex format
 
