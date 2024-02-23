@@ -140,11 +140,13 @@ outputs = model.generate(inputs, max_new_tokens=50)
 from transformers import AutoModelForCausalLM, AutoTokenizer
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map="auto")
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-prompt = "There is a girl who likes adventure,"
-inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs),max_new_tokens=50)[0])
+                                             device_map="auto",
+                                             trust_remote_code=False
+                                             )
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 ## Huggingface Model cards
 We fine-tuned the hyperparameters for each model with an iteration of 1K and successfully achieved near-lossless quantized models in the majority of scenarios. Some of these models has been uploaded to the Huggingface Hub.
