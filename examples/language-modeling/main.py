@@ -194,7 +194,7 @@ if __name__ == '__main__':
         del q_config
     elif args.deployment_device == 'gpu':
         export_dir += "-gpu"
-        autoround.save_quantized(export_dir, target="auto_gptq", use_triton=True)
+        autoround.save_quantized(export_dir, format="auto_gptq", use_triton=True)
         model = model.eval()
 
     if args.device != "cpu":
