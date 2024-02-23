@@ -147,7 +147,7 @@ inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs),max_new_tokens=50)[0])
 ```
 ## Huggingface Model cards
-We simply tuned our method with customized hypeparameters for each model with step 1k and achieved near lossless quantized models in most scenarios. We have uploaded some of them to Huggingface Hub.
+We fine-tuned the hyperparameters for each model with an iteration of 1K and successfully achieved near-lossless quantized models in the majority of scenarios. Some of these models has been uploaded to the Huggingface Hub.
 
 ### AutoGPTQ format
 [Intel/neural-chat-7b-v3-3-int4-inc](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc)
