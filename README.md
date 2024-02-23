@@ -47,20 +47,19 @@ else:
 
 ### On Intel Gaudi2
 
-
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 model_name = "meta-llama/Llama-2-7b-hf"
 model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True)
+            model_name, torch_dtype="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 bits, group_size, scheme = 4, 128, "asym"
 
 # need to load model first, then import
 from auto_round import AutoRound
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme,
-                      device="hpu", scale_dtype="bf16", amp=False)
+                      device="hpu", amp=False)
 autoround.quantize()
 ```
 
@@ -124,26 +123,28 @@ Please run the tuning code first
 # Please read ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to understand the details
 # currently please install neural-speed (https://github.com/intel/neural-speed) from source
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
-
+from transformers import AutoTokenizer
 quantized_model_path = "./tmp_autoround"
-woq_config = WeightOnlyQuantConfig(group_size=group_size, scheme=scheme, use_autoround=True)  ##only supports 4 bits currently
+woq_config = WeightOnlyQuantConfig(group_size=group_size, scheme=scheme, 
+                                   use_autoround=True)  ##only supports 4 bits currently
 prompt = "There is a girl who likes adventure,"
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, trust_remote_code=True)
 inputs = tokenizer(prompt, return_tensors="pt").input_ids
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, quantization_config=woq_config, trust_remote_code=True,device="cpu")
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, quantization_config=woq_config, 
+                                             trust_remote_code=True,device="cpu")
 outputs = model.generate(inputs, max_new_tokens=50)
-
 ```
 ### GPU
 ```python
 # follow auto-gptq or transformers to load the model and inference
+from transformers import AutoModelForCausalLM, AutoTokenizer
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
-                                             trust_remote_code=False)
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+                                             device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 prompt = "There is a girl who likes adventure,"
 inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-print(tokenizer.decode(
-    model.generate(**tokenizer(prompt, return_tensors="pt").to(model.device),max_new_tokens=50)[0]))
+print(tokenizer.decode(model.generate(**inputs),max_new_tokens=50)[0])
 ```
 ## Huggingface Model cards
 We simply tuned our method with customized hypeparameters for each model with step 1k and achieved near lossless quantized models in most scenarios. We have uploaded some of them to Huggingface Hub.
@@ -159,7 +160,7 @@ We simply tuned our method with customized hypeparameters for each model with st
 
 [Intel/Mixtral-8x7B-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) coming soon
 
-[Intel/phi-2-int4-inc](https://huggingface.co/Intel/phi-2-int4-inc) comming soon
+[Intel/phi-2-int4-inc](https://huggingface.co/Intel/phi-2-int4-inc) coming soon
 
 ### Itrex format
 
