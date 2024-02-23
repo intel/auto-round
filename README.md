@@ -44,7 +44,11 @@ else:
     autoround.export(output_dir, target="auto_gptq", use_triton=True) ##export to autogptq format
 ```
 
+<<<<<<< HEAD
 ### On Intel Gaudi2
+=======
+### Tuning on Intel Gaudi2
+>>>>>>> 2a734d0 (update readme)
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
