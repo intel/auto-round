@@ -136,7 +136,7 @@ outputs = model.generate(inputs, max_new_tokens=50)
 ```
 ### GPU
 ```python
-# follow auto-gptq or transformers to load the model and inference
+# follow transformers or auto-gptq to load the model and inference
 from transformers import AutoModelForCausalLM, AutoTokenizer
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,

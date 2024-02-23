@@ -1012,6 +1012,7 @@ class AutoRound(object):
         save_quantized_to_autogptq(model, output_dir, bits=self.bits, group_size=self.group_size, sym=sym,
                                    iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
                                    enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
+                                   scale_dtype=self.scale_dtype,
                                    use_safetensors=True, modules_in_block_to_quantize=modules_in_block_to_quantize)
 
     def save_quantized_as_itrex(self, output_dir):
