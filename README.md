@@ -171,7 +171,7 @@ Please stay tuned
 
 ## Comparison with other methods
 
-We provide a [comprehensive analysis](docs/README.md) with other methods in our accuracy data section. Notably, our approach has outperformed GPTQ with a score of 30/32 and AWQ with a score of 27/32 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, W2G128.  And the tuning costs are comparable.
+We provide a [comprehensive analysis](docs/acc.md) with other methods in our accuracy data section. Notably, our approach has outperformed GPTQ with a score of 30/32 and AWQ with a score of 27/32 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, W2G128.  And the tuning costs are comparable.
 
 ## Tips
 1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. 
