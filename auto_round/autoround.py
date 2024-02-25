@@ -944,15 +944,15 @@ class AutoRound(object):
 
         torch.cuda.empty_cache()
 
-    def export(self, output_dir, target="itrex", **kwargs):
-        if target == "itrex":
-            self.export_to_itrex(output_dir)
-        elif target == "auto_gptq":
-            self.export_to_autogptq(output_dir, **kwargs)
+    def save_quantized(self, output_dir, format="itrex", **kwargs):
+        if format == "itrex":
+            self.save_quantized_as_itrex(output_dir)
+        elif format == "auto_gptq":
+            self.save_quantized_as_autogptq(output_dir, **kwargs)
         else:
             logger.error("export only supports itrex and auto_gptq now")
 
-    def export_to_autogptq(self, output_dir, use_triton=False):
+    def save_quantized_as_autogptq(self, output_dir, use_triton=False):
         """
         Export the model to autogptq format to easily leverage cuda kernel
         """
@@ -1012,9 +1012,10 @@ class AutoRound(object):
         save_quantized_to_autogptq(model, output_dir, bits=self.bits, group_size=self.group_size, sym=sym,
                                    iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
                                    enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
+                                   scale_dtype=self.scale_dtype,
                                    use_safetensors=True, modules_in_block_to_quantize=modules_in_block_to_quantize)
 
-    def export_to_itrex(self, output_dir):
+    def save_quantized_as_itrex(self, output_dir):
         """Save configure file and weights for CPU backend inference."""
         from auto_round.export.export_to_itrex import compress_model
         compressed_model, quantize_config = compress_model(self.model, self.weight_config)

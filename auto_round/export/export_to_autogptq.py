@@ -48,7 +48,9 @@ import json
 def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym=False, iters=200, lr=5e-3,
                                minmax_lr=5e-3,
                                enable_minmax_tuning=True, use_quant_input=True, use_safetensors: bool = True,
-                               safetensors_metadata: Optional[Dict[str, str]] = None, modules_in_block_to_quantize=None):
+                               scale_dtype=torch.float32,
+                               safetensors_metadata: Optional[Dict[str, str]] = None,
+                               modules_in_block_to_quantize=None):
     """save quantized model and configs to local disk for cuda """
     os.makedirs(save_dir, exist_ok=True)
     model.to("cpu")
@@ -98,6 +100,7 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
         safetensors_metadata['minmax_lr'] = str(minmax_lr)
         safetensors_metadata['enable_minmax_tuning'] = str(enable_minmax_tuning)
         safetensors_metadata['use_quant_input'] = str(use_quant_input)
+        safetensors_metadata['scale_dtype'] = str(scale_dtype)
         safe_save(state_dict, join(save_dir, model_save_name), safetensors_metadata)
     else:
         model_save_name = model_base_name + ".bin"
@@ -118,6 +121,7 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
     config_dict['minmax_lr'] = minmax_lr
     config_dict['enable_minmax_tuning'] = enable_minmax_tuning
     config_dict['use_quant_input'] = use_quant_input
+    config_dict['scale_dtype'] = str(scale_dtype)
     if modules_in_block_to_quantize is not None:
         config_dict["modules_in_block_to_quantize"] = modules_in_block_to_quantize
 

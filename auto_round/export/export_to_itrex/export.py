@@ -29,13 +29,13 @@ from auto_round.utils import quant_weight_w_scale, get_module, set_module
 
 def compress_model(
         model,
-        weight_config:Union[str, dict],
+        weight_config: Union[str, dict],
         enable_full_range=False,
         compression_dtype=torch.int32,
         compression_dim=1,
         device="cpu",
         use_optimum_format=True,
-    ):
+):
     """Convert Linear to WeightOnlyLinear for low memory inference.
 
     Args:
@@ -73,7 +73,7 @@ def compress_model(
         fp_weight = m.weight.data
         # scale = torch.tensor(v["scale"], dtype=scale_dtype)
         scale, zp = v["scale"], v["zp"]
-        convert_dtype=torch.float32 if fp_weight.device.type == "cpu" else scale_dtype
+        convert_dtype = torch.float32 if fp_weight.device.type == "cpu" else scale_dtype
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor(scale, dtype=convert_dtype)
             zp = None if scheme == "sym" else torch.tensor(zp, dtype=torch.int32)
@@ -96,6 +96,6 @@ def compress_model(
         )
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
-    
-    quantize_config = QuantConfig(bits=num_bits, sym=(scheme=="sym"), group_size=group_size)
+
+    quantize_config = QuantConfig(bits=num_bits, sym=(scheme == "sym"), group_size=group_size)
     return compressed_model, quantize_config
