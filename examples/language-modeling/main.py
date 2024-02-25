@@ -1,6 +1,5 @@
 import argparse
 import sys
-
 sys.path.insert(0, '../..')
 from auto_round import (AutoRound,
                         AutoAdamRound)
@@ -11,16 +10,15 @@ import os
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
-import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
 from transformers import set_seed
 
-from eval.evaluation import eval_model
-
 import re
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
 
 if __name__ == '__main__':
 
@@ -95,12 +93,22 @@ if __name__ == '__main__':
 
     parser.add_argument("--tasks",
                         default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
-                                 "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
+                                 "mmlu", "wikitext", "truthfulqa_mc1", "truthfulqa_mc2", "openbookqa", "boolq", "rte",
                                  "arc_easy", "arc_challenge"],
-                        help="lm-eval tasks")
+                        help="lm-eval tasks for lm_eval version 0.4")
+    
+    # parser.add_argument("--tasks",
+    #                     default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
+    #                              "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
+    #                              "arc_easy", "arc_challenge"],
+    #                     help="lm-eval tasks for lm_eval version 0.3")
 
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
                         help="Where to store the final model.")
+    
+    parser.add_argument("--eval_legacy", action='store_true',
+                        help="Whether to evaluate with a old lm_eval version(e.g. 0.3.0).")
+
 
     args = parser.parse_args()
     set_seed(args.seed)
@@ -118,7 +126,11 @@ if __name__ == '__main__':
         device_str = f"cuda:{int(args.device)}"
     torch_device = torch.device(device_str)
     is_glm = bool(re.search("chatglm", model_name.lower()))
-    if is_glm:
+    is_llava = bool(re.search("llava", model_name.lower()))
+    if is_llava:
+        from transformers import LlavaForConditionalGeneration
+        model = LlavaForConditionalGeneration.from_pretrained(model_name, low_cpu_mem_usage=True, torch_dtype="auto")
+    elif is_glm:
         model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
     else:
         model = AutoModelForCausalLM.from_pretrained(
@@ -217,6 +229,11 @@ if __name__ == '__main__':
     excel_name = f"{output_dir}_result.xlsx"
     output_dir += "/"
     print(excel_name, flush=True)
+    if not args.eval_legacy:
+        from eval.evaluation import eval_model
+    else:
+        from eval_legacy.evaluation import eval_model
     eval_model(output_dir=output_dir, model=model, tokenizer=tokenizer, tasks=args.tasks, \
                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage, device=torch_device, excel_file=excel_name,
                limit=None)
+
