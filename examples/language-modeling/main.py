@@ -14,8 +14,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
 from transformers import set_seed
 
-from eval.evaluation import eval_model
-
 import re
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -97,10 +95,20 @@ if __name__ == '__main__':
                         default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
                                  "mmlu", "wikitext", "truthfulqa_mc1", "truthfulqa_mc2", "openbookqa", "boolq", "rte",
                                  "arc_easy", "arc_challenge"],
-                        help="lm-eval tasks")
+                        help="lm-eval tasks for lm_eval version 0.4")
+    
+    # parser.add_argument("--tasks",
+    #                     default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
+    #                              "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
+    #                              "arc_easy", "arc_challenge"],
+    #                     help="lm-eval tasks for lm_eval version 0.3")
 
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
                         help="Where to store the final model.")
+    
+    parser.add_argument("--eval_legacy", action='store_true',
+                        help="Whether to evaluate with a old lm_eval version(e.g. 0.3.0).")
+
 
 
     args = parser.parse_args()
@@ -195,11 +203,11 @@ if __name__ == '__main__':
 
     if args.deployment_device == 'cpu':
         export_dir += "-cpu"
-        autoround.export(output_dir=export_dir)
+        autoround.save_quantized(output_dir=export_dir)
         del q_config
     elif args.deployment_device == 'gpu':
         export_dir += "-gpu"
-        autoround.export(export_dir, target="auto_gptq", use_triton=True)
+        autoround.save_quantized(export_dir, format="auto_gptq", use_triton=True)
         model = model.eval()
 
     if args.device != "cpu":
@@ -222,6 +230,11 @@ if __name__ == '__main__':
     excel_name = f"{output_dir}_result.xlsx"
     output_dir += "/"
     print(excel_name, flush=True)
+    if not args.eval_legacy:
+        from eval.evaluation import eval_model
+    else:
+        from eval_legacy.evaluation import eval_model
     eval_model(output_dir=output_dir, model=model, tokenizer=tokenizer, tasks=args.tasks, \
                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage, device=torch_device, excel_file=excel_name,
                limit=None)
+
