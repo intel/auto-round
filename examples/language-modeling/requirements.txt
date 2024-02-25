@@ -10,4 +10,4 @@ accelerate
 datasets
 protobuf
 auto-gptq
-
+openpyxl
