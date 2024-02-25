@@ -11,7 +11,7 @@ import transformers
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, './')
-from eval.parse_results import result_parser
+from .parse_results import result_parser
 import time
 EXT_TASKS = ['wikitext2', 'ptb', 'c4', 'ptb-new', 'c4-new']
 fewshots_dict = {}

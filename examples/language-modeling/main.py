@@ -40,7 +40,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--device", default=0, type=str,
                         help="device gpu int number, or 'cpu' ")
-    
+
     parser.add_argument("--sym", action='store_true',
                         help=" sym quantization")
 
@@ -83,14 +83,14 @@ if __name__ == '__main__':
 
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="whether enable weight minmax tuning")
-    
+
     parser.add_argument("--deployment_device", default='fake', type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu',"
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
-    
+
     parser.add_argument("--scale_dtype", default='fp32',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
-    
+
     parser.add_argument("--tasks",
                         default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
                                  "mmlu", "wikitext", "truthfulqa_mc1", "truthfulqa_mc2", "openbookqa", "boolq", "rte",
@@ -110,9 +110,13 @@ if __name__ == '__main__':
                         help="Whether to evaluate with a old lm_eval version(e.g. 0.3.0).")
 
 
-
     args = parser.parse_args()
     set_seed(args.seed)
+    
+    if not args.eval_legacy:
+        from eval import eval_model
+    else:
+        from eval_legacy import eval_model
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -230,11 +234,9 @@ if __name__ == '__main__':
     excel_name = f"{output_dir}_result.xlsx"
     output_dir += "/"
     print(excel_name, flush=True)
-    if not args.eval_legacy:
-        from eval.evaluation import eval_model
-    else:
-        from eval_legacy.evaluation import eval_model
+    
     eval_model(output_dir=output_dir, model=model, tokenizer=tokenizer, tasks=args.tasks, \
                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage, device=torch_device, excel_file=excel_name,
                limit=None)
+
 
