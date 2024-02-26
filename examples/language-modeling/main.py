@@ -85,7 +85,7 @@ if __name__ == '__main__':
                         help="whether enable weight minmax tuning")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
-                        help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu',"
+                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'both'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
     parser.add_argument("--scale_dtype", default='fp32',
@@ -201,18 +201,14 @@ if __name__ == '__main__':
                       amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config)  ##TODO args pass
-    model, q_config = autoround.quantize()
+    model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
+    
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
-
-    if args.deployment_device == 'cpu':
-        export_dir += "-cpu"
-        autoround.save_quantized(output_dir=export_dir)
-        del q_config
-    elif args.deployment_device == 'gpu':
-        export_dir += "-gpu"
-        autoround.save_quantized(export_dir, format="auto_gptq", use_triton=True)
-        model = model.eval()
+    if args.deployment_device == 'gpu' or args.deployment_device == 'both':
+        autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", inplace=False, use_triton=True)
+    if args.deployment_device == 'cpu' or args.deployment_device == 'both':
+        autoround.save_quantized(output_dir=f'{export_dir}-cpu', inplace=False)
 
     if args.device != "cpu":
         torch.cuda.empty_cache()

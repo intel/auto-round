@@ -33,21 +33,31 @@ class QuantConfig(PretrainedConfig):
     def __init__(
         self,
         bits=4,
-        scale_dtype="fp32", 
+        scale_dtype='torch.float32',
         group_size=128,
         sym=False,
         quant_method="Autoround",
         model_name_or_path=None,
         model_file_base_name='model',
+        enable_minmax_tuning=True,
+        iters=1000,
+        lr=0.001,
+        minmax_lr=0.001,
+        use_quant_input=True,
         **kwargs,
     ):
         self.bits = bits
         self.group_size = group_size
-        self.scale_dtype = scale_dtype  ## reserved parameter
+        self.scale_dtype = scale_dtype
         self.sym = sym
         self.quant_method = quant_method
         self.model_name_or_path = model_name_or_path
         self.model_file_base_name = model_file_base_name
+        self.enable_minmax_tuning=enable_minmax_tuning
+        self.iters=iters
+        self.lr=lr
+        self.minmax_lr=minmax_lr
+        self.use_quant_input=use_quant_input
         
         ### Redundant parameters, will be removed later. ###
         self.damp_percent = 0.01
@@ -61,8 +71,8 @@ class QuantConfig(PretrainedConfig):
         Safety checker that arguments are correct - also replaces some NoneType arguments with their default values.
         """
 
-        if self.scale_dtype not in ["fp32", "fp16"]:
-            raise ValueError("scale_dtype must be 'fp32', 'fp16'.")
+        if self.scale_dtype not in ['torch.float32', 'torch.float16', 'torch.bfloat16']:
+            raise ValueError("scale_dtype must be 'fp32', 'fp16' or 'bf16'.")
 
         if self.group_size not in [-1, 32, 128]:
             raise ValueError("group_size must be an integer in [-1, 32, 128]")

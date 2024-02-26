@@ -223,14 +223,13 @@ def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
     return int_weight
 
 
-def get_module(model, key):
+def get_module(module, key):
     """Get module from model by key name.
 
     Args:
-        model (torch.nn.Module): original model
+        module (torch.nn.Module): original model
         key (str): module name to be replaced
     """
-    module = model
     name_list = key.split(".")
     for name in name_list:
         if hasattr(module, name):

@@ -11,7 +11,6 @@ import transformers
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, './')
-from eval.parse_results import result_parser
 import time
 EXT_TASKS = ['wikitext2', 'ptb', 'c4', 'ptb-new', 'c4-new']
 fewshots_dict = {}
@@ -426,5 +425,6 @@ if __name__ == "__main__":
                eval_bs=args.eval_bs, eval_orig_float=True, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
+
 
 

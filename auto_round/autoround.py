@@ -946,13 +946,13 @@ class AutoRound(object):
 
     def save_quantized(self, output_dir, format="itrex", **kwargs):
         if format == "itrex":
-            self.save_quantized_as_itrex(output_dir)
+            self.save_quantized_as_itrex(output_dir, **kwargs)
         elif format == "auto_gptq":
             self.save_quantized_as_autogptq(output_dir, **kwargs)
         else:
             logger.error("export only supports itrex and auto_gptq now")
 
-    def save_quantized_as_autogptq(self, output_dir, use_triton=False):
+    def save_quantized_as_autogptq(self, output_dir, use_triton=False, inplace=True):
         """
         Export the model to autogptq format to easily leverage cuda kernel
         """
@@ -982,8 +982,11 @@ class AutoRound(object):
         modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
         if all_to_quantized:
             modules_in_block_to_quantize = None
-
-        model = copy.deepcopy(self.model.to("cpu"))  ##TODO avoid this deepcopy
+            
+        if inplace:
+            model = self.model.to("cpu")
+        else:
+            model = copy.deepcopy(self.model.to("cpu"))
 
         from auto_gptq.modeling._utils import pack_model
         if self.bits == 3 or use_triton is False:
@@ -1015,10 +1018,15 @@ class AutoRound(object):
                                    scale_dtype=self.scale_dtype,
                                    use_safetensors=True, modules_in_block_to_quantize=modules_in_block_to_quantize)
 
-    def save_quantized_as_itrex(self, output_dir):
+    def save_quantized_as_itrex(self, output_dir, inplace=True):
         """Save configure file and weights for CPU backend inference."""
-        from auto_round.export.export_to_itrex import compress_model
-        compressed_model, quantize_config = compress_model(self.model, self.weight_config)
+        from auto_round.export.export_to_itrex import compress_model, QuantConfig
+        compressed_model = compress_model(self.model, self.weight_config, inplace=inplace)
+        sym = self.scheme == "sym"
+        quantize_config = QuantConfig(bits=self.bits, group_size=self.group_size, sym=sym,
+                                   iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
+                                   enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
+                                   scale_dtype=str(self.scale_dtype))
         if quantize_config is not None:
             config = compressed_model.config
             setattr(config, "quantization_config", quantize_config.to_dict())
@@ -1350,3 +1358,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
