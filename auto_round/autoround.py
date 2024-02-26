@@ -1074,8 +1074,12 @@ class AutoRound(object):
                 if hasattr(m, "scale"):
                     self.weight_config[n]["scale"] = m.scale
                     self.weight_config[n]["zp"] = m.zp
-                    self.weight_config[n]["g_idx"] = torch.tensor(
-                        [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu")
+                    if self.group_size <= 0:
+                        self.weight_config[n]["g_idx"] = torch.tensor(
+                            [0 for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu")
+                    else:
+                        self.weight_config[n]["g_idx"] = torch.tensor(
+                            [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu")
                     delattr(m, "scale")
                     delattr(m, "zp")
                 else:
