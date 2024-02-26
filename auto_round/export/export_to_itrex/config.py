@@ -88,7 +88,7 @@ class QuantConfig(PretrainedConfig):
     @classmethod
     def from_dict(cls, config_dict, return_unused_kwargs=False, **kwargs):
         """
-        Instantiates a [`AutoroundQuantConfig`] from a Python dictionary of parameters.
+        Instantiates a [`QuantConfig`] from a Python dictionary of parameters.
         Args:
             config_dict (`Dict[str, Any]`):
                 Dictionary that will be used to instantiate the configuration object.
@@ -98,7 +98,7 @@ class QuantConfig(PretrainedConfig):
             kwargs (`Dict[str, Any]`):
                 Additional parameters from which to initialize the configuration object.
         Returns:
-            [`AutoroundQuantConfig`]: The configuration object instantiated from those parameters.
+            [`QuantConfig`]: The configuration object instantiated from those parameters.
         """
 
         config = cls(**config_dict)
@@ -153,7 +153,7 @@ class QuantConfig(PretrainedConfig):
         Args:
             use_diff (`bool`, *optional*, defaults to `True`):
                 If set to `True`, only the difference between the config instance and the default
-                `AutoroundQuantConfig()`
+                `QuantConfig()`
                 is serialized to JSON string.
         Returns:
             `str`: String containing all the attributes that make up this configuration instance in JSON format.
@@ -175,7 +175,7 @@ class QuantConfig(PretrainedConfig):
         config_dict = self.to_dict()
 
         # get the default config dict
-        default_config_dict = AutoroundQuantConfig().to_dict()
+        default_config_dict = QuantConfig().to_dict()
 
         serializable_config_dict = {}
 

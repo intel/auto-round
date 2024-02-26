@@ -31,7 +31,7 @@ from functools import partial
 from torch.functional import F
 from .utils import (quant_weight, set_module, get_module, get_block_names, block_forward, sampling_inputs,
                     get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
-                    collect_minmax_scale, get_batch_dim, is_hpu_available, check_to_quantized)
+                    collect_minmax_scale, get_batch_dim, htcore, is_hpu_available, check_to_quantized)
 from .calib_dataset import CALIB_DATASETS
 
 
