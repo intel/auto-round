@@ -1012,7 +1012,7 @@ class AutoRound(object):
                 info = self.weight_config[key]
                 if not check_to_quantized(info):
                     continue
-                info['zp'] = None if sym else info['zp'].to(torch.float32)
+                info['zp'] = info['zp'].to(torch.float32)
                 quantizers[key] = (None, info['scale'].to(torch.float32), info['zp'], info['g_idx'])
             pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
                        force_layer_back_to_cpu=True, use_triton=True)
