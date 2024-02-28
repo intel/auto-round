@@ -76,15 +76,18 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
                         new_value = str(value)
                     except Exception as e:
                         raise TypeError(
-                            f"safetensors_metadata: both keys and values must be strings and an error occured when trying to convert them: {e}")
+                            f"safetensors_metadata: both keys and values must be strings" /
+                            f" and an error occurred when trying to convert them: {e}")
                     if new_key in new_safetensors_metadata:
                         logger.warning(
-                            f"After converting safetensors_metadata keys to strings, the key '{new_key}' is duplicated. Ensure that all your metadata keys are strings to avoid overwriting.")
+                            f"After converting safetensors_metadata keys to strings, the key '{new_key}' " /
+                                f"is duplicated. Ensure that all your metadata keys are strings to avoid overwriting.")
                     new_safetensors_metadata[new_key] = new_value
             safetensors_metadata = new_safetensors_metadata
             if converted_keys:
                 logger.debug(
-                    f"One or more safetensors_metadata keys or values had to be converted to str(). Final safetensors_metadata: {safetensors_metadata}")
+                    f"One or more safetensors_metadata keys or values had to be converted to str()." /
+                        f" Final safetensors_metadata: {safetensors_metadata}")
 
         # Format is required to enable Accelerate to load the metadata
         # otherwise it raises an OSError
@@ -131,3 +134,4 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
     config_dict["quant_method"] = "gptq"  ##hf transformers could only recognize this value
     model.config.quantization_config = config_dict
     model.config.save_pretrained(save_dir)
+

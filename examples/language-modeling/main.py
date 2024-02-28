@@ -1,6 +1,7 @@
 import argparse
 import sys
 sys.path.insert(0, '../..')
+
 from auto_round import (AutoRound,
                         AutoAdamRound)
 
@@ -85,7 +86,7 @@ if __name__ == '__main__':
                         help="whether enable weight minmax tuning")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
-                        help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu',"
+                        help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
     parser.add_argument("--scale_dtype", default='fp32',
@@ -96,29 +97,42 @@ if __name__ == '__main__':
                                  "mmlu", "wikitext", "truthfulqa_mc1", "truthfulqa_mc2", "openbookqa", "boolq", "rte",
                                  "arc_easy", "arc_challenge"],
                         help="lm-eval tasks for lm_eval version 0.4")
-    
-    # parser.add_argument("--tasks",
-    #                     default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
-    #                              "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
-    #                              "arc_easy", "arc_challenge"],
-    #                     help="lm-eval tasks for lm_eval version 0.3")
 
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
                         help="Where to store the final model.")
     
     parser.add_argument("--eval_legacy", action='store_true',
                         help="Whether to evaluate with a old lm_eval version(e.g. 0.3.0).")
+    
+    parser.add_argument("--disable_lmeval", action='store_true',
+                        help="Whether to do lmeval evaluation.")
 
 
     args = parser.parse_args()
     set_seed(args.seed)
+    
+    tasks = args.tasks
+    if not args.eval_legacy:
+        from eval import eval_model
+    else:
+        from eval_legacy import eval_model
+        if isinstance(tasks, str):
+            tasks = tasks.split(',')
+        if isinstance(tasks, list):
+            if "mmlu" in tasks:
+                tmp_tasks = tasks
+                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
+            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
+                tmp_tasks = tasks
+                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
+            tasks = list(set(tasks))
+        if isinstance(args.tasks, str):
+            tasks = ','.join(tasks)
 
     model_name = args.model_name
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     print(model_name, flush=True)
-
-    tasks = args.tasks
 
     if args.device == "cpu":
         device_str = "cpu"
@@ -154,6 +168,7 @@ if __name__ == '__main__':
             tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
             print(f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length",
@@ -161,14 +176,26 @@ if __name__ == '__main__':
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
 
+    pt_dtype = torch.float16
+    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
+        dtype = 'bfloat16'
+        pt_dtype = torch.bfloat16
+    else:
+        if str(args.device) != "cpu":
+            pt_dtype = torch.float16
+            dtype = 'float16'
+        else:
+            pt_dtype = torch.float32
+            dtype = 'float32'
+            
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if args.eval_fp16_baseline:
         if not args.low_gpu_mem_usage:
             model = model.to(torch_device)
         excel_name += "_fp16.xlsx"
-        eval_model(output_dir=model_name, model=model, tokenizer=tokenizer, tasks=args.tasks, \
-                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage, device=torch_device,
-                   eval_orig_float=True, excel_file=excel_name)
+        eval_model(model_path=model_name, tasks=tasks, dtype=dtype, \
+                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                   device=torch_device, excel_file=excel_name)
         exit()
 
     if not args.low_gpu_mem_usage:
@@ -196,44 +223,34 @@ if __name__ == '__main__':
                       amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config)  ##TODO args pass
-    model, q_config = autoround.quantize()
+    model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
-
-    if args.deployment_device == 'cpu':
-        export_dir += "-cpu"
-        autoround.save_quantized(output_dir=export_dir)
-        del q_config
-    elif args.deployment_device == 'gpu':
-        export_dir += "-gpu"
-        autoround.save_quantized(export_dir, format="auto_gptq", use_triton=True)
-        model = model.eval()
-
+    
+    model.eval()
     if args.device != "cpu":
         torch.cuda.empty_cache()
-    model.eval()
+        
+    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
-
-    pt_dtype = torch.float16
-    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
-        dtype = 'bfloat16'
-        pt_dtype = torch.bfloat16
-    else:
-        if str(args.device) != "cpu":
-            pt_dtype = torch.float16
-            dtype = 'float16'
+    deployment_device = args.deployment_device.split(',')
+    for dev in deployment_device:
+        if dev == 'gpu':
+            autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
+        elif dev == 'cpu':
+            autoround.save_quantized(output_dir=f'{export_dir}-cpu', inplace=False)
+        elif dev == 'fake':
+            model = model.to("cpu")
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
         else:
-            pt_dtype = torch.float32
-            dtype = 'float32'
+            print(f"The '{dev}' deployment type is not enabled yet.")
 
-    excel_name = f"{output_dir}_result.xlsx"
-    output_dir += "/"
-    print(excel_name, flush=True)
-    if not args.eval_legacy:
-        from eval.evaluation import eval_model
-    else:
-        from eval_legacy.evaluation import eval_model
-    eval_model(output_dir=output_dir, model=model, tokenizer=tokenizer, tasks=args.tasks, \
-               eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage, device=torch_device, excel_file=excel_name,
-               limit=None)
+    if not args.disable_lmeval:
+        excel_name = f"{output_dir}_result.xlsx"
+        output_dir += "/"
+        print(excel_name, flush=True)
+        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                    device=torch_device, excel_file=excel_name)
+
 

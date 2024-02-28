@@ -35,6 +35,7 @@ try:
         is_hpu_available = False
 except ImportError:
     is_hpu_available = False
+    htcore = None
 
 def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
@@ -138,7 +139,15 @@ def quant_weight_actor(weight, num_bits, scheme, v, min_scale, max_scale, scale_
         return quant_weight_asym(weight, num_bits, v, min_scale, max_scale, scale_dtype)
 
 
-def quant_weight(weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16):
+def quant_weight(
+        weight,
+        num_bits=4,
+        group_size=-1,
+        scheme="asym",
+        v=0,
+        min_scale=0,
+        max_scale=0, 
+        scale_dtype=torch.float16):
     """Quantizes and dequantizes weight, handing the group size issue .
 
     Args:
@@ -223,14 +232,13 @@ def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
     return int_weight
 
 
-def get_module(model, key):
+def get_module(module, key):
     """Get module from model by key name.
 
     Args:
-        model (torch.nn.Module): original model
+        module (torch.nn.Module): original model
         key (str): module name to be replaced
     """
-    module = model
     name_list = key.split(".")
     for name in name_list:
         if hasattr(module, name):

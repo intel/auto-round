@@ -26,14 +26,9 @@ logger.addHandler(fh)
 
 import copy
 import time
-from torch.amp import autocast
-from functools import partial
-from torch.functional import F
 from .utils import (quant_weight, set_module, get_module, get_block_names, block_forward, sampling_inputs,
                     get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
-                    collect_minmax_scale, get_batch_dim, is_hpu_available, check_to_quantized)
-from .calib_dataset import CALIB_DATASETS
-
+                    collect_minmax_scale, get_batch_dim, htcore, is_hpu_available, check_to_quantized)
 
 class SaveInputs:
     """Cache the inputs of the first block."""
@@ -171,6 +166,7 @@ class SaveInputs:
 
     def _replace_forward(self):
         """Replaces the forward function."""
+        from functools import partial
         for n, m in self.model.named_modules():
             if n == self.block_name:
                 m.orig_forward = m.forward
@@ -258,6 +254,7 @@ class WrapperLinear(torch.nn.Module):
         Returns:
         - torch.Tensor: The output tensor after applying the linear transformation with quantized weights.
         """
+        from torch.functional import F
         weight = self.orig_layer.weight
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
@@ -266,6 +263,7 @@ class WrapperLinear(torch.nn.Module):
             self.scale_dtype
         )
         weight_q = weight_q.to(weight.dtype)
+        # pylint: disable=not-callable
         return F.linear(x, weight_q, self.orig_layer.bias)
 
 
@@ -533,6 +531,7 @@ class AutoRound(object):
             scale_dtype="fp16",
             **kwargs,
     ):
+        from .calib_dataset import CALIB_DATASETS
         self.model = model
         self.model = self.model.to("cpu")
         self.amp = amp
@@ -778,6 +777,7 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.use_quant_input is True, else (None, output)
         """
+        from torch.amp import autocast
         batch_dim = get_batch_dim(input_others)
         if not self.low_gpu_mem_usage and input_ids.device != device:
             input_ids = move_input_to_device(input_ids, device)
@@ -853,8 +853,10 @@ class AutoRound(object):
                 )
                 if self.amp and not check_is_cpu(device):
                     with autocast(device_type="cuda", dtype=self.amp_dtype):
+                        # pylint: disable=not-callable
                         loss = mse_loss(output_q, current_output)
                 else:
+                    # pylint: disable=not-callable
                     loss = mse_loss(output_q.to(torch.float32), current_output.to(torch.float32))
 
                 total_loss += loss.item() / self.gradient_accumulate_steps
@@ -945,14 +947,16 @@ class AutoRound(object):
         torch.cuda.empty_cache()
 
     def save_quantized(self, output_dir, format="itrex", **kwargs):
+        compress_model = None
         if format == "itrex":
-            self.save_quantized_as_itrex(output_dir)
+            compress_model = self.save_quantized_as_itrex(output_dir, **kwargs)
         elif format == "auto_gptq":
             self.save_quantized_as_autogptq(output_dir, **kwargs)
         else:
             logger.error("export only supports itrex and auto_gptq now")
+        return compress_model
 
-    def save_quantized_as_autogptq(self, output_dir, use_triton=False):
+    def save_quantized_as_autogptq(self, output_dir, use_triton=False, inplace=True):
         """
         Export the model to autogptq format to easily leverage cuda kernel
         """
@@ -982,10 +986,14 @@ class AutoRound(object):
         modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
         if all_to_quantized:
             modules_in_block_to_quantize = None
-
-        model = copy.deepcopy(self.model.to("cpu"))  ##TODO avoid this deepcopy
+            
+        if inplace:
+            model = self.model.to("cpu")
+        else:
+            model = copy.deepcopy(self.model.to("cpu"))
 
         from auto_gptq.modeling._utils import pack_model
+        sym = self.scheme == 'sym'
         if self.bits == 3 or use_triton is False:
             if self.bits == 3 and use_triton is True:
                 logger.warning("triton does not support 3 bits, reset it to False")
@@ -1003,22 +1011,26 @@ class AutoRound(object):
                 info = self.weight_config[key]
                 if not check_to_quantized(info):
                     continue
-                quantizers[key] = (None, info['scale'].to(torch.float32), info['zp'].to(torch.float32), info['g_idx'])
-
+                info['zp'] = None if sym else info['zp'].to(torch.float32)
+                quantizers[key] = (None, info['scale'].to(torch.float32), info['zp'], info['g_idx'])
             pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
                        force_layer_back_to_cpu=True, use_triton=True)
         from auto_round import save_quantized_to_autogptq
-        sym = self.scheme == "sym"
         save_quantized_to_autogptq(model, output_dir, bits=self.bits, group_size=self.group_size, sym=sym,
                                    iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
                                    enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
                                    scale_dtype=self.scale_dtype,
                                    use_safetensors=True, modules_in_block_to_quantize=modules_in_block_to_quantize)
 
-    def save_quantized_as_itrex(self, output_dir):
+    def save_quantized_as_itrex(self, output_dir, inplace=True):
         """Save configure file and weights for CPU backend inference."""
-        from auto_round.export.export_to_itrex import compress_model
-        compressed_model, quantize_config = compress_model(self.model, self.weight_config)
+        from auto_round.export.export_to_itrex import compress_model, QuantConfig
+        compressed_model = compress_model(self.model, self.weight_config, inplace=inplace)
+        sym = self.scheme == "sym"
+        quantize_config = QuantConfig(bits=self.bits, group_size=self.group_size, sym=sym,
+                                   iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
+                                   enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
+                                   scale_dtype=str(self.scale_dtype))
         if quantize_config is not None:
             config = compressed_model.config
             setattr(config, "quantization_config", quantize_config.to_dict())
@@ -1032,6 +1044,7 @@ class AutoRound(object):
             logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
         except IOError as e:  # pragma: no cover
             logger.error("Fail to save configure file and weights due to {}.".format(e))
+        return compressed_model
 
     def quantize(self):
         """Quantize the model and return the quantized model along with weight configurations.
@@ -1354,3 +1367,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+

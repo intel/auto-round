@@ -11,7 +11,7 @@ import transformers
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, './')
-from eval.parse_results import result_parser
+from .parse_results import result_parser
 import time
 EXT_TASKS = ['wikitext2', 'ptb', 'c4', 'ptb-new', 'c4-new']
 fewshots_dict = {}
@@ -201,10 +201,9 @@ def simple_evaluate(
     return results, lm
 
 
-def eval_model(output_dir=None, model=None, tokenizer=None,
-               tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
+def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
                eval_bs=32, use_accelerate=True, dtype="float16", limit=None,
-               device="cuda:0", seed=0, nsamples=128, eval_orig_float=False, mark="paper", excel_file="tmp.xlsx"):
+               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
     print("evaluation with official lm-eval", flush=True)
     try:
         import lm_eval
@@ -214,31 +213,6 @@ def eval_model(output_dir=None, model=None, tokenizer=None,
         raise ImportError("""follow requirements to install dependencies.""")
 
     org_s = time.time()
-    ##save model
-    if output_dir is None:
-        output_dir = "./tmp_signround"
-
-    if os.path.exists(output_dir) and not eval_orig_float:
-        shutil.rmtree(output_dir)
-    
-    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
-        dtype = 'bfloat16'
-        pt_dtype = torch.bfloat16
-    else:
-        if str(device) != "cpu":
-            pt_dtype = torch.float16
-            dtype = 'float16'
-        else:
-            pt_dtype = torch.float32
-            dtype = 'float32'
-        
-    if not eval_orig_float:
-        model = model.to(pt_dtype)
-        model = model.to("cpu")
-        model.save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
-
-    
 
     external_tasks = []
     for each in EXT_TASKS:
@@ -256,11 +230,11 @@ def eval_model(output_dir=None, model=None, tokenizer=None,
             print(f'********* {tmp_tasks} evaluate ************')
             task_s = time.time()
             for shot in num_fewshot:
-                if bool(re.search("chatglm", output_dir.lower())):
-                    model_args = f'pretrained={output_dir},tokenizer={output_dir},dtype={dtype},trust_remote_code=True'
+                if bool(re.search("chatglm", model_path.lower())):
+                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code=True'
                     model_type = "hf-causal"
                 else:
-                    model_args = f'pretrained={output_dir},tokenizer={output_dir},dtype={dtype},use_accelerate={use_accelerate},trust_remote_code=True'
+                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},use_accelerate={use_accelerate},trust_remote_code=True'
                     model_type = "hf-causal-experimental"
 
                 if "wikitext" in task_names:
@@ -280,7 +254,7 @@ def eval_model(output_dir=None, model=None, tokenizer=None,
             print(str(e))
             continue
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(output_dir, use_fast=False, trust_remote_code=True)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
     model = lm.model
     # for external tasks
     # maybe adjust for specific model
@@ -371,10 +345,11 @@ if __name__ == "__main__":
                   "arc_challenge"]
     model_name = args.model_name.rstrip('/')
     excel_name = model_name.split('/')[-1] + ".xlsx"
-    eval_model(output_dir=args.model_name,
+    eval_model(model_path=args.model_name,
                tasks=test_tasks,
-               eval_bs=args.eval_bs, eval_orig_float=True, limit=None, excel_file=excel_name)
+               eval_bs=args.eval_bs, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
+
 
 

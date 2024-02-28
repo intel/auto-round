@@ -113,8 +113,8 @@ def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=['train', 
         tokenizer: The tokenizer to be used for tokenization.
         seqlen: The maximum sequence length.
 
-        Returns: A default tokenizer function that applies the provided tokenizer with truncation and a maximum length of
-        seqlen to the "text" field of examples.
+        Returns: A default tokenizer function that applies the provided tokenizer with truncation and
+        a maximum length of seqlen to the "text" field of examples.
         """
 
         def default_tokenizer_function(examples):
@@ -159,3 +159,4 @@ def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=['train', 
 
     calib_dataloader = DataLoader(samples, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
+
