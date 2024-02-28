@@ -1,6 +1,7 @@
 import argparse
 import sys
 sys.path.insert(0, '../..')
+
 from auto_round import (AutoRound,
                         AutoAdamRound)
 
@@ -96,12 +97,6 @@ if __name__ == '__main__':
                                  "mmlu", "wikitext", "truthfulqa_mc1", "truthfulqa_mc2", "openbookqa", "boolq", "rte",
                                  "arc_easy", "arc_challenge"],
                         help="lm-eval tasks for lm_eval version 0.4")
-    
-    # parser.add_argument("--tasks",
-    #                     default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
-    #                              "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
-    #                              "arc_easy", "arc_challenge"],
-    #                     help="lm-eval tasks for lm_eval version 0.3")
 
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
                         help="Where to store the final model.")
@@ -113,17 +108,28 @@ if __name__ == '__main__':
     args = parser.parse_args()
     set_seed(args.seed)
     
+    tasks = args.tasks
     if not args.eval_legacy:
         from eval import eval_model
     else:
         from eval_legacy import eval_model
+        if isinstance(tasks, str):
+            tasks = tasks.split(',')
+        if isinstance(tasks, list):
+            if "mmlu" in tasks:
+                tmp_tasks = tasks
+                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
+            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
+                tmp_tasks = tasks
+                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
+            tasks = list(set(tasks))
+        if isinstance(args.tasks, str):
+            tasks = ','.join(tasks)
 
     model_name = args.model_name
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     print(model_name, flush=True)
-
-    tasks = args.tasks
 
     if args.device == "cpu":
         device_str = "cpu"
@@ -159,6 +165,7 @@ if __name__ == '__main__':
             tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
             print(f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length",
@@ -166,14 +173,26 @@ if __name__ == '__main__':
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
 
+    pt_dtype = torch.float16
+    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
+        dtype = 'bfloat16'
+        pt_dtype = torch.bfloat16
+    else:
+        if str(args.device) != "cpu":
+            pt_dtype = torch.float16
+            dtype = 'float16'
+        else:
+            pt_dtype = torch.float32
+            dtype = 'float32'
+            
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if args.eval_fp16_baseline:
         if not args.low_gpu_mem_usage:
             model = model.to(torch_device)
         excel_name += "_fp16.xlsx"
-        eval_model(output_dir=model_name, model=model, tokenizer=tokenizer, tasks=args.tasks, \
-                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage, device=torch_device,
-                   eval_orig_float=True, excel_file=excel_name)
+        eval_model(model_path=model_name, tasks=tasks, dtype=dtype, \
+                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                   device=torch_device, excel_file=excel_name)
         exit()
 
     if not args.low_gpu_mem_usage:
@@ -215,24 +234,18 @@ if __name__ == '__main__':
     model.eval()
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
-    pt_dtype = torch.float16
-    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
-        dtype = 'bfloat16'
-        pt_dtype = torch.bfloat16
-    else:
-        if str(args.device) != "cpu":
-            pt_dtype = torch.float16
-            dtype = 'float16'
-        else:
-            pt_dtype = torch.float32
-            dtype = 'float32'
+    model = model.to(pt_dtype)
+    model = model.to("cpu")
+    model.save_pretrained(output_dir)
+    tokenizer.save_pretrained(output_dir)
 
     excel_name = f"{output_dir}_result.xlsx"
     output_dir += "/"
     print(excel_name, flush=True)
     
-    eval_model(output_dir=output_dir, model=model, tokenizer=tokenizer, tasks=args.tasks, \
-               eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage, device=torch_device, excel_file=excel_name,
-               limit=None)
+    
+    eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                device=torch_device, excel_file=excel_name)
 
 

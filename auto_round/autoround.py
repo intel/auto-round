@@ -266,6 +266,7 @@ class WrapperLinear(torch.nn.Module):
             self.scale_dtype
         )
         weight_q = weight_q.to(weight.dtype)
+        # pylint: disable=not-callable
         return F.linear(x, weight_q, self.orig_layer.bias)
 
 
@@ -853,8 +854,10 @@ class AutoRound(object):
                 )
                 if self.amp and not check_is_cpu(device):
                     with autocast(device_type="cuda", dtype=self.amp_dtype):
+                        # pylint: disable=not-callable
                         loss = mse_loss(output_q, current_output)
                 else:
+                    # pylint: disable=not-callable
                     loss = mse_loss(output_q.to(torch.float32), current_output.to(torch.float32))
 
                 total_loss += loss.item() / self.gradient_accumulate_steps

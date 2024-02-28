@@ -35,6 +35,7 @@ try:
         is_hpu_available = False
 except ImportError:
     is_hpu_available = False
+    htcore = None
 
 def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
