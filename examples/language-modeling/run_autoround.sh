@@ -12,7 +12,7 @@ python3 main.py \
 --use_quant_input \
 --amp \
 --iters 200 \
---deployment_device 'cpu' \
+--deployment_device 'fake,cpu' \
 --scale_dtype 'fp32' \
 --eval_bs 32 \
 --output_dir "./tmp_autoround"

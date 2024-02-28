@@ -947,12 +947,14 @@ class AutoRound(object):
         torch.cuda.empty_cache()
 
     def save_quantized(self, output_dir, format="itrex", **kwargs):
+        compress_model = None
         if format == "itrex":
-            self.save_quantized_as_itrex(output_dir, **kwargs)
+            compress_model = self.save_quantized_as_itrex(output_dir, **kwargs)
         elif format == "auto_gptq":
             self.save_quantized_as_autogptq(output_dir, **kwargs)
         else:
             logger.error("export only supports itrex and auto_gptq now")
+        return compress_model
 
     def save_quantized_as_autogptq(self, output_dir, use_triton=False, inplace=True):
         """
@@ -991,6 +993,7 @@ class AutoRound(object):
             model = copy.deepcopy(self.model.to("cpu"))
 
         from auto_gptq.modeling._utils import pack_model
+        sym = self.scheme == 'sym'
         if self.bits == 3 or use_triton is False:
             if self.bits == 3 and use_triton is True:
                 logger.warning("triton does not support 3 bits, reset it to False")
@@ -1008,12 +1011,11 @@ class AutoRound(object):
                 info = self.weight_config[key]
                 if not check_to_quantized(info):
                     continue
-                quantizers[key] = (None, info['scale'].to(torch.float32), info['zp'].to(torch.float32), info['g_idx'])
-
+                info['zp'] = None if sym else info['zp'].to(torch.float32)
+                quantizers[key] = (None, info['scale'].to(torch.float32), info['zp'], info['g_idx'])
             pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
                        force_layer_back_to_cpu=True, use_triton=True)
         from auto_round import save_quantized_to_autogptq
-        sym = self.scheme == "sym"
         save_quantized_to_autogptq(model, output_dir, bits=self.bits, group_size=self.group_size, sym=sym,
                                    iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
                                    enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
@@ -1042,6 +1044,7 @@ class AutoRound(object):
             logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
         except IOError as e:  # pragma: no cover
             logger.error("Fail to save configure file and weights due to {}.".format(e))
+        return compressed_model
 
     def quantize(self):
         """Quantize the model and return the quantized model along with weight configurations.

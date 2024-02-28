@@ -86,7 +86,7 @@ if __name__ == '__main__':
                         help="whether enable weight minmax tuning")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
-                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'both'."
+                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'hpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
     parser.add_argument("--scale_dtype", default='fp32',
@@ -103,6 +103,9 @@ if __name__ == '__main__':
     
     parser.add_argument("--eval_legacy", action='store_true',
                         help="Whether to evaluate with a old lm_eval version(e.g. 0.3.0).")
+    
+    parser.add_argument("--disable_lmeval", action='store_true',
+                        help="Whether to do lmeval evaluation.")
 
 
     args = parser.parse_args()
@@ -223,29 +226,31 @@ if __name__ == '__main__':
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
-    if args.deployment_device == 'gpu' or args.deployment_device == 'both':
-        autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", inplace=False, use_triton=True)
-    if args.deployment_device == 'cpu' or args.deployment_device == 'both':
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', inplace=False)
-
+    model.eval()
     if args.device != "cpu":
         torch.cuda.empty_cache()
-    model.eval()
+        
+    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
+    deployment_device = args.deployment_device.split(',')
+    for dev in deployment_device:
+        if dev == 'gpu':
+            autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
+        elif dev == 'cpu':
+            autoround.save_quantized(output_dir=f'{export_dir}-cpu', inplace=False)
+        elif dev == 'fake':
+            model = model.to("cpu")
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
+        else:
+            print(f"The '{dev}' deployment type is not enabled yet.")
 
-    model = model.to(pt_dtype)
-    model = model.to("cpu")
-    model.save_pretrained(output_dir)
-    tokenizer.save_pretrained(output_dir)
-
-    excel_name = f"{output_dir}_result.xlsx"
-    output_dir += "/"
-    print(excel_name, flush=True)
-    
-    
-    eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                device=torch_device, excel_file=excel_name)
+    if not args.disable_lmeval:
+        excel_name = f"{output_dir}_result.xlsx"
+        output_dir += "/"
+        print(excel_name, flush=True)
+        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                    device=torch_device, excel_file=excel_name)
 
 
