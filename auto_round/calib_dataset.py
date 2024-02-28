@@ -1,5 +1,6 @@
-import torch
 import random
+
+import torch
 
 CALIB_DATASETS = {}
 
@@ -43,7 +44,9 @@ def get_tokenizer_function(tokenizer, seqlen):
 
 
 @register_dataset("NeelNanda/pile-10k")
-def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="train", seed=42, bs=4):
+def get_dataloader(
+    tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="train", seed=42, bs=4
+):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -84,12 +87,21 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
     calib_dataset.set_format(type="torch", columns=["input_ids"])
-    calib_dataloader = DataLoader(calib_dataset, batch_size=bs, shuffle=False, collate_fn=collate_batch)
+    calib_dataloader = DataLoader(
+        calib_dataset, batch_size=bs, shuffle=False, collate_fn=collate_batch
+    )
     return calib_dataloader
 
 
 @register_dataset("mbpp")
-def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=['train', 'validation', 'test'], seed=42, bs=4):
+def get_mbpp_dataloader(
+    tokenizer,
+    seqlen,
+    dataset_name="mbpp",
+    split=["train", "validation", "test"],
+    seed=42,
+    bs=4,
+):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -118,7 +130,9 @@ def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=['train', 
         """
 
         def default_tokenizer_function(examples):
-            example = tokenizer(examples, truncation=True, max_length=seqlen, return_tensors="pt")
+            example = tokenizer(
+                examples, truncation=True, max_length=seqlen, return_tensors="pt"
+            )
             # example = tokenizer(examples, return_tensors="pt")
             return example
 
@@ -132,7 +146,10 @@ def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=['train', 
         attention_mask_new = []
         for text in batch:
             token_text = tokenizer_function(text)
-            input_ids, attention_mask = token_text["input_ids"], token_text["attention_mask"]
+            input_ids, attention_mask = (
+                token_text["input_ids"],
+                token_text["attention_mask"],
+            )
             if input_ids.shape[1] < seqlen:
                 continue
             input_ids = input_ids[:seqlen]
@@ -157,5 +174,7 @@ def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=['train', 
             samples.append(data["text"] + data["code"])
     random.Random(seed).shuffle(samples)
 
-    calib_dataloader = DataLoader(samples, batch_size=bs, shuffle=False, collate_fn=collate_batch)
+    calib_dataloader = DataLoader(
+        samples, batch_size=bs, shuffle=False, collate_fn=collate_batch
+    )
     return calib_dataloader

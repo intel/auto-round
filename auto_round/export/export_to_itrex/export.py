@@ -12,29 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
 from logging import getLogger
 
+import torch
+
 logger = getLogger(__name__)
-import os
-from typing import Dict, List, Optional, Union
-from safetensors.torch import save_file as safe_save
-from os.path import join, isfile, isdir
 import copy
 import json
+from typing import Union
+
+
+from auto_round.utils import get_module, quant_weight_w_scale, set_module
+
 from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear
-from auto_round.utils import quant_weight_w_scale, get_module, set_module
 
 
 def compress_model(
-        model,
-        weight_config: Union[str, dict],
-        enable_full_range=False,
-        compression_dtype=torch.int32,
-        compression_dim=1,
-        device="cpu",
-        use_optimum_format=True,
+    model,
+    weight_config: Union[str, dict],
+    enable_full_range=False,
+    compression_dtype=torch.int32,
+    compression_dim=1,
+    device="cpu",
+    use_optimum_format=True,
 ):
     """Convert Linear to WeightOnlyLinear for low memory inference.
 
@@ -80,7 +81,9 @@ def compress_model(
         else:
             scale = scale.to(dtype=convert_dtype)
             zp = None if scheme == "sym" else zp.to(dtype=torch.int32)
-        int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
+        int_weight = quant_weight_w_scale(
+            fp_weight, scale, zp, group_size, fp_weight.device
+        )
         int_weight = int_weight.type(torch.int32)
         new_module = WeightOnlyLinear(
             m.in_features,
@@ -97,5 +100,7 @@ def compress_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
 
-    quantize_config = QuantConfig(bits=num_bits, sym=(scheme == "sym"), group_size=group_size)
+    quantize_config = QuantConfig(
+        bits=num_bits, sym=(scheme == "sym"), group_size=group_size
+    )
     return compressed_model, quantize_config

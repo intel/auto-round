@@ -1,4 +1,3 @@
-
 # Copyright (c) 2023 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,28 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
 import copy
-from torch.amp import autocast
 from collections import UserDict
+
+import torch
+from torch.amp import autocast
 
 
 def is_optimum_habana_available():
     import importlib
+
     from transformers.utils.import_utils import is_optimum_available
 
     return is_optimum_available() and importlib.util.find_spec("optimum.habana") != None
 
+
 try:
-    import habana_frameworks.torch.hpu as hthpu
     import habana_frameworks.torch.core as htcore
+    import habana_frameworks.torch.hpu as hthpu
+
     if is_optimum_habana_available():
         is_hpu_available = True
     else:
-        print("Should install optimum-habana when the environment has habana frameworks")
+        print(
+            "Should install optimum-habana when the environment has habana frameworks"
+        )
         is_hpu_available = False
 except ImportError:
     is_hpu_available = False
+
 
 def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
@@ -49,7 +55,9 @@ def round_ste(x: torch.Tensor):
     return (x.round() - x).detach() + x
 
 
-def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16):
+def quant_weight_asym(
+    weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16
+):
     """Quantizes and dequantizes weight asymmetrically.
 
     Args:
@@ -62,7 +70,7 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_d
     Returns:
         Quantized and dequantized weight, scale, zero-point
     """
-    maxq = torch.tensor(2 ** num_bits - 1)
+    maxq = torch.tensor(2**num_bits - 1)
     zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=scale_dtype)
     # zeros = torch.zeros(weight.shape[0], device=weight.device)
     if isinstance(min_scale, torch.Tensor):
@@ -75,7 +83,7 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_d
     else:
         wmin = torch.minimum(weight.min(1)[0], zeros)
         wmax = torch.maximum(weight.max(1)[0], zeros)
-        
+
     tmp = (wmin == 0) & (wmax == 0)
     wmin[tmp] = -1
     wmax[tmp] = +1
@@ -88,7 +96,9 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_d
     return scale * (q - zp), scale, zp
 
 
-def quant_weight_sym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16):
+def quant_weight_sym(
+    weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16
+):
     """Quantizes and dequantizes weight symmetrically.
 
     Args:
@@ -117,7 +127,9 @@ def quant_weight_sym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dt
     return scale * q, scale, None
 
 
-def quant_weight_actor(weight, num_bits, scheme, v, min_scale, max_scale, scale_dtype=torch.float16):
+def quant_weight_actor(
+    weight, num_bits, scheme, v, min_scale, max_scale, scale_dtype=torch.float16
+):
     """Quantizes and dequantizes weight symmetrically or asymmetrically .
 
     Args:
@@ -138,7 +150,16 @@ def quant_weight_actor(weight, num_bits, scheme, v, min_scale, max_scale, scale_
         return quant_weight_asym(weight, num_bits, v, min_scale, max_scale, scale_dtype)
 
 
-def quant_weight(weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16):
+def quant_weight(
+    weight,
+    num_bits=4,
+    group_size=-1,
+    scheme="asym",
+    v=0,
+    min_scale=0,
+    max_scale=0,
+    scale_dtype=torch.float16,
+):
     """Quantizes and dequantizes weight, handing the group size issue .
 
     Args:
@@ -154,8 +175,15 @@ def quant_weight(weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scal
         Quantized and dequantized weight, scale, zero-point
     """
     if group_size == -1 or weight.shape[1] < group_size:
-        return quant_weight_actor(weight, num_bits, scheme=scheme, v=v, 
-                                  min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype)
+        return quant_weight_actor(
+            weight,
+            num_bits,
+            scheme=scheme,
+            v=v,
+            min_scale=min_scale,
+            max_scale=max_scale,
+            scale_dtype=scale_dtype,
+        )
     orig_shape = weight.shape
     if weight.shape[1] % group_size == 0:
         weight = weight.reshape(-1, group_size)
@@ -163,7 +191,13 @@ def quant_weight(weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scal
             v = v.reshape(-1, group_size)
 
         weight, scale, zp = quant_weight_actor(
-            weight, num_bits, scheme=scheme, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
+            weight,
+            num_bits,
+            scheme=scheme,
+            v=v,
+            min_scale=min_scale,
+            max_scale=max_scale,
+            scale_dtype=scale_dtype,
         )
         weight = weight.reshape(orig_shape)
         scale = scale.reshape(weight.shape[0], -1)  ##only for linear, conv1d
@@ -172,14 +206,22 @@ def quant_weight(weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scal
         return weight, scale, zp
 
     else:
-        pad_len = (weight.shape[1] + group_size - 1) // group_size * group_size - weight.shape[1]
+        pad_len = (
+            weight.shape[1] + group_size - 1
+        ) // group_size * group_size - weight.shape[1]
         weight_new = torch.nn.functional.pad(weight, (0, pad_len))
         v = torch.nn.functional.pad(v, (0, pad_len))
         weight_new = weight_new.reshape(-1, group_size)
         if isinstance(v, torch.Tensor):
             v = v.reshape(-1, group_size)
         weight_new, scale, zp = quant_weight_actor(
-            weight_new, num_bits, scheme=scheme, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
+            weight_new,
+            num_bits,
+            scheme=scheme,
+            v=v,
+            min_scale=min_scale,
+            max_scale=max_scale,
+            scale_dtype=scale_dtype,
         )
         weight_new = weight_new.reshape(orig_shape[0], -1)
 
@@ -188,8 +230,8 @@ def quant_weight(weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scal
         if zp is not None:
             zp = zp.reshape(weight_new.shape[0], -1)
         return weight_new, scale, zp
-    
-    
+
+
 def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
     """Quant and dequant tensor with group size.
 
@@ -206,15 +248,23 @@ def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
     if zp is not None:
         zp = zp.to(device)
     if group_size == -1:
-        return torch.round(weight / scale) if zp is None else torch.round(weight / scale + zp)
+        return (
+            torch.round(weight / scale)
+            if zp is None
+            else torch.round(weight / scale + zp)
+        )
     int_weight = torch.zeros(weight.shape).to(device)
     leng = weight.shape[1] // group_size
     tail_flag = False if weight.shape[1] % group_size == 0 else True
     for i in range(leng):
-        int_weight_tmp = weight[:, i * group_size : (i + 1) * group_size] / scale[:, i].unsqueeze(1)
+        int_weight_tmp = weight[:, i * group_size : (i + 1) * group_size] / scale[
+            :, i
+        ].unsqueeze(1)
         if zp is not None:
             int_weight_tmp += zp[:, i].unsqueeze(1)
-        int_weight[:, i * group_size : (i + 1) * group_size] = torch.round(int_weight_tmp)
+        int_weight[:, i * group_size : (i + 1) * group_size] = torch.round(
+            int_weight_tmp
+        )
     if tail_flag:
         int_weight_tmp = weight[:, leng * group_size :] / scale[:, -1].unsqueeze(1)
         if zp is not None:
@@ -330,8 +380,6 @@ def get_block_names(model):
     return block_names
 
 
-
-
 def collect_round_v(block):
     """Collects the round values for wrapped linear modules in the given block.
 
@@ -380,8 +428,8 @@ def get_batch_dim(input_others):
     """
     dim = int(len(input_others["positional_inputs"]) > 0)
     return dim
-            
-            
+
+
 def sampling_inputs(input_ids, input_others, indices, seqlen):
     """Samples inputs based on the given indices and sequence length.
 
@@ -418,7 +466,14 @@ def sampling_inputs(input_ids, input_others, indices, seqlen):
     return current_input_ids, current_input_others
 
 
-def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu")):
+def block_forward(
+    block,
+    input_ids,
+    input_others,
+    amp=False,
+    amp_dtype=torch.float16,
+    device=torch.device("cpu"),
+):
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -468,7 +523,11 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
 
 def check_to_quantized(config):
     if isinstance(config, dict):
-        if config["bits"] > 8 or "fp" in config["data_type"] or "float" in config["data_type"]:
+        if (
+            config["bits"] > 8
+            or "fp" in config["data_type"]
+            or "float" in config["data_type"]
+        ):
             return False
         return True
     else:
