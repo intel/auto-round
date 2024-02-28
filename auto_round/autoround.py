@@ -31,10 +31,8 @@ from functools import partial
 from torch.functional import F
 from .utils import (quant_weight, set_module, get_module, get_block_names, block_forward, sampling_inputs,
                     get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
-                    collect_minmax_scale, get_batch_dim, is_hpu_available)
+                    collect_minmax_scale, get_batch_dim, is_hpu_available, check_to_quantized)
 from .calib_dataset import CALIB_DATASETS
-
-
 
 
 class SaveInputs:
@@ -403,7 +401,7 @@ def wrapper_block(block, enable_minmax_tuning):
     names = []
     for n, m in block.named_modules():
         if isinstance(m, torch.nn.Linear):
-            if "fp" in m.data_type or "float" in m.data_type:
+            if not check_to_quantized(m):
                 continue
             new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning)
             set_module(block, n, new_m)
@@ -413,7 +411,7 @@ def wrapper_block(block, enable_minmax_tuning):
             import transformers
 
             if isinstance(m, transformers.modeling_utils.Conv1D):
-                if "fp" in m.data_type or "float" in m.data_type:
+                if not check_to_quantized(m):
                     continue
                 new_m = WrapperTransformerConv1d(m, enable_minmax_tuning=enable_minmax_tuning)
                 set_module(block, n, new_m)
@@ -555,7 +553,6 @@ class AutoRound(object):
         except:
             pass
         self.weight_config = weight_config
-        assert tokenizer is not None
         self.dataset_split = dataset_split
         self.seed = seed
         self.tokenizer = tokenizer
@@ -947,21 +944,45 @@ class AutoRound(object):
 
         torch.cuda.empty_cache()
 
-    def export(self, output_dir, target="itrex", **kwargs):
-        if target == "itrex":
-            self.export_to_itrex(output_dir)
-        elif target == "auto_gptq":
-            self.export_to_autogptq(output_dir, **kwargs)
+    def save_quantized(self, output_dir, format="itrex", **kwargs):
+        if format == "itrex":
+            self.save_quantized_as_itrex(output_dir)
+        elif format == "auto_gptq":
+            self.save_quantized_as_autogptq(output_dir, **kwargs)
         else:
             logger.error("export only supports itrex and auto_gptq now")
 
-    def export_to_autogptq(self, output_dir, use_triton=False):
+    def save_quantized_as_autogptq(self, output_dir, use_triton=False):
         """
         Export the model to autogptq format to easily leverage cuda kernel
         """
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
+        logger.info("Saving quantized model to autogptq format, this may take a while...")
+        if self.tokenizer is not None:
+            self.tokenizer.save_pretrained(output_dir)
+        ##check module quantized in block, this may have bug for mixed precision quantization
+        block_name = get_block_names(self.model)[0]
+        first_block = get_module(self.model, block_name)
+        all_to_quantized = True
+        modules_in_block_to_quantize = []
+        for n, m in first_block.named_modules():
+            is_supported_type = False
+            for supported_type in self.supported_types:
+                if isinstance(m, supported_type):
+                    is_supported_type = True
+                    break
+            if not is_supported_type:
+                continue
+            if not check_to_quantized(m):
+                all_to_quantized = False
+            else:
+                modules_in_block_to_quantize.append(n)
+        modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
+        if all_to_quantized:
+            modules_in_block_to_quantize = None
+
         model = copy.deepcopy(self.model.to("cpu"))  ##TODO avoid this deepcopy
 
         from auto_gptq.modeling._utils import pack_model
@@ -971,7 +992,7 @@ class AutoRound(object):
             quantizers = {}
             for key in self.weight_config:
                 info = self.weight_config[key]
-                if info["bits"] > 8:
+                if not check_to_quantized(info):
                     continue
                 quantizers[key] = (None, info['scale'], info['zp'], info['g_idx'])
             pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
@@ -980,7 +1001,7 @@ class AutoRound(object):
             quantizers = {}
             for key in self.weight_config:
                 info = self.weight_config[key]
-                if info["bits"] > 8:
+                if not check_to_quantized(info):
                     continue
                 quantizers[key] = (None, info['scale'].to(torch.float32), info['zp'].to(torch.float32), info['g_idx'])
 
@@ -991,9 +1012,10 @@ class AutoRound(object):
         save_quantized_to_autogptq(model, output_dir, bits=self.bits, group_size=self.group_size, sym=sym,
                                    iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
                                    enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
-                                   use_safetensors=True)
+                                   scale_dtype=self.scale_dtype,
+                                   use_safetensors=True, modules_in_block_to_quantize=modules_in_block_to_quantize)
 
-    def export_to_itrex(self, output_dir):
+    def save_quantized_as_itrex(self, output_dir):
         """Save configure file and weights for CPU backend inference."""
         from auto_round.export.export_to_itrex import compress_model
         compressed_model, quantize_config = compress_model(self.model, self.weight_config)
@@ -1052,8 +1074,12 @@ class AutoRound(object):
                 if hasattr(m, "scale"):
                     self.weight_config[n]["scale"] = m.scale
                     self.weight_config[n]["zp"] = m.zp
-                    self.weight_config[n]["g_idx"] = torch.tensor(
-                        [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu")
+                    if self.group_size <= 0:
+                        self.weight_config[n]["g_idx"] = torch.tensor(
+                            [0 for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu")
+                    else:
+                        self.weight_config[n]["g_idx"] = torch.tensor(
+                            [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu")
                     delattr(m, "scale")
                     delattr(m, "zp")
                 else:
@@ -1068,7 +1094,6 @@ class AutoRound(object):
         cost_time = end_time - start_time
         logger.info(f"quantization tuning time {cost_time}")
         self.quantized = True
-        ##self.export_to_autogptq("test_export")
         return self.model, self.weight_config
 
 

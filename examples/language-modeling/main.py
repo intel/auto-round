@@ -7,14 +7,12 @@ from auto_round import (AutoRound,
 parser = argparse.ArgumentParser()
 import torch
 import os
-
+import transformers
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
 from transformers import set_seed
-
-from eval.evaluation import eval_model
 
 import re
 
@@ -42,9 +40,9 @@ if __name__ == '__main__':
 
     parser.add_argument("--device", default=0, type=str,
                         help="device gpu int number, or 'cpu' ")
-    
+
     parser.add_argument("--sym", action='store_true',
-                         help=" sym quantization")
+                        help=" sym quantization")
 
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
@@ -85,22 +83,31 @@ if __name__ == '__main__':
 
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="whether enable weight minmax tuning")
-    
+
     parser.add_argument("--deployment_device", default='fake', type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu',"
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
-    
+
     parser.add_argument("--scale_dtype", default='fp32',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
-    
+
     parser.add_argument("--tasks",
                         default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
-                                 "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
+                                 "mmlu", "wikitext", "truthfulqa_mc1", "truthfulqa_mc2", "openbookqa", "boolq", "rte",
                                  "arc_easy", "arc_challenge"],
-                        help="lm-eval tasks")
+                        help="lm-eval tasks for lm_eval version 0.4")
+    
+    # parser.add_argument("--tasks",
+    #                     default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
+    #                              "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte",
+    #                              "arc_easy", "arc_challenge"],
+    #                     help="lm-eval tasks for lm_eval version 0.3")
 
-    parser.add_argument("--output_dir", default="./tmp_signround", type=str,
+    parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
                         help="Where to store the final model.")
+    
+    parser.add_argument("--eval_legacy", action='store_true',
+                        help="Whether to evaluate with a old lm_eval version(e.g. 0.3.0).")
 
 
     args = parser.parse_args()
@@ -119,7 +126,11 @@ if __name__ == '__main__':
         device_str = f"cuda:{int(args.device)}"
     torch_device = torch.device(device_str)
     is_glm = bool(re.search("chatglm", model_name.lower()))
-    if is_glm:
+    is_llava = bool(re.search("llava", model_name.lower()))
+    if is_llava:
+        from transformers import LlavaForConditionalGeneration
+        model = LlavaForConditionalGeneration.from_pretrained(model_name, low_cpu_mem_usage=True, torch_dtype="auto")
+    elif is_glm:
         model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
     else:
         model = AutoModelForCausalLM.from_pretrained(
@@ -165,33 +176,63 @@ if __name__ == '__main__':
 
     scheme = "asym"
     if args.sym:
-        scheme = "sym" 
+        scheme = "sym"
     round = AutoRound
     if args.adam:
         round = AutoAdamRound
 
+    weight_config = {}
+    if args.deployment_device == 'gpu':
+        for n, m in model.named_modules():
+            if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
+                if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
+                    weight_config[n] = {"data_type": "fp"}
+                    print(
+                        f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
+
     autoround = round(model, tokenizer, args.bits, args.group_size, scheme, bs=args.train_bs,
-                 seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
-                 minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
-                 amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
-                 seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps, scale_dtype=args.scale_dtype)  ##TODO args pass
+                      seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
+                      minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
+                      amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
+                      seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
+                      scale_dtype=args.scale_dtype, weight_config=weight_config)  ##TODO args pass
     model, q_config = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
+
     if args.deployment_device == 'cpu':
-        autoround.export(output_dir=export_dir)
+        export_dir += "-cpu"
+        autoround.save_quantized(output_dir=export_dir)
         del q_config
     elif args.deployment_device == 'gpu':
-        autoround.export(export_dir, target="auto_gptq", use_triton=True)
-        
+        export_dir += "-gpu"
+        autoround.save_quantized(export_dir, format="auto_gptq", use_triton=True)
+        model = model.eval()
+
     if args.device != "cpu":
         torch.cuda.empty_cache()
     model.eval()
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
-    excel_name = f"{output_dir}/result.xlsx"
+    pt_dtype = torch.float16
+    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
+        dtype = 'bfloat16'
+        pt_dtype = torch.bfloat16
+    else:
+        if str(args.device) != "cpu":
+            pt_dtype = torch.float16
+            dtype = 'float16'
+        else:
+            pt_dtype = torch.float32
+            dtype = 'float32'
+
+    excel_name = f"{output_dir}_result.xlsx"
     output_dir += "/"
     print(excel_name, flush=True)
+    if not args.eval_legacy:
+        from eval.evaluation import eval_model
+    else:
+        from eval_legacy.evaluation import eval_model
     eval_model(output_dir=output_dir, model=model, tokenizer=tokenizer, tasks=args.tasks, \
                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage, device=torch_device, excel_file=excel_name,
                limit=None)
