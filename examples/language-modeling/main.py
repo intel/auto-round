@@ -86,7 +86,7 @@ if __name__ == '__main__':
                         help="whether enable weight minmax tuning")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
-                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'hpu'."
+                        help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
     parser.add_argument("--scale_dtype", default='fp32',
