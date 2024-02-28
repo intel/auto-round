@@ -13,22 +13,13 @@
 # limitations under the License.
 
 
-import logging
 import torch
-
-logger = logging.getLogger("autoround")
-logger.setLevel(logging.INFO)
-fh = logging.StreamHandler()
-fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s',
-                                 "%Y-%m-%d %H:%M:%S")
-fh.setFormatter(fh_formatter)
-logger.addHandler(fh)
 
 import copy
 import time
 from .utils import (quant_weight, set_module, get_module, get_block_names, block_forward, sampling_inputs,
                     get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
-                    collect_minmax_scale, get_batch_dim, htcore, is_hpu_available, check_to_quantized)
+                    collect_minmax_scale, get_batch_dim, htcore, is_hpu_available,check_to_quantized,logger)
 
 class SaveInputs:
     """Cache the inputs of the first block."""

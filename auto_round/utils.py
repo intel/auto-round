@@ -17,6 +17,14 @@ import torch
 import copy
 from torch.amp import autocast
 from collections import UserDict
+import logging
+logger = logging.getLogger("autoround")
+logger.setLevel(logging.INFO)
+fh = logging.StreamHandler()
+fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s',
+                                 "%Y-%m-%d %H:%M:%S")
+fh.setFormatter(fh_formatter)
+logger.addHandler(fh)
 
 
 def is_optimum_habana_available():

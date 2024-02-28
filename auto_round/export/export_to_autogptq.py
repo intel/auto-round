@@ -35,9 +35,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
-from logging import getLogger
-
-logger = getLogger(__name__)
+from auto_round.utils import logger
 import os
 from typing import Dict, List, Optional, Union
 from safetensors.torch import save_file as safe_save
