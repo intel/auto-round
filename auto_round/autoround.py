@@ -576,10 +576,10 @@ class AutoRound(object):
             self.amp_dtype = torch.bfloat16
         if self.amp:
             self.model = self.model.to(self.amp_dtype)
-            logger.info(f"using {self.amp_dtype}")
+            logger.info(f"using {self.amp_dtype} for quantization tuning")
         else:
             self.model = self.model.to(torch.float32)
-            logger.info(f"using {torch.float32} for quantization")
+            logger.info(f"using {torch.float32} for quantization tuning")
         self.dataset_name = dataset_name
 
         if dataloader is None:
