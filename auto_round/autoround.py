@@ -576,9 +576,9 @@ class AutoRound(object):
         if self.amp:
             self.model = self.model.to(self.amp_dtype)
             logger.info(f"using {self.amp_dtype}")
-        elif self.device == "cpu" and self.model.dtype == torch.float16:
+        else:
             self.model = self.model.to(torch.float32)
-            logger.info(f"using {torch.float32} for cpu quantization")
+            logger.info(f"using {torch.float32} for quantization")
         self.dataset_name = dataset_name
 
         if dataloader is None:
