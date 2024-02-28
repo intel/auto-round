@@ -13,22 +13,13 @@
 # limitations under the License.
 
 
-import logging
 import torch
-
-logger = logging.getLogger("autoround")
-logger.setLevel(logging.INFO)
-fh = logging.StreamHandler()
-fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s',
-                                 "%Y-%m-%d %H:%M:%S")
-fh.setFormatter(fh_formatter)
-logger.addHandler(fh)
 
 import copy
 import time
 from .utils import (quant_weight, set_module, get_module, get_block_names, block_forward, sampling_inputs,
                     get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
-                    collect_minmax_scale, get_batch_dim, htcore, is_hpu_available, check_to_quantized)
+                    collect_minmax_scale, get_batch_dim, htcore, is_hpu_available,check_to_quantized,logger)
 
 class SaveInputs:
     """Cache the inputs of the first block."""
@@ -533,6 +524,7 @@ class AutoRound(object):
     ):
         from .calib_dataset import CALIB_DATASETS
         self.model = model
+        self.model_orig_dtype = model.dtype
         self.model = self.model.to("cpu")
         self.amp = amp
         self.use_quant_input = use_quant_input
@@ -574,10 +566,10 @@ class AutoRound(object):
             self.amp_dtype = torch.bfloat16
         if self.amp:
             self.model = self.model.to(self.amp_dtype)
-            logger.info(f"using {self.amp_dtype}")
-        elif self.device == "cpu" and self.model.dtype == torch.float16:
+            logger.info(f"using {self.amp_dtype} for quantization tuning")
+        else:
             self.model = self.model.to(torch.float32)
-            logger.info(f"using {torch.float32} for cpu quantization")
+            logger.info(f"using {torch.float32} for quantization tuning")
         self.dataset_name = dataset_name
 
         if dataloader is None:
@@ -1011,7 +1003,7 @@ class AutoRound(object):
                 info = self.weight_config[key]
                 if not check_to_quantized(info):
                     continue
-                info['zp'] = None if sym else info['zp'].to(torch.float32)
+                info['zp'] = info['zp'].to(torch.float32)
                 quantizers[key] = (None, info['scale'].to(torch.float32), info['zp'], info['g_idx'])
             pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
                        force_layer_back_to_cpu=True, use_triton=True)
@@ -1107,6 +1099,7 @@ class AutoRound(object):
         cost_time = end_time - start_time
         logger.info(f"quantization tuning time {cost_time}")
         self.quantized = True
+        self.model = self.model.to(self.model_orig_dtype)
         return self.model, self.weight_config
 
 

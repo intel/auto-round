@@ -16,15 +16,14 @@
 # limitations under the License.
 """Configs for Autoround quantization."""
 
-import logging
 import torch
-logger = logging.getLogger()
 import copy
 import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Tuple, Union
 from transformers import PretrainedConfig
+from auto_round.utils import logger
 
 QUANT_CONFIG = "quantize_config.json"
 

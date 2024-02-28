@@ -151,7 +151,7 @@ if __name__ == '__main__':
             model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
         )
     model = model.eval()
-    # align wigh GPTQ to eval ppl
+    # align with GPTQ to eval ppl
     if "opt" in model_name:
         seqlen = model.config.max_position_embeddings
         model.seqlen = model.config.max_position_embeddings
@@ -233,19 +233,16 @@ if __name__ == '__main__':
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
     deployment_device = args.deployment_device.split(',')
-    for dev in deployment_device:
-        if dev == 'gpu':
-            autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
-        elif dev == 'cpu':
-            autoround.save_quantized(output_dir=f'{export_dir}-cpu', inplace=False)
-        elif dev == 'fake':
-            model = model.to("cpu")
-            model.save_pretrained(output_dir)
-            tokenizer.save_pretrained(output_dir)
-        else:
-            print(f"The '{dev}' deployment type is not enabled yet.")
+    if 'gpu' in deployment_device:
+        autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
+    if "cpu" in deployment_device:
+        autoround.save_quantized(output_dir=f'{export_dir}-cpu', inplace=False)
+    if "fake" in deployment_device:
+        model = model.to("cpu")
+        model.save_pretrained(output_dir)
+        tokenizer.save_pretrained(output_dir)
 
-    if not args.disable_lmeval:
+    if not args.disable_lmeval and "fake" in deployment_device: ##support autogptq real eval later
         excel_name = f"{output_dir}_result.xlsx"
         output_dir += "/"
         print(excel_name, flush=True)

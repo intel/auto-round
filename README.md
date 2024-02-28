@@ -38,7 +38,7 @@ autoround.quantize()
 
 output_dir = "./tmp_autoround"
 deployment_device = "cpu" ## or gpu
-if deployment_device=="cpu":
+if deployment_device == "cpu":
     autoround.save_quantized(output_dir, format="itrex") ## export to itrex format
 else:
     autoround.save_quantized(output_dir, format="auto_gptq", use_triton=True) ##export to autogptq format
