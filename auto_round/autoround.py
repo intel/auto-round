@@ -534,6 +534,7 @@ class AutoRound(object):
             **kwargs,
     ):
         self.model = model
+        self.model_orig_dtype = model.dtype
         self.model = self.model.to("cpu")
         self.amp = amp
         self.use_quant_input = use_quant_input
@@ -1094,6 +1095,7 @@ class AutoRound(object):
         cost_time = end_time - start_time
         logger.info(f"quantization tuning time {cost_time}")
         self.quantized = True
+        self.model = self.model.to(self.model_orig_dtype)
         return self.model, self.weight_config
 
 
