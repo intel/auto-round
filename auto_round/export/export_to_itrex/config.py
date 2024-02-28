@@ -36,7 +36,7 @@ class QuantConfig(PretrainedConfig):
         scale_dtype='torch.float32',
         group_size=128,
         sym=False,
-        quant_method="Autoround",
+        quant_method="autoround",
         model_name_or_path=None,
         model_file_base_name='model',
         enable_minmax_tuning=True,

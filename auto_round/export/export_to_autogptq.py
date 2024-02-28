@@ -77,7 +77,7 @@ def save_quantized_to_autogptq(model, save_dir: str, bits=4, group_size=128, sym
                     except Exception as e:
                         raise TypeError(
                             f"safetensors_metadata: both keys and values must be strings" /
-                            f" and an error occured when trying to convert them: {e}")
+                            f" and an error occurred when trying to convert them: {e}")
                     if new_key in new_safetensors_metadata:
                         logger.warning(
                             f"After converting safetensors_metadata keys to strings, the key '{new_key}' " /

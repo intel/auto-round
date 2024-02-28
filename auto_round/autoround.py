@@ -26,14 +26,9 @@ logger.addHandler(fh)
 
 import copy
 import time
-from torch.amp import autocast
-from functools import partial
-from torch.functional import F
 from .utils import (quant_weight, set_module, get_module, get_block_names, block_forward, sampling_inputs,
                     get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
                     collect_minmax_scale, get_batch_dim, htcore, is_hpu_available, check_to_quantized)
-from .calib_dataset import CALIB_DATASETS
-
 
 class SaveInputs:
     """Cache the inputs of the first block."""
@@ -171,6 +166,7 @@ class SaveInputs:
 
     def _replace_forward(self):
         """Replaces the forward function."""
+        from functools import partial
         for n, m in self.model.named_modules():
             if n == self.block_name:
                 m.orig_forward = m.forward
@@ -258,6 +254,7 @@ class WrapperLinear(torch.nn.Module):
         Returns:
         - torch.Tensor: The output tensor after applying the linear transformation with quantized weights.
         """
+        from torch.functional import F
         weight = self.orig_layer.weight
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
@@ -534,6 +531,7 @@ class AutoRound(object):
             scale_dtype="fp16",
             **kwargs,
     ):
+        from .calib_dataset import CALIB_DATASETS
         self.model = model
         self.model = self.model.to("cpu")
         self.amp = amp
@@ -779,6 +777,7 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.use_quant_input is True, else (None, output)
         """
+        from torch.amp import autocast
         batch_dim = get_batch_dim(input_others)
         if not self.low_gpu_mem_usage and input_ids.device != device:
             input_ids = move_input_to_device(input_ids, device)
