@@ -159,11 +159,13 @@ We fine-tuned the hyperparameters for each model with an iteration of 1K and suc
 
 [Intel/Mistral-7B-v0.1-int4-inc](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc)
 
-[Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) coming soon
+[Intel/gemma-7b-int4-inc](https://huggingface.co/Intel/gemma-7b-int4-inc) internal review, [accuracy](./docs/gemma-7b-acc.md), [quantization shell](./examples/language-modeling/scripts/gemma-7b.sh)
 
-[Intel/Mixtral-8x7B-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) coming soon
+[Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) coming soon, [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [quantization shell](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh)
 
-[Intel/phi-2-int4-inc](https://huggingface.co/Intel/phi-2-int4-inc) coming soon
+[Intel/Mixtral-8x7B-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) coming soon,[accuracy](./docs/Mistral-7B-v0.1-acc.md), [quantization shell](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh)
+ 
+[Intel/phi-2-int4-inc](https://huggingface.co/Intel/phi-2-int4-inc) coming soon, [accuracy](./docs/phi-2-acc.md) [quantization shell](./examples/language-modeling/scripts/phi-2.sh)
 
 ### Itrex format
 

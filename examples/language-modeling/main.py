@@ -7,7 +7,7 @@ from auto_round import (AutoRound,
 parser = argparse.ArgumentParser()
 import torch
 import os
-
+import transformers
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
