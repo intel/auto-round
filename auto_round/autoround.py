@@ -935,16 +935,16 @@ class AutoRound(object):
     @torch.no_grad()
     def calib(self, n_samples):
         """
-            Perform calibration for quantization.
+        Perform calibration for quantization.
 
-            This method calibrates the model for quantization by processing a specified
-            number of samples from the calibration dataset. It ensures that the data is
-            properly formatted and feeds it to the model. If the number of samples processed
-            is less than the specified number, it logs a warning. If no samples are processed,
-            it logs an error and exits.
+        This method calibrates the model for quantization by processing a specified
+        number of samples from the calibration dataset. It ensures that the data is
+        properly formatted and feeds it to the model. If the number of samples processed
+        is less than the specified number, it logs a warning. If no samples are processed,
+        it logs an error and exits.
 
-            Args:
-                n_samples (int): The number of samples to use for calibration.
+        Args:
+            n_samples (int): The number of samples to use for calibration.
         """
         if self.dataloader is None:
             from .calib_dataset import CALIB_DATASETS
