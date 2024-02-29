@@ -162,8 +162,8 @@ class QuantConfig(PretrainedConfig):
         return json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
 
     def to_diff_dict(self) -> Dict[str, Any]:
-        """Removes all attributes from config which correspond to the default config attributes for better readability and
-        serializes to a Python dictionary.
+        """Removes all attributes from config which correspond to the default config attributes
+        for better readability and serializes to a Python dictionary.
 
         Returns:
             `Dict[str, Any]`: Dictionary of all the attributes that make up this configuration instance,

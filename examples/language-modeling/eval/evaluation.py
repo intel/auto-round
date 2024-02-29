@@ -10,10 +10,9 @@ import shutil
 import transformers
 from typing import TYPE_CHECKING, Optional, Union
 import time
-try:
-    from lm_eval.tasks import TaskManager
-except ImportError:
-    TaskManager = None
+
+
+
     
 if __name__ == "__main__":
     import sys
@@ -84,7 +83,7 @@ def simple_evaluate(
     write_out: bool = False,
     log_samples: bool = True,
     gen_kwargs: str = None,
-    task_manager: TaskManager = None,
+    task_manager=None,
     verbosity: str = "INFO",
     predict_only: bool = False,
     random_seed: int = 1234,
@@ -142,6 +141,7 @@ def simple_evaluate(
     :return
         Dictionary of results
     """
+    from lm_eval.tasks import TaskManager
     import random
     import numpy as np
     import transformers
