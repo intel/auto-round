@@ -1,6 +1,6 @@
-transformers
-torch
-sentencepiece
 accelerate
-datasets
 auto-gptq
+datasets
+sentencepiece
+torch
+transformers

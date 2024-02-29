@@ -16,28 +16,32 @@
 # limitations under the License.
 """Configs for Autoround quantization."""
 
-import torch
 import copy
 import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Tuple, Union
+
+import torch
 from transformers import PretrainedConfig
+
 from auto_round.utils import logger
 
 QUANT_CONFIG = "quantize_config.json"
 
+
 class QuantConfig(PretrainedConfig):
     """A brief quantization configuration for reference when performing model dequantization."""
+
     def __init__(
         self,
         bits=4,
-        scale_dtype='torch.float32',
+        scale_dtype="torch.float32",
         group_size=128,
         sym=False,
         quant_method="autoround",
         model_name_or_path=None,
-        model_file_base_name='model',
+        model_file_base_name="model",
         enable_minmax_tuning=True,
         iters=1000,
         lr=0.001,
@@ -52,42 +56,37 @@ class QuantConfig(PretrainedConfig):
         self.quant_method = quant_method
         self.model_name_or_path = model_name_or_path
         self.model_file_base_name = model_file_base_name
-        self.enable_minmax_tuning=enable_minmax_tuning
-        self.iters=iters
-        self.lr=lr
-        self.minmax_lr=minmax_lr
-        self.use_quant_input=use_quant_input
-        
+        self.enable_minmax_tuning = enable_minmax_tuning
+        self.iters = iters
+        self.lr = lr
+        self.minmax_lr = minmax_lr
+        self.use_quant_input = use_quant_input
+
         ### Redundant parameters, will be removed later. ###
         self.damp_percent = 0.01
         self.desc_act = False
         self.true_sequential = False
         self.quant_method = "gptq"
 
-
     def post_init(self):
         r"""
         Safety checker that arguments are correct - also replaces some NoneType arguments with their default values.
         """
 
-        if self.scale_dtype not in ['torch.float32', 'torch.float16', 'torch.bfloat16']:
+        if self.scale_dtype not in ["torch.float32", "torch.float16", "torch.bfloat16"]:
             raise ValueError("scale_dtype must be 'fp32', 'fp16' or 'bf16'.")
 
         if self.group_size not in [-1, 32, 128]:
             raise ValueError("group_size must be an integer in [-1, 32, 128]")
 
-
     def quantization_method(self):
-        r"""
-        This method returns the quantization method used for the model.
-        """
+        r"""This method returns the quantization method used for the model."""
         return self.quant_method
-    
 
     @classmethod
     def from_dict(cls, config_dict, return_unused_kwargs=False, **kwargs):
-        """
-        Instantiates a [`QuantConfig`] from a Python dictionary of parameters.
+        """Instantiates a [`QuantConfig`] from a Python dictionary of parameters.
+
         Args:
             config_dict (`Dict[str, Any]`):
                 Dictionary that will be used to instantiate the configuration object.
@@ -114,18 +113,16 @@ class QuantConfig(PretrainedConfig):
             return config, kwargs
         else:
             return config
-        
 
     @classmethod
     def from_json_file(cls, json_file_path, return_unused_kwargs, **kwargs):
         with open(json_file_path, "r", encoding="utf-8") as f:
             config_dict = json.load(f)
         return cls.from_dict(config_dict, return_unused_kwargs, **kwargs)
-    
 
     def to_json_file(self, json_file_path: Union[str, os.PathLike], use_diff: bool = True):
-        """
-        Save this instance to a JSON file.
+        """Save this instance to a JSON file.
+
         Args:
             json_file_path (`str` or `os.PathLike`):
                 Path to the JSON file in which this configuration instance's parameters will be saved.
@@ -134,9 +131,10 @@ class QuantConfig(PretrainedConfig):
             writer.write(self.to_json_string(use_diff=use_diff))
 
     def to_dict(self) -> Dict[str, Any]:
-        """
-        Serializes this instance to a Python dictionary. Returns:
-            `Dict[str, Any]`: Dictionary of all the attributes that make up this configuration instance.
+        """Serializes this instance to a Python dictionary.
+
+        Returns:
+        `Dict[str, Any]`: Dictionary of all the attributes that make up this configuration instance.
         """
 
         output = copy.deepcopy(self.__dict__)
@@ -145,10 +143,9 @@ class QuantConfig(PretrainedConfig):
     def __repr__(self):
         return f"{self.__class__.__name__} {self.to_json_string()}"
 
-
     def to_json_string(self, use_diff: bool = True) -> str:
-        """
-        Serializes this instance to a JSON string.
+        """Serializes this instance to a JSON string.
+
         Args:
             use_diff (`bool`, *optional*, defaults to `True`):
                 If set to `True`, only the difference between the config instance and the default
@@ -165,9 +162,9 @@ class QuantConfig(PretrainedConfig):
         return json.dumps(config_dict, indent=2, sort_keys=True) + "\n"
 
     def to_diff_dict(self) -> Dict[str, Any]:
-        """
-        Removes all attributes from config which correspond to the default config attributes for better readability and
+        """Removes all attributes from config which correspond to the default config attributes for better readability and
         serializes to a Python dictionary.
+
         Returns:
             `Dict[str, Any]`: Dictionary of all the attributes that make up this configuration instance,
         """
@@ -186,9 +183,9 @@ class QuantConfig(PretrainedConfig):
         return serializable_config_dict
 
     def save_pretrained(self, save_directory: Union[str, os.PathLike], push_to_hub: bool = False, **kwargs):
-        """
-        Save a configuration object to the directory `save_directory`, so that it can be re-loaded using the
+        """Save a configuration object to the directory `save_directory`, so that it can be re-loaded using the
         [`~PretrainedConfig.from_pretrained`] class method.
+
         Args:
             save_directory (`str` or `os.PathLike`):
                 Directory where the configuration JSON file will be saved (will be created if it does not exist).
