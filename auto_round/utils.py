@@ -13,13 +13,16 @@
 # limitations under the License.
 
 import copy
-from collections import UserDict
 import logging
+from collections import UserDict
+
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
 fh = logging.StreamHandler()
-fh_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s',
-                                 "%Y-%m-%d %H:%M:%S")
+fh_formatter = logging.Formatter(
+    "%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s",
+    "%Y-%m-%d %H:%M:%S",
+)
 fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
 
@@ -120,7 +123,7 @@ def quant_weight_sym(
     Returns:
         Quantized and dequantized weight, scale, zero-point
     """
-    maxq = torch.tensor(2 ** num_bits - 1)
+    maxq = torch.tensor(2**num_bits - 1)
     zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=scale_dtype)
     if isinstance(min_scale, torch.Tensor):
         wmin_tmp = torch.minimum(weight.min(1)[0], zeros)
@@ -134,7 +137,7 @@ def quant_weight_sym(
         wmax = torch.maximum(weight.max(1)[0], zeros)
     wmax_new = torch.max(wmin.abs(), wmax)
     tmp = wmin < 0
-    wmin_new = wmin.clone() ##must clone, otherwise inplace backward will occur
+    wmin_new = wmin.clone()  ##must clone, otherwise inplace backward will occur
     if torch.any(tmp):
         wmin_new[tmp] = -wmax_new[tmp]
 
@@ -175,14 +178,15 @@ def quant_weight_actor(
 
 
 def quant_weight(
-        weight,
-        num_bits=4,
-        group_size=-1,
-        scheme="asym",
-        v=0,
-        min_scale=0,
-        max_scale=0, 
-        scale_dtype=torch.float16):
+    weight,
+    num_bits=4,
+    group_size=-1,
+    scheme="asym",
+    v=0,
+    min_scale=0,
+    max_scale=0,
+    scale_dtype=torch.float16,
+):
     """Quantizes and dequantizes weight, handing the group size issue .
 
     Args:

@@ -15,7 +15,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Torch.nn.Module Class Definition."""
-import logging
 
 # Note: Do not import this file unless you have already imported torch,
 # since the model classes inherit torch.nn.Module.
@@ -24,8 +23,8 @@ import math
 import torch
 from packaging.version import Version
 from torch.nn import functional as F
-from auto_round.utils import logger
 
+from auto_round.utils import logger
 
 NF4 = [
     -1.0,

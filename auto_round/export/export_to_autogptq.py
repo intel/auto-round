@@ -13,7 +13,9 @@
 # limitations under the License.
 
 
-from logging import getLogger
+import os
+from os.path import join
+from typing import Dict, Optional
 
 # MIT License
 #
@@ -37,12 +39,9 @@ from logging import getLogger
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
-from auto_round.utils import logger
-import os
-from os.path import join
-from typing import Dict, Optional
-
 from safetensors.torch import save_file as safe_save
+
+from auto_round.utils import logger
 
 
 def save_quantized_to_autogptq(
@@ -86,18 +85,21 @@ def save_quantized_to_autogptq(
                         new_value = str(value)
                     except Exception as e:
                         raise TypeError(
-                            f"safetensors_metadata: both keys and values must be strings" /
-                            f" and an error occurred when trying to convert them: {e}")
+                            "safetensors_metadata: both keys and values must be strings"
+                            / f" and an error occurred when trying to convert them: {e}"
+                        )
                     if new_key in new_safetensors_metadata:
                         logger.warning(
-                            f"After converting safetensors_metadata keys to strings, the key '{new_key}' " /
-                                f"is duplicated. Ensure that all your metadata keys are strings to avoid overwriting.")
+                            f"After converting safetensors_metadata keys to strings, the key '{new_key}' "
+                            / "is duplicated. Ensure that all your metadata keys are strings to avoid overwriting."
+                        )
                     new_safetensors_metadata[new_key] = new_value
             safetensors_metadata = new_safetensors_metadata
             if converted_keys:
                 logger.debug(
-                    f"One or more safetensors_metadata keys or values had to be converted to str()." /
-                        f" Final safetensors_metadata: {safetensors_metadata}")
+                    "One or more safetensors_metadata keys or values had to be converted to str()."
+                    / f" Final safetensors_metadata: {safetensors_metadata}"
+                )
 
         # Format is required to enable Accelerate to load the metadata
         # otherwise it raises an OSError
@@ -153,4 +155,3 @@ def save_quantized_to_autogptq(
     )
     model.config.quantization_config = config_dict
     model.config.save_pretrained(save_dir)
-
