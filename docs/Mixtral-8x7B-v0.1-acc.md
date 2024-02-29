@@ -21,4 +21,3 @@ lm_eval --model hf --model_args pretrained="Intel/Mixtral-8x7B-v0.1-int4-inc",au
 | rte            | 0.7076 | 0.6931 | 0.7112 |
 | arc_easy       | 0.8430 | 0.8430 | 0.8333 |
 | arc_challenge  | 0.5666 | 0.5648 | 0.5469 |
-

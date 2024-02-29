@@ -20,4 +20,3 @@ lm_eval --model hf --model_args pretrained="Intel/Mistral-7B-v0.1-int4-inc",auto
 | rte            | 0.6643 | 0.6968 |
 | arc_easy       | 0.8085 | 0.8060 |
 | arc_challenge  | 0.5009 | 0.4915 |
-
