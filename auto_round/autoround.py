@@ -362,38 +362,38 @@ class AutoRound(object):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer,
-            bits: int = 4,
-            group_size: int = 128,
-            scheme: str = "asym",
-            weight_config: dict = {},
-            enable_full_range: bool = False,  ##for symmetric, TODO support later
-            bs: int = 8,
-            amp: bool = True,
-            device="cuda:0",
-            lr_scheduler=None,
-            dataloader=None,  ## to support later
-            dataset_name: str = "NeelNanda/pile-10k",
-            dataset_split: str = "train",
-            use_quant_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",  ##only support data_type
-            scale_dtype="fp16",
-            **kwargs,
+        self,
+        model,
+        tokenizer,
+        bits: int = 4,
+        group_size: int = 128,
+        scheme: str = "asym",
+        weight_config: dict = {},
+        enable_full_range: bool = False,  ##for symmetric, TODO support later
+        bs: int = 8,
+        amp: bool = True,
+        device="cuda:0",
+        lr_scheduler=None,
+        dataloader=None,  ## to support later
+        dataset_name: str = "NeelNanda/pile-10k",
+        dataset_split: str = "train",
+        use_quant_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",  ##only support data_type
+        scale_dtype="fp16",
+        **kwargs,
     ):
         self.model = model.eval()
         self.model_orig_dtype = model.dtype
@@ -741,12 +741,12 @@ class AutoRound(object):
             return None, output
 
     def qdq_weight_round(
-            self,
-            model: torch.nn.Module,
-            inputs,
-            block_names,
-            n_blocks=1,
-            device=torch.device("cpu"),
+        self,
+        model: torch.nn.Module,
+        inputs,
+        block_names,
+        n_blocks=1,
+        device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -774,7 +774,7 @@ class AutoRound(object):
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i: i + n_blocks]
+                names = block_names[i : i + n_blocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -934,8 +934,7 @@ class AutoRound(object):
 
     @torch.no_grad()
     def calib(self, n_samples):
-        """
-        Perform calibration for quantization.
+        """Perform calibration for quantization.
 
         This method calibrates the model for quantization by processing a specified
         number of samples from the calibration dataset. It ensures that the data is
@@ -948,6 +947,7 @@ class AutoRound(object):
         """
         if self.dataloader is None:
             from .calib_dataset import CALIB_DATASETS
+
             get_dataloader = CALIB_DATASETS.get(self.dataset_name, CALIB_DATASETS["NeelNanda/pile-10k"])
             self.dataloader = get_dataloader(
                 self.tokenizer,
@@ -999,8 +999,7 @@ class AutoRound(object):
 
     @torch.no_grad()
     def save_first_block_inputs(self, block_name, n_samples):
-        """
-        Save the inputs of the first block for calibration.
+        """Save the inputs of the first block for calibration.
 
         This method temporarily replaces the forward method of the model to capture
         the inputs passing through the specified block. It then calibrates the model
@@ -1013,7 +1012,6 @@ class AutoRound(object):
 
         Returns:
             dict: A dictionary containing the inputs for the specified block.
-
         """
         self.inputs = {}
         self.tmp_block_name = block_name
@@ -1204,38 +1202,38 @@ class AutoOPTRound(AutoRound):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            scheme: str = "asym",
-            weight_config: dict = {},
-            enable_full_range: bool = False,
-            bs: int = 8,
-            amp: bool = True,
-            device="cuda:0",
-            lr_scheduler=None,
-            dataloader=None,
-            dataset_name: str = "NeelNanda/pile-10k",
-            dataset_split: str = "train",
-            use_quant_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            optimizer="AdamW",
-            **kwargs,
+        self,
+        model,
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        scheme: str = "asym",
+        weight_config: dict = {},
+        enable_full_range: bool = False,
+        bs: int = 8,
+        amp: bool = True,
+        device="cuda:0",
+        lr_scheduler=None,
+        dataloader=None,
+        dataset_name: str = "NeelNanda/pile-10k",
+        dataset_split: str = "train",
+        use_quant_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        optimizer="AdamW",
+        **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
             model,
@@ -1354,38 +1352,38 @@ class AutoAdamRound(AutoOPTRound):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            scheme: str = "asym",
-            weight_config: dict = {},
-            enable_full_range: bool = False,
-            bs: int = 8,
-            amp: bool = True,
-            device="cuda:0",
-            lr_scheduler=None,
-            dataloader=None,
-            dataset_name: str = "NeelNanda/pile-10k",
-            dataset_split: str = "train",
-            use_quant_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            optimizer="AdamW",
-            **kwargs,
+        self,
+        model,
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        scheme: str = "asym",
+        weight_config: dict = {},
+        enable_full_range: bool = False,
+        bs: int = 8,
+        amp: bool = True,
+        device="cuda:0",
+        lr_scheduler=None,
+        dataloader=None,
+        dataset_name: str = "NeelNanda/pile-10k",
+        dataset_split: str = "train",
+        use_quant_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        optimizer="AdamW",
+        **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
             model,
