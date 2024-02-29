@@ -12,28 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-from auto_round.utils import logger
-import os
-from typing import Dict, List, Optional, Union
-from safetensors.torch import save_file as safe_save
-from os.path import join, isfile, isdir
 import copy
 import json
+import os
+from os.path import isdir, isfile, join
+from typing import Dict, List, Optional, Union
+
+import torch
+from safetensors.torch import save_file as safe_save
+
+from auto_round.utils import get_module, logger, quant_weight_w_scale, set_module
+
 from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear
-from auto_round.utils import quant_weight_w_scale, get_module, set_module
 
 
 def compress_model(
-        model,
-        weight_config: Union[str, dict],
-        enable_full_range=False,
-        compression_dtype=torch.int32,
-        compression_dim=1,
-        device="cpu",
-        use_optimum_format=True,
-        inplace=False
+    model,
+    weight_config: Union[str, dict],
+    enable_full_range=False,
+    compression_dtype=torch.int32,
+    compression_dim=1,
+    device="cpu",
+    use_optimum_format=True,
+    inplace=False,
 ):
     """Convert Linear to WeightOnlyLinear for low memory inference.
 
@@ -103,4 +105,3 @@ def compress_model(
         set_module(compressed_model, k, new_module)
 
     return compressed_model
-

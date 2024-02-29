@@ -23,8 +23,8 @@ import torch
 from packaging.version import Version
 from torch.autograd import Function
 from torch.nn import functional as F
-from auto_round.utils import logger
 
+from auto_round.utils import logger
 
 NF4 = [
     -1.0,
@@ -57,6 +57,7 @@ FP4_E2M1_BIT = [-1, -2, -3, -4, -5, -6, -7, 0, 1, 2, 3, 4, 5, 6, 7]
 FLOAT_MAPPING = {"nf4": NF4, "fp4": FP4_BNB, "fp4_e2m1_bnb": FP4_BNB, "fp4_e2m1": FP4_E2M1}
 INT_MAPPING = {"nf4": NF4_BIT, "fp4": FP4_BNB_BIT, "fp4_e2m1_bnb": FP4_BNB_BIT, "fp4_e2m1": FP4_E2M1_BIT}
 
+
 def get_torch_version():
     try:
         torch_version = torch.__version__.split("+")[0]
@@ -67,6 +68,7 @@ def get_torch_version():
 
 
 PT_VERSION = get_torch_version().release
+
 
 class WeightOnlyLinear(torch.nn.Module):
     def __init__(
@@ -190,7 +192,7 @@ class WeightOnlyLinear(torch.nn.Module):
             self.scales = self.scales.t_().contiguous()
             self.qweight = self.qweight.t_().contiguous()
             self.qzeros = self.qzeros.t_().contiguous()
-            
+
         int_weight = int_weight.to(self.device)
         if self.use_optimum_format and zp is None:
             # to avoid overflow
@@ -349,4 +351,3 @@ class WeightOnlyLinear(torch.nn.Module):
         if self.use_optimum_format:
             tmp_str += ", use_optimum_format=True"
         return tmp_str
-

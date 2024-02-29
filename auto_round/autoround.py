@@ -13,13 +13,30 @@
 # limitations under the License.
 
 
-import torch
-
 import copy
 import time
-from .utils import (quant_weight, set_module, get_module, get_block_names, block_forward, sampling_inputs,
-                    get_scale_shape, move_input_to_device, check_is_cpu, collect_round_v,
-                    collect_minmax_scale, get_batch_dim, htcore, is_hpu_available,check_to_quantized,logger)
+
+import torch
+
+from .utils import (
+    block_forward,
+    check_is_cpu,
+    check_to_quantized,
+    collect_minmax_scale,
+    collect_round_v,
+    get_batch_dim,
+    get_block_names,
+    get_module,
+    get_scale_shape,
+    htcore,
+    is_hpu_available,
+    logger,
+    move_input_to_device,
+    quant_weight,
+    sampling_inputs,
+    set_module,
+)
+
 
 class SaveInputs:
     """Cache the inputs of the first block."""
@@ -158,6 +175,7 @@ class SaveInputs:
     def _replace_forward(self):
         """Replaces the forward function."""
         from functools import partial
+
         for n, m in self.model.named_modules():
             if n == self.block_name:
                 m.orig_forward = m.forward
@@ -246,12 +264,19 @@ class WrapperLinear(torch.nn.Module):
         - torch.Tensor: The output tensor after applying the linear transformation with quantized weights.
         """
         from torch.functional import F
+
         weight = self.orig_layer.weight
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
         weight_q, _, _ = quant_weight(
-            weight, self.num_bits, self.group_size, self.scheme, self.value, self.min_scale, self.max_scale,
-            self.scale_dtype
+            weight,
+            self.num_bits,
+            self.group_size,
+            self.scheme,
+            self.value,
+            self.min_scale,
+            self.max_scale,
+            self.scale_dtype,
         )
         weight_q = weight_q.to(weight.dtype)
         # pylint: disable=not-callable
@@ -312,14 +337,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         min_scale.clamp_(-1, 0)
         max_scale.clamp_(-1, 0)
         weight_q, scale, zp = quant_weight(
-            self.weight_t,
-            self.num_bits,
-            self.group_size,
-            self.scheme,
-            v,
-            min_scale,
-            max_scale,
-            self.scale_dtype
+            self.weight_t, self.num_bits, self.group_size, self.scheme, v, min_scale, max_scale, self.scale_dtype
         )
         self.orig_layer.weight.data.copy_(weight_q.t())
         self.orig_layer.weight.grad = None
@@ -347,7 +365,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
             self.value,
             self.min_scale,
             self.max_scale,
-            self.scale_dtype
+            self.scale_dtype,
         )
         weight_q = weight_q.to(self.weight_t.dtype)
         size_out = x.size()[:-1] + (self.orig_layer.nf,)
@@ -489,40 +507,41 @@ class AutoRound(object):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer,
-            bits: int = 4,
-            group_size: int = 128,
-            scheme: str = "asym",
-            weight_config: dict = {},
-            enable_full_range: bool = False,  ##for symmetric, TODO support later
-            bs: int = 8,
-            amp: bool = True,
-            device="cuda:0",
-            lr_scheduler=None,
-            dataloader=None,  ## to support later
-            dataset_name: str = "NeelNanda/pile-10k",
-            dataset_split: str = "train",
-            use_quant_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",  ##only support data_type
-            scale_dtype="fp16",
-            **kwargs,
+        self,
+        model,
+        tokenizer,
+        bits: int = 4,
+        group_size: int = 128,
+        scheme: str = "asym",
+        weight_config: dict = {},
+        enable_full_range: bool = False,  ##for symmetric, TODO support later
+        bs: int = 8,
+        amp: bool = True,
+        device="cuda:0",
+        lr_scheduler=None,
+        dataloader=None,  ## to support later
+        dataset_name: str = "NeelNanda/pile-10k",
+        dataset_split: str = "train",
+        use_quant_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",  ##only support data_type
+        scale_dtype="fp16",
+        **kwargs,
     ):
         from .calib_dataset import CALIB_DATASETS
+
         self.model = model
         self.model_orig_dtype = model.dtype
         self.model = self.model.to("cpu")
@@ -552,9 +571,9 @@ class AutoRound(object):
         self.n_blocks = n_blocks
         self.device = device
 
-        if scale_dtype == 'fp16':
+        if scale_dtype == "fp16":
             self.scale_dtype = torch.float16
-        elif scale_dtype == 'bf16':
+        elif scale_dtype == "bf16":
             self.scale_dtype = torch.bfloat16
         else:
             self.scale_dtype = torch.float32
@@ -573,16 +592,14 @@ class AutoRound(object):
         self.dataset_name = dataset_name
 
         if dataloader is None:
-            get_dataloader = CALIB_DATASETS.get(self.dataset_name,
-                                                CALIB_DATASETS["NeelNanda/pile-10k"])
+            get_dataloader = CALIB_DATASETS.get(self.dataset_name, CALIB_DATASETS["NeelNanda/pile-10k"])
             self.dataloader = get_dataloader(
                 self.tokenizer,
                 self.seqlen,
                 seed=self.seed,
                 bs=self.train_bs,
                 split=self.dataset_split,
-                dataset_name=self.dataset_name
-
+                dataset_name=self.dataset_name,
             )
         else:
             self.dataloader = dataloader
@@ -770,6 +787,7 @@ class AutoRound(object):
         Tuple: (q_outputs, output) if self.use_quant_input is True, else (None, output)
         """
         from torch.amp import autocast
+
         batch_dim = get_batch_dim(input_others)
         if not self.low_gpu_mem_usage and input_ids.device != device:
             input_ids = move_input_to_device(input_ids, device)
@@ -881,12 +899,12 @@ class AutoRound(object):
             return None, output
 
     def qdq_weight_round(
-            self,
-            model: torch.nn.Module,
-            inputs,
-            block_names,
-            n_blocks=1,
-            device=torch.device("cpu"),
+        self,
+        model: torch.nn.Module,
+        inputs,
+        block_names,
+        n_blocks=1,
+        device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -914,7 +932,7 @@ class AutoRound(object):
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i: i + n_blocks]
+                names = block_names[i : i + n_blocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -949,9 +967,7 @@ class AutoRound(object):
         return compress_model
 
     def save_quantized_as_autogptq(self, output_dir, use_triton=False, inplace=True):
-        """
-        Export the model to autogptq format to easily leverage cuda kernel
-        """
+        """Export the model to autogptq format to easily leverage cuda kernel."""
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
@@ -978,14 +994,15 @@ class AutoRound(object):
         modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
         if all_to_quantized:
             modules_in_block_to_quantize = None
-            
+
         if inplace:
             model = self.model.to("cpu")
         else:
             model = copy.deepcopy(self.model.to("cpu"))
 
         from auto_gptq.modeling._utils import pack_model
-        sym = self.scheme == 'sym'
+
+        sym = self.scheme == "sym"
         if self.bits == 3 or use_triton is False:
             if self.bits == 3 and use_triton is True:
                 logger.warning("triton does not support 3 bits, reset it to False")
@@ -994,35 +1011,70 @@ class AutoRound(object):
                 info = self.weight_config[key]
                 if not check_to_quantized(info):
                     continue
-                quantizers[key] = (None, info['scale'], info['zp'], info['g_idx'])
-            pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
-                       force_layer_back_to_cpu=True, use_triton=False)
+                quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
+            pack_model(
+                model,
+                quantizers,
+                self.bits,
+                self.group_size,
+                use_cuda_fp16=True,
+                desc_act=False,
+                force_layer_back_to_cpu=True,
+                use_triton=False,
+            )
         else:
             quantizers = {}
             for key in self.weight_config:
                 info = self.weight_config[key]
                 if not check_to_quantized(info):
                     continue
-                info['zp'] = info['zp'].to(torch.float32)
-                quantizers[key] = (None, info['scale'].to(torch.float32), info['zp'], info['g_idx'])
-            pack_model(model, quantizers, self.bits, self.group_size, use_cuda_fp16=True, desc_act=False,
-                       force_layer_back_to_cpu=True, use_triton=True)
+                info["zp"] = info["zp"].to(torch.float32)
+                quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
+            pack_model(
+                model,
+                quantizers,
+                self.bits,
+                self.group_size,
+                use_cuda_fp16=True,
+                desc_act=False,
+                force_layer_back_to_cpu=True,
+                use_triton=True,
+            )
         from auto_round import save_quantized_to_autogptq
-        save_quantized_to_autogptq(model, output_dir, bits=self.bits, group_size=self.group_size, sym=sym,
-                                   iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
-                                   enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
-                                   scale_dtype=self.scale_dtype,
-                                   use_safetensors=True, modules_in_block_to_quantize=modules_in_block_to_quantize)
+
+        save_quantized_to_autogptq(
+            model,
+            output_dir,
+            bits=self.bits,
+            group_size=self.group_size,
+            sym=sym,
+            iters=self.iters,
+            lr=self.lr,
+            minmax_lr=self.minmax_lr,
+            enable_minmax_tuning=self.enable_minmax_tuning,
+            use_quant_input=self.use_quant_input,
+            scale_dtype=self.scale_dtype,
+            use_safetensors=True,
+            modules_in_block_to_quantize=modules_in_block_to_quantize,
+        )
 
     def save_quantized_as_itrex(self, output_dir, inplace=True):
         """Save configure file and weights for CPU backend inference."""
-        from auto_round.export.export_to_itrex import compress_model, QuantConfig
+        from auto_round.export.export_to_itrex import QuantConfig, compress_model
+
         compressed_model = compress_model(self.model, self.weight_config, inplace=inplace)
         sym = self.scheme == "sym"
-        quantize_config = QuantConfig(bits=self.bits, group_size=self.group_size, sym=sym,
-                                   iters=self.iters, lr=self.lr, minmax_lr=self.minmax_lr,
-                                   enable_minmax_tuning=self.enable_minmax_tuning, use_quant_input=self.use_quant_input,
-                                   scale_dtype=str(self.scale_dtype))
+        quantize_config = QuantConfig(
+            bits=self.bits,
+            group_size=self.group_size,
+            sym=sym,
+            iters=self.iters,
+            lr=self.lr,
+            minmax_lr=self.minmax_lr,
+            enable_minmax_tuning=self.enable_minmax_tuning,
+            use_quant_input=self.use_quant_input,
+            scale_dtype=str(self.scale_dtype),
+        )
         if quantize_config is not None:
             config = compressed_model.config
             setattr(config, "quantization_config", quantize_config.to_dict())
@@ -1081,10 +1133,12 @@ class AutoRound(object):
                     self.weight_config[n]["zp"] = m.zp
                     if self.group_size <= 0:
                         self.weight_config[n]["g_idx"] = torch.tensor(
-                            [0 for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu")
+                            [0 for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu"
+                        )
                     else:
                         self.weight_config[n]["g_idx"] = torch.tensor(
-                            [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu")
+                            [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu"
+                        )
                     delattr(m, "scale")
                     delattr(m, "zp")
                 else:
@@ -1144,38 +1198,38 @@ class AutoOPTRound(AutoRound):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            scheme: str = "asym",
-            weight_config: dict = {},
-            enable_full_range: bool = False,
-            bs: int = 8,
-            amp: bool = True,
-            device="cuda:0",
-            lr_scheduler=None,
-            dataloader=None,
-            dataset_name: str = "NeelNanda/pile-10k",
-            dataset_split: str = "train",
-            use_quant_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            optimizer="AdamW",
-            **kwargs,
+        self,
+        model,
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        scheme: str = "asym",
+        weight_config: dict = {},
+        enable_full_range: bool = False,
+        bs: int = 8,
+        amp: bool = True,
+        device="cuda:0",
+        lr_scheduler=None,
+        dataloader=None,
+        dataset_name: str = "NeelNanda/pile-10k",
+        dataset_split: str = "train",
+        use_quant_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        optimizer="AdamW",
+        **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
             model,
@@ -1294,38 +1348,38 @@ class AutoAdamRound(AutoOPTRound):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            scheme: str = "asym",
-            weight_config: dict = {},
-            enable_full_range: bool = False,
-            bs: int = 8,
-            amp: bool = True,
-            device="cuda:0",
-            lr_scheduler=None,
-            dataloader=None,
-            dataset_name: str = "NeelNanda/pile-10k",
-            dataset_split: str = "train",
-            use_quant_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            optimizer="AdamW",
-            **kwargs,
+        self,
+        model,
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        scheme: str = "asym",
+        weight_config: dict = {},
+        enable_full_range: bool = False,
+        bs: int = 8,
+        amp: bool = True,
+        device="cuda:0",
+        lr_scheduler=None,
+        dataloader=None,
+        dataset_name: str = "NeelNanda/pile-10k",
+        dataset_split: str = "train",
+        use_quant_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        optimizer="AdamW",
+        **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
             model,
@@ -1360,4 +1414,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-

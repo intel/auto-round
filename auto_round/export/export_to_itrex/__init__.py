@@ -13,4 +13,3 @@
 # limitations under the License.
 from .export import compress_model
 from .config import QuantConfig
-
