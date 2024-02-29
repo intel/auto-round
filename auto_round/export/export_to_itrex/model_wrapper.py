@@ -24,8 +24,7 @@ import math
 import torch
 from packaging.version import Version
 from torch.nn import functional as F
-
-logger = logging.getLogger()
+from auto_round.utils import logger
 
 
 NF4 = [

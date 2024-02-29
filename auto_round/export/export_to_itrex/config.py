@@ -16,16 +16,14 @@
 # limitations under the License.
 """Configs for Autoround quantization."""
 
-import logging
-
-
-logger = logging.getLogger()
+import torch
 import copy
 import json
 import os
 from typing import Any, Dict, Tuple, Union
 
 from transformers import PretrainedConfig
+from auto_round.utils import logger
 
 QUANT_CONFIG = "quantize_config.json"
 
@@ -36,22 +34,32 @@ class QuantConfig(PretrainedConfig):
     def __init__(
         self,
         bits=4,
-        scale_dtype="fp32",
+        scale_dtype='torch.float32',
         group_size=128,
         sym=False,
-        quant_method="Autoround",
+        quant_method="autoround",
         model_name_or_path=None,
-        model_file_base_name="model",
+        model_file_base_name='model',
+        enable_minmax_tuning=True,
+        iters=1000,
+        lr=0.001,
+        minmax_lr=0.001,
+        use_quant_input=True,
         **kwargs,
     ):
         self.bits = bits
         self.group_size = group_size
-        self.scale_dtype = scale_dtype  ## reserved parameter
+        self.scale_dtype = scale_dtype
         self.sym = sym
         self.quant_method = quant_method
         self.model_name_or_path = model_name_or_path
         self.model_file_base_name = model_file_base_name
-
+        self.enable_minmax_tuning=enable_minmax_tuning
+        self.iters=iters
+        self.lr=lr
+        self.minmax_lr=minmax_lr
+        self.use_quant_input=use_quant_input
+        
         ### Redundant parameters, will be removed later. ###
         self.damp_percent = 0.01
         self.desc_act = False
@@ -63,8 +71,8 @@ class QuantConfig(PretrainedConfig):
         Safety checker that arguments are correct - also replaces some NoneType arguments with their default values.
         """
 
-        if self.scale_dtype not in ["fp32", "fp16"]:
-            raise ValueError("scale_dtype must be 'fp32', 'fp16'.")
+        if self.scale_dtype not in ['torch.float32', 'torch.float16', 'torch.bfloat16']:
+            raise ValueError("scale_dtype must be 'fp32', 'fp16' or 'bf16'.")
 
         if self.group_size not in [-1, 32, 128]:
             raise ValueError("group_size must be an integer in [-1, 32, 128]")
@@ -75,8 +83,8 @@ class QuantConfig(PretrainedConfig):
 
     @classmethod
     def from_dict(cls, config_dict, return_unused_kwargs=False, **kwargs):
-        """Instantiates a [`AutoroundQuantConfig`] from a Python dictionary of parameters.
-
+        """
+        Instantiates a [`QuantConfig`] from a Python dictionary of parameters.
         Args:
             config_dict (`Dict[str, Any]`):
                 Dictionary that will be used to instantiate the configuration object.
@@ -86,7 +94,7 @@ class QuantConfig(PretrainedConfig):
             kwargs (`Dict[str, Any]`):
                 Additional parameters from which to initialize the configuration object.
         Returns:
-            [`AutoroundQuantConfig`]: The configuration object instantiated from those parameters.
+            [`QuantConfig`]: The configuration object instantiated from those parameters.
         """
 
         config = cls(**config_dict)
@@ -141,7 +149,7 @@ class QuantConfig(PretrainedConfig):
         Args:
             use_diff (`bool`, *optional*, defaults to `True`):
                 If set to `True`, only the difference between the config instance and the default
-                `AutoroundQuantConfig()`
+                `QuantConfig()`
                 is serialized to JSON string.
         Returns:
             `str`: String containing all the attributes that make up this configuration instance in JSON format.
@@ -163,7 +171,7 @@ class QuantConfig(PretrainedConfig):
         config_dict = self.to_dict()
 
         # get the default config dict
-        default_config_dict = AutoroundQuantConfig().to_dict()
+        default_config_dict = QuantConfig().to_dict()
 
         serializable_config_dict = {}
 
@@ -227,6 +235,4 @@ class QuantConfig(PretrainedConfig):
     def get_config_dict(
         cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        return super().get_config_dict(
-            pretrained_model_name_or_path, _configuration_file=QUANT_CONFIG, **kwargs
-        )
+        return super().get_config_dict(pretrained_model_name_or_path, _configuration_file=QUANT_CONFIG, **kwargs)

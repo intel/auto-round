@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from logging import getLogger
-
 import torch
-
-logger = getLogger(__name__)
+from auto_round.utils import logger
+import os
+from typing import Dict, List, Optional, Union
+from safetensors.torch import save_file as safe_save
+from os.path import join, isfile, isdir
 import copy
 import json
 from typing import Union
@@ -29,13 +30,14 @@ from .model_wrapper import WeightOnlyLinear
 
 
 def compress_model(
-    model,
-    weight_config: Union[str, dict],
-    enable_full_range=False,
-    compression_dtype=torch.int32,
-    compression_dim=1,
-    device="cpu",
-    use_optimum_format=True,
+        model,
+        weight_config: Union[str, dict],
+        enable_full_range=False,
+        compression_dtype=torch.int32,
+        compression_dim=1,
+        device="cpu",
+        use_optimum_format=True,
+        inplace=False
 ):
     """Convert Linear to WeightOnlyLinear for low memory inference.
 
@@ -54,8 +56,12 @@ def compress_model(
             3: g_idx: use same number for one group instead of recording the channel order.
             4. parameter name changed, such as 'packed_weight' -> 'qweight'.
             5. zeros is always needed even for sym.
+        inplace (bool, optional): Compress the model in place, or copy the model and compress it.
     """
-    compressed_model = copy.deepcopy(model)
+    if inplace:
+        compressed_model = model
+    else:
+        compressed_model = copy.deepcopy(model)
     if isinstance(weight_config, str):
         with open(weight_config, "r") as f:
             q_config = json.load(f)
@@ -72,13 +78,15 @@ def compress_model(
         scale_dtype = v["scale_dtype"]
         m = get_module(compressed_model, k)
         fp_weight = m.weight.data
-        # scale = torch.tensor(v["scale"], dtype=scale_dtype)
         scale, zp = v["scale"], v["zp"]
         convert_dtype = torch.float32 if fp_weight.device.type == "cpu" else scale_dtype
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor(scale, dtype=convert_dtype)
             zp = None if scheme == "sym" else torch.tensor(zp, dtype=torch.int32)
         else:
+            if not inplace:
+                scale = scale.clone()
+                zp = None if scheme == "sym" else zp.clone()
             scale = scale.to(dtype=convert_dtype)
             zp = None if scheme == "sym" else zp.to(dtype=torch.int32)
         int_weight = quant_weight_w_scale(
@@ -100,7 +108,5 @@ def compress_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
 
-    quantize_config = QuantConfig(
-        bits=num_bits, sym=(scheme == "sym"), group_size=group_size
-    )
-    return compressed_model, quantize_config
+    return compressed_model
+
