@@ -32,7 +32,7 @@ def is_optimum_habana_available():
 
     from transformers.utils.import_utils import is_optimum_available
 
-    return is_optimum_available() and importlib.util.find_spec("optimum.habana") != None
+    return is_optimum_available() and importlib.util.find_spec("optimum.habana") is not None
 
 
 try:
