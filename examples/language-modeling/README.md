@@ -59,7 +59,7 @@ Include the flag `--adam`. Note that AdamW is less effective than Sign gradient 
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --iters 400 --lr 0.0025 --minmax_lr 0.0025
 ```
 
-- Running on Intel Gaudi2
+- **Running on Intel Gaudi2**
 ```bash
 bash run_autoround_on_gaudi.sh 
 ```
