@@ -1,8 +1,9 @@
 #!/bin/bash
 set -x
 model_name="Intel/neural-chat-7b-v3-3"
+eval_bs6=1
 
-python3 quant_on_gaudi.py \
+python3 main.py \
   --amp \
   --model_name $model_name \
   --device "hpu" \
