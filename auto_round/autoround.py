@@ -865,8 +865,7 @@ class AutoRound(object):
                     with autocast(device_type="cuda", dtype=self.amp_dtype):
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
-                    # pylint: disable=not-callable
-                    loss = mse_loss(output_q.to(torch.float32), current_output.to(torch.float32))
+                    loss = mse_loss(output_q.to(torch.float32), current_output.to(torch.float32)) # pylint: disable=not-callable
 
                 total_loss += loss.item() / self.gradient_accumulate_steps
                 self.scale_loss_and_backward(scaler, loss)
