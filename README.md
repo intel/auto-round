@@ -179,28 +179,6 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | stabilityai/stablelm-base-alpha-3b | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
 
 
-
-We fine-tuned the hyperparameters for each model with an iteration of 1K and successfully achieved near-lossless quantized models in the majority of scenarios. Some of these models has been uploaded to the Huggingface Hub.
-
-### AutoGPTQ format
-[Intel/neural-chat-7b-v3-3-int4-inc](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc)
-
-[Intel/neural-chat-7b-v3-1-int4-inc](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc)
-
-[Intel/Mistral-7B-v0.1-int4-inc](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc)
-
-[Intel/gemma-7b-int4-inc](https://huggingface.co/Intel/gemma-7b-int4-inc) internal review, [accuracy](./docs/gemma-7b-acc.md), [quantization shell](./examples/language-modeling/scripts/gemma-7b.sh)
-
-[Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) coming soon, [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [quantization shell](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh)
-
-[Intel/Mixtral-8x7B-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) coming soon,[accuracy](./docs/Mistral-7B-v0.1-acc.md), [quantization shell](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh)
- 
-[Intel/phi-2-int4-inc](https://huggingface.co/Intel/phi-2-int4-inc) coming soon, [accuracy](./docs/phi-2-acc.md) [quantization shell](./examples/language-modeling/scripts/phi-2.sh)
-
-### Itrex format
-
-Please stay tuned
-
 ## Comparison with other methods
 
 We provide a [comprehensive analysis](docs/acc.md) with other methods in our accuracy data section. Notably, our approach has outperformed GPTQ with a score of 30/32 and AWQ with a score of 27/32 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, W2G128.  And the tuning costs are comparable.
