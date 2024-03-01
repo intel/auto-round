@@ -863,8 +863,7 @@ class AutoRound(object):
                 )
                 if self.amp and not check_is_cpu(device):
                     with autocast(device_type="cuda", dtype=self.amp_dtype):
-                        # pylint: disable=not-callable
-                        loss = mse_loss(output_q, current_output)
+                        loss = mse_loss(output_q, current_output) # pylint: disable=not-callable
                 else:
                     # pylint: disable=not-callable
                     loss = mse_loss(output_q.to(torch.float32), current_output.to(torch.float32))
@@ -956,9 +955,11 @@ class AutoRound(object):
 
         torch.cuda.empty_cache()
 
-    def save_quantized(self, output_dir, format="itrex", **kwargs):
+    def save_quantized(self, output_dir=None, format="itrex", **kwargs):
         compress_model = None
         if format == "itrex":
+            if 'use_triton' in kwargs.keys():
+                kwargs.pop("use_triton")
             compress_model = self.save_quantized_as_itrex(output_dir, **kwargs)
         elif format == "auto_gptq":
             self.save_quantized_as_autogptq(output_dir, **kwargs)
@@ -966,13 +967,15 @@ class AutoRound(object):
             logger.error("export only supports itrex and auto_gptq now")
         return compress_model
 
-    def save_quantized_as_autogptq(self, output_dir, use_triton=False, inplace=True):
-        """Export the model to autogptq format to easily leverage cuda kernel."""
+    def save_quantized_as_autogptq(self, output_dir=None, use_triton=False, inplace=True):
+        """
+        Export the model to autogptq format to easily leverage cuda kernel
+        """
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
         logger.info("Saving quantized model to autogptq format, this may take a while...")
-        if self.tokenizer is not None:
+        if self.tokenizer is not None and output_dir is not None:
             self.tokenizer.save_pretrained(output_dir)
         ##check module quantized in block, this may have bug for mixed precision quantization
         block_name = get_block_names(self.model)[0]
@@ -1058,7 +1061,7 @@ class AutoRound(object):
             modules_in_block_to_quantize=modules_in_block_to_quantize,
         )
 
-    def save_quantized_as_itrex(self, output_dir, inplace=True):
+    def save_quantized_as_itrex(self, output_dir=None, inplace=True):
         """Save configure file and weights for CPU backend inference."""
         from auto_round.export.export_to_itrex import QuantConfig, compress_model
 
@@ -1075,19 +1078,19 @@ class AutoRound(object):
             use_quant_input=self.use_quant_input,
             scale_dtype=str(self.scale_dtype),
         )
-        if quantize_config is not None:
-            config = compressed_model.config
-            setattr(config, "quantization_config", quantize_config.to_dict())
-            config.save_pretrained(output_dir)
-            quantize_config.save_pretrained(output_dir)
-
-        try:
-            compressed_model.save_pretrained(output_dir, safe_serialization=True)
-            if self.tokenizer is not None:
-                self.tokenizer.save_pretrained(output_dir)
-            logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
-        except IOError as e:  # pragma: no cover
-            logger.error("Fail to save configure file and weights due to {}.".format(e))
+        if output_dir is not None:
+            if quantize_config is not None:
+                config = compressed_model.config
+                setattr(config, "quantization_config", quantize_config.to_dict())
+                config.save_pretrained(output_dir)
+                quantize_config.save_pretrained(output_dir)
+            try:
+                compressed_model.save_pretrained(output_dir, safe_serialization=True)
+                if self.tokenizer is not None:
+                    self.tokenizer.save_pretrained(output_dir)
+                logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
+            except IOError as e:  # pragma: no cover
+                logger.error("Fail to save configure file and weights due to {}.".format(e))
         return compressed_model
 
     def quantize(self):
@@ -1414,3 +1417,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
