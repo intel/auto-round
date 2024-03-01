@@ -1,5 +1,6 @@
-import torch
 import random
+
+import torch
 
 CALIB_DATASETS = {}
 
@@ -89,7 +90,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="
 
 
 @register_dataset("mbpp")
-def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=['train', 'validation', 'test'], seed=42, bs=4):
+def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=["train", "validation", "test"], seed=42, bs=4):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -113,8 +114,8 @@ def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=['train', 
         tokenizer: The tokenizer to be used for tokenization.
         seqlen: The maximum sequence length.
 
-        Returns: A default tokenizer function that applies the provided tokenizer with truncation and a maximum length of
-        seqlen to the "text" field of examples.
+        Returns: A default tokenizer function that applies the provided tokenizer with truncation and
+        a maximum length of seqlen to the "text" field of examples.
         """
 
         def default_tokenizer_function(examples):

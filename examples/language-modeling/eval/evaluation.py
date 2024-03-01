@@ -3,16 +3,21 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import os.path
 import torch
-
+import logging
 import pprint
 import re
 import shutil
 import transformers
+from typing import TYPE_CHECKING, Optional, Union
+import time
+
+
+
+    
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, './')
-from eval.parse_results import result_parser
-import time
+
 EXT_TASKS = ['wikitext2', 'ptb', 'c4', 'ptb-new', 'c4-new']
 fewshots_dict = {}
 fewshots_dict['paper'] = {
@@ -61,30 +66,39 @@ fewshots_dict['all'] = {
 
 def simple_evaluate(
     model,
-    model_args=None,
-    tasks=[],
-    num_fewshot=None,
-    batch_size=None,
-    max_batch_size=None,
-    device=None,
-    use_cache=None,
-    limit=None,
+    model_args: Optional[Union[str, dict, None]] = None,
+    tasks=None,
+    num_fewshot: Optional[int] = None,
+    batch_size: Optional[int] = None,
+    max_batch_size: Optional[int] = None,
+    device: Optional[str] = None,
+    use_cache: Optional[str] = None,
+    cache_requests: bool = False,
+    rewrite_requests_cache: bool = False,
+    delete_requests_cache: bool = False,
+    limit: Optional[Union[int, float]] = None,
     bootstrap_iters: int = 100000,
     check_integrity: bool = False,
     decontamination_ngrams_path=None,
     write_out: bool = False,
     log_samples: bool = True,
     gen_kwargs: str = None,
+    task_manager=None,
+    verbosity: str = "INFO",
+    predict_only: bool = False,
+    random_seed: int = 1234,
+    numpy_random_seed: int = 1234,
+    torch_random_seed: int = 1234,
     lm=None
 ):
     """Instantiate and evaluate a model on a list of tasks.
 
     :param model: Union[str, LM]
         Name of model, transformers.PreTrainedModel object or LM object, see lm_eval.models.get_model
-    :param model_args: Optional[str]
-        String arguments for each model class, see LM.create_from_arg_string.
+    :param model_args: Optional[str, dict]
+        String or dict arguments for each model class, see LM.create_from_arg_string and LM.create_from_arg_object.
         Ignored if `model` argument is a LM object.
-    :param tasks: list[Union[str, Task]]
+    :param tasks: list[Union[str, dict, Task]]
         List of task names or Task objects. Task objects will be taken to have name task.EVAL_HARNESS_NAME if defined and type(task).__name__ otherwise.
     :param num_fewshot: int
         Number of examples in few-shot context
@@ -96,6 +110,12 @@ def simple_evaluate(
         PyTorch device (e.g. "cpu" or "cuda:0") for running models
     :param use_cache: str, optional
         A path to a sqlite db file for caching model responses. `None` if not caching.
+    :param cache_requests: bool, optional
+        Speed up evaluation by caching the building of dataset requests. `None` if not caching.
+    :param rewrite_requests_cache: bool, optional
+        Rewrites all of the request cache if set to `True`. `None` if not desired.
+    :param delete_requests_cache: bool, optional
+        Deletes all of the request cache if set to `True`. `None` if not desired.
     :param limit: int or float, optional
         Limit the number of examples per task (only use this for testing), If <1, limit is a percentage of the total number of examples.
     :param bootstrap_iters:
@@ -109,9 +129,19 @@ def simple_evaluate(
     :param gen_kwargs: str
         String arguments for model generation
         Ignored for all tasks with loglikelihood output_type
+    :param predict_only: bool
+        If true only model outputs will be generated and returned. Metrics will not be evaluated
+    :param random_seed: int
+        Random seed for python's random module. If set to None, the seed will not be set.
+    :param numpy_random_seed: int
+        Random seed for numpy. If set to None, the seed will not be set.
+    :param torch_random_seed: int
+        Random seed for torch. If set to None, the seed will not be set.
+
     :return
         Dictionary of results
     """
+    from lm_eval.tasks import TaskManager
     import random
     import numpy as np
     import transformers
@@ -121,32 +151,46 @@ def simple_evaluate(
     import lm_eval.api.metrics
     import lm_eval.api.registry
     from lm_eval.evaluator import evaluate
-    lm_eval.tasks.initialize_tasks()
+    from lm_eval.logging_utils import add_env_info, get_git_commit_hash
+    from lm_eval.tasks import get_task_dict
     
     from lm_eval.utils import (
-    positional_deprecated,
-    run_task_tests,
-    make_table,
-    get_git_commit_hash,
-    simple_parse_args_string,
-    eval_logger,
+        eval_logger,
+        positional_deprecated,
+        run_task_tests,
+        simple_parse_args_string,
     )
     
-    random.seed(1234)
-    np.random.seed(1234)
-    torch.manual_seed(
-        1234
-    )  # TODO: this may affect training runs that are run with evaluation mid-run.
+    eval_logger.setLevel(getattr(logging, f"{verbosity}"))
+
+    if delete_requests_cache:
+        eval_logger.info("Deleting requests cache...")
+        delete_cache()
     
-    assert (
-        tasks != []
-    ), "No tasks specified, or no tasks found. Please verify the task names."
+    if random_seed is not None:
+        # See https://github.com/EleutherAI/lm-evaluation-harness/pull/1412
+        eval_logger.info(f"Setting random seed to {random_seed}")
+        random.seed(random_seed)
+
+    if numpy_random_seed is not None:
+        eval_logger.info(f"Setting numpy seed to {numpy_random_seed}")
+        np.random.seed(numpy_random_seed)
+
+    if torch_random_seed is not None:
+        eval_logger.info(f"Setting torch manual seed to {torch_random_seed}")
+        torch.manual_seed(torch_random_seed)
+    
+    if tasks is None:
+        tasks = []
+        assert (
+            tasks != []
+        ), "No tasks specified, or no tasks found. Please verify the task names."
 
     if lm == None:
         if gen_kwargs is not None:
             gen_kwargs = simple_parse_args_string(gen_kwargs)
             eval_logger.warning(
-                f"generation_kwargs specified through cli, these settings will be used over set parameters in yaml tasks."
+                "generation_kwargs specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!"
             )
             if gen_kwargs == "":
                 gen_kwargs = None
@@ -154,16 +198,28 @@ def simple_evaluate(
         if isinstance(model, str):
             if model_args is None:
                 model_args = ""
-            lm = lm_eval.api.registry.get_model(model).create_from_arg_string(
-                model_args,
-                {
-                    "batch_size": batch_size,
-                    "max_batch_size": max_batch_size,
-                    "device": device,
-                },
-            )
+
+            elif isinstance(model_args, dict):
+                lm = lm_eval.api.registry.get_model(model).create_from_arg_obj(
+                    model_args,
+                    {
+                        "batch_size": batch_size,
+                        "max_batch_size": max_batch_size,
+                        "device": device,
+                    },
+                )
+
+            else:
+                lm = lm_eval.api.registry.get_model(model).create_from_arg_string(
+                    model_args,
+                    {
+                        "batch_size": batch_size,
+                        "max_batch_size": max_batch_size,
+                        "device": device,
+                    },
+                )
         elif isinstance(model, transformers.PreTrainedModel):
-            lm = lm_eval.api.registry.get_model("hf-causal")(
+            lm = lm_eval.api.registry.get_model("hf")(
                 pretrained=model,
                 batch_size=batch_size,
                 max_batch_size=max_batch_size,
@@ -183,33 +239,46 @@ def simple_evaluate(
                 + model_args.replace("=", "-").replace(",", "_").replace("/", "-")
                 + ".db",
             )
+            
+    if task_manager is None:
+        task_manager = TaskManager(verbosity)
 
-    task_dict = lm_eval.tasks.get_task_dict(tasks)
+    eval_logger.info(
+        "get_task_dict has been updated to accept an optional argument, `task_manager`"
+        "Read more here:https://github.com/EleutherAI/lm-evaluation-harness/blob/main/docs/interface.md#external-library-usage"
+    )
+    task_dict = get_task_dict(tasks, task_manager)
     for task_name in task_dict.keys():
         task_obj = task_dict[task_name]
-        if type(task_obj) == tuple:
-            group, task_obj = task_obj
+        if isinstance(task_obj, tuple):
+            _, task_obj = task_obj
             if task_obj is None:
                 continue
 
-        config = task_obj._config
-        if config["output_type"] == "generate_until" and gen_kwargs is not None:
-            config["generation_kwargs"].update(gen_kwargs)
+        if task_obj.get_config("output_type") == "generate_until":
+            if gen_kwargs is not None:
+                task_obj.set_config(
+                    key="generation_kwargs", value=gen_kwargs, update=True
+                )
+
+            if predict_only:
+                log_samples = True
+                eval_logger.info(
+                    f"Processing {task_name} in output-only mode. Metrics will not be calculated!"
+                )
+                # we have to change the class properties post-hoc. This is pretty hacky.
+                task_obj.override_metric(metric_name="bypass")
 
         if num_fewshot is not None:
-            if config["num_fewshot"] == 0:
+            if (default_num_fewshot := task_obj.get_config("num_fewshot")) == 0:
                 eval_logger.info(
                     f"num_fewshot has been set to 0 for {task_name} in its config. Manual configuration will be ignored."
                 )
             else:
-                # default_num_fewshot = config["num_fewshot"]
-                # eval_logger.warning(
-                #     f"Overwriting default num_fewshot of {task_name} from {default_num_fewshot} to {num_fewshot}"
-                # )
-
-                task_obj._config["num_fewshot"] = num_fewshot
-        else:
-            num_fewshot = config["num_fewshot"]
+                eval_logger.warning(
+                    f"Overwriting default num_fewshot of {task_name} from {default_num_fewshot} to {num_fewshot}"
+                )
+                task_obj.set_config(key="num_fewshot", value=num_fewshot)
 
     if check_integrity:
         run_task_tests(task_list=tasks)
@@ -218,40 +287,47 @@ def simple_evaluate(
         lm=lm,
         task_dict=task_dict,
         limit=limit,
+        cache_requests=cache_requests,
+        rewrite_requests_cache=rewrite_requests_cache,
         bootstrap_iters=bootstrap_iters,
         decontamination_ngrams_path=decontamination_ngrams_path,
         write_out=write_out,
         log_samples=log_samples,
+        verbosity=verbosity,
     )
 
     if lm.rank == 0:
+        if isinstance(model, str):
+            model_name = model
+        elif hasattr(model, "config") and hasattr(model.config, "_name_or_path"):
+            model_name = model.config._name_or_path
+        else:
+            model_name = type(model).__name__
+
         # add info about the model and few shot config
         results["config"] = {
-            "model": model
-            if isinstance(model, str)
-            else model.model.config._name_or_path,
+            "model": model_name,
             "model_args": model_args,
             "batch_size": batch_size,
-            "batch_sizes": list(lm.batch_sizes.values())
-            if hasattr(lm, "batch_sizes")
-            else [],
+            "batch_sizes": (
+                list(lm.batch_sizes.values()) if hasattr(lm, "batch_sizes") else []
+            ),
             "device": device,
             "use_cache": use_cache,
             "limit": limit,
-            "num_fewshot": num_fewshot,
             "bootstrap_iters": bootstrap_iters,
             "gen_kwargs": gen_kwargs,
         }
         results["git_hash"] = get_git_commit_hash()
+        add_env_info(results)  # additional environment info to results
         return results, lm
     else:
         return None
 
 
-def eval_model(output_dir=None, model=None, tokenizer=None,
-               tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
+def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
                eval_bs=32, use_accelerate=True, dtype="float16", limit=None,
-               device="cuda:0", seed=0, nsamples=128, eval_orig_float=False, mark="paper", excel_file="tmp.xlsx"):
+               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
     print("evaluation with official lm-eval", flush=True)
     try:
         import lm_eval.api
@@ -265,29 +341,6 @@ def eval_model(output_dir=None, model=None, tokenizer=None,
         raise ImportError("""follow requirements to install dependencies.""")
     import collections
     org_s = time.time()
-    ##save model
-    if output_dir is None:
-        output_dir = "./tmp_signround"
-
-    if os.path.exists(output_dir) and not eval_orig_float:
-        shutil.rmtree(output_dir)
-    
-    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
-        dtype = 'bfloat16'
-        pt_dtype = torch.bfloat16
-    else:
-        if str(device) != "cpu":
-            pt_dtype = torch.float16
-            dtype = 'float16'
-        else:
-            pt_dtype = torch.float32
-            dtype = 'float32'
-        
-    if not eval_orig_float:
-        model = model.to(pt_dtype)
-        model = model.to("cpu")
-        model.save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
 
     external_tasks = []
     for each in EXT_TASKS:
@@ -305,8 +358,8 @@ def eval_model(output_dir=None, model=None, tokenizer=None,
             task_s = time.time()
             for shot in num_fewshot:
                 model_type = "hf"
-                model_args = f'pretrained={output_dir},tokenizer={output_dir},dtype={dtype},trust_remote_code=True'
-                if use_accelerate: # bool(re.search("chatglm", output_dir.lower()))
+                model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code=True'
+                if use_accelerate: # bool(re.search("chatglm", model_path.lower()))
                     model_args += f',parallelize=True'
 
                 if "wikitext" in tmp_tasks:
@@ -332,7 +385,7 @@ def eval_model(output_dir=None, model=None, tokenizer=None,
             print(str(e))
             continue
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(output_dir, use_fast=False, trust_remote_code=True)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
     model = lm.model
     # for external tasks
     # maybe adjust for specific model
@@ -421,10 +474,11 @@ if __name__ == "__main__":
                     "arc_easy", "arc_challenge"]
     model_name = args.model_name.rstrip('/')
     excel_name = model_name.split('/')[-1] + ".xlsx"
-    eval_model(output_dir=args.model_name,
+    eval_model(model_path=args.model_name,
                tasks=test_tasks,
-               eval_bs=args.eval_bs, eval_orig_float=True, limit=None, excel_file=excel_name)
+               eval_bs=args.eval_bs, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
+
 
 

@@ -1,11 +1,13 @@
 import copy
 import shutil
-import unittest
 import sys
-sys.path.insert(0,".")
+import unittest
+
+sys.path.insert(0, ".")
 import torch
 import transformers
-from auto_round import (AutoRound)
+
+from auto_round import AutoRound
 
 
 class SimpleDataLoader:
@@ -37,8 +39,7 @@ class TestPytorchWeightOnlyAdaptor(unittest.TestCase):
             torchscript=True,
         )
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            "hf-internal-testing/tiny-random-GPTJForCausalLM",
-            trust_remote_code=True
+            "hf-internal-testing/tiny-random-GPTJForCausalLM", trust_remote_code=True
         )
         self.gptj_no_jit = transformers.AutoModelForCausalLM.from_pretrained(
             "hf-internal-testing/tiny-random-GPTJForCausalLM",
@@ -50,19 +51,21 @@ class TestPytorchWeightOnlyAdaptor(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
-    
 
     def test_autoround_int_quant(self):
         model = copy.deepcopy(self.gptj)
         device = "cpu"
-        model=model
+        model = model
         out1 = model(self.lm_input)
         round = AutoRound
-        optq_1 = round(model, self.tokenizer, n_samples=20, device=device, amp=False, seqlen=10, iters=10, scale_dtype='fp32')
+        optq_1 = round(
+            model, self.tokenizer, n_samples=20, device=device, amp=False, seqlen=10, iters=10, scale_dtype="fp32"
+        )
         q_model, weight_config1 = optq_1.quantize()
         q_model = q_model
         from auto_round.export.export_to_itrex import compress_model
-        compressed_model,_ = compress_model(q_model, weight_config1)
+
+        compressed_model, _ = compress_model(q_model, weight_config1)
         q_model = q_model
         model = model
         out2 = model(self.lm_input)
@@ -73,30 +76,27 @@ class TestPytorchWeightOnlyAdaptor(unittest.TestCase):
         self.assertTrue(torch.all(out2[0] == out3[0]))
         self.assertTrue(torch.all(torch.isclose(out3[0], out4[0], atol=1e-5)))
         self.assertTrue("transformer.h.0.attn.k_proj.qzeros" in compressed_model.state_dict().keys())
-        
+
         # model = copy.deepcopy(self.gptj)
         # out6 = model(self.lm_input)
         # optq_2 = round(model, self.tokenizer, n_samples=20, amp=False, seqlen=10)
         # q_model, weight_config2 = optq_2.quantize()
         # out4 = q_model(self.lm_input)
         # out5 = model(self.lm_input)
-        
+
         # self.assertTrue(torch.all(out1[0] == out6[0]))
         # self.assertTrue(torch.all(out4[0] == out5[0]))
         # self.assertTrue(torch.all(torch.isclose(out6[0], out5[0], atol=1e-1)))
-    
-    
+
     def test_config(self):
         from auto_round import QuantConfig
+
         config = QuantConfig.from_pretrained("TheBloke/Llama-2-7B-Chat-GPTQ")
         config.save_pretrained("quantization_config_dir")
         loaded_config = QuantConfig.from_pretrained("quantization_config_dir")
         self.assertEqual(config.group_size, loaded_config.group_size)
         self.assertEqual(config.true_sequential, loaded_config.true_sequential)
-        
-        
-        
+
+
 if __name__ == "__main__":
     unittest.main()
-
-

@@ -11,5 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Intel® auto-round: An open-source Python library supporting popular model weight only compression based on signround."""
+"""Intel® auto-round: An open-source Python library
+supporting popular model weight only compression based on signround."""
+
 __version__ = "0.1"

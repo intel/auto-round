@@ -32,16 +32,16 @@ model_name = "meta-llama/Llama-2-7b-hf"
 model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 bits, group_size, scheme = 4, 128, "asym"
-tuning_device = "cuda:0" ## or "cpu"
+tuning_device = "cuda:0"  ## or "cpu"
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device=tuning_device)
 autoround.quantize()
 
 output_dir = "./tmp_autoround"
-deployment_device = "cpu" ## or gpu
-if deployment_device=="cpu":
-    autoround.save_quantized(output_dir, format="itrex") ## export to itrex format
+deployment_device = "cpu"  ## or gpu
+if deployment_device == "cpu":
+    autoround.save_quantized(output_dir, format="itrex")  ## export to itrex format
 else:
-    autoround.save_quantized(output_dir, format="auto_gptq", use_triton=True) ##export to autogptq format
+    autoround.save_quantized(output_dir, format="auto_gptq", use_triton=True)  ##export to autogptq format
 ```
 
 
@@ -51,15 +51,14 @@ else:
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 model_name = "meta-llama/Llama-2-7b-hf"
-model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype="auto", trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 bits, group_size, scheme = 4, 128, "asym"
 
 # need to load model first, then import
 from auto_round import AutoRound
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme,
-                      device="hpu", amp=False)
+
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device="hpu", amp=False)
 autoround.quantize()
 ```
 
@@ -125,25 +124,26 @@ Please run the tuning code first
 # currently please install neural-speed (https://github.com/intel/neural-speed) from source
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
 from transformers import AutoTokenizer
+
 quantized_model_path = "./tmp_autoround"
-woq_config = WeightOnlyQuantConfig(group_size=group_size, scheme=scheme, 
-                                   use_autoround=True)  ##only supports 4 bits currently
+woq_config = WeightOnlyQuantConfig(
+    group_size=group_size, scheme=scheme, use_autoround=True
+)  ##only supports 4 bits currently
 prompt = "There is a girl who likes adventure,"
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, trust_remote_code=True)
 inputs = tokenizer(prompt, return_tensors="pt").input_ids
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, quantization_config=woq_config, 
-                                             trust_remote_code=True, device="cpu")
+model = AutoModelForCausalLM.from_pretrained(
+    quantized_model_path, quantization_config=woq_config, trust_remote_code=True, device="cpu"
+)
 outputs = model.generate(inputs, max_new_tokens=50)
 ```
 ### GPU
 ```python
 # save_quantized to autogptq format first and then follow transformers or auto-gptq to load the model and inference
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map="auto",
-                                             trust_remote_code=True
-                                             )
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -159,11 +159,13 @@ We fine-tuned the hyperparameters for each model with an iteration of 1K and suc
 
 [Intel/Mistral-7B-v0.1-int4-inc](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc)
 
-[Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) coming soon
+[Intel/gemma-7b-int4-inc](https://huggingface.co/Intel/gemma-7b-int4-inc) internal review, [accuracy](./docs/gemma-7b-acc.md), [quantization shell](./examples/language-modeling/scripts/gemma-7b.sh)
 
-[Intel/Mixtral-8x7B-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) coming soon
+[Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) coming soon, [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [quantization shell](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh)
 
-[Intel/phi-2-int4-inc](https://huggingface.co/Intel/phi-2-int4-inc) coming soon
+[Intel/Mixtral-8x7B-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) coming soon,[accuracy](./docs/Mistral-7B-v0.1-acc.md), [quantization shell](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh)
+ 
+[Intel/phi-2-int4-inc](https://huggingface.co/Intel/phi-2-int4-inc) coming soon, [accuracy](./docs/phi-2-acc.md) [quantization shell](./examples/language-modeling/scripts/phi-2.sh)
 
 ### Itrex format
 
@@ -195,6 +197,3 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
-
-
-
