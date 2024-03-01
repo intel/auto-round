@@ -863,7 +863,7 @@ class AutoRound(object):
                 )
                 if self.amp and not check_is_cpu(device):
                     with autocast(device_type="cuda", dtype=self.amp_dtype):
-                        loss = mse_loss(output_q, current_output) # pylint: disable=not-callable
+                        loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
                     # pylint: disable=not-callable
                     loss = mse_loss(output_q.to(torch.float32), current_output.to(torch.float32))
@@ -958,7 +958,7 @@ class AutoRound(object):
     def save_quantized(self, output_dir=None, format="itrex", **kwargs):
         compress_model = None
         if format == "itrex":
-            if 'use_triton' in kwargs.keys():
+            if "use_triton" in kwargs.keys():
                 kwargs.pop("use_triton")
             compress_model = self.save_quantized_as_itrex(output_dir, **kwargs)
         elif format == "auto_gptq":
@@ -968,9 +968,7 @@ class AutoRound(object):
         return compress_model
 
     def save_quantized_as_autogptq(self, output_dir=None, use_triton=False, inplace=True):
-        """
-        Export the model to autogptq format to easily leverage cuda kernel
-        """
+        """Export the model to autogptq format to easily leverage cuda kernel."""
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
@@ -1417,4 +1415,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
