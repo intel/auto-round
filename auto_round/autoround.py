@@ -863,7 +863,7 @@ class AutoRound(object):
                 )
                 if self.amp and not check_is_cpu(device):
                     with autocast(device_type="cuda", dtype=self.amp_dtype):
-                        loss = mse_loss(output_q, current_output) # pylint: disable=not-callable
+                        loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
                     # pylint: disable=not-callable
                     loss = mse_loss(output_q.to(torch.float32), current_output.to(torch.float32))
@@ -959,13 +959,14 @@ class AutoRound(object):
         compressed_model = None
         if format == "itrex":
             from auto_round.export.export_to_itrex import compress_model
-            inplace = kwargs['inplace'] if 'inplace' in kwargs.keys() else True
+
+            inplace = kwargs["inplace"] if "inplace" in kwargs.keys() else True
             compressed_model = compress_model(self.model, self.weight_config, inplace=inplace)
-            if 'use_triton' in kwargs.keys():
+            if "use_triton" in kwargs.keys():
                 kwargs.pop("use_triton")
             if output_dir is not None:
                 self.save_quantized_as_itrex(output_dir, compressed_model, **kwargs)
-            
+
         elif format == "auto_gptq":
             self.save_quantized_as_autogptq(output_dir, **kwargs)
         else:
@@ -973,9 +974,7 @@ class AutoRound(object):
         return compressed_model
 
     def save_quantized_as_autogptq(self, output_dir, use_triton=False, inplace=True):
-        """
-        Export the model to autogptq format to easily leverage cuda kernel
-        """
+        """Export the model to autogptq format to easily leverage cuda kernel."""
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
@@ -1070,6 +1069,7 @@ class AutoRound(object):
         """Save configure file and weights for CPU backend inference."""
         sym = self.scheme == "sym"
         from auto_round.export.export_to_itrex import QuantConfig
+
         quantize_config = QuantConfig(
             bits=self.bits,
             group_size=self.group_size,
@@ -1418,4 +1418,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
