@@ -956,16 +956,21 @@ class AutoRound(object):
         torch.cuda.empty_cache()
 
     def save_quantized(self, output_dir=None, format="itrex", **kwargs):
-        compress_model = None
+        compressed_model = None
         if format == "itrex":
+            from auto_round.export.export_to_itrex import compress_model
+            inplace = kwargs['inplace'] if 'inplace' in kwargs.keys() else True
+            compressed_model = compress_model(self.model, self.weight_config, inplace=inplace)
             if 'use_triton' in kwargs.keys():
                 kwargs.pop("use_triton")
-            compress_model = self.save_quantized_as_itrex(output_dir, **kwargs)
+            if output_dir is not None:
+                self.save_quantized_as_itrex(output_dir, compressed_model, **kwargs)
+            
         elif format == "auto_gptq":
             self.save_quantized_as_autogptq(output_dir, **kwargs)
         else:
             logger.error("export only supports itrex and auto_gptq now")
-        return compress_model
+        return compressed_model
 
     def save_quantized_as_autogptq(self, output_dir=None, use_triton=False, inplace=True):
         """
@@ -1061,12 +1066,10 @@ class AutoRound(object):
             modules_in_block_to_quantize=modules_in_block_to_quantize,
         )
 
-    def save_quantized_as_itrex(self, output_dir=None, inplace=True):
+    def save_quantized_as_itrex(self, output_dir, compressed_model, **kwargs):
         """Save configure file and weights for CPU backend inference."""
-        from auto_round.export.export_to_itrex import QuantConfig, compress_model
-
-        compressed_model = compress_model(self.model, self.weight_config, inplace=inplace)
         sym = self.scheme == "sym"
+        from auto_round.export.export_to_itrex import QuantConfig
         quantize_config = QuantConfig(
             bits=self.bits,
             group_size=self.group_size,
@@ -1078,20 +1081,18 @@ class AutoRound(object):
             use_quant_input=self.use_quant_input,
             scale_dtype=str(self.scale_dtype),
         )
-        if output_dir is not None:
-            if quantize_config is not None:
-                config = compressed_model.config
-                setattr(config, "quantization_config", quantize_config.to_dict())
-                config.save_pretrained(output_dir)
-                quantize_config.save_pretrained(output_dir)
-            try:
-                compressed_model.save_pretrained(output_dir, safe_serialization=True)
-                if self.tokenizer is not None:
-                    self.tokenizer.save_pretrained(output_dir)
-                logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
-            except IOError as e:  # pragma: no cover
-                logger.error("Fail to save configure file and weights due to {}.".format(e))
-        return compressed_model
+        if quantize_config is not None:
+            config = compressed_model.config
+            setattr(config, "quantization_config", quantize_config.to_dict())
+            config.save_pretrained(output_dir)
+            quantize_config.save_pretrained(output_dir)
+        try:
+            compressed_model.save_pretrained(output_dir, safe_serialization=True)
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(output_dir)
+            logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
+        except IOError as e:  # pragma: no cover
+            logger.error("Fail to save configure file and weights due to {}.".format(e))
 
     def quantize(self):
         """Quantize the model and return the quantized model along with weight configurations.
