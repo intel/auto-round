@@ -1,7 +1,7 @@
 #!/bin/bash
 set -x
 model_name="Intel/neural-chat-7b-v3-3"
-eval_bs6=1
+eval_bs=1
 
 python3 main.py \
   --amp \

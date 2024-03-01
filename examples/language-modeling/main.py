@@ -150,11 +150,11 @@ if __name__ == '__main__':
     torch_dtype = "auto"
     if args.device == "cpu":
         device_str = "cpu"
-    elif args.device == "cuda":
-        device_str = "cuda"
-    else:
+    elif args.device == "hpu":
         device_str = "hpu"
         torch_dtype = torch.bfloat16
+    else:
+        device_str = f"cuda:{int(args.device)}"
 
     torch_device = torch.device(device_str)
     is_glm = bool(re.search("chatglm", model_name.lower()))
