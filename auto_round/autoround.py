@@ -972,7 +972,7 @@ class AutoRound(object):
             logger.error("export only supports itrex and auto_gptq now")
         return compressed_model
 
-    def save_quantized_as_autogptq(self, output_dir=None, use_triton=False, inplace=True):
+    def save_quantized_as_autogptq(self, output_dir, use_triton=False, inplace=True):
         """
         Export the model to autogptq format to easily leverage cuda kernel
         """
@@ -980,7 +980,7 @@ class AutoRound(object):
             logger.warning("please run autoround.quantize first")
             return
         logger.info("Saving quantized model to autogptq format, this may take a while...")
-        if self.tokenizer is not None and output_dir is not None:
+        if self.tokenizer is not None:
             self.tokenizer.save_pretrained(output_dir)
         ##check module quantized in block, this may have bug for mixed precision quantization
         block_name = get_block_names(self.model)[0]
