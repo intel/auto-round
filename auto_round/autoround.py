@@ -37,6 +37,10 @@ from .utils import (
     set_module,
 )
 
+if is_hpu_available:
+    import habana_frameworks.torch.hpu as hthpu
+    import habana_frameworks.torch.core as htcore
+
 
 class SaveInputs:
     """Cache the inputs of the first block."""
