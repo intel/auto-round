@@ -60,8 +60,16 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bi
 ```
  `--enable_minmax_tuning` is strongly recommended 
 
+## 4. Evaluation
+Example supports evaluation for various tasks in lm_eval. It can also save 'fake' qdq models for separate evaluation using the 'evaluation.py' script. This script supports three more tasks (ptb, c4 and wikitext2) on top of the official lm_eval. For models larger than 30b, you can enable multi-GPU evaluation by setting 'CUDA_VISIBLE_DEVICES'. 
 
-## 4. Known Issues
+```bash
+CUDA_VISIBLE_DEVICES=0,1 python3 eval/evaluation.py --model_name /qdq_model_path/ --eval_bs 8 --tasks mmlu,lambada_openai,ptb --excel_path /result_excel/save_path/
+```
+
+You can also utilize the official lm_eval [link](https://github.com/EleutherAI/lm-evaluation-harness/tree/main?tab=readme-ov-file#basic-usage).
+
+## 5. Known Issues
 * Random issues in tuning Qwen models
 * ChatGlm-V1 is not supported
 
@@ -76,6 +84,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
