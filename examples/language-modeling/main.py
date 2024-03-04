@@ -103,7 +103,7 @@ if __name__ == '__main__':
     parser.add_argument("--eval_legacy", action='store_true',
                         help="Whether to evaluate with a old lm_eval version(e.g. 0.3.0).")
 
-    parser.add_argument("--disable_lmeval", action='store_true',
+    parser.add_argument("--disable_eval", action='store_true',
                         help="Whether to do lmeval evaluation.")
 
     args = parser.parse_args()
@@ -253,7 +253,7 @@ if __name__ == '__main__':
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
 
-    if not args.disable_lmeval and "fake" in deployment_device:  ##support autogptq real eval later
+    if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
         excel_name = f"{output_dir}_result.xlsx"
         output_dir += "/"
         print(excel_name, flush=True)

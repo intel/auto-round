@@ -72,9 +72,9 @@ Due to the large size of the model, the quantization and evaluation processes ma
 CUDA_VISIBLE_DEVICES=1,2 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --deployment_device fake,cpu --output_dir /save_model_path/
 ```
 
-- Enable 'disable_lmeval' for the quantization example, save the qdq model by setting 'deployment_device=fake', and then set up multi-GPU cards for the evaluation script.
+- Enable 'disable_eval' for the quantization example, save the qdq model by setting 'deployment_device=fake', and then set up multi-GPU cards for the evaluation script.
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --disable_lmeval --deployment_device fake --output_dir /save_model_path/
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --disable_eval --deployment_device fake --output_dir /save_model_path/
 
 CUDA_VISIBLE_DEVICES=1,2 python3 eval/evaluation.py --model_name /save_model_path/ --eval_bs 8 --tasks mmlu,lambada_openai,ptb --excel_path /result_excel/save_path/
 ```

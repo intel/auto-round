@@ -12,7 +12,7 @@ def register_dataset(name):
 
     Args:
         cls (class): The subclass of register.
-        name: A string. Define the pruner type.
+        name: A string. Define the dataset type.
 
     Returns:
         cls: The class of register.
@@ -160,3 +160,4 @@ def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=["train", 
 
     calib_dataloader = DataLoader(samples, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
+
