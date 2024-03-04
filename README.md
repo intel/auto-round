@@ -58,7 +58,8 @@ bits, group_size, scheme = 4, 128, "asym"
 
 # need to load model first, then import
 from auto_round import AutoRound
-tuning_device = "hpu"  
+
+tuning_device = "hpu"
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device=tuning_device)
 autoround.quantize()
 ```
