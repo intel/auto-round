@@ -38,8 +38,8 @@ from .utils import (
 )
 
 if is_hpu_available:
-    import habana_frameworks.torch.core as htcore # pylint: disable=E0401
-    import habana_frameworks.torch.hpu as hthpu # pylint: disable=E0401
+    import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+    import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
 
 class SaveInputs:
