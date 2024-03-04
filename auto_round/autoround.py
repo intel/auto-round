@@ -491,8 +491,8 @@ class AutoRound(object):
         dataset_split (str): The split of the dataset to be used (default is "train").
         use_quant_input (bool): Whether to use quantized input data (default is True).
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
-        lr (float): The learning rate (default is 0.005).
-        minmax_lr (float): The learning rate for min-max tuning (default is None).
+        lr (float): The learning rate (default is None, will be set to 1.0/iters).
+        minmax_lr (float): The learning rate for min-max tuning (default is None, will be set to 1.0/iters).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is True).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
@@ -504,7 +504,7 @@ class AutoRound(object):
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
-        scale_dtype (str): The data type of quantization scale to be used (default is "float32")
+        scale_dtype (str): The data type of quantization scale to be used (default is "fp32")
         **kwargs: Additional keyword arguments.
 
     Returns:
