@@ -49,16 +49,17 @@ else:
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
 
 model_name = "meta-llama/Llama-2-7b-hf"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 bits, group_size, scheme = 4, 128, "asym"
 
 # need to load model first, then import
 from auto_round import AutoRound
 
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device="hpu", amp=False)
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device="hpu", amp=True)
 autoround.quantize()
 ```
 

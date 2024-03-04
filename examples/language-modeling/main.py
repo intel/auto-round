@@ -1,9 +1,6 @@
 import argparse
 import sys
-
 sys.path.insert(0, '../..')
-from auto_round import (AutoRound,
-                        AutoAdamRound)
 
 parser = argparse.ArgumentParser()
 import torch
@@ -148,19 +145,26 @@ if __name__ == '__main__':
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     print(model_name, flush=True)
-
+    torch_dtype = "auto"
     if args.device == "cpu":
         device_str = "cpu"
+    elif args.device == "hpu":
+        device_str = "hpu"
+        torch_dtype = torch.bfloat16
     else:
         device_str = f"cuda:{int(args.device)}"
+
     torch_device = torch.device(device_str)
     is_glm = bool(re.search("chatglm", model_name.lower()))
     if is_glm:
         model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
+            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype, trust_remote_code=True
         )
+    
+    from auto_round import (AutoRound,
+                        AutoAdamRound)
     model = model.eval()
     # align with GPTQ to eval ppl
     if "opt" in model_name:

@@ -58,7 +58,13 @@ Include the flag `--adam`. Note that AdamW is less effective than Sign gradient 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --iters 400 --lr 0.0025 --minmax_lr 0.0025
 ```
- `--enable_minmax_tuning` is strongly recommended
+
+- **Running on Intel Gaudi2**
+```bash
+bash run_autoround_on_gaudi.sh 
+```
+ `--enable_minmax_tuning` is strongly recommended 
+
 
 ## 4. Evaluation
 The example supports evaluation for various tasks in lm_eval. Moreover, it facilitates separate evaluation through the 'evaluation.py' script, which extends support to three additional tasks (ptb, c4, and wikitext2) beyond the capabilities of the official lm_eval. Additionally, evaluation results will be neatly organized into an Excel file for ease of demonstration.
