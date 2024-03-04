@@ -63,7 +63,7 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bi
 ## 4. Evaluation
 The example supports evaluation for various tasks in lm_eval. Moreover, it facilitates separate evaluation through the 'evaluation.py' script, which extends support to three additional tasks (ptb, c4, and wikitext2) beyond the capabilities of the official lm_eval. Additionally, evaluation results will be neatly organized into an Excel file for ease of demonstration.
 
-For models larger than 30B, enable multi-GPU evaluation by setting 'CUDA_VISIBLE_DEVICES'.
+For large models, GPU memory may be insufficient. Enable multi-GPU evaluation by setting 'CUDA_VISIBLE_DEVICES'.
 
 Due to the large size of the model, the quantization and evaluation processes may be time-consuming. To provide flexibility in the process, two options are offered:
 
