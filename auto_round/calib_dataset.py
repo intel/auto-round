@@ -12,7 +12,7 @@ def register_dataset(name):
 
     Args:
         cls (class): The subclass of register.
-        name: A string. Define the pruner type.
+        name: A string. Define the dataset type.
 
     Returns:
         cls: The class of register.
