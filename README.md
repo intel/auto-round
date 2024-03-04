@@ -59,7 +59,8 @@ bits, group_size, scheme = 4, 128, "asym"
 # need to load model first, then import
 from auto_round import AutoRound
 
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device="hpu", amp=True)
+tuning_device = "hpu"
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device=tuning_device)
 autoround.quantize()
 ```
 
@@ -111,7 +112,39 @@ autoround.quantize()
   
 - `device`: The device to be used for tuning (default is "cuda:0").
 
+- `scale_dtype (str)`: The data type of quantization scale to be used (default is "float32"), different kernels have different choices.
+
 </details>
+
+
+## Support List
+
+| Model                                | Supported                                                                                                                                                                                                                                                          |
+|--------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Intel/neural-chat-7b-v3-3            | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc), [accuracy](./docs/neural-chat-7b-v3-3-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-3.sh), [example](./examples/language-modeling/)                         |
+| Intel/neural-chat-7b-v3-1            | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc), [accuracy](./docs/neural-chat-7b-v3-1-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-1.sh), [example](./examples/language-modeling/)                         |
+| mistralai/Mistral-7B-v0.1            | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc), [accuracy](./docs/Mistral-7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-v0.1.sh), [example](./examples/language-modeling/)                                     |
+| google/gemma-7b                      | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-int4-inc) under review, [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                            |
+| google/gemma-7b-it                   | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-it-int4-inc) under review, [accuracy](./docs/gemma-7b-it-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b-it.sh), [example](./examples/language-modeling/)                                    |                                            |
+  mistralai/Mixtral-8x7B-Instruct-v0.1 | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc) under review, [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh),  [example](./examples/language-modeling/) |
+| mistralai/Mixtral-8x7B-v0.1          | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) under review, [accuracy](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh), [example](./examples/language-modeling/)                  |
+| microsoft/phi-2                      | [HF-int4-model](https://huggingface.co/Intel/phi-2-int4-inc) under review, [accuracy](./docs/phi-2-acc.md), [recipe](./examples/language-modeling/scripts/phi-2.sh), [example](./examples/language-modeling/)                                                      |
+|  Salesforce/codegen25-7b-multi       | [example](./examples/code-generation)                                                                                                                                                                                                                              |
+| EleutherAI/gpt-j-6b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| huggyllama/llama-7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| meta-llama/Llama-2-7b-hf | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| facebook/opt-6.7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| tiiuae/falcon-7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| mosaicml/mpt-7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| bigscience/bloom-7b1 | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| baichuan-inc/Baichuan-7B | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| Qwen/Qwen-7B | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| THUDM/chatglm3-6b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| MBZUAI/LaMini-GPT-124M | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| EleutherAI/gpt-neo-125m | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| databricks/dolly-v2-3b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| stabilityai/stablelm-base-alpha-3b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+
 
 ## Model inference
 Please run the tuning code first
@@ -150,27 +183,36 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
-## Huggingface Model cards
-We fine-tuned the hyperparameters for each model with an iteration of 1K and successfully achieved near-lossless quantized models in the majority of scenarios. Some of these models has been uploaded to the Huggingface Hub.
 
-### AutoGPTQ format
-[Intel/neural-chat-7b-v3-3-int4-inc](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc)
 
-[Intel/neural-chat-7b-v3-1-int4-inc](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc)
+## Support List
 
-[Intel/Mistral-7B-v0.1-int4-inc](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc)
+| Model                                | Supported                                                                                                                                                                                                                                                  |
+|--------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Intel/neural-chat-7b-v3-3            | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc), [acc](./docs/neural-chat-7b-v3-3-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-3.sh), [example](./examples/language-modeling/)                      |
+| Intel/neural-chat-7b-v3-1            | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc), [acc](./docs/neural-chat-7b-v3-1-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-1.sh), [example](./examples/language-modeling/)                      |
+| mistralai/Mistral-7B-v0.1            | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc), [acc](./docs/Mistral-7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-v0.1.sh), [example](./examples/language-modeling/)                                  |
+| google/gemma-7b                      | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-int4-inc) in review, [acc](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                            |
+| google/gemma-7b-it                   | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-it-int4-inc) in review, [acc](./docs/gemma-7b-it-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b-it.sh), [example](./examples/language-modeling/)                                    |                                            |
+  mistralai/Mixtral-8x7B-Instruct-v0.1 | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc) in review, [acc](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh),  [example](./examples/language-modeling/) |
+| mistralai/Mixtral-8x7B-v0.1          | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) in review, [acc](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh), [example](./examples/language-modeling/)                  |
+| microsoft/phi-2                      | [HF-int4-model](https://huggingface.co/Intel/phi-2-int4-inc) in review, [acc](./docs/phi-2-acc.md), [recipe](./examples/language-modeling/scripts/phi-2.sh), [example](./examples/language-modeling/)                                                      |
+|  Salesforce/codegen25-7b-multi       | [example](./examples/code-generation)                                                                                                                                                                                                                      |
+| EleutherAI/gpt-j-6b | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| huggyllama/llama-7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| meta-llama/Llama-2-7b-hf | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| facebook/opt-6.7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| tiiuae/falcon-7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| mosaicml/mpt-7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| bigscience/bloom-7b1 | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| baichuan-inc/Baichuan-7B | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| Qwen/Qwen-7B | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| THUDM/chatglm3-6b | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| MBZUAI/LaMini-GPT-124M | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| EleutherAI/gpt-neo-125m | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| databricks/dolly-v2-3b | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
+| stabilityai/stablelm-base-alpha-3b | [example](./examples/language-modeling/)                                                                                                                                                                                                                   |
 
-[Intel/gemma-7b-int4-inc](https://huggingface.co/Intel/gemma-7b-int4-inc) internal review, [accuracy](./docs/gemma-7b-acc.md), [quantization shell](./examples/language-modeling/scripts/gemma-7b.sh)
-
-[Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) coming soon, [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [quantization shell](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh)
-
-[Intel/Mixtral-8x7B-v0.1-int4-inc](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) coming soon,[accuracy](./docs/Mistral-7B-v0.1-acc.md), [quantization shell](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh)
- 
-[Intel/phi-2-int4-inc](https://huggingface.co/Intel/phi-2-int4-inc) coming soon, [accuracy](./docs/phi-2-acc.md) [quantization shell](./examples/language-modeling/scripts/phi-2.sh)
-
-### Itrex format
-
-Please stay tuned
 
 ## Comparison with other methods
 

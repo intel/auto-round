@@ -504,6 +504,7 @@ class AutoRound(object):
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
+        scale_dtype (str): The data type of quantization scale to be used (default is "float32")
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -541,7 +542,7 @@ class AutoRound(object):
         not_use_best_mse: bool = False,
         dynamic_max_gap: int = -1,
         data_type: str = "int",  ##only support data_type
-        scale_dtype="fp16",
+        scale_dtype: str = "fp32",
         **kwargs,
     ):
         from .calib_dataset import CALIB_DATASETS
@@ -575,9 +576,9 @@ class AutoRound(object):
         self.n_blocks = n_blocks
         self.device = device
 
-        if scale_dtype == "fp16":
+        if scale_dtype == "fp16" or scale_dtype == "float16":
             self.scale_dtype = torch.float16
-        elif scale_dtype == "bf16":
+        elif scale_dtype == "bf16" or scale_dtype == "bfloat16":
             self.scale_dtype = torch.bfloat16
         else:
             self.scale_dtype = torch.float32
