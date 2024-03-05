@@ -536,7 +536,7 @@ class AutoRound(object):
         assert self.seqlen > 0, "seqlen must be positive"
         assert self.n_blocks > 0, "n_blocks must be positive"
         assert self.gradient_accumulate_steps > 0, "gradient accumulate step must be positive"
-        assert self.tokenizer != None or self.dataloader != None
+        # assert self.tokenizer != None or self.dataloader != None
 
     def set_layerwise_config(self, weight_config):
         """Sets the layer-wise configuration based on the provided weight_config.
@@ -577,18 +577,6 @@ class AutoRound(object):
             m.group_size = weight_config[n]["group_size"]
             m.scheme = weight_config[n]["scheme"]
             m.scale_dtype = weight_config[n]["scale_dtype"]
-
-    def get_batch_dim(self, input_others):
-        """Get the batch dimension of the input tensor.
-
-        Args:
-        input_others: A dictionary containing input data, including positional_inputs.
-
-        Returns:
-        The batch dimension of the input tensor.
-        """
-        dim = int(len(input_others["positional_inputs"]) > 0)
-        return dim
 
     @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device, batch_dim):
