@@ -35,8 +35,8 @@ if __name__ == '__main__':
                         help="eval batch size")
 
     parser.add_argument("--device", default=None, type=str,
-                        help="The default is set to None, allowing for automatic detection."
-                             "Currently, device settings support CPU, GPU, and HPU.")
+                        help="The device to be used for tuning. The default is set to None,"
+                        "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
 
     parser.add_argument("--sym", action='store_true',
                         help=" sym quantization")

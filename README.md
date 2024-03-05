@@ -91,7 +91,7 @@ autoround.save_quantized(output_dir)
   
 - `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits or mixed precision.
   
-- `device`: The device to be used for tuning (default is "cuda:0").
+- `device`: The device to be used for tuning. The default is set to None, allowing for automatic detection.
 
 </details>
 
@@ -191,3 +191,4 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
