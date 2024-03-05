@@ -321,10 +321,10 @@ class AutoRound(object):
 
     Args:
         model: The PyTorch model to be quantized.
-        tokenizer: Tokenizer for processing input data. Temporarily set as a mandatory parameter.
+        tokenizer: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
-        scheme (str): The quantization scheme to be used (default is "asym").
+        scheme (str): The quantization scheme (sym/asym) to be used (default is "asym").
         weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
         weight_config={
                    'layer1':##layer_name
@@ -344,13 +344,13 @@ class AutoRound(object):
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
         dataset_split (str): The split of the dataset to be used (default is "train").
-        use_quant_input (bool): Whether to use quantized input data (default is True).
-        enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
+        use_quant_input (bool): Whether to use the output of the previous quantized block as the input for the current block (default is True).
+        enable_minmax_tuning (bool): Whether to enable weight min-max tuning (default is True).
         lr (float): The learning rate (default is None, will be set to 1.0/iters).
-        minmax_lr (float): The learning rate for min-max tuning (default is None, will be set to 1.0/iters).
+        minmax_lr (float): The learning rate for min-max tuning (default is None, it will be set to lr automatically).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is True).
         iters (int): Number of iterations (default is 200).
-        seqlen (int): Length of the sequence.
+        seqlen (int): Data length of the sequence for tuning (default is 2048).
         n_samples (int): Number of samples (default is 512).
         sampler (str): The sampling method (default is "rand").
         seed (int): The random seed (default is 42).
@@ -359,7 +359,7 @@ class AutoRound(object):
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
-        scale_dtype (str): The data type of quantization scale to be used (default is "fp32")
+        scale_dtype (str):  The data type of quantization scale to be used (default is "float32"), different kernels have different choices.
         **kwargs: Additional keyword arguments.
 
     Returns:
