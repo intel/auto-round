@@ -66,7 +66,7 @@ def compress_model(
     else:
         q_config = weight_config
     for k, v in q_config.items():
-        logger.info(f"Compressing {k} on device {device}")
+        logger.info(f"Packing {k}")
         if "float" in v["data_type"]:
             continue
         dtype = v["data_type"]

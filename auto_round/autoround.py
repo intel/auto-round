@@ -961,144 +961,38 @@ class AutoRound(object):
 
         torch.cuda.empty_cache()
 
-    def save_quantized(self, output_dir=None, format="itrex", **kwargs):
+    def save_quantized(self, output_dir=None, format="itrex", inplace=True, **kwargs):
         compressed_model = None
-        if format == "itrex":
+        if format == "itrex" and output_dir is None:
             from auto_round.export.export_to_itrex import compress_model
 
-            inplace = kwargs["inplace"] if "inplace" in kwargs.keys() else True
             compressed_model = compress_model(self.model, self.weight_config, inplace=inplace)
-            if "use_triton" in kwargs.keys():
-                kwargs.pop("use_triton")
-            if output_dir is not None:
-                self.save_quantized_as_itrex(output_dir, compressed_model, **kwargs)
-
-        elif format == "auto_gptq":
-            self.save_quantized_as_autogptq(output_dir, **kwargs)
         else:
-            logger.error("export only supports itrex and auto_gptq now")
+            if not self.quantized:
+                logger.warning("please run autoround.quantize first")
+                return
+            from .export import EXPORT_FORMAT
+
+            save_quantized_as_format = EXPORT_FORMAT.get(format)
+            save_quantized_as_format(
+                output_dir,
+                model=self.model,
+                weight_config=self.weight_config,
+                inplace=inplace,
+                bits=self.bits,
+                group_size=self.group_size,
+                scheme=self.scheme,
+                iters=self.iters,
+                lr=self.lr,
+                minmax_lr=self.minmax_lr,
+                enable_minmax_tuning=self.enable_minmax_tuning,
+                use_quant_input=self.use_quant_input,
+                scale_dtype=self.scale_dtype,
+                tokenizer=self.tokenizer,
+                supported_types=self.supported_types,
+                **kwargs,
+            )
         return compressed_model
-
-    def save_quantized_as_autogptq(self, output_dir, use_triton=False, inplace=True):
-        """Export the model to autogptq format to easily leverage cuda kernel."""
-        if not self.quantized:
-            logger.warning("please run autoround.quantize first")
-            return
-        logger.info("Saving quantized model to autogptq format, this may take a while...")
-        if self.tokenizer is not None:
-            self.tokenizer.save_pretrained(output_dir)
-        ##check module quantized in block, this may have bug for mixed precision quantization
-        block_name = get_block_names(self.model)[0]
-        first_block = get_module(self.model, block_name)
-        all_to_quantized = True
-        modules_in_block_to_quantize = []
-        for n, m in first_block.named_modules():
-            is_supported_type = False
-            for supported_type in self.supported_types:
-                if isinstance(m, supported_type):
-                    is_supported_type = True
-                    break
-            if not is_supported_type:
-                continue
-            if not check_to_quantized(m):
-                all_to_quantized = False
-            else:
-                modules_in_block_to_quantize.append(n)
-        modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
-        if all_to_quantized:
-            modules_in_block_to_quantize = None
-
-        if inplace:
-            model = self.model.to("cpu")
-        else:
-            model = copy.deepcopy(self.model.to("cpu"))
-
-        from auto_gptq.modeling._utils import pack_model
-
-        sym = self.scheme == "sym"
-        if self.bits == 3 or use_triton is False:
-            if self.bits == 3 and use_triton is True:
-                logger.warning("triton does not support 3 bits, reset it to False")
-            quantizers = {}
-            for key in self.weight_config:
-                info = self.weight_config[key]
-                if not check_to_quantized(info):
-                    continue
-                quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
-            pack_model(
-                model,
-                quantizers,
-                self.bits,
-                self.group_size,
-                use_cuda_fp16=True,
-                desc_act=False,
-                force_layer_back_to_cpu=True,
-                use_triton=False,
-            )
-        else:
-            quantizers = {}
-            for key in self.weight_config:
-                info = self.weight_config[key]
-                if not check_to_quantized(info):
-                    continue
-                info["zp"] = info["zp"].to(torch.float32)
-                quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
-            pack_model(
-                model,
-                quantizers,
-                self.bits,
-                self.group_size,
-                use_cuda_fp16=True,
-                desc_act=False,
-                force_layer_back_to_cpu=True,
-                use_triton=True,
-            )
-        from auto_round import save_quantized_to_autogptq
-
-        save_quantized_to_autogptq(
-            model,
-            output_dir,
-            bits=self.bits,
-            group_size=self.group_size,
-            sym=sym,
-            iters=self.iters,
-            lr=self.lr,
-            minmax_lr=self.minmax_lr,
-            enable_minmax_tuning=self.enable_minmax_tuning,
-            use_quant_input=self.use_quant_input,
-            scale_dtype=self.scale_dtype,
-            use_safetensors=True,
-            modules_in_block_to_quantize=modules_in_block_to_quantize,
-        )
-
-    def save_quantized_as_itrex(self, output_dir, compressed_model, **kwargs):
-        """Save configure file and weights for CPU backend inference."""
-        sym = self.scheme == "sym"
-        from auto_round.export.export_to_itrex import QuantConfig
-
-        quantize_config = QuantConfig(
-            bits=self.bits,
-            group_size=self.group_size,
-            sym=sym,
-            iters=self.iters,
-            lr=self.lr,
-            minmax_lr=self.minmax_lr,
-            enable_minmax_tuning=self.enable_minmax_tuning,
-            use_quant_input=self.use_quant_input,
-            scale_dtype=str(self.scale_dtype),
-        )
-        if quantize_config is not None:
-            config = compressed_model.config
-            setattr(config, "quantization_config", quantize_config.to_dict())
-            config.save_pretrained(output_dir)
-            quantize_config.save_pretrained(output_dir)
-        try:
-            compressed_model.save_pretrained(output_dir, safe_serialization=True)
-            if self.tokenizer is not None:
-                self.tokenizer.save_pretrained(output_dir)
-            logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
-        except IOError as e:  # pragma: no cover
-            logger.error("Fail to save configure file and weights due to {}.".format(e))
 
     def quantize(self):
         """Quantize the model and return the quantized model along with weight configurations.
@@ -1117,12 +1011,12 @@ class AutoRound(object):
             self.model = self.model.to(self.amp_dtype)
         if not self.low_gpu_mem_usage:
             self.model = self.model.to(self.device)
-
         save_input_actor = SaveInputs(self.model, self.dataloader, self.seqlen, block_names[0])
         inputs = save_input_actor.get_inputs(n_samples=self.n_samples)
         del save_input_actor
         if "input_ids" in inputs.keys():
-            total_samples = inputs["input_ids"].shape[0]
+            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
+            total_samples = inputs["input_ids"].shape[dim]
             self.n_samples = total_samples
             if total_samples < self.train_bs:
                 self.train_bs = total_samples
