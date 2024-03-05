@@ -19,11 +19,13 @@ import time
 import torch
 
 from .utils import (
+    CpuInfo,
     block_forward,
     check_is_cpu,
     check_to_quantized,
     collect_minmax_scale,
     collect_round_v,
+    detect_device,
     get_batch_dim,
     get_block_names,
     get_module,
@@ -35,8 +37,6 @@ from .utils import (
     quant_weight,
     sampling_inputs,
     set_module,
-    CpuInfo,
-    detect_device,
 )
 
 if is_hpu_available:
@@ -448,8 +448,7 @@ class AutoRound(object):
             if self.device == "cpu" and not CpuInfo().bf16:
                 self.amp = False
                 self.model = self.model.to(torch.float32)
-                logger.warning(f"amp is set to FALSE as the current"
-                    "device does not support the 'bf16' data type.")
+                logger.warning("amp is set to FALSE as the current" "device does not support the 'bf16' data type.")
             else:
                 self.model = self.model.to(self.amp_dtype)
         else:
@@ -1312,4 +1311,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
