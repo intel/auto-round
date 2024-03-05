@@ -1,7 +1,6 @@
 import argparse
 import sys
 sys.path.insert(0, '../..')
-
 parser = argparse.ArgumentParser()
 import torch
 import os
@@ -35,8 +34,9 @@ if __name__ == '__main__':
     parser.add_argument("--eval_bs", default=4, type=int,
                         help="eval batch size")
 
-    parser.add_argument("--device", default=0, type=str,
-                        help="device gpu int number, or 'cpu' ")
+    parser.add_argument("--device", default=None, type=str,
+                        help="The device to be used for tuning. The default is set to None,"
+                        "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
 
     parser.add_argument("--sym", action='store_true',
                         help=" sym quantization")
@@ -145,16 +145,14 @@ if __name__ == '__main__':
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     print(model_name, flush=True)
+    
+    from auto_round.utils import detect_device
+    device_str = detect_device(args.device)
     torch_dtype = "auto"
-    if args.device == "cpu":
-        device_str = "cpu"
-    elif args.device == "hpu":
-        device_str = "hpu"
+    if device_str == "hpu":
         torch_dtype = torch.bfloat16
-    else:
-        device_str = f"cuda:{int(args.device)}"
-
     torch_device = torch.device(device_str)
+    
     is_glm = bool(re.search("chatglm", model_name.lower()))
     if is_glm:
         model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
@@ -251,7 +249,7 @@ if __name__ == '__main__':
     if 'gpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
     if "cpu" in deployment_device:
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', inplace=False)
+        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=False)
     if "fake" in deployment_device:
         model = model.to("cpu")
         model.save_pretrained(output_dir)
@@ -264,5 +262,6 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
+
 
 
