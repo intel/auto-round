@@ -45,7 +45,7 @@ def register_format(name):
 
 
 @register_format("auto_gptq")
-def format_export(output_dir, use_triton=False, inplace=True, **kwargs):
+def save_quantized_as_autogptq(output_dir, use_triton=False, inplace=True, **kwargs):
         """Export the model to autogptq format to easily leverage cuda kernel."""
         model = kwargs['model']
         weight_config = kwargs['weight_config']
@@ -130,7 +130,6 @@ def format_export(output_dir, use_triton=False, inplace=True, **kwargs):
                 use_triton=True,
             )
         from auto_round import save_quantized_to_autogptq
-
         save_quantized_to_autogptq(
             compressed_model,
             output_dir,
@@ -149,7 +148,7 @@ def format_export(output_dir, use_triton=False, inplace=True, **kwargs):
         
         
 @register_format("itrex")
-def format_export(output_dir, inplace=True, **kwargs):
+def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
         """Save configure file and weights for CPU backend inference."""
         model = kwargs['model']
         weight_config = kwargs['weight_config']
