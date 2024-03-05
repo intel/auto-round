@@ -152,7 +152,6 @@ outputs = model.generate(inputs, max_new_tokens=50)
 ```
 ### GPU
 ```python
-# save_quantized to autogptq format first and then follow transformers or auto-gptq to load the model and inference
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 quantized_model_path = "./tmp_autoround"
