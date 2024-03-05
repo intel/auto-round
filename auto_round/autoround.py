@@ -35,6 +35,8 @@ from .utils import (
     quant_weight,
     sampling_inputs,
     set_module,
+    CpuInfo,
+    detect_device,
 )
 
 if is_hpu_available:
@@ -379,7 +381,7 @@ class AutoRound(object):
         enable_full_range: bool = False,  ##for symmetric, TODO support later
         bs: int = 8,
         amp: bool = True,
-        device="cuda:0",
+        device=None,
         lr_scheduler=None,
         dataloader=None,  ## to support later
         dataset_name: str = "NeelNanda/pile-10k",
@@ -428,7 +430,7 @@ class AutoRound(object):
         self.seqlen = seqlen
         self.train_bs = bs
         self.n_blocks = n_blocks
-        self.device = device
+        self.device = detect_device(device)
 
         if scale_dtype == "fp16" or scale_dtype == "float16":
             self.scale_dtype = torch.float16
@@ -440,14 +442,19 @@ class AutoRound(object):
         self.amp_dtype = torch.float16
         if self.model.dtype != torch.float32:
             self.amp_dtype = self.model.dtype
-        if self.device == "cpu":
+        if self.device == "cpu" or self.device == "hpu":
             self.amp_dtype = torch.bfloat16
         if self.amp:
-            self.model = self.model.to(self.amp_dtype)
-            logger.info(f"using {self.amp_dtype} for quantization tuning")
+            if self.device == "cpu" and not CpuInfo().bf16:
+                self.amp = False
+                self.model = self.model.to(torch.float32)
+                logger.warning(f"amp is set to FALSE as the current"
+                    "device does not support the 'bf16' data type.")
+            else:
+                self.model = self.model.to(self.amp_dtype)
         else:
             self.model = self.model.to(torch.float32)
-            logger.info(f"using {torch.float32} for quantization tuning")
+        logger.info(f"using {self.model.dtype} for quantization tuning")
         self.dataset_name = dataset_name
 
         self.dataloader = dataloader
@@ -1305,3 +1312,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
