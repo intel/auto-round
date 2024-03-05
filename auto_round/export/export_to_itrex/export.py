@@ -43,11 +43,10 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     use_quant_input = kwargs["use_quant_input"]
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
-    if output_dir is None:
-        compressed_model = _pack_model(model, weight_config, inplace=inplace)
-        return compressed_model
 
     compressed_model = _pack_model(model, weight_config, inplace=inplace)
+    if output_dir is None:
+        return compressed_model
     quantize_config = QuantConfig(
         bits=bits,
         group_size=group_size,
