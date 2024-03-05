@@ -41,152 +41,6 @@ if is_hpu_available:
     import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
     import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
-
-class SaveInputs:
-    """Cache the inputs of the first block."""
-
-    def __init__(self, model, dataloader, seqlen=256, block_name=None):
-        """Initializes the SaveInputs class.
-
-        Args:
-            model: The model to be used.
-            dataloader: The dataloader for the input data.
-            seqlen (int): The sequence length.
-            block_name (str): The name of the block.
-        """
-        self.model = model.eval()
-        self.dataloader = dataloader
-        self.inputs = {}
-        self.block_name = block_name
-        self.seqlen = seqlen
-
-    @torch.no_grad()
-    def get_forward_func(self, name):
-        """Gets the forward function.
-
-        Args:
-            name (str): The name of the function.
-
-        Returns:
-            function: The forward function.
-        """
-
-        def forward(_, hidden_states, *positional_args, **kwargs):
-            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
-            if name in self.inputs:
-                data = torch.cat([self.inputs[name]["input_ids"], hidden_states.to("cpu")], dim=dim)
-                self.inputs[name]["input_ids"] = data
-            else:
-                self.inputs[name] = {}
-                self.inputs[name]["input_ids"] = hidden_states.to("cpu")
-
-            if "positional_inputs" not in self.inputs[name]:
-                self.inputs[name]["positional_inputs"] = []
-            for idx, item in enumerate(positional_args):
-                self.inputs[name]["positional_inputs"] = move_input_to_device(positional_args)
-
-            for key in kwargs.keys():
-                if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) or (key == "alibi"):
-                    if "attention_mask" in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = None
-                        if kwargs[key] is not None:
-                            if self.inputs[name][key] is not None:
-                                self.inputs[name][key] = torch.cat(
-                                    [self.inputs[name][key], kwargs[key].to("cpu")], dim=0
-                                )
-                            else:
-                                self.inputs[name][key] = kwargs[key].to("cpu")
-                    elif "alibi" in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = None
-                        if isinstance(kwargs[key], torch.Tensor):
-                            alibi = kwargs[key]
-                            batch = kwargs["attention_mask"].shape[0]
-                            alibi = alibi.reshape(batch, -1, alibi.shape[1], alibi.shape[2])
-                            if self.inputs[name][key] is not None:
-                                self.inputs[name][key] = torch.cat([self.inputs[name][key], alibi.to("cpu")], dim=0)
-                            else:
-                                self.inputs[name][key] = alibi.to("cpu")
-                    elif key not in self.inputs[name].keys():
-                        self.inputs[name][key] = move_input_to_device(kwargs[key], device=torch.device("cpu"))
-            raise NotImplementedError
-
-        return forward
-
-    @torch.no_grad()
-    def get_inputs(self, n_samples=512):
-        """Gets the inputs.
-
-        Args:
-            n_samples (int): The number of samples.
-
-        Returns:
-            dict: The inputs.
-        """
-        total_cnt = 0
-        self._replace_forward()
-        for data in self.dataloader:
-            if data is None:
-                continue
-            if isinstance(data, torch.Tensor):
-                data_new = data.to(self.model.device)
-                input_ids = data_new
-            else:
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = data[key].to(self.model.device)
-                input_ids = data_new["input_ids"]
-            # if input_ids.shape[-1] < self.seqlen:
-            #     continue
-            if total_cnt + input_ids.shape[0] > n_samples:
-                input_ids = input_ids[: n_samples - total_cnt, ...]
-            try:
-                if isinstance(data_new, torch.Tensor):
-                    self.model(data_new)
-                elif isinstance(data_new, dict):
-                    self.model(**data_new)
-            except NotImplementedError:
-                pass
-            except Exception as error:
-                logger.error(error)
-            total_cnt += input_ids.shape[0]
-            if total_cnt >= n_samples:
-                break
-        self._recover_forward()
-        if total_cnt == 0:
-            logger.error(
-                f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
-                f"dataloader or decease the sequence length"
-            )
-            exit()
-        elif total_cnt < n_samples:
-            logger.warning(
-                f"Insufficient number of samples collected may affect the quantification. "
-                f"Effective samples size:{total_cnt}, Target sample size:{n_samples}"
-            )
-        res = self.inputs[self.block_name]
-        return res
-
-    def _recover_forward(self):
-        """Recovers the forward function."""
-        for n, m in self.model.named_modules():
-            if n == self.block_name:
-                m.forward = m.orig_forward
-                delattr(m, "orig_forward")
-                break
-
-    def _replace_forward(self):
-        """Replaces the forward function."""
-        from functools import partial
-
-        for n, m in self.model.named_modules():
-            if n == self.block_name:
-                m.orig_forward = m.forward
-                m.forward = partial(self.get_forward_func(n), m)
-                break
-
-
 class WrapperLinear(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True):
         """A wrapper module for linear layers that enables quantization and min-max tuning of weights.
@@ -596,18 +450,8 @@ class AutoRound(object):
             logger.info(f"using {torch.float32} for quantization tuning")
         self.dataset_name = dataset_name
 
-        if dataloader is None:
-            get_dataloader = CALIB_DATASETS.get(self.dataset_name, CALIB_DATASETS["NeelNanda/pile-10k"])
-            self.dataloader = get_dataloader(
-                self.tokenizer,
-                self.seqlen,
-                seed=self.seed,
-                bs=self.train_bs,
-                split=self.dataset_split,
-                dataset_name=self.dataset_name,
-            )
-        else:
-            self.dataloader = dataloader
+
+        self.dataloader = dataloader
         self.iters = iters
         if self.iters <= 0:
             logger.warning("iters must be positive, reset it to 200")
@@ -777,6 +621,162 @@ class AutoRound(object):
         output = torch.cat(output, dim=batch_dim)
         torch.cuda.empty_cache()
         return output
+
+    @torch.no_grad()
+    def calib(self, n_samples):
+        """Perform calibration for quantization.
+        This method calibrates the model for quantization by processing a specified
+        number of samples from the calibration dataset. It ensures that the data is
+        properly formatted and feeds it to the model. If the number of samples processed
+        is less than the specified number, it logs a warning. If no samples are processed,
+        it logs an error and exits.
+        Args:
+            n_samples (int): The number of samples to use for calibration.
+        """
+        if self.dataloader is None:
+            from .calib_dataset import CALIB_DATASETS
+
+            get_dataloader = CALIB_DATASETS.get(self.dataset_name, CALIB_DATASETS["NeelNanda/pile-10k"])
+            self.dataloader = get_dataloader(
+                self.tokenizer,
+                self.seqlen,
+                seed=self.seed,
+                bs=self.train_bs,
+                split=self.dataset_split,
+                dataset_name=self.dataset_name,
+            )
+        total_cnt = 0
+        for data in self.dataloader:
+            if data is None:
+                continue
+            if isinstance(data, torch.Tensor):
+                data_new = data.to(self.model.device)
+                input_ids = data_new
+            else:
+                data_new = {}
+                for key in data.keys():
+                    data_new[key] = data[key].to(self.model.device)
+                input_ids = data_new["input_ids"]
+            # if input_ids.shape[-1] < self.seqlen:
+            #     continue
+            if total_cnt + input_ids.shape[0] > n_samples:
+                input_ids = input_ids[: n_samples - total_cnt, ...]
+            try:
+                if isinstance(data_new, torch.Tensor):
+                    self.model(data_new)
+                elif isinstance(data_new, dict):
+                    self.model(**data_new)
+            except NotImplementedError:
+                pass
+            except Exception as error:
+                logger.error(error)
+            total_cnt += input_ids.shape[0]
+            if total_cnt >= n_samples:
+                break
+        if total_cnt == 0:
+            logger.error(
+                f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
+                f"dataloader or decease the sequence length"
+            )
+            exit()
+        elif total_cnt < n_samples:
+            logger.warning(
+                f"Insufficient number of samples collected may affect the quantification. "
+                f"Effective samples size:{total_cnt}, Target sample size:{n_samples}"
+            )
+
+    @torch.no_grad()
+    def cache_block_input(self, block_name, n_samples):
+        """Save the inputs of the first block for calibration.
+        This method temporarily replaces the forward method of the model to capture
+        the inputs passing through the specified block. It then calibrates the model
+        using a specified number of samples. Finally, it restores the original forward
+        method and returns the inputs for the specified block.
+        Args:
+            block_name (str): The name of the block for which inputs are to be saved.
+            n_samples (int): The number of samples to use for calibration.
+        Returns:
+            dict: A dictionary containing the inputs for the specified block.
+        """
+        self.inputs = {}
+        self.tmp_block_name = block_name
+        self._replace_forward()
+        self.calib(n_samples)
+        self._recover_forward()
+        res = self.inputs[self.tmp_block_name]
+        del self.tmp_block_name
+        return res
+
+    @torch.no_grad()
+    def get_forward_func(self, name):
+        """Gets the forward function.
+        Args:
+            name (str): The name of the function.
+        Returns:
+            function: The forward function.
+        """
+
+        def forward(_, hidden_states, *positional_args, **kwargs):
+            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
+            if name in self.inputs:
+                data = torch.cat([self.inputs[name]["input_ids"], hidden_states.to("cpu")], dim=dim)
+                self.inputs[name]["input_ids"] = data
+            else:
+                self.inputs[name] = {}
+                self.inputs[name]["input_ids"] = hidden_states.to("cpu")
+
+            if "positional_inputs" not in self.inputs[name]:
+                self.inputs[name]["positional_inputs"] = []
+            for idx, item in enumerate(positional_args):
+                self.inputs[name]["positional_inputs"] = move_input_to_device(positional_args)
+
+            for key in kwargs.keys():
+                if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) or (key == "alibi"):
+                    if "attention_mask" in key:
+                        if key not in self.inputs[name].keys():
+                            self.inputs[name][key] = None
+                        if kwargs[key] is not None:
+                            if self.inputs[name][key] is not None:
+                                self.inputs[name][key] = torch.cat(
+                                    [self.inputs[name][key], kwargs[key].to("cpu")], dim=0
+                                )
+                            else:
+                                self.inputs[name][key] = kwargs[key].to("cpu")
+                    elif "alibi" in key:
+                        if key not in self.inputs[name].keys():
+                            self.inputs[name][key] = None
+                        if isinstance(kwargs[key], torch.Tensor):
+                            alibi = kwargs[key]
+                            batch = kwargs["attention_mask"].shape[0]
+                            alibi = alibi.reshape(batch, -1, alibi.shape[1], alibi.shape[2])
+                            if self.inputs[name][key] is not None:
+                                self.inputs[name][key] = torch.cat([self.inputs[name][key], alibi.to("cpu")], dim=0)
+                            else:
+                                self.inputs[name][key] = alibi.to("cpu")
+                    elif key not in self.inputs[name].keys():
+                        self.inputs[name][key] = move_input_to_device(kwargs[key], device=torch.device("cpu"))
+            raise NotImplementedError
+
+        return forward
+
+    def _recover_forward(self):
+        """Recovers the forward function."""
+        for n, m in self.model.named_modules():
+            if n == self.tmp_block_name:
+                m.forward = m.orig_forward
+                delattr(m, "orig_forward")
+                break
+
+    def _replace_forward(self):
+        """Replaces the forward function."""
+        from functools import partial
+
+        for n, m in self.model.named_modules():
+            if n == self.tmp_block_name:
+                m.orig_forward = m.forward
+                m.forward = partial(self.get_forward_func(n), m)
+                break
+
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
@@ -1011,9 +1011,9 @@ class AutoRound(object):
             self.model = self.model.to(self.amp_dtype)
         if not self.low_gpu_mem_usage:
             self.model = self.model.to(self.device)
-        save_input_actor = SaveInputs(self.model, self.dataloader, self.seqlen, block_names[0])
-        inputs = save_input_actor.get_inputs(n_samples=self.n_samples)
-        del save_input_actor
+        inputs = self.cache_block_input(block_names[0], self.n_samples)
+        del self.inputs
+
         if "input_ids" in inputs.keys():
             dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
             total_samples = inputs["input_ids"].shape[dim]
