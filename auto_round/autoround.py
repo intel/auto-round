@@ -546,6 +546,7 @@ class AutoRound(object):
         **kwargs,
     ):
         from .calib_dataset import CALIB_DATASETS
+
         self.model = model
         self.model_orig_dtype = model.dtype
         self.model = self.model.to("cpu")
@@ -964,12 +965,14 @@ class AutoRound(object):
         compressed_model = None
         if format == "itrex" and output_dir is None:
             from auto_round.export.export_to_itrex import compress_model
+
             compressed_model = compress_model(self.model, self.weight_config, inplace=inplace)
         else:
             if not self.quantized:
                 logger.warning("please run autoround.quantize first")
                 return
             from .export import EXPORT_FORMAT
+
             save_quantized_as_format = EXPORT_FORMAT.get(format)
             save_quantized_as_format(
                 output_dir,
@@ -988,7 +991,7 @@ class AutoRound(object):
                 tokenizer=self.tokenizer,
                 supported_types=self.supported_types,
                 **kwargs,
-            )            
+            )
         return compressed_model
 
     def quantize(self):
@@ -1315,4 +1318,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
