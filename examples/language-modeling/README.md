@@ -58,10 +58,36 @@ Include the flag `--adam`. Note that AdamW is less effective than Sign gradient 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --iters 400 --lr 0.0025 --minmax_lr 0.0025
 ```
+
+- **Running on Intel Gaudi2**
+```bash
+bash run_autoround_on_gaudi.sh 
+```
  `--enable_minmax_tuning` is strongly recommended 
 
 
-## 4. Known Issues
+## 4. Evaluation
+The example supports evaluation for various tasks in lm_eval. Moreover, it facilitates separate evaluation through the 'evaluation.py' script, which extends support to three additional tasks (ptb, c4, and wikitext2) beyond the capabilities of the official lm_eval. Additionally, evaluation results will be neatly organized into an Excel file for ease of demonstration.
+
+For large models, GPU memory may be insufficient. Enable multi-GPU evaluation by setting 'CUDA_VISIBLE_DEVICES'.
+
+Due to the large size of the model, the quantization and evaluation processes may be time-consuming. To provide flexibility in the process, two options are offered:
+
+- You can set up multi-GPU cards for the quantization example, which will only use the first card for quantization and then evaluate with all GPU cards.
+```bash
+CUDA_VISIBLE_DEVICES=1,2 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --deployment_device fake,cpu --output_dir /save_model_path/
+```
+
+- Enable 'disable_eval' for the quantization example, save the qdq model by setting 'deployment_device=fake', and then set up multi-GPU cards for the evaluation script.
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --disable_eval --deployment_device fake --output_dir /save_model_path/
+
+CUDA_VISIBLE_DEVICES=1,2 python3 eval/evaluation.py --model_name /save_model_path/ --eval_bs 8 --tasks mmlu,lambada_openai,ptb --excel_path /result_excel/save_path/
+```
+
+You can also utilize the official lm_eval [link](https://github.com/EleutherAI/lm-evaluation-harness/tree/main?tab=readme-ov-file#basic-usage).
+
+## 5. Known Issues
 * Random issues in tuning Qwen models
 * ChatGlm-V1 is not supported
 
@@ -76,6 +102,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 

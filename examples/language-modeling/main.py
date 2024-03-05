@@ -1,10 +1,6 @@
 import argparse
 import sys
-
 sys.path.insert(0, '../..')
-
-from auto_round import (AutoRound,
-                        AutoAdamRound)
 
 parser = argparse.ArgumentParser()
 import torch
@@ -41,7 +37,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--device", default=0, type=str,
                         help="device gpu int number, or 'cpu' ")
-    
+
     parser.add_argument("--sym", action='store_true',
                         help=" sym quantization")
 
@@ -84,14 +80,14 @@ if __name__ == '__main__':
 
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="whether enable weight minmax tuning")
-    
+
     parser.add_argument("--deployment_device", default='fake', type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
-    
+
     parser.add_argument("--scale_dtype", default='fp32',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
-    
+
     parser.add_argument("--tasks",
                         default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
                                  "mmlu", "wikitext", "truthfulqa_mc1", "truthfulqa_mc2", "openbookqa", "boolq", "rte",
@@ -104,9 +100,8 @@ if __name__ == '__main__':
     parser.add_argument("--eval_legacy", action='store_true',
                         help="Whether to evaluate with a old lm_eval version(e.g. 0.3.0).")
 
-    parser.add_argument("--disable_lmeval", action='store_true',
+    parser.add_argument("--disable_eval", action='store_true',
                         help="Whether to do lmeval evaluation.")
-
 
     args = parser.parse_args()
     set_seed(args.seed)
@@ -150,24 +145,26 @@ if __name__ == '__main__':
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     print(model_name, flush=True)
-
+    torch_dtype = "auto"
     if args.device == "cpu":
         device_str = "cpu"
+    elif args.device == "hpu":
+        device_str = "hpu"
+        torch_dtype = torch.bfloat16
     else:
         device_str = f"cuda:{int(args.device)}"
+
     torch_device = torch.device(device_str)
     is_glm = bool(re.search("chatglm", model_name.lower()))
-    is_llava = bool(re.search("llava", model_name.lower()))
-    if is_llava:
-        from transformers import LlavaForConditionalGeneration
-
-        model = LlavaForConditionalGeneration.from_pretrained(model_name, low_cpu_mem_usage=True, torch_dtype="auto")
-    elif is_glm:
+    if is_glm:
         model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
+            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype, trust_remote_code=True
         )
+    
+    from auto_round import (AutoRound,
+                        AutoAdamRound)
     model = model.eval()
     # align with GPTQ to eval ppl
     if "opt" in model_name:
@@ -260,10 +257,11 @@ if __name__ == '__main__':
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
 
-    if not args.disable_lmeval and "fake" in deployment_device:  ##support autogptq real eval later
+    if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
         excel_name = f"{output_dir}_result.xlsx"
         output_dir += "/"
         print(excel_name, flush=True)
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
+

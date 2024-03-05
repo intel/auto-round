@@ -465,20 +465,33 @@ if __name__ == "__main__":
     parser.add_argument(
         "--eval_bs", default=1,
     )
+    parser.add_argument(
+        "--tasks", default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
+                    "mmlu", "wikitext", "truthfulqa_mc1", "truthfulqa_mc2", "openbookqa", "boolq", "rte",
+                    "arc_easy", "arc_challenge"]
+    )
+    parser.add_argument(
+        "--excel_path", default=None,
+        help="The path to save eval results with excel format."
+    )
 
     args = parser.parse_args()
     s = time.time()
 
-    test_tasks = ['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
-                    "mmlu", "wikitext", "truthfulqa_mc1", "truthfulqa_mc2", "openbookqa", "boolq", "rte",
-                    "arc_easy", "arc_challenge"]
+    test_tasks = args.tasks
+    if isinstance(test_tasks, str):
+        test_tasks = test_tasks.split(',')
     model_name = args.model_name.rstrip('/')
-    excel_name = model_name.split('/')[-1] + ".xlsx"
+    if args.excel_path is None:
+        excel_name = model_name.split('/')[-1] + ".xlsx"
+    else:
+        excel_name = args.excel_path
     eval_model(model_path=args.model_name,
                tasks=test_tasks,
                eval_bs=args.eval_bs, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
+
 
 
 
