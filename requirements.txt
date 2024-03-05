@@ -1,6 +1,9 @@
 accelerate
 auto-gptq
 datasets
+py-cpuinfo
 sentencepiece
 torch
 transformers
+
+

@@ -23,47 +23,26 @@ python setup.py install
 ```
 ## Usage of Tuning
 
-### On CPU/GPU
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRound
-
-model_name = "meta-llama/Llama-2-7b-hf"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-bits, group_size, scheme = 4, 128, "asym"
-tuning_device = "cuda:0"  ## or "cpu"
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device=tuning_device)
-autoround.quantize()
-
-output_dir = "./tmp_autoround"
-deployment_device = "cpu"  ## or gpu
-if deployment_device == "cpu":
-    autoround.save_quantized(output_dir, format="itrex")  ## export to itrex format
-else:
-    autoround.save_quantized(output_dir, format="auto_gptq", use_triton=True)  ##export to autogptq format
-```
-
-
-### On Intel Gaudi2
+### On CPU/Gaudi2/ GPU
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
+tuning_device = "cuda:0"  ## or "cpu", "hpu"
+dtype = "auto" if tuning_device != "hpu" else torch.bfloat16
 model_name = "meta-llama/Llama-2-7b-hf"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-bits, group_size, scheme = 4, 128, "asym"
 
-# need to load model first, then import
 from auto_round import AutoRound
 
-tuning_device = "hpu"
+bits, group_size, scheme = 4, 128, "asym"
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device=tuning_device)
 autoround.quantize()
+output_dir = "./tmp_autoround"
+autoround.save_quantized(output_dir)
 ```
-
 
 <details>
   <summary>Detailed Hyperparameters</summary>
@@ -93,6 +72,8 @@ autoround.quantize()
 - `seqlen (int)`: Data length of the sequence for tuning (default is 2048).
   
 - `bs (int)`: Batch size for training (default is 8).
+
+- `scale_dtype (str)`: The data type of quantization scale to be used (default is "float32"), different kernels have different choices.
   
 - `amp (bool)`: Whether to use automatic mixed precision (default is True).
   
@@ -110,26 +91,24 @@ autoround.quantize()
   
 - `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits or mixed precision.
   
-- `device`: The device to be used for tuning (default is "cuda:0").
-
-- `scale_dtype (str)`: The data type of quantization scale to be used (default is "float32"), different kernels have different choices.
+- `device`: The device to be used for tuning. The default is set to None, allowing for automatic detection.
 
 </details>
 
 
 ## Support List
 
-| Model                                | Supported                                                                                                                                                                                                                                                          |
-|--------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Intel/neural-chat-7b-v3-3            | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc), [accuracy](./docs/neural-chat-7b-v3-3-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-3.sh), [example](./examples/language-modeling/)                         |
-| Intel/neural-chat-7b-v3-1            | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc), [accuracy](./docs/neural-chat-7b-v3-1-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-1.sh), [example](./examples/language-modeling/)                         |
-| mistralai/Mistral-7B-v0.1            | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc), [accuracy](./docs/Mistral-7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-v0.1.sh), [example](./examples/language-modeling/)                                     |
-| google/gemma-7b                      | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-int4-inc) under review, [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                            |
-| google/gemma-7b-it                   | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-it-int4-inc) under review, [accuracy](./docs/gemma-7b-it-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b-it.sh), [example](./examples/language-modeling/)                                    |                                            |
+| Model                               | Supported                                                                                                                                                                                                                                                          |
+|-------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Intel/neural-chat-7b-v3-3           | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc), [accuracy](./docs/neural-chat-7b-v3-3-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-3.sh), [example](./examples/language-modeling/)                         |
+| Intel/neural-chat-7b-v3-1           | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc), [accuracy](./docs/neural-chat-7b-v3-1-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-1.sh), [example](./examples/language-modeling/)                         |
+| mistralai/Mistral-7B-v0.1           | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc), [accuracy](./docs/Mistral-7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-v0.1.sh), [example](./examples/language-modeling/)                                     |
+| google/gemma-7b                     | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-int4-inc) under review, [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                            |
+| google/gemma-7b-it                  | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-it-int4-inc) under review, [accuracy](./docs/gemma-7b-it-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b-it.sh), [example](./examples/language-modeling/)                                    |                                            |
   mistralai/Mixtral-8x7B-Instruct-v0.1 | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc) under review, [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh),  [example](./examples/language-modeling/) |
-| mistralai/Mixtral-8x7B-v0.1          | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) under review, [accuracy](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh), [example](./examples/language-modeling/)                  |
-| microsoft/phi-2                      | [HF-int4-model](https://huggingface.co/Intel/phi-2-int4-inc) under review, [accuracy](./docs/phi-2-acc.md), [recipe](./examples/language-modeling/scripts/phi-2.sh), [example](./examples/language-modeling/)                                                      |
-|  Salesforce/codegen25-7b-multi       | [example](./examples/code-generation)                                                                                                                                                                                                                              |
+| mistralai/Mixtral-8x7B-v0.1         | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) under review, [accuracy](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh), [example](./examples/language-modeling/)                  |
+| microsoft/phi-2                     | [HF-int4-model](https://huggingface.co/Intel/phi-2-int4-inc) under review, [accuracy](./docs/phi-2-acc.md), [recipe](./examples/language-modeling/scripts/phi-2.sh), [example](./examples/language-modeling/)                                                      |
+| Salesforce/codegen25-7b-multi       | [example](./examples/code-generation)                                                                                                                                                                                                                              |
 | EleutherAI/gpt-j-6b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
 | huggyllama/llama-7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
 | meta-llama/Llama-2-7b-hf | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
@@ -173,7 +152,6 @@ outputs = model.generate(inputs, max_new_tokens=50)
 ```
 ### GPU
 ```python
-# save_quantized to autogptq format first and then follow transformers or auto-gptq to load the model and inference
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 quantized_model_path = "./tmp_autoround"

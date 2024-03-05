@@ -11,5 +11,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .autoround import AutoRound, AutoAdamRound, AutoOPTRound
-from .version import __version__
+
+
+EXPORT_FORMAT = {}
+
+
+def register_format(name):
+    """Class decorator to register a EXPORT subclass to the registry.
+
+    Decorator function used before a Pattern subclass.
+
+    Args:
+        cls (class): The subclass of register.
+        name: A string. Define the export type.
+
+    Returns:
+        cls: The class of register.
+    """
+
+    def register(format):
+        EXPORT_FORMAT[name] = format
+        return format
+
+    return register

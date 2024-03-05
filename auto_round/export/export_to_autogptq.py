@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import copy
 import json
 import os
 from os.path import isdir, isfile, join
@@ -42,10 +43,116 @@ from typing import Dict, List, Optional, Union
 import torch
 from safetensors.torch import save_file as safe_save
 
-from auto_round.utils import logger
+from auto_round.export.register import register_format
+from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
 
 
-def save_quantized_to_autogptq(
+@register_format("auto_gptq")
+def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwargs):
+    """Export the model to autogptq format to easily leverage cuda kernel."""
+    model = kwargs["model"]
+    weight_config = kwargs["weight_config"]
+    sym = kwargs["scheme"] == "sym"
+    bits = kwargs["bits"]
+    group_size = kwargs["group_size"]
+    iters = kwargs["iters"]
+    lr = kwargs["lr"]
+    minmax_lr = kwargs["minmax_lr"]
+    enable_minmax_tuning = kwargs["enable_minmax_tuning"]
+    use_quant_input = kwargs["use_quant_input"]
+    scale_dtype = kwargs["scale_dtype"]
+    tokenizer = kwargs["tokenizer"]
+    supported_types = kwargs["supported_types"]
+
+    logger.info("Saving quantized model to autogptq format, this may take a while...")
+    if tokenizer is not None:
+        tokenizer.save_pretrained(output_dir)
+    ##check module quantized in block, this may have bug for mixed precision quantization
+    block_name = get_block_names(model)[0]
+    first_block = get_module(model, block_name)
+    all_to_quantized = True
+    modules_in_block_to_quantize = []
+    for n, m in first_block.named_modules():
+        is_supported_type = False
+        for supported_type in supported_types:
+            if isinstance(m, supported_type):
+                is_supported_type = True
+                break
+        if not is_supported_type:
+            continue
+        if not check_to_quantized(m):
+            all_to_quantized = False
+        else:
+            modules_in_block_to_quantize.append(n)
+    modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
+    if all_to_quantized:
+        modules_in_block_to_quantize = None
+
+    if inplace:
+        compressed_model = model.to("cpu")
+    else:
+        compressed_model = copy.deepcopy(model.to("cpu"))
+
+    from auto_gptq.modeling._utils import pack_model
+
+    if bits == 3 or use_triton is False:
+        if bits == 3 and use_triton is True:
+            logger.warning("triton does not support 3 bits, reset it to False")
+        quantizers = {}
+        for key in weight_config:
+            info = weight_config[key]
+            if not check_to_quantized(info):
+                continue
+            quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
+        pack_model(
+            compressed_model,
+            quantizers,
+            bits,
+            group_size,
+            use_cuda_fp16=True,
+            desc_act=False,
+            force_layer_back_to_cpu=True,
+            use_triton=False,
+        )
+    else:
+        quantizers = {}
+        for key in weight_config:
+            info = weight_config[key]
+            if not check_to_quantized(info):
+                continue
+            info["zp"] = info["zp"].to(torch.float32)
+            quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
+        pack_model(
+            compressed_model,
+            quantizers,
+            bits,
+            group_size,
+            use_cuda_fp16=True,
+            desc_act=False,
+            force_layer_back_to_cpu=True,
+            use_triton=True,
+        )
+    if output_dir is None:
+        return compressed_model
+
+    _save_quantized_to_autogptq(
+        compressed_model,
+        output_dir,
+        bits=bits,
+        group_size=group_size,
+        sym=sym,
+        iters=iters,
+        lr=lr,
+        minmax_lr=minmax_lr,
+        enable_minmax_tuning=enable_minmax_tuning,
+        use_quant_input=use_quant_input,
+        scale_dtype=scale_dtype,
+        use_safetensors=True,
+        modules_in_block_to_quantize=modules_in_block_to_quantize,
+    )
+
+
+def _save_quantized_to_autogptq(
     model,
     save_dir: str,
     bits=4,
