@@ -12,6 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .register import EXPORT_FORMAT
-from .export_to_autogptq import save_quantized_as_autogptq
-from .export_to_itrex import save_quantized_as_itrex, QuantConfig
+
+EXPORT_FORMAT = {}
+
+
+def register_format(name):
+    """Class decorator to register a EXPORT subclass to the registry.
+
+    Decorator function used before a Pattern subclass.
+
+    Args:
+        cls (class): The subclass of register.
+        name: A string. Define the export type.
+
+    Returns:
+        cls: The class of register.
+    """
+
+    def register(format):
+        EXPORT_FORMAT[name] = format
+        return format
+
+    return register
+

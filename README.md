@@ -23,47 +23,25 @@ python setup.py install
 ```
 ## Usage of Tuning
 
-### On CPU/GPU
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRound
-
-model_name = "meta-llama/Llama-2-7b-hf"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-bits, group_size, scheme = 4, 128, "asym"
-tuning_device = "cuda:0"  ## or "cpu"
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device=tuning_device)
-autoround.quantize()
-
-output_dir = "./tmp_autoround"
-deployment_device = "cpu"  ## or gpu
-if deployment_device == "cpu":
-    autoround.save_quantized(output_dir, format="itrex")  ## export to itrex format
-else:
-    autoround.save_quantized(output_dir, format="auto_gptq", use_triton=True)  ##export to autogptq format
-```
-
-
-### On Intel Gaudi2
+### On CPU/Gaudi2/ GPU
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
+tuning_device = "cuda:0"  ## or "cpu", "hpu"
+dtype = "auto" if tuning_device!="hpu" else torch.bfloat16
 model_name = "meta-llama/Llama-2-7b-hf"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-bits, group_size, scheme = 4, 128, "asym"
 
-# need to load model first, then import
 from auto_round import AutoRound
-
-tuning_device = "hpu"
+bits, group_size, scheme = 4, 128, "asym"
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device=tuning_device)
 autoround.quantize()
+output_dir = "./tmp_autoround"
+autoround.save_quantized(output_dir) 
 ```
-
 
 <details>
   <summary>Detailed Hyperparameters</summary>

@@ -26,16 +26,63 @@ from auto_round.utils import get_module, logger, quant_weight_w_scale, set_modul
 from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear
 
+from auto_round.export.register import register_format
 
-def compress_model(
-    model,
-    weight_config: Union[str, dict],
-    enable_full_range=False,
-    compression_dtype=torch.int32,
-    compression_dim=1,
-    device="cpu",
-    use_optimum_format=True,
-    inplace=False,
+@register_format("itrex")
+def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
+    """Save configure file and weights for CPU backend inference."""
+    model = kwargs["model"]
+    weight_config = kwargs["weight_config"]
+    sym = kwargs["scheme"] == "sym"
+    bits = kwargs["bits"]
+    group_size = kwargs["group_size"]
+    iters = kwargs["iters"]
+    lr = kwargs["lr"]
+    minmax_lr = kwargs["minmax_lr"]
+    enable_minmax_tuning = kwargs["enable_minmax_tuning"]
+    use_quant_input = kwargs["use_quant_input"]
+    scale_dtype = kwargs["scale_dtype"]
+    tokenizer = kwargs["tokenizer"]
+    if output_dir is None:
+        compressed_model = _pack_model(model, weight_config, inplace=inplace)
+        return compressed_model
+
+    compressed_model = _pack_model(model, weight_config, inplace=inplace)
+    quantize_config = QuantConfig(
+        bits=bits,
+        group_size=group_size,
+        sym=sym,
+        iters=iters,
+        lr=lr,
+        minmax_lr=minmax_lr,
+        enable_minmax_tuning=enable_minmax_tuning,
+        use_quant_input=use_quant_input,
+        scale_dtype=str(scale_dtype),
+    )
+    if quantize_config is not None:
+        config = compressed_model.config
+        setattr(config, "quantization_config", quantize_config.to_dict())
+        config.save_pretrained(output_dir)
+        quantize_config.save_pretrained(output_dir)
+    try:
+        compressed_model.save_pretrained(output_dir, safe_serialization=True)
+        if tokenizer is not None:
+            tokenizer.save_pretrained(output_dir)
+        logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
+    except IOError as e:  # pragma: no cover
+        logger.error("Fail to save configure file and weights due to {}.".format(e))
+    return compressed_model
+
+
+def _pack_model(
+        model,
+        weight_config: Union[str, dict],
+        enable_full_range=False,
+        compression_dtype=torch.int32,
+        compression_dim=1,
+        device="cpu",
+        use_optimum_format=True,
+        inplace=False,
 ):
     """Convert Linear to WeightOnlyLinear for low memory inference.
 
