@@ -34,4 +34,3 @@ def register_format(name):
         return format
 
     return register
-
