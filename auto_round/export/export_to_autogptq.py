@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import copy
 import json
 import os
 from os.path import isdir, isfile, join
@@ -42,10 +43,8 @@ from typing import Dict, List, Optional, Union
 import torch
 from safetensors.torch import save_file as safe_save
 
-from auto_round.utils import logger
 from auto_round.export.register import register_format
-import copy
-from auto_round.utils import get_block_names, get_module, check_to_quantized
+from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
 
 
 @register_format("auto_gptq")
@@ -154,20 +153,20 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
 
 
 def _save_quantized_to_autogptq(
-        model,
-        save_dir: str,
-        bits=4,
-        group_size=128,
-        sym=False,
-        iters=200,
-        lr=5e-3,
-        minmax_lr=5e-3,
-        enable_minmax_tuning=True,
-        use_quant_input=True,
-        use_safetensors: bool = True,
-        scale_dtype=torch.float32,
-        safetensors_metadata: Optional[Dict[str, str]] = None,
-        modules_in_block_to_quantize=None,
+    model,
+    save_dir: str,
+    bits=4,
+    group_size=128,
+    sym=False,
+    iters=200,
+    lr=5e-3,
+    minmax_lr=5e-3,
+    enable_minmax_tuning=True,
+    use_quant_input=True,
+    use_safetensors: bool = True,
+    scale_dtype=torch.float32,
+    safetensors_metadata: Optional[Dict[str, str]] = None,
+    modules_in_block_to_quantize=None,
 ):
     """Save quantized model and configs to local disk for cuda."""
     os.makedirs(save_dir, exist_ok=True)

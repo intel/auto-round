@@ -21,12 +21,12 @@ from typing import Dict, List, Optional, Union
 import torch
 from safetensors.torch import save_file as safe_save
 
+from auto_round.export.register import register_format
 from auto_round.utils import get_module, logger, quant_weight_w_scale, set_module
 
 from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear
 
-from auto_round.export.register import register_format
 
 @register_format("itrex")
 def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
@@ -75,14 +75,14 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
 
 
 def _pack_model(
-        model,
-        weight_config: Union[str, dict],
-        enable_full_range=False,
-        compression_dtype=torch.int32,
-        compression_dim=1,
-        device="cpu",
-        use_optimum_format=True,
-        inplace=False,
+    model,
+    weight_config: Union[str, dict],
+    enable_full_range=False,
+    compression_dtype=torch.int32,
+    compression_dim=1,
+    device="cpu",
+    use_optimum_format=True,
+    inplace=False,
 ):
     """Convert Linear to WeightOnlyLinear for low memory inference.
 

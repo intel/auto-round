@@ -30,17 +30,18 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 tuning_device = "cuda:0"  ## or "cpu", "hpu"
-dtype = "auto" if tuning_device!="hpu" else torch.bfloat16
+dtype = "auto" if tuning_device != "hpu" else torch.bfloat16
 model_name = "meta-llama/Llama-2-7b-hf"
 model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
 from auto_round import AutoRound
+
 bits, group_size, scheme = 4, 128, "asym"
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, scheme=scheme, device=tuning_device)
 autoround.quantize()
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir) 
+autoround.save_quantized(output_dir)
 ```
 
 <details>
