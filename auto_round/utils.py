@@ -516,13 +516,12 @@ def detect_device(device=None):
             return 0 <= num
         except:
             return False
-        
-        
+
     dev_idx = None
     if is_valid_digit(device):
         dev_idx = int(device)
-        device = 'auto'
-    if device is None or device=="auto":
+        device = "auto"
+    if device is None or device == "auto":
         if torch.cuda.is_available():
             device = torch.device("cuda")
             logger.info("Using GPU device")
@@ -605,4 +604,3 @@ class CpuInfo(object):
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
         return 0
-
