@@ -214,15 +214,12 @@ if __name__ == '__main__':
     if not args.low_gpu_mem_usage:
         model = model.to(torch_device)
 
-    scheme = "asym"
-    if args.sym:
-        scheme = "sym"
     round = AutoRound
     if args.adam:
         round = AutoAdamRound
 
     weight_config = {}
-    if args.deployment_device == 'gpu':
+    if 'gpu' in args.deployment_device:
         for n, m in model.named_modules():
             if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
                 if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
@@ -230,7 +227,7 @@ if __name__ == '__main__':
                     print(
                         f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
 
-    autoround = round(model, tokenizer, args.bits, args.group_size, scheme, bs=args.train_bs,
+    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, bs=args.train_bs,
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
                       amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
