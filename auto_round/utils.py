@@ -14,12 +14,12 @@
 
 import copy
 import logging
-import subprocess
 from collections import UserDict
-
 # for cpu usage
 import cpuinfo
+import subprocess
 import psutil
+
 import torch
 from torch.amp import autocast
 
@@ -508,13 +508,12 @@ def check_to_quantized(config):
             return False
         return True
 
-
 def detect_device(device=None):
     if device is None:
         if torch.cuda.is_available():
             device = torch.device("cuda:0")
             logger.info("Using GPU device")
-        elif torch.hpu.is_available():
+        elif is_hpu_available:
             device = torch.device("hpu")
             logger.info("Using HPU device")
         # Use CPU as a fallback
@@ -525,8 +524,7 @@ def detect_device(device=None):
     elif isinstance(device, torch.device):
         device = str(device)
     return device
-
-
+    
 class CpuInfo(object):
     """Get CPU Info."""
 
@@ -590,4 +588,4 @@ class CpuInfo(object):
             if proc.stdout:
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
-        return 0
+        return 0		
