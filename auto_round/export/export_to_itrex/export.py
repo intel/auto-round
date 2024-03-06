@@ -33,7 +33,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     """Save configure file and weights for CPU backend inference."""
     model = kwargs["model"]
     weight_config = kwargs["weight_config"]
-    sym = kwargs["scheme"] == "sym"
+    sym = kwargs["sym"]
     bits = kwargs["bits"]
     group_size = kwargs["group_size"]
     iters = kwargs["iters"]
@@ -44,7 +44,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
 
-    compressed_model = _pack_model(model, weight_config, inplace=inplace)
+    compressed_model = pack_model(model, weight_config, inplace=inplace)
     if output_dir is None:
         return compressed_model
     quantize_config = QuantConfig(
@@ -73,7 +73,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     return compressed_model
 
 
-def _pack_model(
+def pack_model(
     model,
     weight_config: Union[str, dict],
     enable_full_range=False,
@@ -118,7 +118,7 @@ def _pack_model(
         dtype = v["data_type"]
         num_bits = v["bits"]
         group_size = v["group_size"]
-        scheme = v["scheme"]
+        sym = v["sym"]
         scale_dtype = v["scale_dtype"]
         m = get_module(compressed_model, k)
         fp_weight = m.weight.data
@@ -126,13 +126,13 @@ def _pack_model(
         convert_dtype = torch.float32 if fp_weight.device.type == "cpu" else scale_dtype
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor(scale, dtype=convert_dtype)
-            zp = None if scheme == "sym" else torch.tensor(zp, dtype=torch.int32)
+            zp = torch.tensor(zp, dtype=torch.int32)
         else:
             if not inplace:
                 scale = scale.clone()
-                zp = None if scheme == "sym" else zp.clone()
+                zp = zp.clone()
             scale = scale.to(dtype=convert_dtype)
-            zp = None if scheme == "sym" else zp.to(dtype=torch.int32)
+            zp = zp.to(dtype=torch.int32)
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
         int_weight = int_weight.type(torch.int32)
         new_module = WeightOnlyLinear(

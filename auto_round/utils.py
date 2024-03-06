@@ -149,13 +149,13 @@ def quant_weight_sym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dt
     return scale * (q - zp), scale, zp
 
 
-def quant_weight_actor(weight, num_bits, scheme, v, min_scale, max_scale, scale_dtype=torch.float16):
+def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dtype=torch.float16):
     """Quantizes and dequantizes weight symmetrically or asymmetrically .
 
     Args:
         weight: Tensor containing the weight to be quantized
         num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        scheme: Sym or asym
+        sym: Sym or asym
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for weight
         max_scale: Maximum scale coefficient for weight
@@ -164,14 +164,14 @@ def quant_weight_actor(weight, num_bits, scheme, v, min_scale, max_scale, scale_
         Quantized and dequantized weight, scale, zero-point
     """
     assert num_bits > 0, "num_bits should be larger than 0"
-    if scheme == "sym":
+    if sym:
         return quant_weight_sym(weight, num_bits, v, min_scale, max_scale, scale_dtype)
     else:
         return quant_weight_asym(weight, num_bits, v, min_scale, max_scale, scale_dtype)
 
 
 def quant_weight(
-    weight, num_bits=4, group_size=-1, scheme="asym", v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16
+    weight, num_bits=4, group_size=-1, sym=False, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16
 ):
     """Quantizes and dequantizes weight, handing the group size issue .
 
@@ -179,7 +179,7 @@ def quant_weight(
         weight: Tensor containing the weight to be quantized
         num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
         group_size: The number of elements shares scale and zero point
-        scheme: Sym or asym
+        sym: Sym or asym
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for weight
         max_scale: Maximum scale coefficient for weight
@@ -189,7 +189,7 @@ def quant_weight(
     """
     if group_size == -1 or weight.shape[1] < group_size:
         return quant_weight_actor(
-            weight, num_bits, scheme=scheme, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
+            weight, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
         )
     orig_shape = weight.shape
     if weight.shape[1] % group_size == 0:
@@ -198,7 +198,7 @@ def quant_weight(
             v = v.reshape(-1, group_size)
 
         weight, scale, zp = quant_weight_actor(
-            weight, num_bits, scheme=scheme, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
+            weight, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
         )
         weight = weight.reshape(orig_shape)
         scale = scale.reshape(weight.shape[0], -1)  ##only for linear, conv1d
@@ -214,7 +214,7 @@ def quant_weight(
         if isinstance(v, torch.Tensor):
             v = v.reshape(-1, group_size)
         weight_new, scale, zp = quant_weight_actor(
-            weight_new, num_bits, scheme=scheme, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
+            weight_new, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
         )
         weight_new = weight_new.reshape(orig_shape[0], -1)
 
@@ -510,9 +510,20 @@ def check_to_quantized(config):
 
 
 def detect_device(device=None):
-    if device is None:
+    def is_valid_digit(s):
+        try:
+            num = int(s)
+            return 0 <= num
+        except:
+            return False
+
+    dev_idx = None
+    if is_valid_digit(device):
+        dev_idx = int(device)
+        device = "auto"
+    if device is None or device == "auto":
         if torch.cuda.is_available():
-            device = torch.device("cuda:0")
+            device = torch.device("cuda")
             logger.info("Using GPU device")
         elif is_hpu_available:
             device = torch.device("hpu")
@@ -521,6 +532,8 @@ def detect_device(device=None):
         else:
             device = torch.device("cpu")
             logger.info("Using CPU device")
+        if dev_idx is not None:
+            device = str(device) + f":{dev_idx}"
         return str(device)
     elif isinstance(device, torch.device):
         device = str(device)

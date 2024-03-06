@@ -56,7 +56,7 @@ class WrapperLinear(torch.nn.Module):
         - orig_layer (torch.nn.Module): The original linear layer being wrapped.
         - num_bits (int): The number of bits for quantization.
         - group_size (int): The size of the groups for quantization.
-        - scheme (str): The quantization scheme to use.
+        - sym (bool): Whether the symmetric quantization is to be used.
         - value (torch.nn.Parameter): The learnable parameter for quantization.
         - enable_minmax_tuning (bool): Whether min-max scaling tuning is enabled.
         - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
@@ -67,7 +67,7 @@ class WrapperLinear(torch.nn.Module):
         self.num_bits = self.orig_layer.bits
         self.group_size = self.orig_layer.group_size
         self.scale_dtype = self.orig_layer.scale_dtype
-        self.scheme = self.orig_layer.scheme
+        self.sym = self.orig_layer.sym
         self.value = torch.nn.Parameter(
             torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device), requires_grad=True
         )
@@ -103,7 +103,7 @@ class WrapperLinear(torch.nn.Module):
             self.orig_layer.weight,
             self.num_bits,
             self.group_size,
-            self.scheme,
+            self.sym,
             v,
             min_scale,
             max_scale,
@@ -133,7 +133,7 @@ class WrapperLinear(torch.nn.Module):
             weight,
             self.num_bits,
             self.group_size,
-            self.scheme,
+            self.sym,
             self.value,
             self.min_scale,
             self.max_scale,
@@ -153,14 +153,14 @@ class WrapperTransformerConv1d(torch.nn.Module):
         - orig_layer (torch.nn.Module): The original 1D convolutional layer to be wrapped.
         - num_bits (int): The number of bits for quantization.
         - group_size (int): The size of the groups for quantization.
-        - scheme (str): The quantization scheme to use.
+        - sym (bool): Whether symmetric quantization is to be used.
         - enable_minmax_tuning (bool): Whether to enable min-max scaling tuning. Default is True.
 
         Attributes:
         - orig_layer (torch.nn.Module): The original 1D convolutional layer being wrapped.
         - num_bits (int): The number of bits for quantization.
         - group_size (int): The size of the groups for quantization.
-        - scheme (str): The quantization scheme to use.
+        - sym (bool): Whether symmetric quantization is to be used.
         - weight_t (torch.Tensor): Transposed weight tensor of the original layer.
         - value (torch.nn.Parameter): The learnable parameter for quantization.
         - enable_minmax_tuning (bool): Whether min-max scaling tuning is enabled.
@@ -171,7 +171,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.orig_layer = orig_layer
         self.num_bits = self.orig_layer.bits
         self.group_size = self.orig_layer.group_size
-        self.scheme = self.orig_layer.scheme
+        self.sym = self.orig_layer.sym
         device = self.orig_layer.weight.device
         self.weight_t = self.orig_layer.weight.t()
         self.value = torch.nn.Parameter(torch.zeros(self.weight_t.shape, device=device), requires_grad=True)
@@ -198,7 +198,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         min_scale.clamp_(-1, 0)
         max_scale.clamp_(-1, 0)
         weight_q, scale, zp = quant_weight(
-            self.weight_t, self.num_bits, self.group_size, self.scheme, v, min_scale, max_scale, self.scale_dtype
+            self.weight_t, self.num_bits, self.group_size, self.sym, v, min_scale, max_scale, self.scale_dtype
         )
         self.orig_layer.weight.data.copy_(weight_q.t())
         self.orig_layer.weight.grad = None
@@ -222,7 +222,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
             self.weight_t,
             self.num_bits,
             self.group_size,
-            self.scheme,
+            self.sym,
             self.value,
             self.min_scale,
             self.max_scale,
@@ -264,29 +264,32 @@ def wrapper_block(block, enable_minmax_tuning):
         enable_minmax_tuning: A boolean indicating whether min-max tuning is enabled.
 
     Returns:
-        list: A list of names of the wrapped layers.
+        list: A list of names of the wrapped layers and unwrapped layers.
     """
-    names = []
+    quantized_layers = []
+    unquantized_layers = []
     for n, m in block.named_modules():
         if isinstance(m, torch.nn.Linear):
             if not check_to_quantized(m):
+                unquantized_layers.append(n)
                 continue
             new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning)
             set_module(block, n, new_m)
-            names.append(n)
+            quantized_layers.append(n)
 
         try:
             import transformers
 
             if isinstance(m, transformers.modeling_utils.Conv1D):
                 if not check_to_quantized(m):
+                    unquantized_layers.append(n)
                     continue
                 new_m = WrapperTransformerConv1d(m, enable_minmax_tuning=enable_minmax_tuning)
                 set_module(block, n, new_m)
-                names.append(n)
+                quantized_layers.append(n)
         except:
             pass
-    return names
+    return quantized_layers, unquantized_layers
 
 
 @torch.no_grad()
@@ -326,7 +329,7 @@ class AutoRound(object):
         tokenizer: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
-        scheme (str): The quantization scheme (sym/asym) to be used (default is "asym").
+        sym (bool): Whether symmetric quantization is to be used (default is False).
         weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
         weight_config={
                    'layer1':##layer_name
@@ -334,14 +337,14 @@ class AutoRound(object):
                        'data_type': 'int',
                        'bits': 4,
                        'group_size': 32,
-                       'scheme': "asym", ## or sym
+                       'sym': False
                    }
                    ...
                }
         enable_full_range (bool): Whether to enable full range quantization (default is False).
-        bs (int): Batch size for training (default is 8).
+        batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for tuning (default is "cuda:0").
+        device: The device to be used for tuning (default is "auto").
         lr_scheduler: The learning rate scheduler to be used.
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
@@ -376,15 +379,15 @@ class AutoRound(object):
         tokenizer,
         bits: int = 4,
         group_size: int = 128,
-        scheme: str = "asym",
+        sym: bool = False,
         weight_config: dict = {},
         enable_full_range: bool = False,  ##for symmetric, TODO support later
-        bs: int = 8,
+        batch_size: int = 8,
         amp: bool = True,
         device=None,
         lr_scheduler=None,
         dataloader=None,  ## to support later
-        dataset_name: str = "NeelNanda/pile-10k",
+        dataset: str = "NeelNanda/pile-10k",
         dataset_split: str = "train",
         use_quant_input: bool = True,
         enable_minmax_tuning: bool = True,
@@ -413,7 +416,7 @@ class AutoRound(object):
         self.n_blocks = n_blocks
         self.bits = bits
         self.group_size = group_size
-        self.scheme = scheme
+        self.sym = sym
         self.low_gpu_mem_usage = low_gpu_mem_usage
         self.data_type = data_type
         self.supported_types = [torch.nn.Linear]
@@ -428,7 +431,7 @@ class AutoRound(object):
         self.seed = seed
         self.tokenizer = tokenizer
         self.seqlen = seqlen
-        self.train_bs = bs
+        self.train_bs = batch_size
         self.n_blocks = n_blocks
         self.device = detect_device(device)
 
@@ -454,7 +457,7 @@ class AutoRound(object):
         else:
             self.model = self.model.to(torch.float32)
         logger.info(f"using {self.model.dtype} for quantization tuning")
-        self.dataset_name = dataset_name
+        self.dataset_name = dataset
 
         self.dataloader = dataloader
         self.iters = iters
@@ -478,6 +481,7 @@ class AutoRound(object):
         self.set_layerwise_config(self.weight_config)
         self.optimizer = self.get_optimizer(None)
         self.check_configs()
+        torch.set_printoptions(precision=5)
 
     def get_optimizer(self, optimizer):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.
@@ -568,7 +572,7 @@ class AutoRound(object):
                 weight_config[n]["data_type"] = self.data_type
                 weight_config[n]["bits"] = self.bits
                 weight_config[n]["group_size"] = self.group_size
-                weight_config[n]["scheme"] = self.scheme
+                weight_config[n]["sym"] = self.sym
             else:
                 if "data_type" not in weight_config[n].keys():
                     weight_config[n]["data_type"] = self.data_type
@@ -576,14 +580,14 @@ class AutoRound(object):
                     weight_config[n]["bits"] = self.bits
                 if "group_size" not in weight_config[n].keys():
                     weight_config[n]["group_size"] = self.group_size
-                if "scheme" not in weight_config[n].keys():
-                    weight_config[n]["scheme"] = self.scheme
+                if "sym" not in weight_config[n].keys():
+                    weight_config[n]["sym"] = self.sym
             weight_config[n]["scale_dtype"] = self.scale_dtype
 
             m.data_type = weight_config[n]["data_type"]
             m.bits = weight_config[n]["bits"]
             m.group_size = weight_config[n]["group_size"]
-            m.scheme = weight_config[n]["scheme"]
+            m.sym = weight_config[n]["sym"]
             m.scale_dtype = weight_config[n]["scale_dtype"]
 
     @torch.no_grad()
@@ -801,8 +805,7 @@ class AutoRound(object):
         if q_input is not None:
             input_ids = q_input.to(cache_device)
 
-        names = wrapper_block(block, self.enable_minmax_tuning)
-        logger.info(names)
+        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
 
         round_params = []
         minmax_params = []
@@ -837,6 +840,7 @@ class AutoRound(object):
         best_loss = torch.finfo(torch.float).max
         mse_loss = torch.nn.MSELoss().to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
+        init_loss = None
         for i in range(self.iters):
             if self.sampler == "rand":
                 indices = torch.randperm(n_samples)[:pick_samples]
@@ -871,6 +875,9 @@ class AutoRound(object):
                     )
 
                 total_loss += loss.item() / self.gradient_accumulate_steps
+                if i == 0:
+                    init_loss = total_loss
+
                 self.scale_loss_and_backward(scaler, loss)
 
             if total_loss < best_loss:
@@ -888,6 +895,20 @@ class AutoRound(object):
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
                     break
             self.step(scaler, optimizer, lr_schedule)
+
+        last_loss = total_loss
+        best_iter = self.iters
+        if not self.not_use_best_mse:
+            last_loss = best_loss
+            best_iter = last_best_iter
+        dump_info = (
+            f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))}"
+            f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+        )
+        logger.info(dump_info)
+        if len(unquantized_layer_names) != 0:
+            logger.info(f"{unquantized_layer_names} have not been quantized")
+
         unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.use_quant_input:
             q_outputs = self.get_block_outputs(
@@ -974,7 +995,7 @@ class AutoRound(object):
             inplace=inplace,
             bits=self.bits,
             group_size=self.group_size,
-            scheme=self.scheme,
+            sym=self.sym,
             iters=self.iters,
             lr=self.lr,
             minmax_lr=self.minmax_lr,
@@ -1049,6 +1070,21 @@ class AutoRound(object):
         end_time = time.time()
         cost_time = end_time - start_time
         logger.info(f"quantization tuning time {cost_time}")
+        ## dump a summary
+        quantized_layers = []
+        unquantized_layers = []
+        for n, m in self.model.named_modules():
+            if isinstance(m, tuple(self.supported_types)):
+                if self.weight_config[n]["bits"] == 16:
+                    unquantized_layers.append(n)
+                else:
+                    quantized_layers.append(n)
+        logger.info(
+            f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
+        )
+        if len(unquantized_layers) > 0:
+            logger.info(f"Summary: {unquantized_layers} have not been quantized")
+
         self.quantized = True
         self.model = self.model.to(self.model_orig_dtype)
         return self.model, self.weight_config
@@ -1062,12 +1098,12 @@ class AutoOPTRound(AutoRound):
         tokenizer: An optional tokenizer for processing input data.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
-        scheme (str): The quantization scheme to be used (default is "asym").
+        sym (bool): Whether sym to be used (default is False).
         weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
-        bs (int): Batch size for training (default is 8).
+        batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "cuda:0").
+        device: The device to be used for training (default is "auto").
         lr_scheduler: The learning rate scheduler to be used.
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
@@ -1087,6 +1123,8 @@ class AutoOPTRound(AutoRound):
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
+        scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
+                           have different choices.
         optimizer: string or object
         **kwargs: Additional keyword arguments.
 
@@ -1100,15 +1138,15 @@ class AutoOPTRound(AutoRound):
         tokenizer=None,
         bits: int = 4,
         group_size: int = 128,
-        scheme: str = "asym",
+        sym: bool = False,
         weight_config: dict = {},
         enable_full_range: bool = False,
-        bs: int = 8,
+        batch_size: int = 8,
         amp: bool = True,
-        device="cuda:0",
+        device="auto",
         lr_scheduler=None,
         dataloader=None,
-        dataset_name: str = "NeelNanda/pile-10k",
+        dataset: str = "NeelNanda/pile-10k",
         dataset_split: str = "train",
         use_quant_input: bool = True,
         enable_minmax_tuning: bool = True,
@@ -1125,6 +1163,7 @@ class AutoOPTRound(AutoRound):
         not_use_best_mse: bool = False,
         dynamic_max_gap: int = -1,
         data_type: str = "int",
+        scale_dtype: str = "fp32",
         optimizer="AdamW",
         **kwargs,
     ):
@@ -1133,15 +1172,15 @@ class AutoOPTRound(AutoRound):
             tokenizer,
             bits,
             group_size,
-            scheme,
+            sym,
             weight_config,
             enable_full_range,
-            bs,
+            batch_size,
             amp,
             device,
             lr_scheduler,
             dataloader,
-            dataset_name,
+            dataset,
             dataset_split,
             use_quant_input,
             enable_minmax_tuning,
@@ -1158,6 +1197,7 @@ class AutoOPTRound(AutoRound):
             not_use_best_mse,
             dynamic_max_gap,
             data_type,
+            scale_dtype,
             **kwargs,
         )
 
@@ -1212,12 +1252,12 @@ class AutoAdamRound(AutoOPTRound):
         tokenizer: An optional tokenizer for processing input data.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
-        scheme (str): The quantization scheme to be used (default is "asym").
+        sym (str): Whether symmetric quantization to be used (default is False).
         weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
-        bs (int): Batch size for training (default is 8).
+        batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "cuda:0").
+        device: The device to be used for training (default is "auto").
         lr_scheduler: The learning rate scheduler to be used.
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
@@ -1238,6 +1278,8 @@ class AutoAdamRound(AutoOPTRound):
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
         optimizer: string or object
+        scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
+                           have different choices.
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -1250,15 +1292,15 @@ class AutoAdamRound(AutoOPTRound):
         tokenizer=None,
         bits: int = 4,
         group_size: int = 128,
-        scheme: str = "asym",
+        sym: bool = False,
         weight_config: dict = {},
         enable_full_range: bool = False,
-        bs: int = 8,
+        batch_size: int = 8,
         amp: bool = True,
-        device="cuda:0",
+        device="auto",
         lr_scheduler=None,
         dataloader=None,
-        dataset_name: str = "NeelNanda/pile-10k",
+        dataset: str = "NeelNanda/pile-10k",
         dataset_split: str = "train",
         use_quant_input: bool = True,
         enable_minmax_tuning: bool = True,
@@ -1275,6 +1317,7 @@ class AutoAdamRound(AutoOPTRound):
         not_use_best_mse: bool = False,
         dynamic_max_gap: int = -1,
         data_type: str = "int",
+        scale_dtype: str = "fp32",
         optimizer="AdamW",
         **kwargs,
     ):
@@ -1283,15 +1326,15 @@ class AutoAdamRound(AutoOPTRound):
             tokenizer,
             bits,
             group_size,
-            scheme,
+            sym,
             weight_config,
             enable_full_range,
-            bs,
+            batch_size,
             amp,
             device,
             lr_scheduler,
             dataloader,
-            dataset_name,
+            dataset,
             dataset_split,
             use_quant_input,
             enable_minmax_tuning,
@@ -1308,6 +1351,7 @@ class AutoAdamRound(AutoOPTRound):
             not_use_best_mse,
             dynamic_max_gap,
             data_type,
+            scale_dtype,
             optimizer,
             **kwargs,
         )
