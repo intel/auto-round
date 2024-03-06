@@ -6,8 +6,8 @@ import unittest
 sys.path.insert(0, ".")
 import torch
 import transformers
-import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from auto_round import AutoRound
 
 
@@ -103,7 +103,7 @@ class TestAutoRound(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         model_name = "facebook/opt-125m"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype='auto', trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -114,8 +114,15 @@ class TestAutoRound(unittest.TestCase):
 
     def test_default(self):
         bits, group_size, sym = 4, 128, False
-        autoround = AutoRound(self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2,
-                              dataloader=self.llm_dataloader)
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            dataloader=self.llm_dataloader,
+        )
         autoround.quantize()
         if torch.cuda.is_available():
             autoround.save_quantized(output_dir="./saved", inplace=False)
@@ -123,47 +130,97 @@ class TestAutoRound(unittest.TestCase):
 
     def test_sym(self):
         bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2,
-                              dataloader=self.llm_dataloader)
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            dataloader=self.llm_dataloader,
+        )
         autoround.quantize()
 
     def test_w4g1(self):
         bits, group_size, sym = 4, -1, True
-        autoround = AutoRound(self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2,
-                              dataloader=self.llm_dataloader)
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            dataloader=self.llm_dataloader,
+        )
         autoround.quantize()
 
     def test_w3g128(self):
         bits, group_size, sym = 3, 128, True
-        autoround = AutoRound(self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2,
-                              dataloader=self.llm_dataloader)
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            dataloader=self.llm_dataloader,
+        )
         autoround.quantize()
 
     def test_w2g128(self):
         bits, group_size, sym = 2, 128, True
-        autoround = AutoRound(self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2,
-                              dataloader=self.llm_dataloader)
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            dataloader=self.llm_dataloader,
+        )
         autoround.quantize()
 
     def test_disable_use_quant_input(self):
         bits, group_size, sym = 4, -1, True
-        autoround = AutoRound(self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2,
-                              use_quant_input=False,
-                              dataloader=self.llm_dataloader)
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            use_quant_input=False,
+            dataloader=self.llm_dataloader,
+        )
         autoround.quantize()
 
     def test_disable_minmax_tuning(self):
         bits, group_size, sym = 4, -1, True
-        autoround = AutoRound(self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2,
-                              enable_minmax_tuning=False,
-                              dataloader=self.llm_dataloader)
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            enable_minmax_tuning=False,
+            dataloader=self.llm_dataloader,
+        )
         autoround.quantize()
 
     def test_signround(self):
         bits, group_size, sym = 4, -1, False
-        autoround = AutoRound(self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2,
-                              enable_minmax_tuning=False, use_quant_input=False,
-                              dataloader=self.llm_dataloader)
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            enable_minmax_tuning=False,
+            use_quant_input=False,
+            dataloader=self.llm_dataloader,
+        )
         autoround.quantize()
 
 
