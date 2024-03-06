@@ -514,7 +514,7 @@ def detect_device(device=None):
         if torch.cuda.is_available():
             device = torch.device("cuda:0")
             logger.info("Using GPU device")
-        elif torch.hpu.is_available():
+        elif is_hpu_available:
             device = torch.device("hpu")
             logger.info("Using HPU device")
         # Use CPU as a fallback
