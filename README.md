@@ -140,7 +140,7 @@ from intel_extension_for_transformers.transformers import AutoModelForCausalLM, 
 from transformers import AutoTokenizer
 
 quantized_model_path = "./tmp_autoround"
-scheme="sym" if sym else "asym"
+scheme = "sym" if sym else "asym"
 woq_config = WeightOnlyQuantConfig(
     group_size=group_size, scheme=scheme, use_autoround=True
 )  ##only supports 4 bits currently

@@ -384,7 +384,7 @@ class AutoRound(object):
         device=None,
         lr_scheduler=None,
         dataloader=None,  ## to support later
-        dataset : str = "NeelNanda/pile-10k",
+        dataset: str = "NeelNanda/pile-10k",
         dataset_split: str = "train",
         use_quant_input: bool = True,
         enable_minmax_tuning: bool = True,
