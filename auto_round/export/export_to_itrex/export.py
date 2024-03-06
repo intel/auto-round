@@ -151,4 +151,3 @@ def pack_model(
         set_module(compressed_model, k, new_module)
 
     return compressed_model
-

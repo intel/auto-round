@@ -13,4 +13,3 @@
 # limitations under the License.
 from .export import save_quantized_as_itrex, pack_model
 from .config import QuantConfig
-

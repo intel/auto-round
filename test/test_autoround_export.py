@@ -1,4 +1,3 @@
-
 import copy
 import shutil
 import sys
@@ -10,6 +9,7 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+
 
 class SimpleDataLoader:
     def __init__(self):
@@ -56,10 +56,10 @@ class TestAutoroundExport(unittest.TestCase):
         model = copy.deepcopy(self.gptj)
         out1 = model(self.lm_input)
         round = AutoRound
-        optq_1 = round(
-            model, self.tokenizer, n_samples=20, amp=False, seqlen=10, iters=10)
+        optq_1 = round(model, self.tokenizer, n_samples=20, amp=False, seqlen=10, iters=10)
         q_model, weight_config1 = optq_1.quantize()
         from auto_round.export.export_to_itrex import pack_model
+
         compressed_model = pack_model(model=q_model, weight_config=weight_config1)
         out2 = model(self.lm_input)
         out3 = q_model(self.lm_input)
@@ -72,7 +72,7 @@ class TestAutoroundExport(unittest.TestCase):
 
         model = copy.deepcopy(self.gptj)
         out6 = model(self.lm_input)
-        optq_2 = round(model, self.tokenizer, device='cpu', n_samples=20, seqlen=10)
+        optq_2 = round(model, self.tokenizer, device="cpu", n_samples=20, seqlen=10)
         q_model, weight_config2 = optq_2.quantize()
         compressed_model = pack_model(model=q_model, weight_config=weight_config2, inplace=False)
         out4 = q_model(self.lm_input)
