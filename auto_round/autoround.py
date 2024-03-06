@@ -339,7 +339,7 @@ class AutoRound(object):
                    ...
                }
         enable_full_range (bool): Whether to enable full range quantization (default is False).
-        bs (int): Batch size for training (default is 8).
+        batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
         device: The device to be used for tuning (default is "cuda:0").
         lr_scheduler: The learning rate scheduler to be used.
@@ -379,7 +379,7 @@ class AutoRound(object):
         sym: bool = False,
         weight_config: dict = {},
         enable_full_range: bool = False,  ##for symmetric, TODO support later
-        bs: int = 8,
+        batch_size: int = 8,
         amp: bool = True,
         device=None,
         lr_scheduler=None,
@@ -428,7 +428,7 @@ class AutoRound(object):
         self.seed = seed
         self.tokenizer = tokenizer
         self.seqlen = seqlen
-        self.train_bs = bs
+        self.train_bs = batch_size
         self.n_blocks = n_blocks
         self.device = detect_device(device)
 
@@ -1065,7 +1065,7 @@ class AutoOPTRound(AutoRound):
         sym (bool): Whether sym to be used (default is False).
         weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
-        bs (int): Batch size for training (default is 8).
+        batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
         device: The device to be used for training (default is "cuda:0").
         lr_scheduler: The learning rate scheduler to be used.
@@ -1087,6 +1087,8 @@ class AutoOPTRound(AutoRound):
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
+        scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
+                           have different choices.
         optimizer: string or object
         **kwargs: Additional keyword arguments.
 
@@ -1103,7 +1105,7 @@ class AutoOPTRound(AutoRound):
         sym: bool = False,
         weight_config: dict = {},
         enable_full_range: bool = False,
-        bs: int = 8,
+        batch_size: int = 8,
         amp: bool = True,
         device="cuda:0",
         lr_scheduler=None,
@@ -1125,6 +1127,7 @@ class AutoOPTRound(AutoRound):
         not_use_best_mse: bool = False,
         dynamic_max_gap: int = -1,
         data_type: str = "int",
+        scale_dtype: str = "fp32",
         optimizer="AdamW",
         **kwargs,
     ):
@@ -1136,7 +1139,7 @@ class AutoOPTRound(AutoRound):
             sym,
             weight_config,
             enable_full_range,
-            bs,
+            batch_size,
             amp,
             device,
             lr_scheduler,
@@ -1158,6 +1161,7 @@ class AutoOPTRound(AutoRound):
             not_use_best_mse,
             dynamic_max_gap,
             data_type,
+            scale_dtype,
             **kwargs,
         )
 
@@ -1215,7 +1219,7 @@ class AutoAdamRound(AutoOPTRound):
         sym (str): Whether symmetric quantization to be used (default is False).
         weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
-        bs (int): Batch size for training (default is 8).
+        batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
         device: The device to be used for training (default is "cuda:0").
         lr_scheduler: The learning rate scheduler to be used.
@@ -1238,6 +1242,8 @@ class AutoAdamRound(AutoOPTRound):
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
         optimizer: string or object
+        scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
+                           have different choices.
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -1253,7 +1259,7 @@ class AutoAdamRound(AutoOPTRound):
         sym: bool = False,
         weight_config: dict = {},
         enable_full_range: bool = False,
-        bs: int = 8,
+        batch_size: int = 8,
         amp: bool = True,
         device="cuda:0",
         lr_scheduler=None,
@@ -1275,6 +1281,7 @@ class AutoAdamRound(AutoOPTRound):
         not_use_best_mse: bool = False,
         dynamic_max_gap: int = -1,
         data_type: str = "int",
+        scale_dtype: str = "fp32",
         optimizer="AdamW",
         **kwargs,
     ):
@@ -1286,7 +1293,7 @@ class AutoAdamRound(AutoOPTRound):
             sym,
             weight_config,
             enable_full_range,
-            bs,
+            batch_size,
             amp,
             device,
             lr_scheduler,
@@ -1308,6 +1315,7 @@ class AutoAdamRound(AutoOPTRound):
             not_use_best_mse,
             dynamic_max_gap,
             data_type,
+            scale_dtype,
             optimizer,
             **kwargs,
         )
