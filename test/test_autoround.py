@@ -10,6 +10,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
+
 class LLMDataLoader:
     def __init__(self):
         self.batch_size = 1
@@ -17,6 +18,7 @@ class LLMDataLoader:
     def __iter__(self):
         for i in range(2):
             yield torch.ones([1, 10], dtype=torch.long)
+
 
 class TestAutoRound(unittest.TestCase):
     @classmethod
@@ -145,4 +147,3 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
