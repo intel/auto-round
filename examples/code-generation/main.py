@@ -156,13 +156,10 @@ if __name__ == '__main__':
     if not args.low_gpu_mem_usage:
         model = model.to(torch_device)
 
-    scheme = "asym"
-    if args.sym:
-        scheme = "sym"
     round = AutoRound
     if args.adam:
         round = AutoAdamRound
-    autoround = round(model, tokenizer, args.bits, args.group_size, scheme, bs=args.train_bs,
+    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, bs=args.train_bs,
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
                       amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,

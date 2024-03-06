@@ -52,7 +52,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     """Export the model to autogptq format to easily leverage cuda kernel."""
     model = kwargs["model"]
     weight_config = kwargs["weight_config"]
-    sym = kwargs["scheme"] == "sym"
+    sym = kwargs["sym"]
     bits = kwargs["bits"]
     group_size = kwargs["group_size"]
     iters = kwargs["iters"]
