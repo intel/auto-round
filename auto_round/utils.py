@@ -510,9 +510,21 @@ def check_to_quantized(config):
 
 
 def detect_device(device=None):
-    if device is None:
+    def is_valid_digit(s):
+        try:
+            num = int(s)
+            return 0 <= num
+        except:
+            return False
+        
+        
+    dev_idx = None
+    if is_valid_digit(device):
+        dev_idx = int(device)
+        device = 'auto'
+    if device is None or device=="auto":
         if torch.cuda.is_available():
-            device = torch.device("cuda:0")
+            device = torch.device("cuda")
             logger.info("Using GPU device")
         elif is_hpu_available:
             device = torch.device("hpu")
@@ -521,6 +533,8 @@ def detect_device(device=None):
         else:
             device = torch.device("cpu")
             logger.info("Using CPU device")
+        if dev_idx is not None:
+            device = str(device) + f":{dev_idx}"
         return str(device)
     elif isinstance(device, torch.device):
         device = str(device)
@@ -591,3 +605,4 @@ class CpuInfo(object):
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
         return 0
+

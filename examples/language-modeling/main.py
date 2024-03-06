@@ -34,8 +34,8 @@ if __name__ == '__main__':
     parser.add_argument("--eval_bs", default=4, type=int,
                         help="eval batch size")
 
-    parser.add_argument("--device", default=None, type=str,
-                        help="The device to be used for tuning. The default is set to None,"
+    parser.add_argument("--device", default="auto", type=str,
+                        help="The device to be used for tuning. The default is set to auto/None,"
                         "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
 
     parser.add_argument("--sym", action='store_true',
@@ -97,16 +97,11 @@ if __name__ == '__main__':
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
                         help="Where to store the final model.")
 
-    parser.add_argument("--eval_legacy", action='store_true',
-                        help="Whether to evaluate with a old lm_eval version(e.g. 0.3.0).")
-
     parser.add_argument("--disable_eval", action='store_true',
                         help="Whether to do lmeval evaluation.")
 
     args = parser.parse_args()
     set_seed(args.seed)
-
-
     tasks = args.tasks
     use_eval_legacy = False
     import subprocess
@@ -116,13 +111,9 @@ if __name__ == '__main__':
             return version
         except subprocess.CalledProcessError:
             return "Library not found"
-
-
     res = get_library_version("lm-eval")
     if res == "0.3.0":
         use_eval_legacy = True
-
-
     if not use_eval_legacy:
         from eval import eval_model
     else:
@@ -259,6 +250,7 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
+
 
 
 

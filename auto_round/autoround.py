@@ -344,7 +344,7 @@ class AutoRound(object):
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for tuning (default is "cuda:0").
+        device: The device to be used for tuning (default is "auto").
         lr_scheduler: The learning rate scheduler to be used.
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
@@ -901,7 +901,8 @@ class AutoRound(object):
         if not self.not_use_best_mse:
             last_loss = best_loss
             best_iter = last_best_iter
-        dump_info = f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+        dump_info = f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))}" \
+                    f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
@@ -1100,7 +1101,7 @@ class AutoOPTRound(AutoRound):
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "cuda:0").
+        device: The device to be used for training (default is "auto").
         lr_scheduler: The learning rate scheduler to be used.
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
@@ -1140,7 +1141,7 @@ class AutoOPTRound(AutoRound):
         enable_full_range: bool = False,
         batch_size: int = 8,
         amp: bool = True,
-        device="cuda:0",
+        device="auto",
         lr_scheduler=None,
         dataloader=None,
         dataset: str = "NeelNanda/pile-10k",
@@ -1254,7 +1255,7 @@ class AutoAdamRound(AutoOPTRound):
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
-        device: The device to be used for training (default is "cuda:0").
+        device: The device to be used for training (default is "auto").
         lr_scheduler: The learning rate scheduler to be used.
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
@@ -1294,7 +1295,7 @@ class AutoAdamRound(AutoOPTRound):
         enable_full_range: bool = False,
         batch_size: int = 8,
         amp: bool = True,
-        device="cuda:0",
+        device="auto",
         lr_scheduler=None,
         dataloader=None,
         dataset: str = "NeelNanda/pile-10k",
@@ -1352,3 +1353,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
