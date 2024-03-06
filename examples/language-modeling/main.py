@@ -218,7 +218,7 @@ if __name__ == '__main__':
                     print(
                         f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
 
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, bs=args.train_bs,
+    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
                       amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
@@ -250,7 +250,5 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
-
-
 
 

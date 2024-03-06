@@ -44,7 +44,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
 
-    compressed_model = _pack_model(model, weight_config, inplace=inplace)
+    compressed_model = pack_model(model, weight_config, inplace=inplace)
     if output_dir is None:
         return compressed_model
     quantize_config = QuantConfig(
@@ -73,7 +73,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     return compressed_model
 
 
-def _pack_model(
+def pack_model(
     model,
     weight_config: Union[str, dict],
     enable_full_range=False,
@@ -151,3 +151,4 @@ def _pack_model(
         set_module(compressed_model, k, new_module)
 
     return compressed_model
+

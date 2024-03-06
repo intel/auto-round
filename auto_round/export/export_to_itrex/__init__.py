@@ -11,5 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .export import save_quantized_as_itrex, _pack_model
+from .export import save_quantized_as_itrex, pack_model
 from .config import QuantConfig
+
