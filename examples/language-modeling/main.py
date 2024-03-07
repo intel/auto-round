@@ -210,13 +210,12 @@ if __name__ == '__main__':
         round = AutoAdamRound
 
     weight_config = {}
-    if 'gpu' in args.deployment_device:
-        for n, m in model.named_modules():
-            if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
-                if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                    weight_config[n] = {"data_type": "fp"}
-                    print(
-                        f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
+    for n, m in model.named_modules():
+        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
+            if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
+                weight_config[n] = {"data_type": "fp"}
+                print(
+                    f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
