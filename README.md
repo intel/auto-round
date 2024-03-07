@@ -38,7 +38,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 from auto_round import AutoRound
 
 bits, group_size, sym = 4, 128, False
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=tuning_device)
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=tuning_device)   
 autoround.quantize()
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir)
@@ -53,9 +53,8 @@ Please run the tuning code first
 
 ### Intel CPU
 ```python
-# save_quantized to itrex format first
-# Please read ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to understand the details
-# currently please install neural-speed (https://github.com/intel/neural-speed) from source
+# Please save the quantized model in 'itrex' format first, then refer to the ITREX tutorial for more details on inference with the INC4 model.
+# (https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed)
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
 from transformers import AutoTokenizer
 
@@ -166,7 +165,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | MBZUAI/LaMini-GPT-124M | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
 | EleutherAI/gpt-neo-125m | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
 | databricks/dolly-v2-3b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
-| stabilityai/stablelm-base-alpha-3b | [example](./examples/language-modeling/)                                                                                                                                                                                         
+| stabilityai/stablelm-base-alpha-3b | [example](./examples/language-modeling/)
 
 
 
@@ -197,3 +196,4 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
