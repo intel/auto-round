@@ -38,7 +38,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 from auto_round import AutoRound
 
 bits, group_size, sym = 4, 128, False
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=tuning_device)   
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=tuning_device)
 autoround.quantize()
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir)
@@ -196,4 +196,3 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
-
