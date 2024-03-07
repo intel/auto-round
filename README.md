@@ -53,7 +53,7 @@ Please run the tuning code first
 
 ### Intel CPU
 ```python
-# Please save the quantized model in 'itrex' format first, then refer to the ITREX tutorial for more details on inference with the INC4 model.
+# Please save the quantized model in 'itrex' format first, then refer to the ITREX tutorial for more details on inference with the INT4 model.
 # (https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed)
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
 from transformers import AutoTokenizer
