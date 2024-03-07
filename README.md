@@ -23,7 +23,7 @@ python setup.py install
 ```
 ## Usage of Tuning
 
-### On CPU/Gaudi2/ GPU
+### On CPU/ Gaudi2/ GPU
 
 ```python
 import torch
@@ -38,10 +38,53 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 from auto_round import AutoRound
 
 bits, group_size, sym = 4, 128, False
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=tuning_device)
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=tuning_device)   
 autoround.quantize()
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir)
+```
+
+
+
+## Model inference
+Please run the tuning code first
+
+
+
+### Intel CPU
+```python
+# save_quantized to itrex format first
+# Please read ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to understand the details
+# currently please install neural-speed (https://github.com/intel/neural-speed) from source
+from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
+from transformers import AutoTokenizer
+
+quantized_model_path = "./tmp_autoround"
+scheme = "sym" if sym else "asym"
+woq_config = WeightOnlyQuantConfig(
+    group_size=group_size, scheme=scheme, use_autoround=True
+)  ##only supports 4 bits currently
+prompt = "There is a girl who likes adventure,"
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, trust_remote_code=True)
+inputs = tokenizer(prompt, return_tensors="pt").input_ids
+model = AutoModelForCausalLM.from_pretrained(
+    quantized_model_path, quantization_config=woq_config, trust_remote_code=True, device="cpu"
+)
+outputs = model.generate(inputs, max_new_tokens=50)
+print(tokenizer.decode(outputs[0]))
+```
+
+
+### GPU
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+quantized_model_path = "./tmp_autoround"
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
 <details>
@@ -71,7 +114,7 @@ autoround.save_quantized(output_dir)
   
 - `seqlen (int)`: Data length of the sequence for tuning (default is 2048).
   
-- `bs (int)`: Batch size for training (default is 8).
+- `batch_size (int)`: Batch size for training (default is 8).
 
 - `scale_dtype (str)`: The data type of quantization scale to be used (default is "float32"), different kernels have different choices.
   
@@ -91,7 +134,7 @@ autoround.save_quantized(output_dir)
   
 - `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits or mixed precision.
   
-- `device`: The device to be used for tuning. The default is set to None, allowing for automatic detection.
+- `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.
 
 </details>
 
@@ -123,46 +166,8 @@ autoround.save_quantized(output_dir)
 | MBZUAI/LaMini-GPT-124M | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
 | EleutherAI/gpt-neo-125m | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
 | databricks/dolly-v2-3b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
-| stabilityai/stablelm-base-alpha-3b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| stabilityai/stablelm-base-alpha-3b | [example](./examples/language-modeling/)                                                                                                                                                                                         
 
-
-## Model inference
-Please run the tuning code first
-
-
-
-### Intel CPU
-```python
-# save_quantized to itrex format first
-# Please read ITREX(https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed) to understand the details
-# currently please install neural-speed (https://github.com/intel/neural-speed) from source
-from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
-from transformers import AutoTokenizer
-
-quantized_model_path = "./tmp_autoround"
-scheme = "sym" if sym else "asym"
-woq_config = WeightOnlyQuantConfig(
-    group_size=group_size, scheme=scheme, use_autoround=True
-)  ##only supports 4 bits currently
-prompt = "There is a girl who likes adventure,"
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, trust_remote_code=True)
-inputs = tokenizer(prompt, return_tensors="pt").input_ids
-model = AutoModelForCausalLM.from_pretrained(
-    quantized_model_path, quantization_config=woq_config, trust_remote_code=True, device="cpu"
-)
-outputs = model.generate(inputs, max_new_tokens=50)
-```
-### GPU
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
-text = "There is a girl who likes adventure,"
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-```
 
 
 
@@ -192,3 +197,4 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
