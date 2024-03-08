@@ -46,5 +46,6 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
+
 if __name__ == "__main__":
     unittest.main()
