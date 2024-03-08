@@ -481,7 +481,7 @@ class AutoRound(object):
         self.set_layerwise_config(self.weight_config)
         self.optimizer = self.get_optimizer(None)
         self.check_configs()
-        torch.set_printoptions(precision=5)
+        torch.set_printoptions(precision=3, sci_mode=True)
 
     def get_optimizer(self, optimizer):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.
@@ -644,6 +644,8 @@ class AutoRound(object):
                 split=self.dataset_split,
                 dataset_name=self.dataset_name,
             )
+
+        self.start_time = time.time()
         total_cnt = 0
         for data in self.dataloader:
             if data is None:
@@ -902,7 +904,7 @@ class AutoRound(object):
             last_loss = best_loss
             best_iter = last_best_iter
         dump_info = (
-            f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))}"
+            f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
         logger.info(dump_info)
@@ -1014,20 +1016,17 @@ class AutoRound(object):
         Returns:
         The quantized model and weight configurations.
         """
-        start_time = time.time()
         # logger.info("cache block input")
         block_names = get_block_names(self.model)
         if len(block_names) == 0:
             logger.warning("could not find blocks, exit with original model")
             return
-
         if self.amp:
             self.model = self.model.to(self.amp_dtype)
         if not self.low_gpu_mem_usage:
             self.model = self.model.to(self.device)
         inputs = self.cache_block_input(block_names[0], self.n_samples)
         del self.inputs
-
         if "input_ids" in inputs.keys():
             dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
             total_samples = inputs["input_ids"].shape[dim]
@@ -1068,7 +1067,7 @@ class AutoRound(object):
                     self.weight_config[n]["sym"] = None
 
         end_time = time.time()
-        cost_time = end_time - start_time
+        cost_time = end_time - self.start_time
         logger.info(f"quantization tuning time {cost_time}")
         ## dump a summary
         quantized_layers = []
@@ -1079,9 +1078,13 @@ class AutoRound(object):
                     unquantized_layers.append(n)
                 else:
                     quantized_layers.append(n)
-        logger.info(
+        summary_info = (
             f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
         )
+        if len(unquantized_layers) > 0:
+            summary_info += f",  {unquantized_layers} have not been quantized"
+
+        logger.info(summary_info)
         if len(unquantized_layers) > 0:
             logger.info(f"Summary: {unquantized_layers} have not been quantized")
 

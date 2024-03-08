@@ -1,11 +1,7 @@
 import argparse
 import random
 import sys
-
 sys.path.insert(0, '../..')
-from auto_round import (AutoRound,
-                        AutoAdamRound)
-
 parser = argparse.ArgumentParser()
 import torch
 import os
@@ -40,8 +36,9 @@ if __name__ == '__main__':
     parser.add_argument("--eval_bs", default=4, type=int,
                         help="eval batch size")
 
-    parser.add_argument("--device", default=0, type=str,
-                        help="device gpu int number, or 'cpu' ")
+    parser.add_argument("--device", default="auto", type=str,
+                        help="The device to be used for tuning. The default is set to auto/None,"
+                        "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
 
     parser.add_argument("--sym", action='store_true',
                         help=" sym quantization")
@@ -84,7 +81,7 @@ if __name__ == '__main__':
                         help="whether enable weight minmax tuning")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
-                        help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu',"
+                        help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
     parser.add_argument("--scale_dtype", default='fp32',
@@ -101,31 +98,30 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     set_seed(args.seed)
-
+    tasks = args.tasks
+            
     model_name = args.model_name
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     print(model_name, flush=True)
 
-    tasks = args.tasks
-
-    if args.device == "cpu":
-        device_str = "cpu"
-    else:
-        device_str = f"cuda:{int(args.device)}"
+    from auto_round.utils import detect_device
+    device_str = detect_device(args.device)
+    torch_dtype = "auto"
+    if device_str == "hpu":
+        torch_dtype = torch.bfloat16
     torch_device = torch.device(device_str)
     is_glm = bool(re.search("chatglm", model_name.lower()))
-    is_llava = bool(re.search("llava", model_name.lower()))
-    if is_llava:
-        from transformers import LlavaForConditionalGeneration
-
-        model = LlavaForConditionalGeneration.from_pretrained(model_name, low_cpu_mem_usage=True, torch_dtype="auto")
-    elif is_glm:
+    
+    if is_glm:
         model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype="auto", trust_remote_code=True
+            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype, trust_remote_code=True
         )
+        
+    from auto_round import (AutoRound,
+                        AutoAdamRound)
     model = model.eval()
     # align wigh GPTQ to eval ppl
     if "opt" in model_name:
@@ -159,38 +155,27 @@ if __name__ == '__main__':
     round = AutoRound
     if args.adam:
         round = AutoAdamRound
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, bs=args.train_bs,
+    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
                       amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, dataset_name="mbpp", dataset_split=['train', 'validation', 'test'])  ##TODO args pass
+                      scale_dtype=args.scale_dtype, dataset="mbpp", dataset_split=['train', 'validation', 'test'])  ##TODO args pass
     model, q_config = autoround.quantize()
     model_name = args.model_name.rstrip("/")
-    export_dir = args.output_dir + "/compressed_" + model_name.split('/')[-1] + "/"
-    if args.deployment_device == 'cpu':
-        autoround.export(output_dir=export_dir)
-        del q_config
-    elif args.deployment_device == 'gpu':
-        autoround.export(export_dir, target="auto_gptq", use_triton=True)
+    model.eval()
     if args.device != "cpu":
         torch.cuda.empty_cache()
-    model.eval()
-    output_dir = args.output_dir + "_" + model_name.split('/')[-1] + f"_w{args.bits}_g{args.group_size}"
 
-    import shutil
-
-    if os.path.exists(output_dir):
-        shutil.rmtree(output_dir)
-
-    if (hasattr(model, 'config') and model.config.torch_dtype is torch.bfloat16):
-        dtype = 'bfloat16'
-        pt_dtype = torch.bfloat16
-    else:
-        pt_dtype = torch.float16
-
-    model = model.to(pt_dtype)
-    model = model.to("cpu")
-    model.save_pretrained(output_dir)
-    tokenizer.save_pretrained(output_dir)
+    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
+    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
+    deployment_device = args.deployment_device.split(',')
+    if 'gpu' in deployment_device:
+        autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
+    if "cpu" in deployment_device:
+        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=False)
+    if "fake" in deployment_device:
+        model = model.to("cpu")
+        model.save_pretrained(output_dir)
+        tokenizer.save_pretrained(output_dir)
 
