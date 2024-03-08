@@ -21,6 +21,10 @@ AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inf
 pip install -r requirements.txt
 python setup.py install
 ```
+### Install from pypi
+```bash
+pip install auto-round
+```
 ## Usage of Tuning
 
 ### On CPU/ Gaudi2/ GPU
@@ -180,11 +184,6 @@ We provide a [comprehensive analysis](docs/acc.md) with other methods in our acc
 2 Setting 'use_quant_input' to False has been observed to occasionally yield improved results.
 
 3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
-
-  
-## Examples
-Quantization has been enabled for various large language models. Please refer to the [example readme](examples/README.md) for details.
-
 
 ## Reference
 If you find SignRound useful for your research, please cite our paper:
