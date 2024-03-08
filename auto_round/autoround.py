@@ -43,7 +43,8 @@ if is_hpu_available:
     import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
     import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
-start_time = 0 
+start_time = 0
+
 
 class WrapperLinear(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True):
@@ -1355,4 +1356,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
