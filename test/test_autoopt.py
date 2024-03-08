@@ -45,3 +45,6 @@ class TestAutoRound(unittest.TestCase):
             dataloader=self.llm_dataloader,
         )
         autoround.quantize()
+
+if __name__ == "__main__":
+    unittest.main()
