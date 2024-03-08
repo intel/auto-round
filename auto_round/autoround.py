@@ -43,6 +43,7 @@ if is_hpu_available:
     import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
     import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
+start_time = 0 
 
 class WrapperLinear(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True):
@@ -644,6 +645,8 @@ class AutoRound(object):
                 split=self.dataset_split,
                 dataset_name=self.dataset_name,
             )
+        global start_time
+        start_time = time.time()
         total_cnt = 0
         for data in self.dataloader:
             if data is None:
@@ -1014,20 +1017,17 @@ class AutoRound(object):
         Returns:
         The quantized model and weight configurations.
         """
-        start_time = time.time()
         # logger.info("cache block input")
         block_names = get_block_names(self.model)
         if len(block_names) == 0:
             logger.warning("could not find blocks, exit with original model")
             return
-
         if self.amp:
             self.model = self.model.to(self.amp_dtype)
         if not self.low_gpu_mem_usage:
             self.model = self.model.to(self.device)
         inputs = self.cache_block_input(block_names[0], self.n_samples)
         del self.inputs
-
         if "input_ids" in inputs.keys():
             dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
             total_samples = inputs["input_ids"].shape[dim]
@@ -1355,3 +1355,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
