@@ -17,6 +17,8 @@ import copy
 import time
 
 import torch
+import os
+
 
 from .utils import (
     CpuInfo,
@@ -45,7 +47,8 @@ if is_hpu_available:
 
 
 class AuotoRoundConfig:
-    layer_euqalization_transform = False
+    layer_euqalization_transform = os.environ.get("USE_LEQ", "0") == "1"
+    # CUDA_VISIBLE_DEVICES=0 USE_LEQ=1 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --enable_minmax_tuning 
 
 config = AuotoRoundConfig()
 
