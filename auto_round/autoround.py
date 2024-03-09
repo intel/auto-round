@@ -44,6 +44,11 @@ if is_hpu_available:
     import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
 
+class AuotoRoundConfig:
+    layer_euqalization_transform = False
+
+config = AuotoRoundConfig()
+
 class WrapperLinear(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True):
         """A wrapper module for linear layers that enables quantization and min-max tuning of weights.
@@ -84,6 +89,10 @@ class WrapperLinear(torch.nn.Module):
         else:
             self.min_scale = torch.tensor(0, device=self.orig_layer.weight.device)
             self.max_scale = torch.tensor(0, device=self.orig_layer.weight.device)
+        
+        if config.layer_euqalization_transform:
+            from .scale import ScaleCalculator
+            self.weight_scale_calculator = ScaleCalculator(self.orig_layer.in_features, self.orig_layer.weight.device)
 
     def unwrapper(self, v, min_scale, max_scale):
         """Unwrapper the layer to the original layer.
@@ -113,6 +122,9 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.weight.grad = None  ##clear grad
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+        if config.layer_euqalization_transform:
+            from .scale import replace_linear_with_smoothed_linear
+            self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, self.weight_scale_calculator.get_final_scale())
         return self.orig_layer
 
     def forward(self, x):
@@ -127,6 +139,9 @@ class WrapperLinear(torch.nn.Module):
         from torch.functional import F
 
         weight = self.orig_layer.weight
+        if config.layer_euqalization_transform:
+            from .scale import euqalization_transform
+            weight, x = euqalization_transform(weight, x, self.weight_scale_calculator.get_final_scale())
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
         weight_q, _, _ = quant_weight(
@@ -816,13 +831,27 @@ class AutoRound(object):
                 round_params.append(m.value)
                 minmax_params.append(m.min_scale)
                 minmax_params.append(m.max_scale)
-
+        
+        trainable_params = []
+        
         if self.enable_minmax_tuning:
-            optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
-            )
+            minmax_params = [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}]
+            trainable_params += minmax_params
         else:
-            optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+            trainable_params = round_params
+        
+        if config.layer_euqalization_transform:
+            from .scale import get_scale_param_from_block
+            trainable_params += get_scale_param_from_block(block)
+
+        # if self.enable_minmax_tuning:
+        #     optimizer = self.optimizer(
+        #         [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+        #     )
+        # else:
+        #     optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+        
+        optimizer = self.optimizer(params=trainable_params, lr=self.lr, weight_decay=0)
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
