@@ -59,7 +59,7 @@ def euqalization_transform(weight, x, weight_scale):
     input_scale_for_x = weight_scale.reshape(input_scale_target_shape)
     updated_x = torch.div(x, input_scale_for_x)
     updated_weight = weight * weight_scale.reshape(1, -1)
-    return updated_x, updated_weight
+    return updated_weight, updated_x
 
 def replace_linear_with_smoothed_linear(module, input_scale):
     from .scale import MulLinear

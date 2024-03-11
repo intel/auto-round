@@ -48,7 +48,7 @@ if is_hpu_available:
 
 class AuotoRoundConfig:
     layer_euqalization_transform = os.environ.get("USE_LEQ", "0") == "1"
-    # CUDA_VISIBLE_DEVICES=0 USE_LEQ=1 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --enable_minmax_tuning 
+    # CUDA_VISIBLE_DEVICES=0 USE_LEQ=1 python3 main.py --model_name /models/opt-125m/  --amp --bits 4 --group_size -1 --enable_minmax_tuning 
 
 config = AuotoRoundConfig()
 
@@ -844,8 +844,10 @@ class AutoRound(object):
             trainable_params = round_params
         
         if config.layer_euqalization_transform:
+            leq_params = []
             from .scale import get_scale_param_from_block
-            trainable_params += get_scale_param_from_block(block)
+            leq_params += get_scale_param_from_block(block)
+            minmax_params += {"leq_params": leq_params}
 
         # if self.enable_minmax_tuning:
         #     optimizer = self.optimizer(
@@ -1104,6 +1106,7 @@ class AutoRound(object):
         ## dump a summary
         quantized_layers = []
         unquantized_layers = []
+        # TODO: the linear module was replaced with `NewMulLinear`, update the config name 
         for n, m in self.model.named_modules():
             if isinstance(m, tuple(self.supported_types)):
                 if self.weight_config[n]["bits"] == 16:
