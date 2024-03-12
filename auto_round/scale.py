@@ -1,9 +1,9 @@
-# 1. insert scale calculator ar `WrapperLinear`
-#   1) `init` insert `self.input_scale_calculator = ScaleCalculatorV(module.in_features, module.weight.device)`
-#   2) add parameter of `self.input_scale_calculator` into optimizer
-#   2) `forward` transform `input` and `weight`
-# 2. at the `unwrapper` stage, replace the original `Linear` with `MulLinear`
-
+# [x] insert scale calculator ar `WrapperLinear`
+#   [x] `init` insert `self.input_scale_calculator = ScaleCalculatorV(module.in_features, module.weight.device)`
+#   [x] add parameter of `self.input_scale_calculator` into optimizer
+#   [x] `forward` transform `input` and `weight`
+# [x] at the `unwrapper` stage, replace the original `Linear` with `MulLinear`
+# [ ] save and export
 
 
 

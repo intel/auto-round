@@ -327,7 +327,7 @@ def simple_evaluate(
 
 def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
                eval_bs=32, use_accelerate=True, dtype="float16", limit=None,
-               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
+               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx", model_tokenizer_pairs = None):
     print("evaluation with official lm-eval", flush=True)
     try:
         import lm_eval.api
@@ -349,59 +349,16 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
             tasks.remove(each)
 
     results = {}
+
+
+    
     model = None
     lm = None
-    for tmp_tasks in tasks:
-        try:
-            num_fewshot = fewshots_dict[mark][tmp_tasks]
-            print(f'********* {tmp_tasks} evaluate ************')
-            task_s = time.time()
-            for shot in num_fewshot:
-                model_type = "hf"
-                model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code=True'
-                if use_accelerate: # bool(re.search("chatglm", model_path.lower()))
-                    model_args += f',parallelize=True'
+    if model_tokenizer_pairs:
+        tokenizer = model_tokenizer_pairs[1]
+        model = model_tokenizer_pairs[0]
 
-                if "wikitext" in tmp_tasks:
-                    tmp_eval_bs = 1
-                else:
-                    tmp_eval_bs = eval_bs
-                tmp_results, lm = simple_evaluate(model=model_type, model_args=model_args, tasks=tmp_tasks,
-                                                  num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
-                                                  max_batch_size=tmp_eval_bs, lm=lm, device=str(device))
-                sub_name = f'{tmp_tasks} {shot}-shot'
-                print(f'{sub_name}: ')
-                pprint.pprint(tmp_results["results"])
-                print(f"\n{sub_name} cost time: {time.time() - task_s}\n")
-                results[sub_name] = {}
-                if 'mmlu' in tmp_tasks:
-                    for cata in ['humanities', 'other', 'stem', 'sociology']:
-                        results[sub_name][cata] = tmp_results['results'][f'mmlu_{cata}']
-                    results[sub_name]['avg'] = tmp_results['results'][f'mmlu']
-                else:
-                    results[sub_name] = tmp_results['results']
-        except Exception as e:
-            print(f'********* {tmp_tasks} ERROR ************')
-            print(str(e))
-            continue
-
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
-    model = lm.model
-    # for external tasks
-    # maybe adjust for specific model
-    # if hasattr(lm.model.config, "max_position_embeddings"):
-    #     lm.model.seqlen = lm.model.config.max_position_embeddings
-    # else:
-    #     ## for llama-1, opt
-    #     lm.model.seqlen = 2048
-
-    # if "opt" in model_name:
-    #     seqlen = model.config.max_position_embeddings
-    #     model.seqlen = model.config.max_position_embeddings
-    # else:
-    #     seqlen = 2048
-    #     model.seqlen = seqlen
-
+    model_seqlen_backup = model.seqlen
     model.seqlen = 2048
     from eval.utils import get_loaders, eval_ppl_same_with_gptq
     for dataset in external_tasks:
@@ -417,6 +374,66 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
         except Exception as e:
             print(str(e))
             continue
+    model.seqlen = model_seqlen_backup
+
+    for tmp_tasks in tasks:
+        try:
+            num_fewshot = fewshots_dict[mark][tmp_tasks]
+            print(f'********* {tmp_tasks} evaluate ************')
+            task_s = time.time()
+            for shot in num_fewshot:
+                model_type = "hf"
+                model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code=True'
+                if use_accelerate: # bool(re.search("chatglm", model_path.lower()))
+                    model_args += f',parallelize=True'
+
+                if "wikitext" in tmp_tasks:
+                    tmp_eval_bs = 1
+                else:
+                    tmp_eval_bs = eval_bs
+                if model_tokenizer_pairs:
+                    tmp_results, lm = simple_evaluate(model=model, model_args=model_args, tasks=tmp_tasks,
+                                                    num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
+                                                    max_batch_size=tmp_eval_bs, lm=lm, device=str(device))
+                else:
+                    tmp_results, lm = simple_evaluate(model=model_type, model_args=model_args, tasks=tmp_tasks,
+                                                    num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
+                                                    max_batch_size=tmp_eval_bs, lm=lm, device=str(device))
+                sub_name = f'{tmp_tasks} {shot}-shot'
+                print(f'{sub_name}: ')
+                pprint.pprint(tmp_results["results"])
+                print(f"\n{sub_name} cost time: {time.time() - task_s}\n")
+                results[sub_name] = {}
+                if 'mmlu' in tmp_tasks:
+                    for cata in ['humanities', 'other', 'stem', 'sociology']:
+                        results[sub_name][cata] = tmp_results['results'][f'mmlu_{cata}']
+                    results[sub_name]['avg'] = tmp_results['results'][f'mmlu']
+                else:
+                    results[sub_name] = tmp_results['results']
+        except Exception as e:
+            print(f'********* {tmp_tasks} ERROR ************')
+            print(str(e))
+            continue
+    
+    if not model_tokenizer_pairs:
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
+        model = lm.model
+    # for external tasks
+    # maybe adjust for specific model
+    # if hasattr(lm.model.config, "max_position_embeddings"):
+    #     lm.model.seqlen = lm.model.config.max_position_embeddings
+    # else:
+    #     ## for llama-1, opt
+    #     lm.model.seqlen = 2048
+
+    # if "opt" in model_name:
+    #     seqlen = model.config.max_position_embeddings
+    #     model.seqlen = model.config.max_position_embeddings
+    # else:
+    #     seqlen = 2048
+    #     model.seqlen = seqlen
+
+
 
     print(results, flush=True)
     print("cost time: ", time.time() - org_s)

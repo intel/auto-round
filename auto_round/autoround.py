@@ -1077,6 +1077,13 @@ class AutoRound(object):
             n_blocks=self.n_blocks,
             device=self.device,
         )
+        if False: # TODO: release it after the leq is ready
+            self.summary_info()
+        self.quantized = True
+        self.model = self.model.to(self.model_orig_dtype)
+        return self.model, self.weight_config
+    
+    def summary_info(self):
         for n, m in self.model.named_modules():
             if n in self.weight_config.keys():
                 if hasattr(m, "scale"):
@@ -1122,10 +1129,6 @@ class AutoRound(object):
         logger.info(summary_info)
         if len(unquantized_layers) > 0:
             logger.info(f"Summary: {unquantized_layers} have not been quantized")
-
-        self.quantized = True
-        self.model = self.model.to(self.model_orig_dtype)
-        return self.model, self.weight_config
 
 
 class AutoOPTRound(AutoRound):

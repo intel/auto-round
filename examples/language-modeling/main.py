@@ -233,21 +233,31 @@ if __name__ == '__main__':
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
     deployment_device = args.deployment_device.split(',')
-    if 'gpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
-    if "cpu" in deployment_device:
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=False)
-    if "fake" in deployment_device:
-        model = model.to("cpu")
-        model.save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
 
-    if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
-        excel_name = f"{output_dir}_result.xlsx"
-        output_dir += "/"
-        print(excel_name, flush=True)
-        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
+    from auto_round import AuotoRoundConfig
+    if AuotoRoundConfig.layer_euqalization_transform:
+        # TODO: Release it after later
+        from ppl_eval import eval_wikitext2
+        eval_wikitext2(model, tokenizer)
+        # eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
+        #         eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+        #         device=torch_device, excel_file=excel_name, model_tokenizer_pairs=(model, tokenizer))
+    else:
+        if 'gpu' in deployment_device:
+            autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
+        if "cpu" in deployment_device:
+            autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=False)
+        if "fake" in deployment_device:
+            model = model.to("cpu")
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
+
+        if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
+            excel_name = f"{output_dir}_result.xlsx"
+            output_dir += "/"
+            print(excel_name, flush=True)
+            eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
+                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                    device=torch_device, excel_file=excel_name)
 
 
