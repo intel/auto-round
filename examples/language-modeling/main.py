@@ -192,7 +192,7 @@ if __name__ == '__main__':
             pt_dtype = torch.float32
             dtype = 'float32'
 
-    excel_name = f"{model_name}_{args.bits}_{args.group_size}"
+    excel_name = f"{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}" + ".xlsx"
     if args.eval_fp16_baseline:
         if not args.low_gpu_mem_usage:
             model = model.to(torch_device)
@@ -235,13 +235,13 @@ if __name__ == '__main__':
     deployment_device = args.deployment_device.split(',')
 
     from auto_round import AuotoRoundConfig
-    if AuotoRoundConfig.layer_euqalization_transform:
+    if AuotoRoundConfig.layer_equalization_transform:
         # TODO: Release it after later
         from ppl_eval import eval_wikitext2
-        eval_wikitext2(model, tokenizer)
-        # eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
-        #         eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-        #         device=torch_device, excel_file=excel_name, model_tokenizer_pairs=(model, tokenizer))
+        # eval_wikitext2(model, tokenizer)
+        eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
+                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                device=torch_device, excel_file=excel_name, model_tokenizer_pairs=(model.to("cuda"), tokenizer))
     else:
         if 'gpu' in deployment_device:
             autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)

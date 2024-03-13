@@ -329,6 +329,7 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
                eval_bs=32, use_accelerate=True, dtype="float16", limit=None,
                device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx", model_tokenizer_pairs = None):
     print("evaluation with official lm-eval", flush=True)
+    print(f"The result will be saved to {excel_file}")
     try:
         import lm_eval.api
         import lm_eval.tasks

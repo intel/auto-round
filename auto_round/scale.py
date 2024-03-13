@@ -17,6 +17,21 @@ def get_scale_param_from_block(block: torch.nn.Module):
             scale_params.extend( mod.weight_scale_calculator.parameters())
     return scale_params
 
+def _transform_weight(weight, weight_scale):
+    updated_weight = weight * weight_scale.reshape(1, -1)
+    return updated_weight
+    
+def _transform_input(x, weight_scale):
+    input_scale_target_shape = (1,) * (len(x.shape) - 1) + (-1,)
+    input_scale_for_x = weight_scale.reshape(input_scale_target_shape)
+    updated_x = torch.div(x, input_scale_for_x)
+    return updated_x
+
+def equalization_transform(weight, x, weight_scale):
+    updated_x = _transform_input(x, weight_scale)
+    updated_weight = _transform_weight(weight, weight_scale)
+    return updated_weight, updated_x
+
 class MulLinear(torch.nn.Module):
     def __init__(self, module, weight_scale=None):
         """A forward hook to save input max of a module
@@ -26,17 +41,14 @@ class MulLinear(torch.nn.Module):
         if weight_scale is None:
             weight_scale = torch.ones(module.in_features)
         self.register_buffer("weight_scale", weight_scale)
-        module.weight *= self.weight_scale.unsqueeze(dim=0)
+        module.weight *= weight_scale.reshape(1, -1)
         self.add_module("linear", module)
-        logger.info(f"NewMulLinear: {module} has been wrapped.")
+        logger.info(f"MulLinear: {module} has been wrapped as `MulLinear`.")
 
     def forward(self, X):
-        shape_len = len(X.shape) - 1
-        inverse_scale_new_shape = (1,) * shape_len + (-1,)
-        inverse_scale_for_x = 1.0 / self.weight_scale.view(inverse_scale_new_shape)
-        X = torch.mul(X, inverse_scale_for_x)
-        X = self.linear(X)
-        return X
+        updated_x = _transform_input(X, self.weight_scale)
+        y = self.linear(updated_x)
+        return y
 
     @property
     def weight(self):
@@ -54,16 +66,13 @@ class MulLinear(torch.nn.Module):
     def bias(self, bias):
         self.linear.bias = bias
 
-def euqalization_transform(weight, x, weight_scale):
-    input_scale_target_shape = (1,) * (len(x.shape) - 1) + (-1,)
-    input_scale_for_x = weight_scale.reshape(input_scale_target_shape)
-    updated_x = torch.div(x, input_scale_for_x)
-    updated_weight = weight * weight_scale.reshape(1, -1)
-    return updated_weight, updated_x
 
-def replace_linear_with_smoothed_linear(module, input_scale):
+
+def replace_linear_with_smoothed_linear(module, weight_scale):
     from .scale import MulLinear
-    return MulLinear(module, input_scale)
+    logger.info(f"Replace {module} with `MulLinear`.")
+    logger.info(f"weight_scale shape: {weight_scale.shape}, weight scale min: {weight_scale.min()}, weight scale max: {weight_scale.max()}")
+    return MulLinear(module, weight_scale)
 
 class ScaleCalculator(torch.nn.Module):
     def __init__(self, shape: int, device):

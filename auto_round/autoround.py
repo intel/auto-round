@@ -47,7 +47,7 @@ if is_hpu_available:
 
 
 class AuotoRoundConfig:
-    layer_euqalization_transform = os.environ.get("USE_LEQ", "0") == "1"
+    layer_equalization_transform = os.environ.get("USE_LEQ", "0") == "1"
     # CUDA_VISIBLE_DEVICES=0 USE_LEQ=1 python3 main.py --model_name /models/opt-125m/  --amp --bits 4 --group_size -1 --enable_minmax_tuning 
 
 config = AuotoRoundConfig()
@@ -93,7 +93,7 @@ class WrapperLinear(torch.nn.Module):
             self.min_scale = torch.tensor(0, device=self.orig_layer.weight.device)
             self.max_scale = torch.tensor(0, device=self.orig_layer.weight.device)
         
-        if config.layer_euqalization_transform:
+        if config.layer_equalization_transform:
             from .scale import ScaleCalculator
             self.weight_scale_calculator = ScaleCalculator(self.orig_layer.in_features, self.orig_layer.weight.device)
 
@@ -125,7 +125,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.weight.grad = None  ##clear grad
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
-        if config.layer_euqalization_transform:
+        if config.layer_equalization_transform:
             from .scale import replace_linear_with_smoothed_linear
             self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, self.weight_scale_calculator.get_final_scale())
         return self.orig_layer
@@ -142,9 +142,11 @@ class WrapperLinear(torch.nn.Module):
         from torch.functional import F
 
         weight = self.orig_layer.weight
-        if config.layer_euqalization_transform:
-            from .scale import euqalization_transform
-            weight, x = euqalization_transform(weight, x, self.weight_scale_calculator.get_final_scale())
+        # ! Do we need do transformation for each forward?
+        # ! We need to transform the original weight instead of the transformed weight
+        if config.layer_equalization_transform:
+            from .scale import equalization_transform
+            weight, x = equalization_transform(weight, x, self.weight_scale_calculator.forward(x))
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
         weight_q, _, _ = quant_weight(
@@ -841,13 +843,12 @@ class AutoRound(object):
             minmax_params = [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}]
             trainable_params += minmax_params
         else:
-            trainable_params = round_params
+            trainable_params.append({"params":round_params})
         
-        if config.layer_euqalization_transform:
-            leq_params = []
+        if config.layer_equalization_transform:
             from .scale import get_scale_param_from_block
-            leq_params += get_scale_param_from_block(block)
-            minmax_params += {"leq_params": leq_params}
+            leq_params_lst = get_scale_param_from_block(block)
+            trainable_params.append({"params": leq_params_lst})
 
         # if self.enable_minmax_tuning:
         #     optimizer = self.optimizer(
