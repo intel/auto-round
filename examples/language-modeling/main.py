@@ -238,7 +238,7 @@ if __name__ == '__main__':
     if AuotoRoundConfig.layer_equalization_transform:
         # TODO: Release it after later
         from ppl_eval import eval_wikitext2
-        # eval_wikitext2(model, tokenizer)
+        eval_wikitext2(model, tokenizer)
         eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
                 eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                 device=torch_device, excel_file=excel_name, model_tokenizer_pairs=(model.to("cuda"), tokenizer))

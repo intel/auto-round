@@ -111,27 +111,43 @@ class WrapperLinear(torch.nn.Module):
         min_scale.clamp_(-1, 0)
         max_scale.clamp_(-1, 0)
 
-        q_dq_weight, scale, zp = quant_weight(
-            self.orig_layer.weight,
-            self.num_bits,
-            self.group_size,
-            self.sym,
-            v,
-            min_scale,
-            max_scale,
-            self.scale_dtype,
-        )
-        self.orig_layer.weight.data.copy_(q_dq_weight)
-        self.orig_layer.weight.grad = None  ##clear grad
-        self.orig_layer.scale = scale.to("cpu")
-        self.orig_layer.zp = zp.to("cpu") if zp is not None else None
         if config.layer_equalization_transform:
+            # import pdb; pdb.set_trace()
             from .scale import replace_linear_with_smoothed_linear
-            logger.info(f"Replace {self.orig_layer} with `MulLinear`")
-            logger.info(f"The range of orginal layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
             self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, self.weight_scale_calculator.get_final_scale())
-            logger.info(f"The range of new layer weight: {self.orig_layer.linear.weight.min()} - {self.orig_layer.linear.weight.max()}")
-        return self.orig_layer
+            # ! Update the orig_layer.linear instead of the orig_layer
+            q_dq_weight, scale, zp = quant_weight(
+                self.orig_layer.linear.weight,
+                self.num_bits,
+                self.group_size,
+                self.sym,
+                v,
+                min_scale,
+                max_scale,
+                self.scale_dtype,
+            )
+            self.orig_layer.linear.weight.data.copy_(q_dq_weight)
+            self.orig_layer.linear.weight.grad = None  ##clear grad
+            self.orig_layer.linear.scale = scale.to("cpu")
+            self.orig_layer.linear.zp = zp.to("cpu") if zp is not None else None
+            return self.orig_layer
+        else:
+            q_dq_weight, scale, zp = quant_weight(
+                self.orig_layer.weight,
+                self.num_bits,
+                self.group_size,
+                self.sym,
+                v,
+                min_scale,
+                max_scale,
+                self.scale_dtype,
+            )
+            self.orig_layer.weight.data.copy_(q_dq_weight)
+            self.orig_layer.weight.grad = None  ##clear grad
+            self.orig_layer.scale = scale.to("cpu")
+            self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+            return self.orig_layer
+
 
     def forward(self, x):
         """Performs forward pass through the wrapped linear layer with quantized weights.
