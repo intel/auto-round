@@ -192,7 +192,7 @@ if __name__ == '__main__':
             pt_dtype = torch.float32
             dtype = 'float32'
 
-    excel_name = f"{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}" + ".xlsx"
+    excel_name = f"{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_" + ".xlsx"
     if args.eval_fp16_baseline:
         if not args.low_gpu_mem_usage:
             model = model.to(torch_device)
