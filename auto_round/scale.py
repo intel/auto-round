@@ -88,14 +88,11 @@ class ScaleCalculator(torch.nn.Module):
     def forward(self, x):
         update_scale = torch.clip(self.scale1, min=0.0, max=1.0) / torch.clip(self.scale2, min=1e-5, max=1.0)
         # TODO: add more complex logic here
-        update_scale = torch.clip(update_scale, min = 1.0)
         return update_scale
 
     def get_final_scale(self):
-        # TODO: add more complex logic here
         update_scale = torch.clip(self.scale1, min=0.0, max=1.0) / torch.clip(self.scale2, min=1e-5, max=1.0)
         # TODO: add more complex logic here
-        update_scale = torch.clip(update_scale, min = 1.0)
         return update_scale
 
 # ScaleCalculatorVanilla

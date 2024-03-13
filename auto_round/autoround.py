@@ -114,7 +114,10 @@ class WrapperLinear(torch.nn.Module):
         if config.layer_equalization_transform:
             # import pdb; pdb.set_trace()
             from .scale import replace_linear_with_smoothed_linear
+            logger.info(f"Replace {self.orig_layer} with `MulLinear`")
+            logger.info(f"The range of orginal layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
             self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, self.weight_scale_calculator.get_final_scale())
+            logger.info(f"The range of new layer weight: {self.orig_layer.linear.weight.min()} - {self.orig_layer.linear.weight.max()}")
             # ! Update the orig_layer.linear instead of the orig_layer
             q_dq_weight, scale, zp = quant_weight(
                 self.orig_layer.linear.weight,
