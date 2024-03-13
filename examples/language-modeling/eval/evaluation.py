@@ -359,24 +359,6 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
         tokenizer = model_tokenizer_pairs[1]
         model = model_tokenizer_pairs[0]
 
-    model_seqlen_backup = model.seqlen
-    model.seqlen = 2048
-    from eval.utils import get_loaders, eval_ppl_same_with_gptq
-    for dataset in external_tasks:
-        try:
-            dataloader, testloader = get_loaders(
-                dataset, nsamples=nsamples, seed=seed,
-                tokenizer=tokenizer, seqlen=model.seqlen
-            )
-            ppl = eval_ppl_same_with_gptq(model, testloader, device)
-            print(dataset, ppl)
-
-            results.update({dataset: ppl})
-        except Exception as e:
-            print(str(e))
-            continue
-    model.seqlen = model_seqlen_backup
-
     for tmp_tasks in tasks:
         try:
             num_fewshot = fewshots_dict[mark][tmp_tasks]
@@ -434,7 +416,21 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
     #     seqlen = 2048
     #     model.seqlen = seqlen
 
+    model.seqlen = 2048
+    from eval.utils import get_loaders, eval_ppl_same_with_gptq
+    for dataset in external_tasks:
+        try:
+            dataloader, testloader = get_loaders(
+                dataset, nsamples=nsamples, seed=seed,
+                tokenizer=tokenizer, seqlen=model.seqlen
+            )
+            ppl = eval_ppl_same_with_gptq(model, testloader, device)
+            print(dataset, ppl)
 
+            results.update({dataset: ppl})
+        except Exception as e:
+            print(str(e))
+            continue
 
     print(results, flush=True)
     print("cost time: ", time.time() - org_s)

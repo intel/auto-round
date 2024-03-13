@@ -127,7 +127,10 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
         if config.layer_equalization_transform:
             from .scale import replace_linear_with_smoothed_linear
+            logger.info(f"Replace {self.orig_layer} with `MulLinear`")
+            logger.info(f"The range of orginal layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
             self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, self.weight_scale_calculator.get_final_scale())
+            logger.info(f"The range of new layer weight: {self.orig_layer.linear.weight.min()} - {self.orig_layer.linear.weight.max()}")
         return self.orig_layer
 
     def forward(self, x):
