@@ -2,7 +2,7 @@ transformers
 torch
 git+https://github.com/EleutherAI/lm-evaluation-harness.git@96d185fa6232a5ab685ba7c43e45d1dbb3bb906d
 # For the paper results use the old lm_eval (0.3.0)
-# git+https://github.com/EleutherAI/lm-evaluation-harness.git@008fc2a23245c40384f2312718433eeb1e0f87a9s
+# git+https://github.com/EleutherAI/lm-evaluation-harness.git@008fc2a23245c40384f2312718433eeb1e0f87a9
 tiktoken
 transformers_stream_generator
 peft
