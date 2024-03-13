@@ -68,6 +68,7 @@ class MulLinear(torch.nn.Module):
 
 
 
+
 def replace_linear_with_smoothed_linear(module, weight_scale):
     from .scale import MulLinear
     logger.info(f"Replace {module} with `MulLinear`.")
