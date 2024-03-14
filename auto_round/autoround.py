@@ -48,6 +48,7 @@ if is_hpu_available:
 
 class AuotoRoundConfig:
     layer_equalization_transform = os.environ.get("USE_LEQ", "0") == "1"
+    pass_model_to_lm_eval = os.environ.get("PASS_MODEL_TO_LM_EVAL", "0") == "1"
     # CUDA_VISIBLE_DEVICES=0 USE_LEQ=1 python3 main.py --model_name /models/opt-125m/  --amp --bits 4 --group_size -1 --enable_minmax_tuning 
 
 config = AuotoRoundConfig()

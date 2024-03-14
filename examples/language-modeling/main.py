@@ -31,7 +31,7 @@ if __name__ == '__main__':
     parser.add_argument("--train_bs", default=8, type=int,
                         help="train batch size")
 
-    parser.add_argument("--eval_bs", default=4, type=int,
+    parser.add_argument("--eval_bs", default=32, type=int,
                         help="eval batch size")
 
     parser.add_argument("--device", default="auto", type=str,
@@ -191,15 +191,16 @@ if __name__ == '__main__':
         else:
             pt_dtype = torch.float32
             dtype = 'float32'
-
-    excel_name = f"{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_" + ".xlsx"
+    from auto_round import AuotoRoundConfig
+    excel_name = f"{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_leq_{AuotoRoundConfig.layer_equalization_transform}" + ".xlsx"
     if args.eval_fp16_baseline:
         if not args.low_gpu_mem_usage:
             model = model.to(torch_device)
         excel_name += "_fp16.xlsx"
-        eval_model(model_path=model_name, tasks=tasks, dtype=dtype, \
+        eval_model(model_path=None, tasks=tasks, dtype=dtype, \
                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
+                   device=torch_device, excel_file=excel_name, 
+                   model_tokenizer_pairs=(model.to("cuda"), tokenizer))
         exit()
 
     if not args.low_gpu_mem_usage:
@@ -235,13 +236,14 @@ if __name__ == '__main__':
     deployment_device = args.deployment_device.split(',')
 
     from auto_round import AuotoRoundConfig
-    if AuotoRoundConfig.layer_equalization_transform:
+    if AuotoRoundConfig.layer_equalization_transform or AuotoRoundConfig.pass_model_to_lm_eval:
         # TODO: Release it after later
         from ppl_eval import eval_wikitext2
         eval_wikitext2(model, tokenizer)
         eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
                 eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                device=torch_device, excel_file=excel_name, model_tokenizer_pairs=(model.to("cuda"), tokenizer))
+                device=torch_device, excel_file=excel_name,
+                model_tokenizer_pairs=(model.to("cuda"), tokenizer))
     else:
         if 'gpu' in deployment_device:
             autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
