@@ -79,7 +79,7 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_d
     Returns:
         Quantized and dequantized weight, scale, zero-point
     """
-    maxq = torch.tensor(2 ** num_bits - 1)
+    maxq = torch.tensor(2**num_bits - 1)
     zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=scale_dtype)
     # zeros = torch.zeros(weight.shape[0], device=weight.device)
     if isinstance(min_scale, torch.Tensor):
@@ -118,7 +118,7 @@ def quant_weight_sym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dt
     Returns:
         Quantized and dequantized weight, scale, zero-point
     """
-    maxq = torch.tensor(2 ** num_bits - 1)
+    maxq = torch.tensor(2**num_bits - 1)
     zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=scale_dtype)
     if isinstance(min_scale, torch.Tensor):
         wmin_tmp = torch.minimum(weight.min(1)[0], zeros)
@@ -171,7 +171,7 @@ def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dty
 
 
 def quant_weight(
-        weight, num_bits=4, group_size=-1, sym=False, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16
+    weight, num_bits=4, group_size=-1, sym=False, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16
 ):
     """Quantizes and dequantizes weight, handing the group size issue .
 
@@ -246,15 +246,15 @@ def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
     leng = weight.shape[1] // group_size
     tail_flag = False if weight.shape[1] % group_size == 0 else True
     for i in range(leng):
-        int_weight_tmp = weight[:, i * group_size: (i + 1) * group_size] / scale[:, i].unsqueeze(1)
+        int_weight_tmp = weight[:, i * group_size : (i + 1) * group_size] / scale[:, i].unsqueeze(1)
         if zp is not None:
             int_weight_tmp += zp[:, i].unsqueeze(1)
-        int_weight[:, i * group_size: (i + 1) * group_size] = torch.round(int_weight_tmp)
+        int_weight[:, i * group_size : (i + 1) * group_size] = torch.round(int_weight_tmp)
     if tail_flag:
-        int_weight_tmp = weight[:, leng * group_size:] / scale[:, -1].unsqueeze(1)
+        int_weight_tmp = weight[:, leng * group_size :] / scale[:, -1].unsqueeze(1)
         if zp is not None:
             int_weight_tmp += zp[:, -1].unsqueeze(1)
-        int_weight[:, leng * group_size:] = torch.round(int_weight_tmp)
+        int_weight[:, leng * group_size :] = torch.round(int_weight_tmp)
     return int_weight
 
 
@@ -593,11 +593,11 @@ class CpuInfo(object):
             cmd = "sysctl -n machdep.cpu.core_count"
 
         with subprocess.Popen(
-                args=cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=False,
+            args=cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=False,
         ) as proc:
             proc.wait()
             if proc.stdout:
