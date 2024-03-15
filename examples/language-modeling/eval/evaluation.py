@@ -351,6 +351,7 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
     results = {}
     model = None
     lm = None
+
     for tmp_tasks in tasks:
         try:
             num_fewshot = fewshots_dict[mark][tmp_tasks]
