@@ -532,7 +532,7 @@ def detect_device(device=None):
         else:
             device = torch.device("cpu")
             logger.info("Using CPU device")
-        if dev_idx is not None:
+        if dev_idx is not None and str(device) != "cpu":
             device = str(device) + f":{dev_idx}"
         return str(device)
     elif isinstance(device, torch.device):

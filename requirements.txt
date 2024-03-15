@@ -5,5 +5,3 @@ py-cpuinfo
 sentencepiece
 torch
 transformers
-
-
