@@ -1,5 +1,5 @@
 ## Due to licensing restrictions, we are unable to release the model. 
-#Recipe 1, please refer to Qwen1.5-7B-Chat_2.sh for recipe #2.
+# Recipe 2
 python3 main.py \
 --model_name Qwen/Qwen1.5-7B-Chat\
 --bits 4 \
@@ -8,9 +8,8 @@ python3 main.py \
 --amp \
 --use_quant_input \
 --n_samples 512 \
---iters 200 \
+--iters 1000 \
 --deployment_device gpu \
 --sym \
 --eval_bs 32 \
---minmax_lr 0.01 
-
+--minmax_lr 0.002 
