@@ -1,5 +1,5 @@
 ## Due to licensing restrictions, we are unable to release the model. 
-#Recipe 1, please refer to Qwen1.5-7B-Chat_2.sh for recipe #2.
+#Recipe 1
 python3 main.py \
 --model_name Qwen/Qwen1.5-7B-Chat\
 --bits 4 \
