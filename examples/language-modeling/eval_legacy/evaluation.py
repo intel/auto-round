@@ -249,7 +249,7 @@ def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrand
                 else:
                     tmp_eval_bs = eval_bs
                 if model_tokenizer_pairs:
-                    tmp_results, lm = simple_evaluate(model=model, model_args=model_args, tasks=[tmp_tasks],
+                    tmp_results, lm = simple_evaluate(model=model, model_args=model_args, tasks=task_names,
                                                     num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
                                                     max_batch_size=tmp_eval_bs, lm=lm, device=str(device))
                 else:
