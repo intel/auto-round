@@ -34,7 +34,6 @@ fewshots_dict['paper'] = {
     "rte": [0],
     "arc_easy": [0],
     "arc_challenge": [0],
-    "gsm8k": [0],
 }
 fewshots_dict['leadboard'] = {
     "hellaswag": [10],
@@ -352,24 +351,9 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
     results = {}
     model = None
     lm = None
-    if 'cmmlu' in tasks:
-        tasks.remove('cmmlu')
-        from eval.utils import CMMLU_SUBJECTS
-        for key in CMMLU_SUBJECTS.keys():
-            tasks.append('cmmlu_' + key)
-    
-    if 'ceval' in tasks:
-        tasks.remove('ceval')
-        from eval.utils import CEVAL_SUBJECTS
-        for key in CEVAL_SUBJECTS.keys():
-            tasks.append('ceval-valid_' + key)
-
     for tmp_tasks in tasks:
         try:
-            if 'cmmlu' in tmp_tasks or 'ceval' in tmp_tasks:
-                num_fewshot = [0]
-            else:
-                num_fewshot = fewshots_dict[mark][tmp_tasks]
+            num_fewshot = fewshots_dict[mark][tmp_tasks]
             print(f'********* {tmp_tasks} evaluate ************')
             task_s = time.time()
             for shot in num_fewshot:
