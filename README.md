@@ -25,7 +25,7 @@ python setup.py install
 ```bash
 pip install auto-round
 ```
-## Usage of Tuning
+## Model quantization
 
 ### On CPU/ Gaudi2/ GPU
 
@@ -51,7 +51,7 @@ autoround.save_quantized(output_dir)
 
 
 ## Model inference
-Please run the tuning code first
+Please run the quantization code first.
 
 
 
