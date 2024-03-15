@@ -26,6 +26,7 @@ from .utils import (
     check_is_cpu,
     check_to_quantized,
     collect_minmax_scale,
+    collect_weight_scale,
     collect_round_v,
     detect_device,
     get_batch_dim,
@@ -98,7 +99,7 @@ class WrapperLinear(torch.nn.Module):
             from .scale import ScaleCalculator
             self.weight_scale_calculator = ScaleCalculator(self.orig_layer.in_features, self.orig_layer.weight.device)
 
-    def unwrapper(self, v, min_scale, max_scale):
+    def unwrapper(self, v, min_scale, max_scale, leq_weight_scale=None):
         """Unwrapper the layer to the original layer.
 
         Args:
@@ -114,10 +115,11 @@ class WrapperLinear(torch.nn.Module):
 
         if config.layer_equalization_transform:
             # import pdb; pdb.set_trace()
+            assert leq_weight_scale is not None, "leq_weight_scale is required for layer equalization transform"
             from .scale import replace_linear_with_smoothed_linear
             logger.info(f"Replace {self.orig_layer} with `MulLinear`")
             logger.info(f"The range of orginal layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
-            self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, self.weight_scale_calculator.get_final_scale())
+            self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, leq_weight_scale)
             logger.info(f"The range of new layer weight: {self.orig_layer.linear.weight.min()} - {self.orig_layer.linear.weight.max()}")
             # ! Update the orig_layer.linear instead of the orig_layer
             q_dq_weight, scale, zp = quant_weight(
@@ -336,7 +338,7 @@ def wrapper_block(block, enable_minmax_tuning):
 
 
 @torch.no_grad()
-def unwrapper_block(block, vs, min_scales, max_scales):
+def unwrapper_block(block, vs, min_scales, max_scales, leq_weight_scales = None):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
     Args:
@@ -350,6 +352,7 @@ def unwrapper_block(block, vs, min_scales, max_scales):
             v = 0
             min_scale = 0
             max_scale = 0
+            leq_weight_scale = None
             if isinstance(vs, dict):
                 v = vs[n]
             if isinstance(min_scales, dict):
@@ -358,7 +361,13 @@ def unwrapper_block(block, vs, min_scales, max_scales):
             if isinstance(max_scales, dict):
                 max_scale = max_scales[n]
                 max_scale = torch.clamp(max_scale, -1, 0)
-            orig_layer = m.unwrapper(v, min_scale, max_scale)
+            if leq_weight_scales and isinstance(leq_weight_scales, dict):
+                assert hasattr(m, "weight_scale_calculator")
+                leq_weight_scale = leq_weight_scales[n]
+                final_leq_weight_scale = m.weight_scale_calculator.get_final_scale()
+                diff = final_leq_weight_scale - leq_weight_scale
+                logger.info(f"diff max: {diff.max()}, min: {diff.min()}")
+            orig_layer = m.unwrapper(v, min_scale, max_scale, leq_weight_scale)
             set_module(block, n, orig_layer)
 
 
@@ -940,21 +949,33 @@ class AutoRound(object):
 
                 self.scale_loss_and_backward(scaler, loss)
 
+
+            # ! we should run step before update the current best
+            self.step(scaler, optimizer, lr_schedule)
+
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
                     # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
                     best_v = collect_round_v(block)
                     best_min_scale, best_max_scale = collect_minmax_scale(block)
+                    best_leq_weight_scales = None
+                    if config.layer_equalization_transform:
+                        best_leq_weight_scales = collect_weight_scale(block)
                     last_best_iter = i
+                    logger.info(f"get better result at iter {i}, the loss is {total_loss}")
             if self.not_use_best_mse and i == self.iters - 1:
                 best_v = collect_round_v(block)
                 best_min_scale, best_max_scale = collect_minmax_scale(block)
-
+                best_leq_weight_scales = None
+                if config.layer_equalization_transform:
+                    best_leq_weight_scales = collect_weight_scale(block)
+                logger.info(f"get better result at last iter {i}, the loss is {total_loss}")
+                    
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
                     break
-            self.step(scaler, optimizer, lr_schedule)
+
 
         last_loss = total_loss
         best_iter = self.iters
@@ -969,7 +990,7 @@ class AutoRound(object):
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
 
-        unwrapper_block(block, best_v, best_min_scale, best_max_scale)
+        unwrapper_block(block, best_v, best_min_scale, best_max_scale, best_leq_weight_scales)
         if self.use_quant_input:
             q_outputs = self.get_block_outputs(
                 block, input_ids, input_others, self.train_bs, device, cache_device, batch_dim

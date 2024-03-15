@@ -400,6 +400,24 @@ def collect_minmax_scale(block):
     return min_scales, max_scales
 
 
+def collect_weight_scale(block):
+    """Collects the weight scaling values for wrapped linear modules in the given block.
+
+    Args:
+    block: The input block.
+
+    Returns:
+    scales: A dictionary of scaling values.
+    """
+    weight_scales = {}
+    name_list = []
+    for n, m in block.named_modules():
+        if hasattr(m, "weight_scale_calculator"):
+            weight_scales[n] = copy.deepcopy(m.weight_scale_calculator.get_final_scale().detach())
+            name_list.append(n)
+    assert len(weight_scales.keys()) == len(name_list)    
+    return weight_scales
+
 @torch.no_grad()
 def get_batch_dim(input_others):
     """Gets the batch dimension based on the input positional inputs.

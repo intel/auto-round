@@ -3,6 +3,7 @@
 #   [x] add parameter of `self.input_scale_calculator` into optimizer
 #   [x] `forward` transform `input` and `weight`
 # [x] at the `unwrapper` stage, replace the original `Linear` with `MulLinear`
+# [x] use the best weight scale instead of the final weight scale
 # [ ] save and export
 
 
