@@ -114,11 +114,11 @@ if __name__ == '__main__':
     res = get_library_version("lm-eval")
     if res == "0.3.0":
         use_eval_legacy = True
+        
     if not use_eval_legacy:
         from eval import eval_model
     else:
         from eval_legacy import eval_model
-
         if isinstance(tasks, str):
             tasks = tasks.split(',')
         if isinstance(tasks, list):
@@ -131,6 +131,12 @@ if __name__ == '__main__':
             tasks = list(set(tasks))
         if isinstance(args.tasks, str):
             tasks = ','.join(tasks)
+        
+    if 'fake' in args.deployment_device and not args.disable_eval:
+        if use_eval_legacy:
+            print("Using the legacy lm_eval(0.3.0)")
+        else:
+            print("Using the latest lm_eval(0.4.1)")
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -249,5 +255,6 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
+
 
 
