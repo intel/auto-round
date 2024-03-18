@@ -413,8 +413,15 @@ def get_batch_dim(input_others):
     dim = int(len(input_others["positional_inputs"]) > 0)
     return dim
 
+def is_special_model(model):
+    model_name = None
+    if hasattr(model, 'config') and hasattr(model.config, '_name_or_path'):
+        model_name = model.config._name_or_path
+    else:
+        logger.warn("Unable to get model name via config.")
+    return 'Baichuan2-13B-Chat' in model_name
 
-def sampling_inputs(input_ids, input_others, indices, seqlen):
+def sampling_inputs(input_ids, input_others, indices, seqlen, special_model_flag=False):
     """Samples inputs based on the given indices and sequence length.
 
     Args:
@@ -440,7 +447,7 @@ def sampling_inputs(input_ids, input_others, indices, seqlen):
 
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
-        if "attention_mask" in key or "alibi" in key:
+        if not special_model_flag and ("attention_mask" in key or "alibi" in key):
             current_input_others[key] = None
             if input_others[key] is not None:
                 current_input_others[key] = input_others[key][indices, ...]
@@ -604,3 +611,4 @@ class CpuInfo(object):
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
         return 0
+
