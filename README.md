@@ -12,6 +12,14 @@ AutoRound
 
 AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference. It's tailored for a wide range of models and consistently delivers noticeable improvements, often significantly outperforming SignRound with the cost of more tuning time for quantization.
 
+our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps, which competes impressively against recent methods without introducing any additional inference overhead. The below image presents an overview of AutoRound.
+
+<div align="center">
+
+![](docs/autoround_overview.png)
+
+<div align="left">
+
 ## Prerequisites
 - Python 3.9 or higher
 
