@@ -35,14 +35,14 @@ pip install auto-round
 ```
 ## Model quantization
 
-### CPU/ Gaudi2/ GPU
+### Gaudi2/ CPU/ GPU
 
 ```python
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-tuning_device = "cuda:0"  ## or "cpu", "hpu"
-dtype = "auto" if tuning_device != "hpu" else torch.bfloat16
+device = "hpu"  ## or "cpu", "cuda:0"
+dtype = "auto" if device != "hpu" else torch.bfloat16
 model_name = "meta-llama/Llama-2-7b-hf"
 model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -56,14 +56,12 @@ output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir)
 ```
 
-
-
 ## Model inference
 Please run the quantization code first.
 
 
 
-### Intel CPU
+### CPU
 ```python
 # Please save the quantized model in 'itrex' format first, then refer to the ITREX tutorial for more details on inference with the INT4 model.
 # (https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed)
