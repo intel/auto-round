@@ -243,7 +243,7 @@ if __name__ == '__main__':
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
 
-    data = customized_data(tokenizer, args.seqlen)
+    data = customized_data()
 
     autoround = round(model, tokenizer, args.bits, args.group_size, dataloader=data, sym=args.sym,
                       batch_size=args.train_bs,
