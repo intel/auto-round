@@ -35,7 +35,7 @@ pip install auto-round
 ```
 ## Model quantization
 
-### On CPU/ Gaudi2/ GPU
+### CPU/ Gaudi2/ GPU
 
 ```python
 import torch
