@@ -651,21 +651,30 @@ class AutoRound(object):
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
-                data_new = data.to(self.model.device)
-                input_ids = data_new
+                input_ids = data.to(self.model.device)
+
+            elif isinstance(data, str):
+                if self.tokenizer is None:
+                    logger.error("for string input, please provide tokenizer")
+                    exit()
+                data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
+                data_new = {}
+                for key in data.keys():
+                    data_new[key] = data[key].to(self.model.device)
+                input_ids = data_new["input_ids"]
             else:
                 data_new = {}
                 for key in data.keys():
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
-            # if input_ids.shape[-1] < self.seqlen:
-            #     continue
+            if input_ids.shape[-1] < self.seqlen:
+                continue
             if total_cnt + input_ids.shape[0] > n_samples:
                 input_ids = input_ids[: n_samples - total_cnt, ...]
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
-                elif isinstance(data_new, dict):
+                else:
                     self.model(**data_new)
             except NotImplementedError:
                 pass
@@ -683,7 +692,7 @@ class AutoRound(object):
         elif total_cnt < n_samples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantification. "
-                f"Effective samples size:{total_cnt}, Target sample size:{n_samples}"
+                f"Valid samples size:{total_cnt}, Target sample size:{n_samples}"
             )
 
     @torch.no_grad()
