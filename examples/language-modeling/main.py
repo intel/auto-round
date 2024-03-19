@@ -102,6 +102,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     set_seed(args.seed)
+    
+    from auto_round import AuotoRoundConfig
     tasks = args.tasks
     use_eval_legacy = False
     import subprocess
@@ -123,15 +125,23 @@ if __name__ == '__main__':
             tasks = tasks.split(',')
         if isinstance(tasks, list):
             if "mmlu" in tasks:
-                tmp_tasks = tasks
-                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
+                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tasks]
             if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
-                tmp_tasks = tasks
-                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-            tasks = list(set(tasks))
+                # Handle "truthfulqa_mc1" and "truthfulqa_mc2" by including only "truthfulqa_mc"
+                # !! Keep task order
+                new_tasks = []
+                for task_name in tasks:
+                    if "truthfulqa_mc" in task_name:
+                        tmp_task_name = "truthfulqa_mc"
+                        if tmp_task_name not in new_tasks:
+                            new_tasks.append(tmp_task_name)
+                    else:
+                        new_tasks.append(task_name)
+                tasks = new_tasks
         if isinstance(args.tasks, str):
             tasks = ','.join(tasks)
-
+        print(f"Using legacy lm-eval, tasks are {tasks}.")
+        
     model_name = args.model_name
     if model_name[-1] == "/":
         model_name = model_name[:-1]
@@ -191,8 +201,8 @@ if __name__ == '__main__':
         else:
             pt_dtype = torch.float32
             dtype = 'float32'
-    from auto_round import AuotoRoundConfig
-    excel_name = f"{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_leq_{AuotoRoundConfig.layer_equalization_transform}" + ".xlsx"
+    
+    excel_name = f"___xx__{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_leq_{AuotoRoundConfig.layer_equalization_transform}" + ".xlsx"
     if args.eval_fp16_baseline:
         if not args.low_gpu_mem_usage:
             model = model.to(torch_device)
@@ -239,7 +249,7 @@ if __name__ == '__main__':
     if AuotoRoundConfig.layer_equalization_transform or AuotoRoundConfig.pass_model_to_lm_eval:
         # TODO: Release it after later
         from ppl_eval import eval_wikitext2
-        eval_wikitext2(model, tokenizer)
+        # eval_wikitext2(model, tokenizer)
         eval_model(model_path=None, tasks=tasks, dtype=dtype, limit=None,
                 eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                 device=torch_device, excel_file=excel_name,
