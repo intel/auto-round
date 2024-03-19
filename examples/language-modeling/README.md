@@ -47,25 +47,27 @@ pip install -r requirements.txt
 
 - **Default Settings:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --enable_minmax_tuning --use_quant_input
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1  --use_quant_input
 ```
 - **Reduced GPU Memory Usage and Adjusted Training Batch Size:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --low_gpu_mem_usage --train_bs 1 --gradient_accumulate_steps 8
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1  --train_bs 1 --gradient_accumulate_steps 8
 ```
 - **Utilizing the AdamW Optimizer:**
+
 Include the flag `--adam`. Note that AdamW is less effective than Sign gradient descent in many scenarios we tested.
 
 - **Running the Original SignRound:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --iters 400 --lr 0.0025 --minmax_lr 0.0025
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --iters 400 --lr 0.0025 --disable_minmax_tuning
 ```
+
 
 - **Running on Intel Gaudi2**
 ```bash
 bash run_autoround_on_gaudi.sh 
 ```
- `--enable_minmax_tuning` is strongly recommended 
+
 
 
 ## 4. Evaluation
