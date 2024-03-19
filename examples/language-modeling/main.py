@@ -80,7 +80,7 @@ if __name__ == '__main__':
                         help="low_gpu_mem_usage is deprecated")
 
     parser.add_argument("--enable_minmax_tuning", action='store_true',
-                        help="enable_minmax_tuning is deprecated")  # #not usage
+                        help="enable_minmax_tuning is deprecated")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu'."
@@ -108,7 +108,7 @@ if __name__ == '__main__':
                         help="disable low_gpu_mem_usage")
 
     parser.add_argument("--disable_minmax_tuning", action='store_true',
-                        help="disable whether enable weight minmax tuning")  # #not usage
+                        help="disable whether enable weight minmax tuning")
 
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
