@@ -57,6 +57,8 @@ if __name__ == '__main__':
     parser.add_argument("--seed", default=42, type=int,
                         help="seed")
 
+
+
     parser.add_argument("--eval_fp16_baseline", action='store_true',
                         help="whether to eval FP16 baseline")
 
@@ -109,6 +111,10 @@ if __name__ == '__main__':
 
     parser.add_argument("--disable_minmax_tuning", action='store_true',
                         help="disable whether enable weight minmax tuning")
+
+    parser.add_argument("--disable_trust_remote_code", action='store_true',
+                        help="Whether to disable trust_remote_code")
+
 
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
@@ -178,10 +184,10 @@ if __name__ == '__main__':
 
     is_glm = bool(re.search("chatglm", model_name.lower()))
     if is_glm:
-        model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+        model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype, trust_remote_code=True
+            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code
         )
 
     from auto_round import (AutoRound,
@@ -204,7 +210,7 @@ if __name__ == '__main__':
         if tokenizer.pad_token is None:
             tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:

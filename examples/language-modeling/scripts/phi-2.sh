@@ -5,4 +5,5 @@ python3 main.py \
 --bits 4 \
 --iters 1000 \
 --deployment_device 'gpu' \
+--disable_trust_remote_code \
 --output_dir "./tmp_autoround"
