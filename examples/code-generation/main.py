@@ -58,7 +58,7 @@ if __name__ == '__main__':
                         help="seed")
 
     parser.add_argument("--amp", action='store_true',
-                        help="amp")
+                        help="amp is deprecated")
 
     parser.add_argument("--adam", action='store_true',
                         help="adam")
@@ -74,10 +74,10 @@ if __name__ == '__main__':
                         help="number of samples")
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
-                        help="low_gpu_mem_usage")
+                        help="low_gpu_mem_usage is deprecated")
 
     parser.add_argument("--enable_minmax_tuning", action='store_true',
-                        help="whether enable weight minmax tuning")
+                        help="enable_minmax_tuning is deprecated")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu'."
