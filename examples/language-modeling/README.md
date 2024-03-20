@@ -32,10 +32,17 @@ The transformers version required varies across different types of models. Here,
 | microsoft/phi-2 | 4.36 |
 
 
-## 2. Prepare Dataset
+## 2. Prepare Calibration Dataset
 
-The NeelNanda/pile-10k in huggingface is adopted as the default calibration data and  will be downloaded automatically from the datasets Hub. To customize a dataset, please kindly follow our dataset code.
+### Default Dataset
+The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in huggingface is adopted as the default calibration data and  will be downloaded automatically from the datasets Hub. To customize a dataset, please kindly follow our dataset code.
 See more about loading [huggingface dataset](https://huggingface.co/docs/datasets/main/en/quickstart)
+
+### Customized Dataset
+- Following the [code](./main_customized_data.py) to pass list of string or list of inputs to dataloader.
+
+- Register your dataset/dataloader following the [code](../../auto_round/calib_dataset.py) and pass the new dataset&split args to initialize AutoRound object.
+
 
 <br />
 
