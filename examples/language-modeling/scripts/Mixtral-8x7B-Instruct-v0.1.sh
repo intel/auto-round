@@ -6,5 +6,4 @@ python3 main.py \
 --iters 1000 \
 --use_quant_input \
 --deployment_device 'gpu' \
---eval_bs 32 \
 --output_dir "./tmp_autoround"

@@ -110,7 +110,7 @@ if __name__ == '__main__':
                         help="disable low_gpu_mem_usage")
 
     parser.add_argument("--disable_minmax_tuning", action='store_true',
-                        help="disable whether enable weight minmax tuning")
+                        help="whether disable  enable weight minmax tuning")
 
     parser.add_argument("--disable_trust_remote_code", action='store_true',
                         help="Whether to disable trust_remote_code")

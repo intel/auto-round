@@ -5,5 +5,4 @@ python3 main.py \
 --bits 4 \
 --iters 1000 \
 --deployment_device 'gpu' \
---scale_dtype 'fp32' \
 --output_dir "./tmp_autoround"

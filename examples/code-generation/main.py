@@ -102,7 +102,7 @@ if __name__ == '__main__':
                         help="disable low_gpu_mem_usage")
 
     parser.add_argument("--disable_minmax_tuning", action='store_true',
-                        help="disable whether enable weight minmax tuning")  # #not usage
+                        help="whether disable  enable weight minmax tuning")  # #not usage
 
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
