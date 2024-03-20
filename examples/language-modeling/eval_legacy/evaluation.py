@@ -248,6 +248,11 @@ def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrand
                     tmp_eval_bs = 1
                 else:
                     tmp_eval_bs = eval_bs
+                for _task_name in task_names:
+                    if "boolq" in _task_name or "hendr" in _task_name:
+                        tmp_eval_bs = 4
+                print(f"evaluating {task_names} with bs {tmp_eval_bs}")
+
                 if model_tokenizer_pairs:
                     tmp_results, lm = simple_evaluate(model=model, model_args=model_args, tasks=task_names,
                                                     num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
