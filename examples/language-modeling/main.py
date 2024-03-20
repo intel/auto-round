@@ -57,8 +57,6 @@ if __name__ == '__main__':
     parser.add_argument("--seed", default=42, type=int,
                         help="seed")
 
-
-
     parser.add_argument("--eval_fp16_baseline", action='store_true',
                         help="whether to eval FP16 baseline")
 

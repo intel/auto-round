@@ -38,19 +38,16 @@ pip install auto-round
 ### Gaudi2/ CPU/ GPU
 
 ```python
-import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-device = "hpu"  ## or "cpu", "cuda:0"
-dtype = "auto" if device != "hpu" else torch.bfloat16
 model_name = "meta-llama/Llama-2-7b-hf"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
 from auto_round import AutoRound
 
 bits, group_size, sym = 4, 128, False
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=tuning_device)
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
 autoround.quantize()
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir)
