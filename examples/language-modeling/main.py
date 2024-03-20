@@ -1,5 +1,6 @@
 import argparse
 import sys
+
 sys.path.insert(0, '../..')
 parser = argparse.ArgumentParser()
 import torch
@@ -36,7 +37,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--device", default="auto", type=str,
                         help="The device to be used for tuning. The default is set to auto/None,"
-                        "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
+                             "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
 
     parser.add_argument("--sym", action='store_true',
                         help=" sym quantization")
@@ -56,11 +57,13 @@ if __name__ == '__main__':
     parser.add_argument("--seed", default=42, type=int,
                         help="seed")
 
+
+
     parser.add_argument("--eval_fp16_baseline", action='store_true',
                         help="whether to eval FP16 baseline")
 
     parser.add_argument("--amp", action='store_true',
-                        help="amp")
+                        help="amp is deprecated ")
 
     parser.add_argument("--adam", action='store_true',
                         help="adam")
@@ -76,10 +79,10 @@ if __name__ == '__main__':
                         help="number of samples")
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
-                        help="low_gpu_mem_usage")
+                        help="low_gpu_mem_usage is deprecated")
 
     parser.add_argument("--enable_minmax_tuning", action='store_true',
-                        help="whether enable weight minmax tuning")
+                        help="enable_minmax_tuning is deprecated")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu'."
@@ -100,25 +103,53 @@ if __name__ == '__main__':
     parser.add_argument("--disable_eval", action='store_true',
                         help="Whether to do lmeval evaluation.")
 
+    parser.add_argument("--disable_amp", action='store_true',
+                        help="disable amp")
+
+    parser.add_argument("--disable_low_gpu_mem_usage", action='store_true',
+                        help="disable low_gpu_mem_usage")
+
+    parser.add_argument("--disable_minmax_tuning", action='store_true',
+                        help="whether disable  enable weight minmax tuning")
+
+    parser.add_argument("--disable_trust_remote_code", action='store_true',
+                        help="Whether to disable trust_remote_code")
+
+
     args = parser.parse_args()
+    if args.low_gpu_mem_usage:
+        print(
+            "low_gpu_mem_usage is deprecated, it has been set to the default, use disable_low_gpu_mem_usage to turn it off")
+    if args.enable_minmax_tuning:
+        print(
+            "enable_minmax_tuning is deprecated, it has been set to the default, use disable_minmax_tuning to turn it off")
+    if args.amp:
+        print(
+            "amp is deprecated, it has been set to the default, use disable_amp to turn it off")
+
     set_seed(args.seed)
     tasks = args.tasks
     use_eval_legacy = False
     import subprocess
+
+
     def get_library_version(library_name):
         try:
             version = subprocess.check_output(['pip', 'show', library_name]).decode().split('\n')[1].split(': ')[1]
             return version
         except subprocess.CalledProcessError:
             return "Library not found"
+
+
     res = get_library_version("lm-eval")
     if res == "0.3.0":
         use_eval_legacy = True
-        
+
     if not use_eval_legacy:
         from eval import eval_model
     else:
         from eval_legacy import eval_model
+
         if isinstance(tasks, str):
             tasks = tasks.split(',')
         if isinstance(tasks, list):
@@ -131,7 +162,7 @@ if __name__ == '__main__':
             tasks = list(set(tasks))
         if isinstance(args.tasks, str):
             tasks = ','.join(tasks)
-        
+
     if 'fake' in args.deployment_device and not args.disable_eval:
         if use_eval_legacy:
             print("Using the legacy lm_eval(0.3.0)")
@@ -142,24 +173,26 @@ if __name__ == '__main__':
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     print(model_name, flush=True)
-    
+
     from auto_round.utils import detect_device
+
     device_str = detect_device(args.device)
     torch_dtype = "auto"
     if device_str == "hpu":
         torch_dtype = torch.bfloat16
     torch_device = torch.device(device_str)
-    
+
     is_glm = bool(re.search("chatglm", model_name.lower()))
     if is_glm:
-        model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+        model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype, trust_remote_code=True
+            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code
         )
-    
+
     from auto_round import (AutoRound,
-                        AutoAdamRound)
+                            AutoAdamRound)
+
     model = model.eval()
     # align with GPTQ to eval ppl
     if "opt" in model_name:
@@ -177,7 +210,7 @@ if __name__ == '__main__':
         if tokenizer.pad_token is None:
             tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
@@ -200,11 +233,11 @@ if __name__ == '__main__':
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if args.eval_fp16_baseline:
-        if not args.low_gpu_mem_usage:
+        if args.disable_low_gpu_mem_usage:
             model = model.to(torch_device)
         excel_name += "_fp16.xlsx"
         eval_model(model_path=model_name, tasks=tasks, dtype=dtype, \
-                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
         exit()
 
@@ -226,9 +259,11 @@ if __name__ == '__main__':
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
-                      amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
+                      amp=not args.disable_amp, n_samples=args.n_samples,
+                      low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, weight_config=weight_config)  ##TODO args pass
+                      scale_dtype=args.scale_dtype, weight_config=weight_config,
+                      enable_minmax_tuning=not args.disable_minmax_tuning)  ##TODO args pass
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -255,6 +290,3 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
-
-
-

@@ -305,8 +305,8 @@ def unwrapper_block(block, vs, min_scales, max_scales):
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
             v = 0
-            min_scale = 0
-            max_scale = 0
+            min_scale = torch.tensor(0)
+            max_scale = torch.tensor(0)
             if isinstance(vs, dict):
                 v = vs[n]
             if isinstance(min_scales, dict):
@@ -852,6 +852,7 @@ class AutoRound(object):
         mse_loss = torch.nn.MSELoss().to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
+        best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
         for i in range(self.iters):
             if self.sampler == "rand":
                 indices = torch.randperm(n_samples)[:pick_samples]
@@ -1094,8 +1095,6 @@ class AutoRound(object):
             summary_info += f",  {unquantized_layers} have not been quantized"
 
         logger.info(summary_info)
-        if len(unquantized_layers) > 0:
-            logger.info(f"Summary: {unquantized_layers} have not been quantized")
 
         self.quantized = True
         self.model = self.model.to(self.model_orig_dtype)

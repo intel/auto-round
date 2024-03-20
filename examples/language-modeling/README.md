@@ -32,10 +32,17 @@ The transformers version required varies across different types of models. Here,
 | microsoft/phi-2 | 4.36 |
 
 
-## 2. Prepare Dataset
+## 2. Prepare Calibration Dataset
 
-The NeelNanda/pile-10k in huggingface is adopted as the default calibration data and  will be downloaded automatically from the datasets Hub. To customize a dataset, please kindly follow our dataset code.
+### Default Dataset
+The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in huggingface is adopted as the default calibration data and  will be downloaded automatically from the datasets Hub. To customize a dataset, please kindly follow our dataset code.
 See more about loading [huggingface dataset](https://huggingface.co/docs/datasets/main/en/quickstart)
+
+### Customized Dataset
+- Following the [code](./main_customized_data.py) to pass list of string or list of inputs to dataloader.
+
+- Register your dataset/dataloader following the [code](../../auto_round/calib_dataset.py) and pass the new dataset&split args to initialize AutoRound object.
+
 
 <br />
 
@@ -47,25 +54,27 @@ pip install -r requirements.txt
 
 - **Default Settings:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --enable_minmax_tuning --use_quant_input
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1  --use_quant_input
 ```
 - **Reduced GPU Memory Usage and Adjusted Training Batch Size:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --low_gpu_mem_usage --train_bs 1 --gradient_accumulate_steps 8
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1  --train_bs 1 --gradient_accumulate_steps 8
 ```
 - **Utilizing the AdamW Optimizer:**
-Include the flag `--adam`. Note that AdamW is less effective than Sign gradient descent in many scenarios we tested.
+
+Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 - **Running the Original SignRound:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --iters 400 --lr 0.0025 --minmax_lr 0.0025
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1 --iters 400 --lr 0.0025 --disable_minmax_tuning
 ```
+
 
 - **Running on Intel Gaudi2**
 ```bash
 bash run_autoround_on_gaudi.sh 
 ```
- `--enable_minmax_tuning` is strongly recommended 
+
 
 
 ## 4. Evaluation
