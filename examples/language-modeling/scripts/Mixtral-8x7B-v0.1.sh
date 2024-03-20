@@ -4,10 +4,5 @@ python3 main.py \
 --group_size 128 \
 --bits 4 \
 --iters 1000 \
---enable_minmax_tuning \
---low_gpu_mem_usage \
 --deployment_device 'gpu' \
---scale_dtype 'fp32' \
---eval_bs 32 \
---output_dir "./tmp_autoround" \
---amp
+--output_dir "./tmp_autoround"
