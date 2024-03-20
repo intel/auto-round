@@ -32,7 +32,6 @@ from .utils import (
     get_scale_shape,
     htcore,
     is_hpu_available,
-    is_special_model,
     logger,
     move_input_to_device,
     quant_weight,
