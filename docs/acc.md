@@ -59,8 +59,8 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>58.22</td>
         <td>73.45</td>
         <td>59.47</td>
-        <td><b>74.03</td>
-        <td><b>80.20</td>
+        <td>74.03</td>
+        <td>80.20</td>
         <td>26.93</td>
         <td>31.00</td>
         <td>81.50</td>
@@ -78,8 +78,8 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>79.43</td>
         <td>25.34</td>
         <td>30.40</td>
-        <td><b>82.69</td>
-        <td><b>68.95</td>
+        <td>82.69</td>
+        <td>68.95</td>
         <td>79.25</td>
         <td>47.44</td>
         <td>61.36</td>
@@ -102,16 +102,16 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <tr>
         <td>Ours</td>
         <th>59.52</td>
-        <td><b>73.76</td>
-        <td><b>60.75</td>
+        <td>73.76</td>
+        <td>60.75</td>
         <td>73.32</td>
         <td>80.09</td>
-        <td><b>27.17</td>
-        <td><b>33.00</td>
+        <td>27.17</td>
+        <td>33.00</td>
         <td>82.02</td>
         <td>66.07</td>
-        <td><b>80.47</td>
-        <td><b>49.49</td>
+        <td>80.47</td>
+        <td>49.49</td>
         <td><b>62.33</td>
     </tr>
     <tr>
@@ -137,7 +137,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>55.63</td>
         <td>68.51</td>
         <td>76.82</td>
-        <td><b>26.19</td>
+        <td>26.19</td>
         <td>30.60</td>
         <td>73.64</td>
         <td>58.84</td>
@@ -148,7 +148,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <tr>
         <td>GPTQ</td>
         <td>39.66</td>
-        <td><b>71.92</td>
+        <td>71.92</td>
         <td>55.89</td>
         <td>68.03</td>
         <td>77.58</td>
@@ -162,14 +162,14 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>AWQ</td>
-        <td><b>40.24</td>
+        <td>40.24</td>
         <td>71.20</td>
         <td>56.26</td>
-        <td><b>69.61</td>
+        <td>69.61</td>
         <td>76.93</td>
         <td>26.07</td>
-        <td><b>32.60</td>
-        <td><b>77.31</td>
+        <td>32.60</td>
+        <td>77.31</td>
         <td>63.18</td>
         <td>75.00</td>
         <td>41.30</td>
@@ -194,15 +194,15 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Ours</td>
         <td>39.97</td>
         <td>71.63</td>
-        <td><b>56.52</td>
+        <td>56.52</td>
         <td>68.43</td>
-        <td><b>77.91</td>
+        <td>77.91</td>
         <td>25.70</td>
         <td>31.60</td>
         <td>76.18</td>
-        <td><b>65.70</td>
-        <td><b>76.01</td>
-        <td><b>42.58</td>
+        <td>65.70</td>
+        <td>76.01</td>
+        <td>42.58</td>
         <td><b>57.48</td>
     </tr>
     <tr>
@@ -227,10 +227,10 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>74.35</td>
         <td>59.12</td>
         <td>71.98</td>
-        <td><b>79.00</td>
+        <td>79.00</td>
         <td>24.85</td>
         <td>33.00</td>
-        <td><b>81.77</td>
+        <td>81.77</td>
         <td>64.98</td>
         <td>79.08</td>
         <td>46.59</td>
@@ -254,14 +254,14 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <tr>
         <td>AWQ</td>
         <td>51.16</td>
-        <td><b>75.98</td>
+        <td>75.98</td>
         <td>59.51</td>
         <td>70.80</td>
         <td>78.40</td>
         <td>25.21</td>
-        <td><b>34.60</td>
+        <td>34.60</td>
         <td>78.26</td>
-        <td><b>66.79</td>
+        <td>66.79</td>
         <td>79.12</td>
         <td>46.59</td>
         <td>60.58</td>
@@ -283,17 +283,17 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>52.30</td>
+        <td>52.30</td>
         <td>75.96</td>
-        <td><b>59.79</td>
-        <td><b>72.30</td>
+        <td>59.79</td>
+        <td>72.30</td>
         <td>78.84</td>
-        <td><b>25.58</td>
+        <td>25.58</td>
         <td>34.00</td>
         <td>80.15</td>
-        <td><b>66.79</td>
-        <td><b>79.38</td>
-        <td><b>48.12</td>
+        <td>66.79</td>
+        <td>79.38</td>
+        <td>48.12</td>
         <td><b>61.20</td>
     </tr>
     <tr>
@@ -320,7 +320,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>76.72</td>
         <td>81.50</td>
         <td>28.89</td>
-        <td><b>37.80</td>
+        <td>37.80</td>
         <td>83.39</td>
         <td>68.23</td>
         <td>81.99</td>
@@ -334,11 +334,11 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>63.86</td>
         <td>76.87</td>
         <td>81.61</td>
-        <td><b>31.46</td>
+        <td>31.46</td>
         <td>36.40</td>
         <td>82.23</td>
         <td>70.04</td>
-        <td><b>82.53</td>
+        <td>82.53</td>
         <td>54.18</td>
         <td>65.75</td>
     </tr>
@@ -352,9 +352,9 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>30.48</td>
         <td>37.20</td>
         <td>83.64</td>
-        <td><b>72.92</td>
+        <td>72.92</td>
         <td>82.49</td>
-        <td><b>55.80</td>
+        <td>55.80</td>
         <td><b>66.28</td>
     </tr>
     <tr>
@@ -374,16 +374,16 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>65.43</td>
-        <td><b>79.55</td>
-        <td><b>64.47</td>
-        <td><b>78.06</td>
-        <td><b>82.10</td>
+        <td>65.43</td>
+        <td>79.55</td>
+        <td>64.47</td>
+        <td>78.06</td>
+        <td>82.10</td>
         <td>30.60</td>
         <td>36.40</td>
-        <td><b>83.91</td>
+        <td>83.91</td>
         <td>71.12</td>
-        <td><b>82.53</td>
+        <td>82.53</td>
         <td>54.78</td>
         <td>66.27</td>
     </tr>
@@ -423,7 +423,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>29.06</td>
         <td>71.08</td>
         <td>55.11</td>
-        <td><b>70.01</td>
+        <td>70.01</td>
         <td>77.37</td>
         <td>20.93</td>
         <td>32.20</td>
@@ -435,7 +435,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>AWQ</td>
-        <td><b>33.33</td>
+        <td>33.33</td>
         <td>70.81</td>
         <td>55.98</td>
         <td>68.27</td>
@@ -451,17 +451,17 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <tr>
         <td>Ours</td>
         <td>31.80</td>
-        <td><b>71.96</td>
-        <td><b>56.57</td>
+        <td>71.96</td>
+        <td>56.57</td>
         <td>69.53</td>
-        <td><b>79.00</td>
-        <td><b>21.91</td>
-        <td><b>33.20</td>
-        <td><b>75.72</td>
-        <td><b>66.79</td>
-        <td><b>74.83</td>
-        <td><b>43.09</td>
-        <td><b>56.76</td>
+        <td>79.00</td>
+        <td>21.91</td>
+        <td>33.20</td>
+        <td>75.72</td>
+        <td>66.79</td>
+        <td>74.83</td>
+        <td>43.09</td>
+        <td>56.76</td>
     </tr>
     <tr>
         <td rowspan="5">V1-13B</td>
@@ -488,7 +488,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>78.02</td>
         <td>24.85</td>
         <td>32.00</td>
-        <td><b>78.20</td>
+        <td>78.20</td>
         <td>66.43</td>
         <td>75.67</td>
         <td>44.62</td>
@@ -501,42 +501,42 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>58.92</td>
         <td>71.03</td>
         <td>78.45</td>
-        <td><b>26.44</td>
-        <td><b>33.60</td>
+        <td>26.44</td>
+        <td>33.60</td>
         <td>77.09</td>
-        <td><b>68.23</td>
+        <td>68.23</td>
         <td>76.85</td>
         <td>44.97</td>
         <td>59.12</td>
     </tr>
     <tr>
         <td>AWQ</td>
-        <td><b>44.56</td>
+        <td>44.56</td>
         <td>74.13</td>
         <td>59.13</td>
         <td>71.27</td>
-        <td><b>78.94</td>
+        <td>78.94</td>
         <td>25.83</td>
         <td>33.20</td>
         <td>76.42</td>
         <td>66.06</td>
-        <td><b>76.89</td>
-        <td><b>46.67</td>
+        <td>76.89</td>
+        <td>46.67</td>
         <td>59.37</td>
     </tr>
     <tr>
         <td>Ours</td>
         <td>43.94</td>
-        <td><b>75.82</td>
-        <td><b>59.51</td>
-        <td><b>72.22</td>
+        <td>75.82</td>
+        <td>59.51</td>
+        <td>72.22</td>
         <td>78.78</td>
         <td>25.70</td>
         <td>32.80</td>
         <td>77.34</td>
         <td>67.51</td>
         <td>76.47</td>
-        <td><b>46.67</td>
+        <td>46.67</td>
         <td><b>59.71</td>
     </tr>
     <tr>
@@ -591,28 +591,28 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>76.77</td>
         <td>62.78</td>
         <td>74.11</td>
-        <td><b>81.07</td>
-        <td><b>27.78</td>
+        <td>81.07</td>
+        <td>27.78</td>
         <td>35.00</td>
-        <td><b>82.66</td>
-        <td><b>67.15</td>
+        <td>82.66</td>
+        <td>67.15</td>
         <td>79.97</td>
         <td>51.71</td>
         <td>63.01</td>
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>54.72</td>
-        <td><b>77.84</td>
-        <td><b>62.91</td>
-        <td><b>75.06</td>
+        <td>54.72</td>
+        <td>77.84</td>
+        <td>62.91</td>
+        <td>75.06</td>
         <td>80.69</td>
         <td>26.68</td>
-        <td><b>36.40</td>
+        <td>36.40</td>
         <td>82.60</td>
         <td>66.79</td>
-        <td><b>80.13</td>
-        <td><b>52.13</td>
+        <td>80.13</td>
+        <td>52.13</td>
         <td><b>63.27</td>
     </tr>
     <tr>
@@ -636,14 +636,14 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>58.74</td>
         <td>76.42</td>
         <td>64.12</td>
-        <td><b>76.72</td>
+        <td>76.72</td>
         <td>81.01</td>
-        <td><b>29.25</td>
-        <td><b>38.60</td>
+        <td>29.25</td>
+        <td>38.60</td>
         <td>84.13</td>
         <td>70.40</td>
         <td>80.72</td>
-        <td><b>51.88</td>
+        <td>51.88</td>
         <td>64.73</td>
     </tr>
     <tr>
@@ -652,12 +652,12 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>78.17</td>
         <td>63.78</td>
         <td>75.69</td>
-        <td><b>81.34</td>
+        <td>81.34</td>
         <td>28.27</td>
         <td>38.40</td>
         <td>83.76</td>
         <td>68.59</td>
-        <td><b>80.98</td>
+        <td>80.98</td>
         <td>51.62</td>
         <td>64.52</td>
     </tr>
@@ -671,23 +671,23 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>28.27</td>
         <td>35.20</td>
         <td>83.94</td>
-        <td><b>71.48</td>
+        <td>71.48</td>
         <td>78.75</td>
         <td>50.94</td>
         <td>64.19</td>
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>59.21</td>
-        <td><b>79.16</td>
-        <td><b>64.37</td>
+        <td>59.21</td>
+        <td>79.16</td>
+        <td>64.37</td>
         <td>76.64</td>
-        <td><b>81.34</td>
+        <td>81.34</td>
         <td>26.81</td>
         <td>37.80</td>
-        <td><b>84.40</td>
+        <td>84.40</td>
         <td>69.68</td>
-        <td><b>80.98</td>
+        <td>80.98</td>
         <td>51.79</td>
         <td><b>64.74</td>
     </tr>
@@ -734,11 +734,11 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>RTN</td>
         <td>59.72</td>
         <td>74.44</td>
-        <td><b>61.06</td>
+        <td>61.06</td>
         <td>73.40</td>
         <td>80.36</td>
         <td>27.17</td>
-        <td><b>32.60</td>
+        <td>32.60</td>
         <td>83.67</td>
         <td>64.62</td>
         <td>79.63</td>
@@ -750,12 +750,12 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>59.17</td>
         <td>74.52</td>
         <td>60.37</td>
-        <td><b>74.90</td>
-        <td><b>80.58</td>
+        <td>74.90</td>
+        <td>80.58</td>
         <td>26.68</td>
         <td>31.00</td>
         <td>83.33</td>
-        <td><b>67.15</td>
+        <td>67.15</td>
         <td>79.67</td>
         <td>48.12</td>
         <td>62.32</td>
@@ -769,10 +769,10 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>80.03</td>
         <td>27.05</td>
         <td>30.40</td>
-        <td><b>84.01</td>
+        <td>84.01</td>
         <td>62.09</td>
-        <td><b>80.39</td>
-        <td><b>50.26</td>
+        <td>80.39</td>
+        <td>50.26</td>
         <td>62.16</td>
     </tr>
     <tr>
@@ -788,22 +788,22 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>66.79 </td>
         <td>79.92 </td>
         <td>49.32 </td>
-        <td>62.75 </td>
+        <td><b>62.75 </td>
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>60.47</td>
-        <td><b>75.59</td>
+        <td>60.47</td>
+        <td>75.59</td>
         <td>61.03</td>
         <td>73.88</td>
         <td>80.09</td>
-        <td><b>27.54</td>
+        <td>27.54</td>
         <td>31.60</td>
         <td>83.09</td>
         <td>66.07</td>
         <td>79.97</td>
         <td>49.49</td>
-        <td><b>62.62</td>
+        <td>62.62</td>
     </tr>
     <tr>
         <td rowspan="6">V2-7B</td>
@@ -825,23 +825,23 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>RTN</td>
         <td>40.91</td>
         <td>72.44</td>
-        <td><b>56.91</td>
+        <td>56.91</td>
         <td>68.35</td>
         <td>77.58</td>
         <td>24.97</td>
         <td>31.20</td>
         <td>77.61</td>
         <td>56.32</td>
-        <td><b>76.26</td>
+        <td>76.26</td>
         <td>43.52</td>
         <td>56.92</td>
     </tr>
     <tr>
         <td>GPTQ</td>
-        <td><b>42.57</td>
-        <td><b>73.28</td>
+        <td>42.57</td>
+        <td>73.28</td>
         <td>56.36</td>
-        <td><b>69.06</td>
+        <td>69.06</td>
         <td>78.02</td>
         <td>25.34</td>
         <td>30.20</td>
@@ -858,12 +858,12 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>56.40</td>
         <td>68.98</td>
         <td>77.31</td>
-        <td><b>25.70</td>
-        <td><b>31.60</td>
-        <td><b>78.75</td>
+        <td>25.70</td>
+        <td>31.60</td>
+        <td>78.75</td>
         <td>58.48</td>
         <td>76.14</td>
-        <td><b>43.86</td>
+        <td>43.86</td>
         <td>57.35</td>
     </tr>
         <tr>
@@ -887,11 +887,11 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>72.75</td>
         <td>56.79</td>
         <td>68.67</td>
-        <td><b>78.13</td>
+        <td>78.13</td>
         <td>25.58</td>
         <td>30.20</td>
         <td>77.49</td>
-        <td><b>63.54</td>
+        <td>63.54</td>
         <td>75.76</td>
         <td>42.58</td>
         <td><b>57.57</td>
@@ -924,12 +924,12 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>80.24</td>
         <td>62.09</td>
         <td>79.00</td>
-        <td><b>47.95</td>
+        <td>47.95</td>
         <td>60.65</td>
     </tr>
     <tr>
         <td>GPTQ</td>
-        <td><b>52.66</td>
+        <td>52.66</td>
         <td>76.54</td>
         <td>59.76</td>
         <td>72.14</td>
@@ -937,7 +937,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>25.70</td>
         <td>34.00</td>
         <td>79.33</td>
-        <td><b>66.43</td>
+        <td>66.43</td>
         <td>78.58</td>
         <td>47.53</td>
         <td><b>61.00</td>
@@ -945,13 +945,13 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <tr>
         <td>AWQ</td>
         <td>52.39</td>
-        <td><b>76.89</td>
-        <td><b>59.97</td>
-        <td><b>73.24</td>
-        <td><b>79.00</td>
+        <td>76.89</td>
+        <td>59.97</td>
+        <td>73.24</td>
+        <td>79.00</td>
         <td>25.21</td>
         <td>32.60</td>
-        <td><b>80.40</td>
+        <td>80.40</td>
         <td>63.54</td>
         <td>79.04</td>
         <td>47.70</td>
@@ -978,12 +978,12 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>76.46</td>
         <td>59.87</td>
         <td>71.67</td>
-        <td><b>79.00</td>
-        <td><b>25.83</td>
-        <td><b>35.20</td>
+        <td>79.00</td>
+        <td>25.83</td>
+        <td>35.20</td>
         <td>79.60</td>
         <td>63.54</td>
-        <td><b>79.25</td>
+        <td>79.25</td>
         <td>47.01</td>
         <td>60.85</td>
     </tr>
@@ -1028,24 +1028,24 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>31.09</td>
         <td>37.00</td>
         <td>84.19</td>
-        <td><b>69.31</td>
+        <td>69.31</td>
         <td>82.79</td>
         <td>54.61</td>
         <td>66.22</td>
     </tr>
     <tr>
         <td>AWQ</td>
-        <td><b>65.79</td>
-        <td><b>79.76</td>
+        <td>65.79</td>
+        <td>79.76</td>
         <td>64.48</td>
         <td>77.58</td>
-        <td><b>82.32</td>
+        <td>82.32</td>
         <td>30.72</td>
-        <td><b>38.00</td>
+        <td>38.00</td>
         <td>83.06</td>
         <td>68.95</td>
         <td>82.70</td>
-        <td><b>55.12</td>
+        <td>55.12</td>
         <td>66.23</td>
     </tr>
     <tr>
@@ -1067,14 +1067,14 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Ours</td>
         <td>65.65</td>
         <td>79.49</td>
-        <td><b>64.60</td>
-        <td><b>78.30</td>
+        <td>64.60</td>
+        <td>78.30</td>
         <td>82.05</td>
-        <td><b>31.58</td>
+        <td>31.58</td>
         <td>37.40</td>
-        <td><b>84.83</td>
+        <td>84.83</td>
         <td>68.95</td>
-        <td><b>82.87</td>
+        <td>82.87</td>
         <td>54.52</td>
         <td><b>66.39</td>
     </tr>
@@ -1102,7 +1102,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>70.01</td>
         <td>78.45</td>
         <td>20.93</td>
-        <td><b>33.60</td>
+        <td>33.60</td>
         <td>74.74</td>
         <td>64.26</td>
         <td>74.71</td>
@@ -1116,7 +1116,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>55.85</td>
         <td>70.09</td>
         <td>78.13</td>
-        <td><b>22.28</td>
+        <td>22.28</td>
         <td>30.40</td>
         <td>74.65</td>
         <td>64.26</td>
@@ -1126,8 +1126,8 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>AWQ</td>
-        <td><b>33.42</td>
-        <td><b>72.95</td>
+        <td>33.42</td>
+        <td>72.95</td>
         <td>56.30</td>
         <td>68.75</td>
         <td>77.97</td>
@@ -1143,15 +1143,15 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Ours</td>
         <td>32.15</td>
         <td>72.85</td>
-        <td><b>56.45</td>
-        <td><b>70.17</td>
-        <td><b>78.51</td>
-        <td><b>22.28</td>
+        <td>56.45</td>
+        <td>70.17</td>
+        <td>78.51</td>
+        <td>22.28</td>
         <td>32.80</td>
-        <td><b>75.14</td>
-        <td><b>67.87</td>
-        <td><b>75.13</td>
-        <td><b>41.89</td>
+        <td>75.14</td>
+        <td>67.87</td>
+        <td>75.13</td>
+        <td>41.89</td>
         <td><b>56.84</td>
     </tr>
     <tr>
@@ -1172,16 +1172,16 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>RTN</td>
-        <td><b>42.71</td>
+        <td>42.71</td>
         <td>75.26</td>
         <td>59.30</td>
         <td>72.53</td>
-        <td><b>79.54</td>
+        <td>79.54</td>
         <td>25.95</td>
         <td>32.60</td>
         <td>76.76</td>
         <td>65.34</td>
-        <td><b>76.98</td>
+        <td>76.98</td>
         <td>45.82</td>
         <td>59.34</td>
     </tr>
@@ -1207,8 +1207,8 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>59.50</td>
         <td>72.77</td>
         <td>78.89</td>
-        <td><b>26.56</td>
-        <td><b>33.60</td>
+        <td>26.56</td>
+        <td>33.60</td>
         <td>77.46</td>
         <td>68.59</td>
         <td>76.94</td>
@@ -1218,16 +1218,16 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <tr>
         <td>Ours</td>
         <td>42.27</td>
-        <td><b>76.17</td>
-        <td><b>59.53</td>
-        <td><b>73.56</td>
+        <td>76.17</td>
+        <td>59.53</td>
+        <td>73.56</td>
         <td>79.33</td>
         <td>25.70</td>
         <td>32.80</td>
-        <td><b>78.20</td>
-        <td><b>70.04</td>
+        <td>78.20</td>
+        <td>70.04</td>
         <td>76.94</td>
-        <td><b>46.25</td>
+        <td>46.25</td>
         <td><b>60.07</td>
     </tr>
     <tr>
@@ -1252,7 +1252,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>77.02</td>
         <td>62.90</td>
         <td>74.35</td>
-        <td><b>80.52</td>
+        <td>80.52</td>
         <td>27.29</td>
         <td>34.20</td>
         <td>81.96</td>
@@ -1271,35 +1271,35 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>27.54</td>
         <td>34.60</td>
         <td>81.93</td>
-        <td><b>67.51</td>
+        <td>67.51</td>
         <td>80.05</td>
         <td>50.51</td>
         <td>62.92</td>
     </tr>
     <tr>
         <td>AWQ</td>
-        <td><b>55.14</td>
+        <td>55.14</td>
         <td>77.49</td>
-        <td><b>63.08</td>
-        <td><b>75.77</td>
-        <td><b>80.52</td>
+        <td>63.08</td>
+        <td>75.77</td>
+        <td>80.52</td>
         <td>27.29</td>
         <td>34.20</td>
-        <td><b>82.87</td>
+        <td>82.87</td>
         <td>67.15</td>
-        <td><b>80.43</td>
-        <td><b>52.90</td>
+        <td>80.43</td>
+        <td>52.90</td>
         <td><b>63.35</td>
     </tr>
     <tr>
         <td>Ours</td>
         <td>54.68</td>
-        <td><b>77.90</td>
+        <td>77.90</td>
         <td>62.93</td>
         <td>74.82</td>
         <td>80.47</td>
-        <td><b>28.15</td>
-        <td><b>35.80</td>
+        <td>28.15</td>
+        <td>35.80</td>
         <td>82.39</td>
         <td>66.79</td>
         <td>80.13</td>
@@ -1325,21 +1325,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <tr>
         <td>RTN</td>
         <td>59.53</td>
-        <td><b>79.51</td>
+        <td>79.51</td>
         <td>64.63</td>
-        <td><b>77.35</td>
+        <td>77.35</td>
         <td>80.96</td>
         <td>27.91</td>
         <td>38.40</td>
-        <td><b>84.43</td>
-        <td><b>71.48</td>
+        <td>84.43</td>
+        <td>71.48</td>
         <td>81.48</td>
         <td>52.22</td>
         <td><b>65.26</td>
     </tr>
     <tr>
         <td>GPTQ*</td>
-        <td><b>60.47</td>
+        <td>60.47</td>
         <td>78.79</td>
         <td>64.45</td>
         <td>76.24</td>
@@ -1348,20 +1348,20 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>37.40</td>
         <td>83.85</td>
         <td>68.95</td>
-        <td><b>81.57</td>
-        <td><b>53.07</td>
+        <td>81.57</td>
+        <td>53.07</td>
         <td>64.91</td>
     </tr>
     <tr>
         <td>AWQ</td>
         <td>59.45</td>
         <td>79.31</td>
-        <td><b>64.67</td>
+        <td>64.67</td>
         <td>76.72</td>
-        <td><b>81.56</td>
-        <td><b>28.15</td>
+        <td>81.56</td>
+        <td>28.15</td>
         <td>38.00</td>
-        <td><b>84.43</td>
+        <td>84.43</td>
         <td>71.12</td>
         <td>81.10</td>
         <td>52.13</td>
@@ -1375,7 +1375,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>77.03</td>
         <td>81.28</td>
         <td>27.91</td>
-        <td><b>38.60</td>
+        <td>38.60</td>
         <td>84.31</td>
         <td>70.76</td>
         <td>81.19</td>
@@ -1446,7 +1446,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>24.85</td>
         <td>30.80</td>
         <td>81.44</td>
-        <td><b>63.54</td>
+        <td>63.54</td>
         <td>77.27</td>
         <td>45.65</td>
         <td>59.91</td>
@@ -1454,16 +1454,16 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <tr>
         <td>AWQ</td>
         <td>55.61</td>
-        <td><b>73.69</td>
+        <td>73.69</td>
         <td>57.86</td>
         <td>71.27</td>
-        <td><b>79.82</td>
-        <td><b>26.07</td>
+        <td>79.82</td>
+        <td>26.07</td>
         <td>29.00</td>
         <td>81.10</td>
         <td>59.21</td>
-        <td><b>79.00</td>
-        <td><b>46.93</td>
+        <td>79.00</td>
+        <td>46.93</td>
         <td>59.96</td>
     </tr>
     <tr>
@@ -1483,14 +1483,14 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>57.54</td>
+        <td>57.54</td>
         <td>73.01</td>
-        <td><b>59.60</td>
-        <td><b>72.85</td>
+        <td>59.60</td>
+        <td>72.85</td>
         <td>79.54</td>
         <td>25.70</td>
-        <td><b>31.60</td>
-        <td><b>81.74</td>
+        <td>31.60</td>
+        <td>81.74</td>
         <td>58.12</td>
         <td>78.70</td>
         <td>46.33</td>
@@ -1532,7 +1532,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>36.11</td>
         <td>69.61</td>
         <td>53.66</td>
-        <td><b>68.59</td>
+        <td>68.59</td>
         <td>76.01</td>
         <td>21.91</td>
         <td>27.80</td>
@@ -1574,17 +1574,17 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>40.13</td>
-        <td><b>71.01</td>
-        <td><b>55.33</td>
+        <td>40.13</td>
+        <td>71.01</td>
+        <td>55.33</td>
         <td>68.27</td>
-        <td><b>76.82</td>
-        <td><b>25.34</td>
-        <td><b>32.80</td>
-        <td><b>75.32</td>
-        <td><b>60.29</td>
-        <td><b>75.25</td>
-        <td><b>42.92</td>
+        <td>76.82</td>
+        <td>25.34</td>
+        <td>32.80</td>
+        <td>75.32</td>
+        <td>60.29</td>
+        <td>75.25</td>
+        <td>42.92</td>
         <td><b>56.68</td>
     </tr>
     <tr>
@@ -1610,7 +1610,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>57.74</td>
         <td>70.72</td>
         <td>78.07</td>
-        <td><b>25.21</td>
+        <td>25.21</td>
         <td>32.00</td>
         <td>77.28</td>
         <td>60.65</td>
@@ -1621,28 +1621,28 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <tr>
         <td>GPTQ</td>
         <td>49.56</td>
-        <td><b>75.24</td>
+        <td>75.24</td>
         <td>57.83</td>
         <td>70.88</td>
-        <td><b>78.56</td>
+        <td>78.56</td>
         <td>24.97</td>
         <td>33.40</td>
         <td>78.44</td>
-        <td><b>62.82</td>
+        <td>62.82</td>
         <td>77.99</td>
         <td>45.65</td>
         <td><b>59.58</td>
     </tr>
     <tr>
         <td>AWQ</td>
-        <td><b>49.77</td>
+        <td>49.77</td>
         <td>75.22</td>
         <td>58.58</td>
-        <td><b>71.82</td>
+        <td>71.82</td>
         <td>77.75</td>
         <td>24.11</td>
-        <td><b>34.20</td>
-        <td><b>79.97</td>
+        <td>34.20</td>
+        <td>79.97</td>
         <td>53.43</td>
         <td>77.95</td>
         <td>44.62</td>
@@ -1667,15 +1667,15 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Ours</td>
         <td>49.64</td>
         <td>75.20</td>
-        <td><b>59.11</td>
+        <td>59.11</td>
         <td>71.59</td>
         <td>78.29</td>
         <td>24.85</td>
-        <td><b>34.20</td>
+        <td>34.20</td>
         <td>78.47</td>
         <td>58.12</td>
-        <td><b>78.58</td>
-        <td><b>45.82</td>
+        <td>78.58</td>
+        <td>45.82</td>
         <td>59.44</td>
     </tr>
     <tr>
@@ -1699,7 +1699,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>61.15</td>
         <td>77.95</td>
         <td>61.98</td>
-        <td><b>77.90</td>
+        <td>77.90</td>
         <td>80.79</td>
         <td>29.74</td>
         <td>36.00</td>
@@ -1721,22 +1721,22 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>81.53</td>
         <td>67.87</td>
         <td>81.65</td>
-        <td><b>53.67</td>
+        <td>53.67</td>
         <td>65.08</td>
     </tr>
     <tr>
         <td>AWQ</td>
         <td>64.09</td>
-        <td><b>79.47</td>
+        <td>79.47</td>
         <td>63.75</td>
         <td>76.48</td>
-        <td><b>81.77</td>
+        <td>81.77</td>
         <td>29.74</td>
-        <td><b>37.20</td>
-        <td><b>82.69</td>
+        <td>37.20</td>
+        <td>82.69</td>
         <td>66.06</td>
         <td>81.40</td>
-        <td><b>53.67</td>
+        <td>53.67</td>
         <td>65.12</td>
     </tr>
     <tr>
@@ -1756,16 +1756,16 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>64.94</td>
+        <td>64.94</td>
         <td>78.89</td>
-        <td><b>63.83</td>
+        <td>63.83</td>
         <td>76.56</td>
         <td>81.50</td>
-        <td><b>31.21</td>
-        <td><b>37.20</td>
+        <td>31.21</td>
+        <td>37.20</td>
         <td>81.41</td>
-        <td><b>68.59</td>
-        <td><b>81.73</td>
+        <td>68.59</td>
+        <td>81.73</td>
         <td>52.56</td>
         <td><b>65.31</td>
     </tr>
@@ -1817,15 +1817,15 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>AWQ</td>
-        <td><b>30.33</td>
+        <td>30.33</td>
         <td>70.19</td>
         <td>54.53</td>
         <td>68.98</td>
         <td>76.71</td>
         <td>20.81</td>
         <td>31.60</td>
-        <td><b>74.68</td>
-        <td><b>64.62</td>
+        <td>74.68</td>
+        <td>64.62</td>
         <td>73.23</td>
         <td>38.91</td>
         <td><b>54.96</td>
@@ -1833,16 +1833,16 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <tr>
         <td>Ours</td>
         <td>25.85</td>
-        <td><b>70.95</td>
-        <td><b>55.45</td>
-        <td><b>69.69</td>
-        <td><b>77.37</td>
-        <td><b>21.66</td>
-        <td><b>32.00</td>
+        <td>70.95</td>
+        <td>55.45</td>
+        <td>69.69</td>
+        <td>77.37</td>
+        <td>21.66</td>
+        <td>32.00</td>
         <td>73.88</td>
         <td>60.29</td>
-        <td><b>73.48</td>
-        <td><b>39.33</td>
+        <td>73.48</td>
+        <td>39.33</td>
         <td>54.54</td>
     </tr>
     <tr>
@@ -1868,7 +1868,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>57.25</td>
         <td>70.48</td>
         <td>77.31</td>
-        <td><b>26.93</td>
+        <td>26.93</td>
         <td>32.00</td>
         <td>71.44</td>
         <td>62.82</td>
@@ -1885,7 +1885,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>77.37</td>
         <td>24.48</td>
         <td>31.40</td>
-        <td><b>77.52</td>
+        <td>77.52</td>
         <td>62.82</td>
         <td>74.41</td>
         <td>43.26</td>
@@ -1893,15 +1893,15 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>AWQ</td>
-        <td><b>40.53</td>
+        <td>40.53</td>
         <td>73.94</td>
         <td>57.89</td>
         <td>69.53</td>
-        <td><b>78.94</td>
+        <td>78.94</td>
         <td>26.68</td>
         <td>33.40</td>
         <td>74.83</td>
-        <td><b>65.34</td>
+        <td>65.34</td>
         <td>75.93</td>
         <td>45.05</td>
         <td>58.37</td>
@@ -1909,16 +1909,16 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <tr>
         <td>Ours</td>
         <td>39.16</td>
-        <td><b>75.22</td>
-        <td><b>58.64</td>
-        <td><b>71.59</td>
-        <td><b>78.94</td>
+        <td>75.22</td>
+        <td>58.64</td>
+        <td>71.59</td>
+        <td>78.94</td>
         <td>25.95</td>
-        <td><b>35.20</td>
+        <td>35.20</td>
         <td>76.30</td>
-        <td><b>65.34</td>
-        <td><b>76.52</td>
-        <td><b>45.39</td>
+        <td>65.34</td>
+        <td>76.52</td>
+        <td>45.39</td>
         <td><b>58.93</td>
     </tr>
     <tr>
@@ -1957,11 +1957,11 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>51.39</td>
         <td>74.97</td>
         <td>60.35</td>
-        <td><b>75.30</td>
+        <td>75.30</td>
         <td>79.60</td>
         <td>26.93</td>
         <td>34.80</td>
-        <td><b>82.75</td>
+        <td>82.75</td>
         <td>64.62</td>
         <td>78.11</td>
         <td>48.46</td>
@@ -1978,21 +1978,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>34.40</td>
         <td>81.90</td>
         <td>67.15</td>
-        <td><b>79.59</td>
-        <td><b>50.77</td>
+        <td>79.59</td>
+        <td>50.77</td>
         <td>62.44</td>
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>54.39</td>
-        <td><b>77.49</td>
-        <td><b>62.13</td>
+        <td>54.39</td>
+        <td>77.49</td>
+        <td>62.13</td>
         <td>74.03</td>
-        <td><b>80.47</td>
-        <td><b>27.30</td>
-        <td><b>35.00</td>
+        <td>80.47</td>
+        <td>27.30</td>
+        <td>35.00</td>
         <td>79.76</td>
-        <td><b>68.59</td>
+        <td>68.59</td>
         <td>79.46</td>
         <td>48.98</td>
         <td><b>62.51</td>
@@ -2021,40 +2021,40 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>75.93</td>
         <td>80.41</td>
         <td>28.64</td>
-        <td><b>38.40</td>
+        <td>38.40</td>
         <td>82.69</td>
         <td>66.43</td>
         <td>80.22</td>
-        <td><b>51.19</td>
+        <td>51.19</td>
         <td>63.82</td>
     </tr>
     <tr>
         <td>GPTQ*</td>
         <td>57.92</td>
-        <td><b>78.69</td>
+        <td>78.69</td>
         <td>62.98</td>
-        <td><b>76.87</td>
+        <td>76.87</td>
         <td>80.63</td>
         <td>27.66</td>
         <td>37.60</td>
         <td>84.16</td>
         <td>68.95</td>
         <td>80.89</td>
-        <td><b>51.19</td>
+        <td>51.19</td>
         <td>64.32</td>
     </tr>
     <tr>
         <td>AWQ</td>
-        <td><b>58.87</td>
+        <td>58.87</td>
         <td>77.94</td>
-        <td><b>63.77</td>
+        <td>63.77</td>
         <td>75.37</td>
-        <td><b>80.96</td>
+        <td>80.96</td>
         <td>27.66</td>
         <td>36.80</td>
-        <td><b>85.02</td>
-        <td><b>71.12</td>
-        <td><b>81.10</td>
+        <td>85.02</td>
+        <td>71.12</td>
+        <td>81.10</td>
         <td>50.34</td>
         <td>64.45</td>
     </tr>
@@ -2065,7 +2065,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>63.60</td>
         <td>76.56</td>
         <td>80.85</td>
-        <td><b>29.50</td>
+        <td>29.50</td>
         <td>37.80</td>
         <td>84.80</td>
         <td>70.04</td>
@@ -2174,17 +2174,17 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>40.46</td>
-        <td><b>58.61</td>
-        <td><b>50.87</td>
-        <td><b>62.90</td>
-        <td><b>75.84</td>
-        <td><b>24.85</td>
-        <td><b>22.80</td>
-        <td><b>78.56</td>
-        <td><b>57.04</td>
-        <td><b>70.88</td>
-        <td><b>37.03</td>
+        <td>40.46</td>
+        <td>58.61</td>
+        <td>50.87</td>
+        <td>62.90</td>
+        <td>75.84</td>
+        <td>24.85</td>
+        <td>22.80</td>
+        <td>78.56</td>
+        <td>57.04</td>
+        <td>70.88</td>
+        <td>37.03</td>
         <td><b>52.71 </td>
     </tr>
     <tr>
@@ -2225,7 +2225,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>32.59</td>
         <td>55.17</td>
         <td>58.32</td>
-        <td><b>25.95</td>
+        <td>25.95</td>
         <td>15.80</td>
         <td>52.14</td>
         <td>51.99</td>
@@ -2265,17 +2265,17 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>27.20</td>
-        <td><b>55.25</td>
-        <td><b>47.35</td>
-        <td><b>61.01</td>
-        <td><b>72.96</td>
+        <td>27.20</td>
+        <td>55.25</td>
+        <td>47.35</td>
+        <td>61.01</td>
+        <td>72.96</td>
         <td>24.85</td>
-        <td><b>25.60</td>
-        <td><b>68.07</td>
-        <td><b>54.51</td>
-        <td><b>65.99</td>
-        <td><b>32.25</td>
+        <td>25.60</td>
+        <td>68.07</td>
+        <td>54.51</td>
+        <td>65.99</td>
+        <td>32.25</td>
         <td><b>48.64</td>
     </tr>
     <tr>
@@ -2301,7 +2301,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>33.08</td>
         <td>49.01</td>
         <td>57.94</td>
-        <td><b>26.19</td>
+        <td>26.19</td>
         <td>16.00</td>
         <td>47.74</td>
         <td>53.43</td>
@@ -2356,17 +2356,17 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>34.33</td>
-        <td><b>63.92</td>
-        <td><b>53.35</td>
-        <td><b>64.33</td>
-        <td><b>76.17</td>
+        <td>34.33</td>
+        <td>63.92</td>
+        <td>53.35</td>
+        <td>64.33</td>
+        <td>76.17</td>
         <td>25.70</td>
-        <td><b>26.00</td>
-        <td><b>72.75</td>
-        <td><b>61.73</td>
-        <td><b>71.17</td>
-        <td><b>38.57</td>
+        <td>26.00</td>
+        <td>72.75</td>
+        <td>61.73</td>
+        <td>71.17</td>
+        <td>38.57</td>
         <td><b>53.46</td>
     </tr>
     <tr>
@@ -2447,17 +2447,17 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>54.04</td>
-        <td><b>72.97</td>
-        <td><b>59.65</td>
-        <td><b>74.90</td>
-        <td><b>79.00</td>
-        <td><b>29.01</td>
-        <td><b>34.80 </td>
-        <td><b>79.63 </td>
-        <td><b>69.68</td>
-        <td><b>78.37 </td>
-        <td><b> 46.59</td>
+        <td>54.04</td>
+        <td>72.97</td>
+        <td>59.65</td>
+        <td>74.90</td>
+        <td>79.00</td>
+        <td>29.01</td>
+        <td>34.80 </td>
+        <td>79.63 </td>
+        <td>69.68</td>
+        <td>78.37 </td>
+        <td> 46.59</td>
         <td><b>61.69</td>
     </tr>
     <tr>
@@ -2486,7 +2486,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>24.24</td>
         <td>15.20</td>
         <td>39.63</td>
-        <td><b>57.40</td>
+        <td>57.40</td>
         <td>27.86</td>
         <td>21.84</td>
         <td>31.07</td>
@@ -2513,7 +2513,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>25.37</td>
         <td>53.28</td>
         <td>52.56</td>
-        <td><b>25.21</td>
+        <td>25.21</td>
         <td>13.80</td>
         <td>37.83</td>
         <td>52.71</td>
@@ -2523,17 +2523,17 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>24.46</td>
-        <td><b>13.53</td>
-        <td><b>42.16</td>
-        <td><b>56.99</td>
-        <td><b>70.02</td>
+        <td>24.46</td>
+        <td>13.53</td>
+        <td>42.16</td>
+        <td>56.99</td>
+        <td>70.02</td>
         <td>24.60</td>
-        <td><b>25.20</td>
-        <td><b>62.91</td>
+        <td>25.20</td>
+        <td>62.91</td>
         <td>47.29</td>
-        <td><b>60.90</td>
-        <td><b>31.74</td>
+        <td>60.90</td>
+        <td>31.74</td>
         <td><b>41.80</td>
     </tr>
     <tr>
@@ -2559,7 +2559,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>29.67</td>
         <td>49.33</td>
         <td>57.24</td>
-        <td><b>25.58</td>
+        <td>25.58</td>
         <td>12.40</td>
         <td>44.10</td>
         <td>53.79</td>
@@ -2599,17 +2599,17 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>31.87</td>
-        <td><b>59.65</td>
-        <td><b>51.25</td>
-        <td><b>67.64</td>
-        <td><b>76.28</td>
-        <td><b>25.58</td>
-        <td><b>27.80</td>
-        <td><b>69.11</td>
-        <td><b>58.48</td>
-        <td><b>70.71</td>
-        <td><b>37.12</td>
+        <td>31.87</td>
+        <td>59.65</td>
+        <td>51.25</td>
+        <td>67.64</td>
+        <td>76.28</td>
+        <td>25.58</td>
+        <td>27.80</td>
+        <td>69.11</td>
+        <td>58.48</td>
+        <td>70.71</td>
+        <td>37.12</td>
         <td><b>52.32</td>
     </tr>
     <tr>
@@ -2665,7 +2665,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>25.41</td>
         <td>50.20</td>
         <td>52.94</td>
-        <td><b>24.48</td>
+        <td>24.48</td>
         <td>16.60</td>
         <td>62.17</td>
         <td>47.29</td>
@@ -2675,17 +2675,17 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>40.83</td>
-        <td><b>67.92</td>
-        <td><b>56.73</td>
-        <td><b>68.90</td>
-        <td><b>76.17</td>
+        <td>40.83</td>
+        <td>67.92</td>
+        <td>56.73</td>
+        <td>68.90</td>
+        <td>76.17</td>
         <td>24.36</td>
-        <td><b>31.60</td>
-        <td><b>75.54</td>
-        <td><b>62.45</td>
-        <td><b>74.92</td>
-        <td><b>42.41</td>
+        <td>31.60</td>
+        <td>75.54</td>
+        <td>62.45</td>
+        <td>74.92</td>
+        <td>42.41</td>
         <td><b>56.53</td>
     </tr>
     <tr>
@@ -2751,17 +2751,17 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <td><b>47.21</td>
-        <td><b>72.07</td>
-        <td><b>60.06</td>
-        <td><b> 73.24</td>
-        <td><b>78.62</td>
-        <td><b>25.46</td>
-        <td><b>34.20</td>
-        <td><b>80.64</td>
-        <td><b>62.82</td>
-        <td><b>77.48</td>
-        <td><b>46.76</td>
+        <td>47.21</td>
+        <td>72.07</td>
+        <td>60.06</td>
+        <td> 73.24</td>
+        <td>78.62</td>
+        <td>25.46</td>
+        <td>34.20</td>
+        <td>80.64</td>
+        <td>62.82</td>
+        <td>77.48</td>
+        <td>46.76</td>
         <td><b>59.87</td>
     </tr>
 </table>
