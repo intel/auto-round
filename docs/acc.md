@@ -101,7 +101,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>Ours</td>
-        <th>59.52</td>
+        <td>59.52</td>
         <td>73.76</td>
         <td>60.75</td>
         <td>73.32</td>
