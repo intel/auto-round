@@ -57,8 +57,6 @@ if __name__ == '__main__':
     parser.add_argument("--seed", default=42, type=int,
                         help="seed")
 
-
-
     parser.add_argument("--eval_fp16_baseline", action='store_true',
                         help="whether to eval FP16 baseline")
 
@@ -241,7 +239,7 @@ if __name__ == '__main__':
                    device=torch_device, excel_file=excel_name)
         exit()
 
-    if not args.low_gpu_mem_usage:
+    if args.disable_low_gpu_mem_usage:
         model = model.to(torch_device)
 
     round = AutoRound
@@ -288,5 +286,5 @@ if __name__ == '__main__':
         output_dir += "/"
         print(excel_name, flush=True)
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)

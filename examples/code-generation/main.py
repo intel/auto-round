@@ -169,7 +169,7 @@ if __name__ == '__main__':
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
 
-    if not args.low_gpu_mem_usage:
+    if args.disable_low_gpu_mem_usage:
         model = model.to(torch_device)
 
     round = AutoRound
