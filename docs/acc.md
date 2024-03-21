@@ -158,7 +158,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>62.09</td>
         <td>75.55</td>
         <td>41.72</td>
-        <td><b>56.76</td>
+        <td>56.76</td>
     </tr>
     <tr>
         <td>AWQ</td>
@@ -461,7 +461,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>66.79</td>
         <td>74.83</td>
         <td>43.09</td>
-        <td>56.76</td>
+        <td><b>56.76</td>
     </tr>
     <tr>
         <td rowspan="5">V1-13B</td>
