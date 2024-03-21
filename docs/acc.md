@@ -1,5 +1,5 @@
 ## Comparison with other methods
-To ensure a fair comparison as much as possible and alleviate overfitting in perplexity evaluation on Wikitext or C4, we utilized 512 samples from NeelNanda/pile-10k for all methods during calibration. Due to memory constraints, we maintained the original sequence length of 512 for AWQ, while for GPTQ and our approach, a sequence length of 2048 is used. We have enabled act-order and true-seqential in GPTQ, and also activated static group in scenarios where group_size!=-1.  The notation GPTQ* indicates that we adjusted the random seed or data preprocessing to address issues related to the non-positive definite Hessian matrix or other issues. With these configurations, the tuning costs for GPTQ, AWQ, and ours are comparable.
+To ensure a fair comparison as much as possible and alleviate overfitting in perplexity evaluation on Wikitext or C4, we utilized 512 samples from NeelNanda/pile-10k for all methods during calibration. Due to memory constraints, we maintained the original sequence length of 512 for AWQ, while for GPTQ and our approach, a sequence length of 2048 is used. We have enabled act-order and true-seqential in GPTQ, and also activated static group in scenarios where group_size!=-1.  The notation GPTQ* indicates that we adjusted the random seed or data preprocessing to address issues related to the non-positive definite Hessian matrix or other issues. With these configurations, the tuning costs for GPTQ, AWQ, and ours are comparable.With these configurations, the tuning costs for GPTQ, AWQ, and ours are comparable, while HQQ is much faster.
 
 For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequence length to 2048. For lm-eval wikitext ppl, we adopt lm-eval. The lm-eval-harness git id we used in the following is 008fc2a23245c40384f2312718433eeb1e0f87a9 and we evaluated on qdq fake model.
 
@@ -24,7 +24,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Avg.</td>
     </tr>
     <tr>
-        <td rowspan="5">Mistral-7B</td>
+        <td rowspan="6">Mistral-7B</td>
         <td>FP16</td>
         <td>61.35</td>
         <td>75.68</td>
@@ -115,7 +115,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>62.33</td>
     </tr>
     <tr>
-        <td rowspan="5">V2-7B</td>
+        <td rowspan="6">V2-7B</td>
         <td>FP16</td>
         <td>42.69</td>
         <td>73.90</td>
@@ -206,7 +206,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>57.48</td>
     </tr>
     <tr>
-        <td rowspan="5">V2-13B</td>
+        <td rowspan="6">V2-13B</td>
         <td>FP16</td>
         <td>52.86</td>
         <td>76.77</td>
@@ -297,7 +297,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>61.20</td>
     </tr>
     <tr>
-        <td rowspan="5">V2-70B</td>
+        <td rowspan="6">V2-70B</td>
         <td>FP16</td>
         <td>66.23</td>
         <td>79.64</td>
@@ -388,7 +388,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>66.27</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-7B</td>
+        <td rowspan="6">V1-7B</td>
         <td>FP16</td>
         <td>32.74</td>
         <td>73.53</td>
@@ -464,7 +464,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>56.76</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-13B</td>
+        <td rowspan="6">V1-13B</td>
         <td>FP16</td>
         <td>44.21</td>
         <td>76.21</td>
@@ -540,7 +540,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>59.71</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-30B</td>
+        <td rowspan="6">V1-30B</td>
         <td>FP16</td>
         <td>55.14</td>
         <td>77.55</td>
@@ -616,7 +616,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>63.27</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-65B</td>
+        <td rowspan="6">V1-65B</td>
         <td>FP16</td>
         <td>59.79</td>
         <td>79.12</td>
@@ -715,7 +715,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Avg.</td>
     </tr>
     <tr>
-        <td  rowspan="5">Mistral-7B</td>
+        <td  rowspan="6">Mistral-7B</td>
         <td>FP16</td>
         <td>61.35</td>
         <td>75.68</td>
@@ -806,7 +806,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>62.62</td>
     </tr>
     <tr>
-        <td rowspan="5">V2-7B</td>
+        <td rowspan="6">V2-7B</td>
         <td>FP16</td>
         <td>42.69</td>
         <td>73.90</td>
@@ -897,7 +897,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>57.57</td>
     </tr>
     <tr>
-        <td rowspan="5">V2-13B</td>
+        <td rowspan="6">V2-13B</td>
         <td>FP16</td>
         <td>52.86</td>
         <td>76.77</td>
@@ -988,7 +988,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>60.85</td>
     </tr>
     <tr>
-        <td rowspan="5">V2-70B</td>
+        <td rowspan="6">V2-70B</td>
         <td>FP16</td>
         <td>66.23</td>
         <td>79.64</td>
@@ -1079,7 +1079,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>66.39</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-7B</td>
+        <td rowspan="6">V1-7B</td>
         <td>FP16</td>
         <td>32.74</td>
         <td>73.53</td>
@@ -1155,7 +1155,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>56.84</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-13B</td>
+        <td rowspan="6">V1-13B</td>
         <td>FP16</td>
         <td>44.21</td>
         <td>76.21</td>
@@ -1231,7 +1231,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>60.07</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-30B</td>
+        <td rowspan="6">V1-30B</td>
         <td>FP16</td>
         <td>55.14</td>
         <td>77.55</td>
@@ -1307,7 +1307,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>63.20</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-65B</td>
+        <td rowspan="6">V1-65B</td>
         <td>FP16</td>
         <td>59.79</td>
         <td>79.12</td>
@@ -1406,7 +1406,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Avg.</td>
     </tr>
     <tr>
-        <td rowspan="5">Mistral-7B</td>
+        <td rowspan="6">Mistral-7B</td>
         <td>FP16</td>
         <td>61.35</td>
         <td>75.68</td>
@@ -1497,7 +1497,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>60.43</td>
     </tr>
     <tr>
-        <td rowspan="5">V2-7B</td>
+        <td rowspan="6">V2-7B</td>
         <td>FP16</td>
         <td>42.69</td>
         <td>73.90</td>
@@ -1588,7 +1588,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>56.68</td>
     </tr>
     <tr>
-        <td rowspan="5">V2-13B</td>
+        <td rowspan="6">V2-13B</td>
         <td>FP16</td>
         <td>52.86</td>
         <td>76.77</td>
@@ -1679,7 +1679,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>59.44</td>
     </tr>
     <tr>
-        <td rowspan="5">V2-70B</td>
+        <td rowspan="6">V2-70B</td>
         <td>FP16</td>
         <td>66.23</td>
         <td>79.64</td>
@@ -1770,7 +1770,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>65.31</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-7B</td>
+        <td rowspan="6">V1-7B</td>
         <td>FP16</td>
         <td>32.74</td>
         <td>73.53</td>
@@ -1846,7 +1846,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>54.54</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-13B</td>
+        <td rowspan="6">V1-13B</td>
         <td>FP16</td>
         <td>44.21</td>
         <td>76.21</td>
@@ -1922,7 +1922,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>58.93</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-30B</td>
+        <td rowspan="6">V1-30B</td>
         <td>FP16</td>
         <td>55.14</td>
         <td>77.55</td>
@@ -1998,7 +1998,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>62.51</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-65B</td>
+        <td rowspan="6">V1-65B</td>
         <td>FP16</td>
         <td>59.79</td>
         <td>79.12</td>
@@ -2097,7 +2097,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Avg.</td>
     </tr>
     <tr>
-        <td rowspan="5">Mistral-7B</td>
+        <td rowspan="6">Mistral-7B</td>
         <td>FP16</td>
         <td>61.35</td>
         <td>75.68</td>
@@ -2188,7 +2188,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>52.71 </td>
     </tr>
     <tr>
-        <td rowspan="5">V2-7B</td>
+        <td rowspan="6">V2-7B</td>
         <td>FP16</td>
         <td>42.69</td>
         <td>73.90</td>
@@ -2250,21 +2250,6 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
     <tr>
         <td>HQQ</td>
-        <td>23.35 </td>
-        <td>0.85 </td>
-        <td>27.77 </td>
-        <td>51.62 </td>
-        <td>56.69 </td>
-        <td>26.68 </td>
-        <td>15.80 </td>
-        <td>40.55 </td>
-        <td>53.43 </td>
-        <td>28.62 </td>
-        <td>20.14 </td>
-        <td>31.41 </td>
-    </tr>
-    <tr>
-        <td>Ours</td>
         <td>24.51 </td>
         <td>0.02 </td>
         <td>26.06 </td>
@@ -2279,7 +2264,22 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>29.87 </td>
     </tr>
     <tr>
-        <td rowspan="5">V2-13B</td>
+        <td>Ours</td>
+        <td><b>27.20</td>
+        <td><b>55.25</td>
+        <td><b>47.35</td>
+        <td><b>61.01</td>
+        <td><b>72.96</td>
+        <td>24.85</td>
+        <td><b>25.60</td>
+        <td><b>68.07</td>
+        <td><b>54.51</td>
+        <td><b>65.99</td>
+        <td><b>32.25</td>
+        <td><b>48.64</td>
+    </tr>
+    <tr>
+        <td rowspan="6">V2-13B</td>
         <td>FP16</td>
         <td>52.86</td>
         <td>76.77</td>
@@ -2370,7 +2370,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>53.46</td>
     </tr>
     <tr>
-        <td rowspan="5">V2-70B</td>
+        <td rowspan="6">V2-70B</td>
         <td>FP16</td>
         <td>66.23</td>
         <td>79.64</td>
@@ -2461,7 +2461,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>61.69</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-7B</td>
+        <td rowspan="6">V1-7B</td>
         <td>FP16</td>
         <td>32.74</td>
         <td>73.53</td>
@@ -2537,7 +2537,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>41.80</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-13B</td>
+        <td rowspan="6">V1-13B</td>
         <td>FP16</td>
         <td>44.21</td>
         <td>76.21</td>
@@ -2613,7 +2613,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>52.32</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-30B</td>
+        <td rowspan="6">V1-30B</td>
         <td>FP16</td>
         <td>55.14</td>
         <td>77.55</td>
@@ -2689,7 +2689,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>56.53</td>
     </tr>
     <tr>
-        <td rowspan="5">V1-65B</td>
+        <td rowspan="6">V1-65B</td>
         <td>FP16</td>
         <td>59.79</td>
         <td>79.12</td>
