@@ -450,13 +450,15 @@ def sampling_inputs(input_ids, input_others, indices, seqlen):
     return current_input_ids, current_input_others
 
 
-def block_forward(block,
-        input_ids,
-        input_others,
-        amp=False,
-        amp_dtype=torch.bfloat16,
-        amp_device_type="hpu",
-        device=torch.device("cpu")):
+def block_forward(
+    block,
+    input_ids,
+    input_others,
+    amp=False,
+    amp_dtype=torch.bfloat16,
+    amp_device_type="hpu",
+    device=torch.device("cpu"),
+):
     """Performs a forward pass through a block with the given inputs.
 
     Args:
