@@ -13,10 +13,10 @@
 # limitations under the License.
 
 import copy
+import importlib
 import logging
 import subprocess
 from collections import UserDict
-import importlib
 
 # for cpu usage
 import cpuinfo
@@ -32,13 +32,12 @@ fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
 
 
-
-
 class LazyImport(object):
     """Lazy import python module till use."""
 
     def __init__(self, module_name):
         """Init LazyImport object.
+
         Args:
            module_name (string): The name of module imported later
         """
@@ -64,11 +63,13 @@ class LazyImport(object):
         function = getattr(self.module, function_name)
         return function(*args, **kwargs)
 
+
 def is_optimum_habana_available():
 
     from transformers.utils.import_utils import is_optimum_available
 
     return is_optimum_available() and importlib.util.find_spec("optimum.habana") is not None
+
 
 htcore = LazyImport("habana_frameworks.torch.core")
 
