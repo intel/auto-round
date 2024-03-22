@@ -448,13 +448,13 @@ class AutoRound(object):
         if self.device == "cpu":
             self.amp_dtype = torch.bfloat16
             self.amp_device_type = "cpu"
-            
+
         if "hpu" in self.device:
             self.amp_dtype = torch.bfloat16
             self.amp_device_type = "hpu"
         if "cuda" in self.device:
             self.amp_device_type = "cuda"
-            
+
         if self.amp:
             if self.device == "cpu" and not CpuInfo().bf16:
                 self.amp = False
@@ -620,8 +620,9 @@ class AutoRound(object):
             end_index = min(self.n_samples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
             tmp_input_ids, tmp_input_others = sampling_inputs(input_ids, input_others, indices, self.seqlen)
-            tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, 
-                                       self.amp_device_type, device).to(cache_device)
+            tmp_output = block_forward(
+                block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, self.amp_device_type, device
+            ).to(cache_device)
             output.append(tmp_output)
         output = torch.cat(output, dim=batch_dim)
         torch.cuda.empty_cache()
@@ -801,7 +802,7 @@ class AutoRound(object):
         Tuple: (q_outputs, output) if self.use_quant_input is True, else (None, output)
         """
         from torch.amp import autocast
-        
+
         batch_dim = get_batch_dim(input_others)
         if not self.low_gpu_mem_usage and input_ids.device != device:
             input_ids = move_input_to_device(input_ids, device)
@@ -1371,4 +1372,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-

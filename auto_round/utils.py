@@ -515,7 +515,7 @@ def check_to_quantized(config):
         if config.bits > 8 or "fp" in config.data_type or "float" in config.data_type:
             return False
         return True
-    
+
 
 def detect_device(device=None):
     def is_valid_digit(s):
@@ -612,4 +612,3 @@ class CpuInfo(object):
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
         return 0
-
