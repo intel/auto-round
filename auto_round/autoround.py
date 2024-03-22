@@ -31,7 +31,7 @@ from .utils import (
     get_module,
     get_scale_shape,
     htcore,
-    is_optimum_habana_available(),
+    is_optimum_habana_available,
     logger,
     move_input_to_device,
     quant_weight,
