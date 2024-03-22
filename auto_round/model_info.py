@@ -1,1 +1,2 @@
-SPECIAL_ATTENTION_LIST = ["Baichuan2-13B-Chat"]
+SHARE_ATTENTION_LIST = ["Baichuan2-13B-Chat"]
+

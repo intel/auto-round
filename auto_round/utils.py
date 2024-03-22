@@ -22,9 +22,7 @@ import cpuinfo
 import psutil
 import torch
 from torch.amp import autocast
-
-from .model_info import SPECIAL_ATTENTION_LIST
-
+from .model_info import SHARE_ATTENTION_LIST
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
 fh = logging.StreamHandler()
@@ -415,20 +413,18 @@ def get_batch_dim(input_others):
     dim = int(len(input_others["positional_inputs"]) > 0)
     return dim
 
-
-def is_special_attention_model(model):
+def is_share_attention_model(model):
     model_name = None
-    if not hasattr(model, "config") or not hasattr(model.config, "_name_or_path"):
+    if not hasattr(model, 'config') or not hasattr(model.config, '_name_or_path'):
         logger.warn("Unable to get model name via config, assumed to be a normal model.")
         return True
     model_name = model.config._name_or_path
-    for key in SPECIAL_ATTENTION_LIST:
+    for key in SHARE_ATTENTION_LIST:
         if key in model_name:
             return True
     return False
 
-
-def sampling_inputs(input_ids, input_others, indices, seqlen, special_attention_flag=False):
+def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_flag=False):
     """Samples inputs based on the given indices and sequence length.
 
     Args:
@@ -454,7 +450,7 @@ def sampling_inputs(input_ids, input_others, indices, seqlen, special_attention_
 
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
-        if not special_attention_flag and ("attention_mask" in key or "alibi" in key):
+        if not share_attention_flag and ("attention_mask" in key or "alibi" in key):
             current_input_others[key] = None
             if input_others[key] is not None:
                 current_input_others[key] = input_others[key][indices, ...]
@@ -618,3 +614,4 @@ class CpuInfo(object):
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
         return 0
+
