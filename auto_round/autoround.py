@@ -445,8 +445,16 @@ class AutoRound(object):
         self.amp_dtype = torch.float16
         if self.model.dtype != torch.float32:
             self.amp_dtype = self.model.dtype
-        if self.device == "cpu" or self.device == "hpu":
+        if self.device == "cpu":
             self.amp_dtype = torch.bfloat16
+            self.amp_device_type = "cpu"
+
+        if "hpu" in self.device:
+            self.amp_dtype = torch.bfloat16
+            self.amp_device_type = "hpu"
+        if "cuda" in self.device:
+            self.amp_device_type = "cuda"
+
         if self.amp:
             if self.device == "cpu" and not CpuInfo().bf16:
                 self.amp = False
@@ -612,9 +620,8 @@ class AutoRound(object):
             end_index = min(self.n_samples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
             tmp_input_ids, tmp_input_others = sampling_inputs(input_ids, input_others, indices, self.seqlen)
-            tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
-                cache_device
-            )
+            tmp_output = block_forward(block, tmp_input_ids, tmp_input_others,
+                    self.amp, self.amp_dtype, self.amp_device_type, device).to(cache_device)
             output.append(tmp_output)
         output = torch.cat(output, dim=batch_dim)
         torch.cuda.empty_cache()
@@ -876,10 +883,11 @@ class AutoRound(object):
                 current_output = move_input_to_device(current_output, device)
 
                 output_q = block_forward(
-                    block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
+                    block, current_input_ids, current_input_others,
+                    self.amp, self.amp_dtype, self.amp_device_type, device
                 )
                 if self.amp and not check_is_cpu(device):
-                    with autocast(device_type=self.device, dtype=self.amp_dtype):
+                    with autocast(device_type=self.amp_device_type, dtype=self.amp_dtype):
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable
@@ -1225,7 +1233,7 @@ class AutoOPTRound(AutoRound):
 
     def get_scaler(self):
         scaler = None
-        if self.amp and not check_is_cpu(self.device) and self.device != "hpu":
+        if self.amp and not check_is_cpu(self.device) and self.amp_device_type != "hpu":
             from torch.cuda.amp import GradScaler
 
             scaler = GradScaler(init_scale=1024, growth_interval=100000)
