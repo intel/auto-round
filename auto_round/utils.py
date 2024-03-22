@@ -23,6 +23,8 @@ import psutil
 import torch
 from torch.amp import autocast
 
+SHARE_ATTENTION_MASK_LIST = ["Baichuan2-13B-Base", "Baichuan2-13B-Chat"]
+
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
 fh = logging.StreamHandler()
@@ -414,7 +416,7 @@ def get_batch_dim(input_others):
     return dim
 
 
-def sampling_inputs(input_ids, input_others, indices, seqlen):
+def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_mask_flag=False):
     """Samples inputs based on the given indices and sequence length.
 
     Args:
@@ -440,7 +442,7 @@ def sampling_inputs(input_ids, input_others, indices, seqlen):
 
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
-        if "attention_mask" in key or "alibi" in key:
+        if not share_attention_mask_flag and "attention_mask" in key or "alibi" in key:
             current_input_others[key] = None
             if input_others[key] is not None:
                 current_input_others[key] = input_others[key][indices, ...]
@@ -450,7 +452,15 @@ def sampling_inputs(input_ids, input_others, indices, seqlen):
     return current_input_ids, current_input_others
 
 
-def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu")):
+def block_forward(
+    block,
+    input_ids,
+    input_others,
+    amp=False,
+    amp_dtype=torch.bfloat16,
+    amp_device_type="hpu",
+    device=torch.device("cpu"),
+):
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -474,22 +484,22 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
         if alibi is not None:
             alibi = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
         if amp and not check_is_cpu(device):
-            with autocast(device_type="cuda", dtype=amp_dtype):  # pragma: no cover
+            with autocast(device_type=amp_device_type, dtype=amp_dtype):  # pragma: no cover
                 output = block(
                     input_ids, attention_mask=attention_mask, alibi=alibi
                 )  ##TODO is this correct for all models with alibi?
         elif amp and check_is_cpu(device):
-            with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+            with torch.autocast(device_type=amp_device_type, dtype=torch.bfloat16):
                 output = block(input_ids, attention_mask=attention_mask, alibi=alibi)
         else:
             output = block(input_ids, attention_mask=attention_mask, alibi=alibi)
     else:
         input_tuple = input_others.pop("positional_inputs", None)
         if amp and not check_is_cpu(device):
-            with autocast(device_type="cuda", dtype=amp_dtype):  # pragma: no cover
+            with autocast(device_type=amp_device_type, dtype=amp_dtype):  # pragma: no cover
                 output = block.forward(input_ids, *input_tuple, **input_others)
         elif amp and check_is_cpu(device):
-            with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+            with torch.autocast(device_type=amp_device_type, dtype=torch.bfloat16):
                 output = block.forward(input_ids, *input_tuple, **input_others)
         else:
             output = block.forward(input_ids, *input_tuple, **input_others)
@@ -507,6 +517,18 @@ def check_to_quantized(config):
         if config.bits > 8 or "fp" in config.data_type or "float" in config.data_type:
             return False
         return True
+
+
+def is_share_attention_mask_model(model):
+    model_name = None
+    if not hasattr(model, "config") or not hasattr(model.config, "_name_or_path"):
+        logger.warn("Unable to get model name via config, assumed to be a normal model.")
+        return True
+    model_name = model.config._name_or_path
+    for key in SHARE_ATTENTION_MASK_LIST:
+        if key in model_name:
+            return True
+    return False
 
 
 def detect_device(device=None):
