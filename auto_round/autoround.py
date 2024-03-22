@@ -879,7 +879,7 @@ class AutoRound(object):
                     block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
                 )
                 if self.amp and not check_is_cpu(device):
-                    with autocast(device_type="cuda", dtype=self.amp_dtype):
+                    with autocast(device_type=self.device, dtype=self.amp_dtype):
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable
@@ -1225,7 +1225,7 @@ class AutoOPTRound(AutoRound):
 
     def get_scaler(self):
         scaler = None
-        if self.amp and not check_is_cpu(self.device):
+        if self.amp and not check_is_cpu(self.device) and self.device != "hpu":
             from torch.cuda.amp import GradScaler
 
             scaler = GradScaler(init_scale=1024, growth_interval=100000)
