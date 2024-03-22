@@ -483,6 +483,7 @@ class AutoRound(object):
         self.check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
         if is_optimum_habana_available():
+            logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
