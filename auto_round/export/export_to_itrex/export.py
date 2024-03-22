@@ -123,7 +123,7 @@ def pack_model(
         m = get_module(compressed_model, k)
         fp_weight = m.weight.data
         scale, zp = v["scale"], v["zp"]
-        convert_dtype = torch.float32 if fp_weight.device.type == "cpu" else scale_dtype
+        convert_dtype = scale_dtype
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor(scale, dtype=convert_dtype)
             zp = torch.tensor(zp, dtype=torch.int32)
@@ -151,3 +151,4 @@ def pack_model(
         set_module(compressed_model, k, new_module)
 
     return compressed_model
+
