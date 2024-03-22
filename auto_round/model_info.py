@@ -1,2 +1,1 @@
 SHARE_ATTENTION_LIST = ["Baichuan2-13B-Chat"]
-

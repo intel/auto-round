@@ -32,12 +32,12 @@ from .utils import (
     get_scale_shape,
     htcore,
     is_hpu_available,
+    is_share_attention_model,
     logger,
     move_input_to_device,
     quant_weight,
     sampling_inputs,
     set_module,
-    is_share_attention_model,
 )
 
 if is_hpu_available:
@@ -613,7 +613,9 @@ class AutoRound(object):
             end_index = min(self.n_samples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
             share_attention_flag = is_share_attention_model(self.model)
-            tmp_input_ids, tmp_input_others = sampling_inputs(input_ids, input_others, indices, self.seqlen, share_attention_flag)
+            tmp_input_ids, tmp_input_others = sampling_inputs(
+                input_ids, input_others, indices, self.seqlen, share_attention_flag
+            )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
@@ -797,6 +799,7 @@ class AutoRound(object):
         Tuple: (q_outputs, output) if self.use_quant_input is True, else (None, output)
         """
         from torch.amp import autocast
+
         share_attention_flag = is_share_attention_model(self.model)
         batch_dim = get_batch_dim(input_others)
         if not self.low_gpu_mem_usage and input_ids.device != device:
@@ -1361,4 +1364,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
