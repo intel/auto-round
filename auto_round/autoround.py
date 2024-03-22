@@ -31,7 +31,7 @@ from .utils import (
     get_module,
     get_scale_shape,
     htcore,
-    is_hpu_available,
+    is_optimum_habana_available(),
     logger,
     move_input_to_device,
     quant_weight,
@@ -39,9 +39,9 @@ from .utils import (
     set_module,
 )
 
-if is_hpu_available:
-    import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-    import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+# if is_optimum_habana_available():
+#     import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+#     import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
 
 class WrapperLinear(torch.nn.Module):
@@ -512,7 +512,7 @@ class AutoRound(object):
         """
         scale_loss = loss * 1000
         scale_loss.backward()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         return scale_loss
 
@@ -529,7 +529,7 @@ class AutoRound(object):
         """
         optimizer.step()
         # for hpu
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         optimizer.zero_grad()
         lr_schedule.step()
@@ -1236,7 +1236,7 @@ class AutoOPTRound(AutoRound):
             loss = scaler.scale(loss)
 
         loss.backward()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         return loss
 
@@ -1250,7 +1250,7 @@ class AutoOPTRound(AutoRound):
             optimizer.step()
             optimizer.zero_grad()
             lr_schedule.step()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
 
 
