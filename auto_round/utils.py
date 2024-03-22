@@ -518,9 +518,10 @@ def check_to_quantized(config):
             return False
         return True
 
+
 def is_share_attention_mask_model(model):
     model_name = None
-    if not hasattr(model, 'config') or not hasattr(model.config, '_name_or_path'):
+    if not hasattr(model, "config") or not hasattr(model.config, "_name_or_path"):
         logger.warn("Unable to get model name via config, assumed to be a normal model.")
         return True
     model_name = model.config._name_or_path
@@ -528,6 +529,7 @@ def is_share_attention_mask_model(model):
         if key in model_name:
             return True
     return False
+
 
 def detect_device(device=None):
     def is_valid_digit(s):
@@ -624,4 +626,3 @@ class CpuInfo(object):
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
         return 0
-
