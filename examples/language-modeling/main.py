@@ -143,13 +143,12 @@ if __name__ == '__main__':
     if res == "0.3.0":
         use_eval_legacy = True
 
+    if isinstance(tasks, str):
+        tasks = tasks.split(',')
     if not use_eval_legacy:
         from eval import eval_model
     else:
         from eval_legacy import eval_model
-
-        if isinstance(tasks, str):
-            tasks = tasks.split(',')
         if isinstance(tasks, list):
             if "mmlu" in tasks:
                 tmp_tasks = tasks
