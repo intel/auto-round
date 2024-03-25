@@ -53,47 +53,6 @@ autoround.quantize()
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir)
 ```
-
-## Model inference
-Please run the quantization code first.
-
-
-
-### CPU
-```python
-# Please save the quantized model in 'itrex' format first, then refer to the ITREX tutorial for more details on inference with the INT4 model.
-# (https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed)
-from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
-from transformers import AutoTokenizer
-
-quantized_model_path = "./tmp_autoround"
-scheme = "sym" if sym else "asym"
-woq_config = WeightOnlyQuantConfig(
-    group_size=group_size, scheme=scheme, use_autoround=True
-)  ##only supports 4 bits currently
-prompt = "There is a girl who likes adventure,"
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, trust_remote_code=True)
-inputs = tokenizer(prompt, return_tensors="pt").input_ids
-model = AutoModelForCausalLM.from_pretrained(
-    quantized_model_path, quantization_config=woq_config, trust_remote_code=True, device="cpu"
-)
-outputs = model.generate(inputs, max_new_tokens=50)
-print(tokenizer.decode(outputs[0]))
-```
-
-
-### GPU
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
-text = "There is a girl who likes adventure,"
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-```
-
 <details>
   <summary>Detailed Hyperparameters</summary>
 
@@ -145,6 +104,48 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 </details>
 
+## Model inference
+Please run the quantization code first.
+
+
+
+### CPU
+```python
+# Please save the quantized model in 'itrex' format first, then refer to the ITREX tutorial for more details on inference with the INT4 model.
+# (https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed)
+from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
+from transformers import AutoTokenizer
+
+quantized_model_path = "./tmp_autoround"
+scheme = "sym" if sym else "asym"
+woq_config = WeightOnlyQuantConfig(
+    group_size=group_size, scheme=scheme, use_autoround=True
+)  ##only supports 4 bits currently
+prompt = "There is a girl who likes adventure,"
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, trust_remote_code=True)
+inputs = tokenizer(prompt, return_tensors="pt").input_ids
+model = AutoModelForCausalLM.from_pretrained(
+    quantized_model_path, quantization_config=woq_config, trust_remote_code=True, device="cpu"
+)
+outputs = model.generate(inputs, max_new_tokens=50)
+print(tokenizer.decode(outputs[0]))
+```
+
+
+### GPU
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+quantized_model_path = "./tmp_autoround"
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+```
+
+
+
 
 ## Support List
 
@@ -153,19 +154,19 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | Intel/neural-chat-7b-v3-3 | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc), [accuracy](./docs/neural-chat-7b-v3-3-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-3.sh), [example](./examples/language-modeling/)                         |
 | Intel/neural-chat-7b-v3-1 | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc), [accuracy](./docs/neural-chat-7b-v3-1-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-1.sh), [example](./examples/language-modeling/)                         |
 | mistralai/Mistral-7B-v0.1 | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc), [accuracy](./docs/Mistral-7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-v0.1.sh), [example](./examples/language-modeling/)                                     |
+| microsoft/phi-2          | [HF-int4-model](https://huggingface.co/Intel/phi-2-int4-inc), [accuracy](./docs/phi-2-acc.md), [recipe](./examples/language-modeling/scripts/phi-2.sh), [example](./examples/language-modeling/)     
+| tiiuae/falcon-7b | [HF-int4-model](https://huggingface.co/Intel/falcon-7b-int4-inc), [accuracy](./docs/falcon-7b-acc.md), [recipe](./examples/language-modeling/scripts/falcon-7b.sh), [example](./examples/language-modeling/)  |
 | google/gemma-7b          | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-int4-inc) (under review), [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                            |
 | google/gemma-7b-it       | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-it-int4-inc) (under review), [accuracy](./docs/gemma-7b-it-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b-it.sh), [example](./examples/language-modeling/)                                    |                                            |
   mistralai/Mixtral-8x7B-Instruct-v0.1 | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh),  [example](./examples/language-modeling/) |
 | mistralai/Mixtral-8x7B-v0.1 | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh), [example](./examples/language-modeling/)                  |
-| microsoft/phi-2          | [HF-int4-model](https://huggingface.co/Intel/phi-2-int4-inc), [accuracy](./docs/phi-2-acc.md), [recipe](./examples/language-modeling/scripts/phi-2.sh), [example](./examples/language-modeling/)                                                      |
 | meta-llama/Llama-2-7b-chat-hf | [accuracy](./docs/Llama-2-7b-chat-hf-acc.md), [recipe](./examples/language-modeling/scripts/Llama-2-7b-chat-hf.sh), [example](./examples/language-modeling/)                                                                                                                    |
 | Qwen/Qwen1.5-7B-Chat | [accuracy](./docs/Qwen1.5-7B-Chat-acc.md), [recipe1](./examples/language-modeling/scripts/Qwen1.5-7B-Chat.sh), [recipe2](./examples/language-modeling/scripts/Qwen1.5-7B-Chat_2.sh), [example](./examples/language-modeling/)      |
 | Salesforce/codegen25-7b-multi | [example](./examples/code-generation)                                                                                                                                                                                                                              |
 | EleutherAI/gpt-j-6b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
 | huggyllama/llama-7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
 | meta-llama/Llama-2-7b-hf | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
-| facebook/opt-6.7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
-| tiiuae/falcon-7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
+| facebook/opt-6.7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           ||
 | mosaicml/mpt-7b | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
 | bigscience/bloom-7b1 | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
 | baichuan-inc/Baichuan-7B | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
