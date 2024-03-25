@@ -20,4 +20,3 @@ Since we encountered an issue evaluating this model with lm-eval, we opted to ev
 | rte            | 0.6173 | 0.6245   |
 | arc_easy       | 0.7479 | 0.7433   |
 | arc_challenge  | 0.4019 | 0.3968   |
-
