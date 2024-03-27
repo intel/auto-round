@@ -16,7 +16,7 @@ our method adopts sign gradient descent to fine-tune rounding values and minmax 
 
 <div align="center">
 
-![](docs/autoround_overview.png)
+![](docs/imgs/autoround_overview.png)
 
 <div align="left">
 
