@@ -1845,7 +1845,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>59.44</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-70B</td>
+        <td rowspan="7">V2-70B</td>
         <td>FP16</td>
         <td>66.23</td>
         <td>79.64</td>
@@ -1919,6 +1919,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>81.78 </td>
         <td>53.67 </td>
         <td>64.80 </td>
+    </tr>
+    <tr>
+        <td>Omniquant</td>
+        <td>63.18 </td>
+        <td>78.63 </td>
+        <td>63.54 </td>
+        <td>76.48 </td>
+        <td>81.50 </td>
+        <td>30.35 </td>
+        <td>35.80 </td>
+        <td>82.57 </td>
+        <td>70.40 </td>
+        <td>81.02 </td>
+        <td>52.82 </td>
+        <td>65.12 </td>
     </tr>
     <tr>
         <td>Ours</td>
