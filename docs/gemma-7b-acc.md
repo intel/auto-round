@@ -1,5 +1,7 @@
 Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source,  and the  git id 96d185fa6232a5ab685ba7c43e45d1dbb3bb906d, Install the latest [AutoGPTQ](https://github.com/AutoGPTQ/AutoGPTQ) from source first
 
+Please note that there is a discrepancy between the baseline result and the official data, which is a known issue within the official model card community.
+
 ```bash
 lm_eval --model hf --model_args pretrained="Intel/gemma-7b-int4-inc",autogptq=True,gptq_use_triton=True --device cuda:0 --tasks lambada_openai,hellaswag,piqa,winogrande,truthfulqa_mc1,openbookqa,boolq,rte,arc_easy,arc_challenge,mmlu --batch_size 32
 ```
