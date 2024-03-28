@@ -32,6 +32,7 @@ from .utils import (
     get_scale_shape,
     htcore,
     is_hpu_available,
+    is_share_attention_model,
     logger,
     move_input_to_device,
     quant_weight,
@@ -611,7 +612,10 @@ class AutoRound(object):
         for i in range(0, self.n_samples, bs):
             end_index = min(self.n_samples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = sampling_inputs(input_ids, input_others, indices, self.seqlen)
+            share_attention_flag = is_share_attention_model(self.model)
+            tmp_input_ids, tmp_input_others = sampling_inputs(
+                input_ids, input_others, indices, self.seqlen, share_attention_flag
+            )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
@@ -730,6 +734,7 @@ class AutoRound(object):
 
         def forward(_, hidden_states, *positional_args, **kwargs):
             dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
+            share_attention_flag = is_share_attention_model(self.model)
             if name in self.inputs:
                 data = torch.cat([self.inputs[name]["input_ids"], hidden_states.to("cpu")], dim=dim)
                 self.inputs[name]["input_ids"] = data
@@ -748,7 +753,7 @@ class AutoRound(object):
                         if key not in self.inputs[name].keys():
                             self.inputs[name][key] = None
                         if kwargs[key] is not None:
-                            if self.inputs[name][key] is not None:
+                            if (not share_attention_flag) and self.inputs[name][key] is not None:
                                 self.inputs[name][key] = torch.cat(
                                     [self.inputs[name][key], kwargs[key].to("cpu")], dim=0
                                 )
@@ -761,7 +766,7 @@ class AutoRound(object):
                             alibi = kwargs[key]
                             batch = kwargs["attention_mask"].shape[0]
                             alibi = alibi.reshape(batch, -1, alibi.shape[1], alibi.shape[2])
-                            if self.inputs[name][key] is not None:
+                            if (not share_attention_flag) and self.inputs[name][key] is not None:
                                 self.inputs[name][key] = torch.cat([self.inputs[name][key], alibi.to("cpu")], dim=0)
                             else:
                                 self.inputs[name][key] = alibi.to("cpu")
@@ -804,6 +809,7 @@ class AutoRound(object):
         """
         from torch.amp import autocast
 
+        share_attention_flag = is_share_attention_model(self.model)
         batch_dim = get_batch_dim(input_others)
         if not self.low_gpu_mem_usage and input_ids.device != device:
             input_ids = move_input_to_device(input_ids, device)
@@ -860,7 +866,7 @@ class AutoRound(object):
             total_loss = 0
             for _ in range(self.gradient_accumulate_steps):
                 current_input_ids, current_input_others = sampling_inputs(
-                    input_ids, input_others, indices, seqlen=self.seqlen
+                    input_ids, input_others, indices, seqlen=self.seqlen, share_attention_flag=share_attention_flag
                 )
                 if len(input_ids.shape) == 3:
                     if batch_dim == 0:
