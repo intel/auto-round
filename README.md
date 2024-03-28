@@ -47,7 +47,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 from auto_round import AutoRound
 
 bits, group_size, sym = 4, 128, False
-## The device will be detected automatically, or you can specify it.
+##device:Optional["auto", None, "hpu", "cpu", "cuda"]
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=None)
 autoround.quantize()
 output_dir = "./tmp_autoround"

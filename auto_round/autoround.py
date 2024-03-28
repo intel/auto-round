@@ -445,7 +445,7 @@ class AutoRound(object):
         self.amp_dtype = torch.float16
         if self.model.dtype != torch.float32:
             self.amp_dtype = self.model.dtype
-        if self.device == "cpu" or self.device == "hpu":
+        if self.device == "cpu" or "hpu" in self.device:
             self.amp_dtype = torch.bfloat16
         if self.amp:
             if self.device == "cpu" and not CpuInfo().bf16:
@@ -879,7 +879,7 @@ class AutoRound(object):
                     block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
                 )
                 if self.amp and not check_is_cpu(device):
-                    with autocast(device_type="cuda", dtype=self.amp_dtype):
+                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable

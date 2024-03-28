@@ -165,7 +165,7 @@ if __name__ == '__main__':
 
     device_str = detect_device(args.device)
     torch_dtype = "auto"
-    if device_str == "hpu":
+    if "hpu" in device_str:
         torch_dtype = torch.bfloat16
     torch_device = torch.device(device_str)
 
