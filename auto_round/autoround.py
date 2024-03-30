@@ -18,6 +18,7 @@ import time
 
 import torch
 
+from .model_info import check_hidden_state_dim, check_share_attention_mask
 from .utils import (
     CpuInfo,
     block_forward,
@@ -37,7 +38,6 @@ from .utils import (
     sampling_inputs,
     set_module,
 )
-from .model_info import check_share_attention_mask, check_hidden_state_dim
 
 if is_hpu_available:
     import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
@@ -611,7 +611,9 @@ class AutoRound(object):
         for i in range(0, self.n_samples, bs):
             end_index = min(self.n_samples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = sampling_inputs(input_ids, input_others, indices, self.seqlen, self.share_attention_mask_flag, self.input_dim)
+            tmp_input_ids, tmp_input_others = sampling_inputs(
+                input_ids, input_others, indices, self.seqlen, self.share_attention_mask_flag, self.input_dim
+            )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
@@ -722,17 +724,16 @@ class AutoRound(object):
         """
 
         def forward(_, hidden_states, *positional_args, **kwargs):
+            """Rewrite forward function, process and collect input data.
+
+            Args:
+                hidden_states (torch.Tensor): The hidden states tensor.
+                *positional_args: Variable number of positional arguments.
+                **kwargs: Variable number of keyword arguments.
+
+            Returns:
+                NotImplementedError: Getting the first layer of input and then raise NotImplementedError to saves run time.
             """
-        Rewrite forward function, process and collect input data.
-
-        Args:
-            hidden_states (torch.Tensor): The hidden states tensor.
-            *positional_args: Variable number of positional arguments.
-            **kwargs: Variable number of keyword arguments.
-
-        Returns:
-            NotImplementedError: Getting the first layer of input and then raise NotImplementedError to saves run time.
-        """
             if self.share_attention_mask_flag is None:
                 self.input_dim = check_hidden_state_dim(self.model, positional_args)
                 self.share_attention_mask_flag = check_share_attention_mask(self.model, hidden_states, **kwargs)
@@ -809,6 +810,7 @@ class AutoRound(object):
         Tuple: (q_outputs, output) if self.use_quant_input is True, else (None, output)
         """
         from torch.amp import autocast
+
         if not self.low_gpu_mem_usage and input_ids.device != device:
             input_ids = move_input_to_device(input_ids, device)
             input_others = move_input_to_device(input_others, device)
@@ -863,12 +865,12 @@ class AutoRound(object):
             total_loss = 0
             for _ in range(self.gradient_accumulate_steps):
                 current_input_ids, current_input_others = sampling_inputs(
-                    input_ids, 
+                    input_ids,
                     input_others,
                     indices,
                     seqlen=self.seqlen,
                     share_attention_mask_flag=self.share_attention_mask_flag,
-                    input_dim=self.input_dim
+                    input_dim=self.input_dim,
                 )
                 if len(input_ids.shape) == 3:
                     if self.input_dim == 0:
@@ -931,9 +933,7 @@ class AutoRound(object):
 
         unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.use_quant_input:
-            q_outputs = self.get_block_outputs(
-                block, input_ids, input_others, self.train_bs, device, cache_device
-            )
+            q_outputs = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device)
 
             return q_outputs, output
 
@@ -1376,4 +1376,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-

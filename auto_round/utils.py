@@ -22,6 +22,7 @@ import cpuinfo
 import psutil
 import torch
 from torch.amp import autocast
+
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
 logger.propagate = False
@@ -589,4 +590,3 @@ class CpuInfo(object):
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
         return 0
-
