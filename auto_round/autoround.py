@@ -26,19 +26,18 @@ from .utils import (
     collect_minmax_scale,
     collect_round_v,
     detect_device,
-    get_batch_dim,
     get_block_names,
     get_module,
     get_scale_shape,
     htcore,
     is_hpu_available,
-    is_share_attention_model,
     logger,
     move_input_to_device,
     quant_weight,
     sampling_inputs,
     set_module,
 )
+from .model_info import check_share_attention_mask, check_hidden_state_dim
 
 if is_hpu_available:
     import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
@@ -592,7 +591,7 @@ class AutoRound(object):
             m.scale_dtype = weight_config[n]["scale_dtype"]
 
     @torch.no_grad()
-    def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device, batch_dim):
+    def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
         """Compute the output of a given block of the model for a given input.
 
         Args:
@@ -612,15 +611,12 @@ class AutoRound(object):
         for i in range(0, self.n_samples, bs):
             end_index = min(self.n_samples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
-            share_attention_flag = is_share_attention_model(self.model)
-            tmp_input_ids, tmp_input_others = sampling_inputs(
-                input_ids, input_others, indices, self.seqlen, share_attention_flag
-            )
+            tmp_input_ids, tmp_input_others = sampling_inputs(input_ids, input_others, indices, self.seqlen, self.share_attention_mask_flag, self.input_dim)
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
             output.append(tmp_output)
-        output = torch.cat(output, dim=batch_dim)
+        output = torch.cat(output, dim=self.input_dim)
         torch.cuda.empty_cache()
         return output
 
@@ -706,6 +702,8 @@ class AutoRound(object):
         """
         self.inputs = {}
         self.tmp_block_name = block_name
+        self.share_attention_mask_flag = None
+        self.hidden_dim_flag = None
         self._replace_forward()
         self.calib(n_samples)
         self._recover_forward()
@@ -724,10 +722,22 @@ class AutoRound(object):
         """
 
         def forward(_, hidden_states, *positional_args, **kwargs):
-            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
-            share_attention_flag = is_share_attention_model(self.model)
+            """
+        Rewrite forward function, process and collect input data.
+
+        Args:
+            hidden_states (torch.Tensor): The hidden states tensor.
+            *positional_args: Variable number of positional arguments.
+            **kwargs: Variable number of keyword arguments.
+
+        Returns:
+            NotImplementedError: Getting the first layer of input and then raise NotImplementedError to saves run time.
+        """
+            if self.share_attention_mask_flag is None:
+                self.input_dim = check_hidden_state_dim(self.model, positional_args)
+                self.share_attention_mask_flag = check_share_attention_mask(self.model, hidden_states, **kwargs)
             if name in self.inputs:
-                data = torch.cat([self.inputs[name]["input_ids"], hidden_states.to("cpu")], dim=dim)
+                data = torch.cat([self.inputs[name]["input_ids"], hidden_states.to("cpu")], dim=self.input_dim)
                 self.inputs[name]["input_ids"] = data
             else:
                 self.inputs[name] = {}
@@ -744,7 +754,7 @@ class AutoRound(object):
                         if key not in self.inputs[name].keys():
                             self.inputs[name][key] = None
                         if kwargs[key] is not None:
-                            if (not share_attention_flag) and self.inputs[name][key] is not None:
+                            if (not self.share_attention_mask_flag) and self.inputs[name][key] is not None:
                                 self.inputs[name][key] = torch.cat(
                                     [self.inputs[name][key], kwargs[key].to("cpu")], dim=0
                                 )
@@ -757,7 +767,7 @@ class AutoRound(object):
                             alibi = kwargs[key]
                             batch = kwargs["attention_mask"].shape[0]
                             alibi = alibi.reshape(batch, -1, alibi.shape[1], alibi.shape[2])
-                            if (not share_attention_flag) and self.inputs[name][key] is not None:
+                            if (not self.share_attention_mask_flag) and self.inputs[name][key] is not None:
                                 self.inputs[name][key] = torch.cat([self.inputs[name][key], alibi.to("cpu")], dim=0)
                             else:
                                 self.inputs[name][key] = alibi.to("cpu")
@@ -799,16 +809,13 @@ class AutoRound(object):
         Tuple: (q_outputs, output) if self.use_quant_input is True, else (None, output)
         """
         from torch.amp import autocast
-
-        share_attention_flag = is_share_attention_model(self.model)
-        batch_dim = get_batch_dim(input_others)
         if not self.low_gpu_mem_usage and input_ids.device != device:
             input_ids = move_input_to_device(input_ids, device)
             input_others = move_input_to_device(input_others, device)
         cache_device = device
         if self.low_gpu_mem_usage:
             cache_device = "cpu"
-        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device, batch_dim)
+        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device)
 
         if q_input is not None:
             input_ids = q_input.to(cache_device)
@@ -839,7 +846,7 @@ class AutoRound(object):
 
         pick_samples = self.train_bs
         if len(input_ids.shape) == 3:
-            n_samples = input_ids.shape[batch_dim]
+            n_samples = input_ids.shape[self.input_dim]
         else:
             n_samples = input_ids.shape[0] // self.seqlen
         if self.sampler != "rand":
@@ -856,12 +863,17 @@ class AutoRound(object):
             total_loss = 0
             for _ in range(self.gradient_accumulate_steps):
                 current_input_ids, current_input_others = sampling_inputs(
-                    input_ids, input_others, indices, seqlen=self.seqlen, share_attention_flag=share_attention_flag
+                    input_ids, 
+                    input_others,
+                    indices,
+                    seqlen=self.seqlen,
+                    share_attention_mask_flag=self.share_attention_mask_flag,
+                    input_dim=self.input_dim
                 )
                 if len(input_ids.shape) == 3:
-                    if batch_dim == 0:
+                    if self.input_dim == 0:
                         current_output = output[indices, :, :]
-                    elif batch_dim == 1:
+                    elif self.input_dim == 1:
                         current_output = output[:, indices, :]
                     else:
                         current_output = output[:, :, indices]
@@ -920,7 +932,7 @@ class AutoRound(object):
         unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.use_quant_input:
             q_outputs = self.get_block_outputs(
-                block, input_ids, input_others, self.train_bs, device, cache_device, batch_dim
+                block, input_ids, input_others, self.train_bs, device, cache_device
             )
 
             return q_outputs, output
@@ -1364,3 +1376,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
