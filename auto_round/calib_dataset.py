@@ -1,5 +1,6 @@
-import random
 import json
+import random
+
 import torch
 
 CALIB_DATASETS = {}
@@ -90,7 +91,9 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", data_pa
 
 
 @register_dataset("mbpp")
-def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", data_path=None, split=["train", "validation", "test"], seed=42, bs=4):
+def get_mbpp_dataloader(
+    tokenizer, seqlen, dataset_name="mbpp", data_path=None, split=["train", "validation", "test"], seed=42, bs=4
+):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -163,9 +166,10 @@ def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", data_path=None, 
 
 
 @register_dataset("custom")
-def get_custom_dataloader(tokenizer, seqlen, dataset_name="custom", data_path=None, split=["train", "validation", "test"], seed=42, bs=4):
-    """
-    Returns a dataloader for a custom dataset and split. 
+def get_custom_dataloader(
+    tokenizer, seqlen, dataset_name="custom", data_path=None, split=["train", "validation", "test"], seed=42, bs=4
+):
+    """Returns a dataloader for a custom dataset and split.
     We allow the input of a jsonl file containing a processed text sample each line.
 
     Args:
