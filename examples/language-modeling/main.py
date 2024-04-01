@@ -11,7 +11,7 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
 from transformers import set_seed
-
+import time
 import re
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -201,8 +201,9 @@ if __name__ == '__main__':
         else:
             pt_dtype = torch.float32
             dtype = 'float32'
-    
-    excel_name = f"___xx__{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_leq_{AuotoRoundConfig.layer_equalization_transform}" + ".xlsx"
+    timestamp_str = time.strftime("%Y%m%d-%H%M%S")
+    excel_name = f"___{timestamp_str}__{'_'.join(model_name.split('/'))}_{args.bits}_{args.group_size}_{args.iters}_leq_{AuotoRoundConfig.layer_equalization_transform}" + ".xlsx"
+    print(f"excel_name: {excel_name}", flush=True)
     if args.eval_fp16_baseline:
         if not args.low_gpu_mem_usage:
             model = model.to(torch_device)

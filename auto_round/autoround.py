@@ -47,9 +47,11 @@ if is_hpu_available:
     import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
 
+
 class AuotoRoundConfig:
     layer_equalization_transform = os.environ.get("USE_LEQ", "0") == "1"
     pass_model_to_lm_eval = os.environ.get("PASS_MODEL_TO_LM_EVAL", "0") == "1"
+    init_method = os.environ.get("INIT_METHOD", None)
     # CUDA_VISIBLE_DEVICES=0 USE_LEQ=1 python3 main.py --model_name /models/opt-125m/  --amp --bits 4 --group_size -1 --enable_minmax_tuning 
 
 config = AuotoRoundConfig()
@@ -97,7 +99,7 @@ class WrapperLinear(torch.nn.Module):
         
         if config.layer_equalization_transform:
             from .scale import ScaleCalculator
-            self.weight_scale_calculator = ScaleCalculator(self.orig_layer.in_features, self.orig_layer.weight.device)
+            self.weight_scale_calculator = ScaleCalculator(self.orig_layer.weight.data, self.orig_layer.weight.device, init_method=config.init_method)
 
     def unwrapper(self, v, min_scale, max_scale, leq_weight_scale=None):
         """Unwrapper the layer to the original layer.

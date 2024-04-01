@@ -76,13 +76,36 @@ def replace_linear_with_smoothed_linear(module, weight_scale):
     logger.info(f"weight_scale shape: {weight_scale.shape}, weight scale min: {weight_scale.min()}, weight scale max: {weight_scale.max()}")
     return MulLinear(module, weight_scale)
 
+
+def get_weight_scale(weight_data):
+    assert len(weight_data.shape) == 2, f"weight_data shape len should be 2, got {weight_data.shape}"
+    alpha = 0.5
+    # print(weight_data)
+    weight_amax = torch.max(torch.abs(weight_data), dim=0).values
+    # print(weight_amax)
+    # print(weight_amax.shape)
+
+    norm_weight_amax = torch.pow(weight_amax, alpha)
+    # print(norm_weight_amax)
+    norm_weight_amax = norm_weight_amax.reshape(1, -1)
+    norm_weight_amax_clip = norm_weight_amax + 1
+    return norm_weight_amax_clip.to(weight_data.device)
+    
+
 class ScaleCalculator(torch.nn.Module):
-    def __init__(self, shape: int, device):
+    def __init__(self, data: int, device, init_method = None):
         super().__init__()
+        assert len(data.shape) == 2, f"weight_data shape len should be 2, got {data.shape}"
+        shape = data.shape[1]
         self.shape = shape
         self.device = device
         tensor1 = torch.ones(shape, device=device) * 0.5
-        tensor2 = torch.ones(shape, device=device) * 0.5
+        if init_method is None:
+            tensor2 = torch.ones(shape, device=device) * 0.5
+        else:
+            logger.info(f"init scale 2 according to the weight")
+            tensor2 = get_weight_scale(data) * 0.5
+        
         self.scale1 = torch.nn.Parameter(tensor1, requires_grad=True)
         self.scale2 = torch.nn.Parameter(tensor2, requires_grad=True)
 

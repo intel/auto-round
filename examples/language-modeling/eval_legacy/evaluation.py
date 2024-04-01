@@ -56,6 +56,7 @@ fewshots_dict['all'] = {
     "gsm8k": [5]
 }
 
+pre_bs = None
 
 def simple_evaluate(
         model,
@@ -128,7 +129,11 @@ def simple_evaluate(
 
     assert tasks != [], "No tasks specified"
     assert isinstance(tasks, list), "Tasks must be a list"
-    if lm == None:
+    pre_bs = None
+    if lm == None or batch_size != pre_bs:
+        torch.cuda.empty_cache()
+        print(f"Creating lm with batch size {batch_size}")
+        pre_bs = batch_size
         if isinstance(model, str):
             if model_args is None:
                 model_args = ""
