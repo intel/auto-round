@@ -111,7 +111,7 @@ Please run the quantization code first.
 
 ### CPU
 ```python
-Install the latest https://github.com/intel/intel-extension-for-transformers from source first.
+##Install the latest https://github.com/intel/intel-extension-for-transformers from source first.
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
  
