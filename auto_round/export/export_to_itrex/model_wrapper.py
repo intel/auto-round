@@ -351,4 +351,3 @@ class WeightOnlyLinear(torch.nn.Module):
         if self.use_optimum_format:
             tmp_str += ", use_optimum_format=True"
         return tmp_str
-
