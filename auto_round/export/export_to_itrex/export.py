@@ -134,6 +134,11 @@ def pack_model(
                 zp = zp.clone()
             scale = scale.to(dtype=convert_dtype)
             zp = zp.to(dtype=torch.int32)
+            
+        if use_optimum_format == False and sym and zp is not None:
+            zp = None
+            logger.warning("Attempting to drop the current zero point may result in inconsistent accuracy.")
+            
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
         int_weight = int_weight.type(torch.int32)
         new_module = WeightOnlyLinear(
