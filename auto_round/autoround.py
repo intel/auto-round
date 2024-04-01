@@ -611,7 +611,14 @@ class AutoRound(object):
         for i in range(0, self.n_samples, bs):
             end_index = min(self.n_samples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = sampling_inputs(input_ids, input_others, indices, self.seqlen, self.share_attention_mask_flag, self.input_dim)
+            tmp_input_ids, tmp_input_others = sampling_inputs(
+                input_ids,
+                input_others,
+                indices,
+                self.seqlen,
+                self.share_attention_mask_flag,
+                self.input_dim
+            )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
@@ -731,7 +738,7 @@ class AutoRound(object):
             **kwargs: Variable number of keyword arguments.
 
         Returns:
-            NotImplementedError: Getting the first layer of input and then raise NotImplementedError to saves run time.
+            NotImplementedError: Getting the first layer inputs and then raise the error to save runtime.
         """
             if self.share_attention_mask_flag is None:
                 self.input_dim = check_hidden_state_dim(self.model, positional_args)
@@ -832,7 +839,9 @@ class AutoRound(object):
 
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}],
+                lr=self.lr,
+                weight_decay=0
             )
         else:
             optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
