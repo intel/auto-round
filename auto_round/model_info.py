@@ -18,12 +18,10 @@ from .utils import logger, torch
 def check_share_attention_mask(model, hidden_states, attention_mask=None, **kwargs):
     if attention_mask is None or not isinstance(hidden_states, torch.Tensor):
         return False
-    is_baichuan = bool(hasattr(model, 'config') and 'baichuan' in model.config.model_type)
+    is_baichuan = bool(hasattr(model, "config") and "baichuan" in model.config.model_type)
     return bool(attention_mask.shape[0] != hidden_states.shape[0] and is_baichuan)
-    
-    
+
+
 def check_hidden_state_dim(model, positional_args):
     is_chatglm = hasattr(model, "config") and "chatglm" in model.config.model_type
     return int(is_chatglm and positional_args is not None)
-    
-

@@ -133,7 +133,7 @@ def pack_model(
                 zp = zp.clone()
             scale = scale.to(dtype=convert_dtype)
             zp = zp.to(dtype=torch.int32)
-        
+
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
         int_weight = int_weight.type(torch.int32)
         new_module = WeightOnlyLinear(
@@ -152,4 +152,3 @@ def pack_model(
         set_module(compressed_model, k, new_module)
 
     return compressed_model
-
