@@ -43,8 +43,8 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     use_quant_input = kwargs["use_quant_input"]
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
-
-    compressed_model = pack_model(model, weight_config, inplace=inplace)
+    
+    compressed_model = pack_model(inplace=inplace, **kwargs)
     if output_dir is None:
         return compressed_model
     quantize_config = QuantConfig(
@@ -82,6 +82,7 @@ def pack_model(
     device="cpu",
     use_optimum_format=True,
     inplace=False,
+    **kwargs
 ):
     """Convert Linear to WeightOnlyLinear for low memory inference.
 
@@ -133,11 +134,6 @@ def pack_model(
                 zp = zp.clone()
             scale = scale.to(dtype=convert_dtype)
             zp = zp.to(dtype=torch.int32)
-
-        if use_optimum_format == False and sym and zp is not None:
-            zp = None
-            logger.warning("Attempting to drop the current zero point may result in inconsistent accuracy.")
-
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
         int_weight = int_weight.type(torch.int32)
         new_module = WeightOnlyLinear(
@@ -150,9 +146,12 @@ def pack_model(
             zp=zp is not None,
             bias=m.bias is not None,
             device=device,
-            use_optimum_format=True,
+            compression_dtype=compression_dtype,
+            compression_dim=compression_dim,
+            use_optimum_format=use_optimum_format,
         )
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
 
     return compressed_model
+
