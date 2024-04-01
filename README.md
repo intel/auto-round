@@ -111,24 +111,16 @@ Please run the quantization code first.
 
 ### CPU
 ```python
-# Please save the quantized model in 'itrex' format first, then refer to the ITREX tutorial for more details on inference with the INT4 model.
-# (https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed)
-from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
+Install the latest https://github.com/intel/intel-extension-for-transformers from source first.
+from intel_extension_for_transformers.transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
-
+ 
 quantized_model_path = "./tmp_autoround"
-scheme = "sym" if sym else "asym"
-woq_config = WeightOnlyQuantConfig(
-    group_size=group_size, scheme=scheme, use_autoround=True
-)  ##only supports 4 bits currently
-prompt = "There is a girl who likes adventure,"
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, trust_remote_code=True)
-inputs = tokenizer(prompt, return_tensors="pt").input_ids
-model = AutoModelForCausalLM.from_pretrained(
-    quantized_model_path, quantization_config=woq_config, trust_remote_code=True, device="cpu"
-)
-outputs = model.generate(inputs, max_new_tokens=50)
-print(tokenizer.decode(outputs[0]))
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
 
