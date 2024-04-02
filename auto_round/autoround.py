@@ -18,7 +18,7 @@ import time
 
 import torch
 
-from .model_info import check_hidden_state_dim, check_share_attention_mask
+from .special_model_handler import check_hidden_state_dim, check_share_attention_mask
 from .utils import (
     CpuInfo,
     block_forward,
