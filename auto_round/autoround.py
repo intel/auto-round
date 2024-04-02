@@ -305,8 +305,8 @@ def unwrapper_block(block, vs, min_scales, max_scales):
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
             v = 0
-            min_scale = 0
-            max_scale = 0
+            min_scale = torch.tensor(0)
+            max_scale = torch.tensor(0)
             if isinstance(vs, dict):
                 v = vs[n]
             if isinstance(min_scales, dict):
@@ -445,7 +445,7 @@ class AutoRound(object):
         self.amp_dtype = torch.float16
         if self.model.dtype != torch.float32:
             self.amp_dtype = self.model.dtype
-        if self.device == "cpu" or self.device == "hpu":
+        if self.device == "cpu" or "hpu" in self.device:
             self.amp_dtype = torch.bfloat16
         if self.amp:
             if self.device == "cpu" and not CpuInfo().bf16:
@@ -653,21 +653,30 @@ class AutoRound(object):
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
-                data_new = data.to(self.model.device)
-                input_ids = data_new
+                input_ids = data.to(self.model.device)
+
+            elif isinstance(data, str):
+                if self.tokenizer is None:
+                    logger.error("for string input, please provide tokenizer")
+                    exit()
+                data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
+                data_new = {}
+                for key in data.keys():
+                    data_new[key] = data[key].to(self.model.device)
+                input_ids = data_new["input_ids"]
             else:
                 data_new = {}
                 for key in data.keys():
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
-            # if input_ids.shape[-1] < self.seqlen:
-            #     continue
+            if input_ids.shape[-1] < self.seqlen:
+                continue
             if total_cnt + input_ids.shape[0] > n_samples:
                 input_ids = input_ids[: n_samples - total_cnt, ...]
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
-                elif isinstance(data_new, dict):
+                else:
                     self.model(**data_new)
             except NotImplementedError:
                 pass
@@ -685,7 +694,7 @@ class AutoRound(object):
         elif total_cnt < n_samples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantification. "
-                f"Effective samples size:{total_cnt}, Target sample size:{n_samples}"
+                f"Valid samples size:{total_cnt}, Target sample size:{n_samples}"
             )
 
     @torch.no_grad()
@@ -858,6 +867,7 @@ class AutoRound(object):
         mse_loss = torch.nn.MSELoss().to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
+        best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
         for i in range(self.iters):
             if self.sampler == "rand":
                 indices = torch.randperm(n_samples)[:pick_samples]
@@ -889,7 +899,7 @@ class AutoRound(object):
                     block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
                 )
                 if self.amp and not check_is_cpu(device):
-                    with autocast(device_type="cuda", dtype=self.amp_dtype):
+                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable
@@ -1103,8 +1113,6 @@ class AutoRound(object):
             summary_info += f",  {unquantized_layers} have not been quantized"
 
         logger.info(summary_info)
-        if len(unquantized_layers) > 0:
-            logger.info(f"Summary: {unquantized_layers} have not been quantized")
 
         self.quantized = True
         self.model = self.model.to(self.model_orig_dtype)

@@ -17,6 +17,25 @@ import re
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+
+def customized_data():
+    ##Important Notice!!! Autoround will drop data < args.seqlen and truncate data to args.seqlen
+    data = ["AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference" * 240]
+    data.append("AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference")
+    return data
+
+
+def customized_data_with_tokenizer(tokenizer, seqlen=2048):
+    ##Import notice!!! Autoround will dump data < args.seqlen
+    data = ["AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference" * 240]
+    data.append("AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference")
+    tokens = []
+    for d in data:
+        token = tokenizer(d, truncation=True, max_length=seqlen, return_tensors="pt").data
+        tokens.append(token)
+    return tokens
+
+
 if __name__ == '__main__':
 
     parser.add_argument(
@@ -61,7 +80,7 @@ if __name__ == '__main__':
                         help="whether to eval FP16 baseline")
 
     parser.add_argument("--amp", action='store_true',
-                        help="amp is deprecated ")
+                        help="amp")
 
     parser.add_argument("--adam", action='store_true',
                         help="adam")
@@ -77,10 +96,10 @@ if __name__ == '__main__':
                         help="number of samples")
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
-                        help="low_gpu_mem_usage is deprecated")
+                        help="low_gpu_mem_usage")
 
     parser.add_argument("--enable_minmax_tuning", action='store_true',
-                        help="enable_minmax_tuning is deprecated")
+                        help="whether enable weight minmax tuning")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu'."
@@ -101,30 +120,7 @@ if __name__ == '__main__':
     parser.add_argument("--disable_eval", action='store_true',
                         help="Whether to do lmeval evaluation.")
 
-    parser.add_argument("--disable_amp", action='store_true',
-                        help="disable amp")
-
-    parser.add_argument("--disable_low_gpu_mem_usage", action='store_true',
-                        help="disable low_gpu_mem_usage")
-
-    parser.add_argument("--disable_minmax_tuning", action='store_true',
-                        help="whether disable  enable weight minmax tuning")
-
-    parser.add_argument("--disable_trust_remote_code", action='store_true',
-                        help="Whether to disable trust_remote_code")
-
-
     args = parser.parse_args()
-    if args.low_gpu_mem_usage:
-        print(
-            "low_gpu_mem_usage is deprecated, it has been set to the default, use disable_low_gpu_mem_usage to turn it off")
-    if args.enable_minmax_tuning:
-        print(
-            "enable_minmax_tuning is deprecated, it has been set to the default, use disable_minmax_tuning to turn it off")
-    if args.amp:
-        print(
-            "amp is deprecated, it has been set to the default, use disable_amp to turn it off")
-
     set_seed(args.seed)
     tasks = args.tasks
     use_eval_legacy = False
@@ -142,13 +138,13 @@ if __name__ == '__main__':
     res = get_library_version("lm-eval")
     if res == "0.3.0":
         use_eval_legacy = True
-
-    if isinstance(tasks, str):
-        tasks = tasks.split(',')
     if not use_eval_legacy:
         from eval import eval_model
     else:
         from eval_legacy import eval_model
+
+        if isinstance(tasks, str):
+            tasks = tasks.split(',')
         if isinstance(tasks, list):
             if "mmlu" in tasks:
                 tmp_tasks = tasks
@@ -159,12 +155,6 @@ if __name__ == '__main__':
             tasks = list(set(tasks))
         if isinstance(args.tasks, str):
             tasks = ','.join(tasks)
-
-    if 'fake' in args.deployment_device and not args.disable_eval:
-        if use_eval_legacy:
-            print("Using the legacy lm_eval(0.3.0)")
-        else:
-            print("Using the latest lm_eval(0.4.1)")
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -181,10 +171,10 @@ if __name__ == '__main__':
 
     is_glm = bool(re.search("chatglm", model_name.lower()))
     if is_glm:
-        model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code
+            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype, trust_remote_code=True
         )
 
     from auto_round import (AutoRound,
@@ -207,7 +197,7 @@ if __name__ == '__main__':
         if tokenizer.pad_token is None:
             tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
@@ -230,15 +220,15 @@ if __name__ == '__main__':
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if args.eval_fp16_baseline:
-        if args.disable_low_gpu_mem_usage:
+        if not args.low_gpu_mem_usage:
             model = model.to(torch_device)
         excel_name += "_fp16.xlsx"
         eval_model(model_path=model_name, tasks=tasks, dtype=dtype, \
-                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
         exit()
 
-    if args.disable_low_gpu_mem_usage:
+    if not args.low_gpu_mem_usage:
         model = model.to(torch_device)
 
     round = AutoRound
@@ -253,14 +243,15 @@ if __name__ == '__main__':
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
 
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
+    data = customized_data()
+
+    autoround = round(model, tokenizer, args.bits, args.group_size, dataloader=data, sym=args.sym,
+                      batch_size=args.train_bs,
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
-                      amp=not args.disable_amp, n_samples=args.n_samples,
-                      low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
+                      amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning)  ##TODO args pass
+                      scale_dtype=args.scale_dtype, weight_config=weight_config)  ##TODO args pass
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -285,5 +276,5 @@ if __name__ == '__main__':
         output_dir += "/"
         print(excel_name, flush=True)
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)

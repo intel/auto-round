@@ -34,6 +34,9 @@ fewshots_dict['paper'] = {
     "rte": [0],
     "arc_easy": [0],
     "arc_challenge": [0],
+    "gsm8k": [0],
+    "ceval-valid": [0],
+    "cmmlu": [0],
 }
 fewshots_dict['leadboard'] = {
     "hellaswag": [10],
@@ -375,7 +378,7 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
                 pprint.pprint(tmp_results["results"])
                 print(f"\n{sub_name} cost time: {time.time() - task_s}\n")
                 results[sub_name] = {}
-                if 'mmlu' in tmp_tasks:
+                if 'mmlu' in tmp_tasks and 'cmmlu' not in tmp_tasks:
                     for cata in ['humanities', 'other', 'stem', 'sociology']:
                         results[sub_name][cata] = tmp_results['results'][f'mmlu_{cata}']
                     results[sub_name]['avg'] = tmp_results['results'][f'mmlu']
