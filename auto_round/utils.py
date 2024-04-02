@@ -25,6 +25,7 @@ from torch.amp import autocast
 
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
+logger.propagate = False
 fh = logging.StreamHandler()
 fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
 fh.setFormatter(fh_formatter)
@@ -400,21 +401,7 @@ def collect_minmax_scale(block):
     return min_scales, max_scales
 
 
-@torch.no_grad()
-def get_batch_dim(input_others):
-    """Gets the batch dimension based on the input positional inputs.
-
-    Args:
-    input_others: A dictionary containing input data.
-
-    Returns:
-    dim: The batch dimension.
-    """
-    dim = int(len(input_others["positional_inputs"]) > 0)
-    return dim
-
-
-def sampling_inputs(input_ids, input_others, indices, seqlen):
+def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_mask_flag=False, input_dim=0):
     """Samples inputs based on the given indices and sequence length.
 
     Args:
@@ -428,7 +415,7 @@ def sampling_inputs(input_ids, input_others, indices, seqlen):
     current_input_others: The sampled other input data.
     """
     if len(input_ids.shape) == 3:
-        if int(len(input_others["positional_inputs"]) > 0):
+        if bool(input_dim):
             current_input_ids = input_ids[:, indices, :]
         else:
             current_input_ids = input_ids[indices, :, :]
@@ -437,10 +424,9 @@ def sampling_inputs(input_ids, input_others, indices, seqlen):
         current_input_ids = input_ids.view(n_samples, seqlen, -1)
         current_input_ids = current_input_ids[indices, :, :]
         current_input_ids = current_input_ids.reshape(-1, input.shape[-1])
-
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
-        if "attention_mask" in key or "alibi" in key:
+        if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key):
             current_input_others[key] = None
             if input_others[key] is not None:
                 current_input_others[key] = input_others[key][indices, ...]

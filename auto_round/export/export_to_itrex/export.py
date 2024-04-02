@@ -123,7 +123,7 @@ def pack_model(
         m = get_module(compressed_model, k)
         fp_weight = m.weight.data
         scale, zp = v["scale"], v["zp"]
-        convert_dtype = torch.float32 if fp_weight.device.type == "cpu" else scale_dtype
+        convert_dtype = scale_dtype
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor(scale, dtype=convert_dtype)
             zp = torch.tensor(zp, dtype=torch.int32)
@@ -133,6 +133,7 @@ def pack_model(
                 zp = zp.clone()
             scale = scale.to(dtype=convert_dtype)
             zp = zp.to(dtype=torch.int32)
+
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
         int_weight = int_weight.type(torch.int32)
         new_module = WeightOnlyLinear(
