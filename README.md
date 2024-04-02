@@ -12,7 +12,7 @@ AutoRound
 
 AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference. It's tailored for a wide range of models and consistently delivers noticeable improvements, often significantly outperforming SignRound with the cost of more tuning time for quantization.
 
-our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps, which competes impressively against recent methods without introducing any additional inference overhead. The below image presents an overview of AutoRound.
+Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps, which competes impressively against recent methods without introducing any additional inference overhead. The below image presents an overview of AutoRound.
 
 <div align="center">
 
@@ -176,7 +176,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 ## Comparison with other methods
 
-We provide a [comprehensive analysis](docs/acc.md) with other methods in our accuracy data section. In summary, our approach achieved superior performance compared to GPTQ, scoring 30/32, AWQ with 27/32, HQQ with 15/16, and OmniQuant with a perfect score of 16/16 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, and W2G128, based on the average accuracies of 11 zero-shot tasks..  And the tuning costs are comparable.
+We provide a [comprehensive analysis](docs/acc.md) with other methods in our accuracy data section. In summary, our approach achieved superior performance compared to GPTQ, scoring 30/32, AWQ with 27/32, HQQ with 15/16, and OmniQuant with a perfect score of 16/16 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, and W2G128, based on the average accuracies of 11 zero-shot tasks.  And the tuning costs are comparable.
 
 ## Tips
 1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. 
