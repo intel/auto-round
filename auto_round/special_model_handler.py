@@ -14,8 +14,9 @@
 
 from .utils import logger, torch
 
-share_attention_mask_tuple = ('baichuan',)
-special_states_dim_tuple = ('chatglm',)
+share_attention_mask_tuple = ("baichuan",)
+special_states_dim_tuple = ("chatglm",)
+
 
 def check_share_attention_mask(model, hidden_states, attention_mask=None, **kwargs):
     """Checks if the attention mask states of the hidden states are shared in the model.
@@ -53,5 +54,3 @@ def check_hidden_state_dim(model, positional_args):
             is_special = True
             break
     return int(is_special and positional_args is not None)
-    
-

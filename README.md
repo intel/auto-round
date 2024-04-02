@@ -114,7 +114,7 @@ Please run the quantization code first.
 ##Install the latest https://github.com/intel/intel-extension-for-transformers from source first.
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
- 
+
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
