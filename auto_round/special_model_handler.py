@@ -12,26 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copyright (c) 2023 Intel Corporation
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from .utils import logger, torch
 
 share_attention_mask_tuple = ('baichuan',)
 special_states_dim_tuple = ('chatglm',)
 
 def check_share_attention_mask(model, hidden_states, attention_mask=None, **kwargs):
-    """Performs forward pass through the wrapped linear layer with quantized weights.
+    """Checks if the attention mask states of the hidden states are shared in the model.
 
     Args:
         hidden_states (torch.Tensor): The hidden states of the model.
@@ -66,3 +53,5 @@ def check_hidden_state_dim(model, positional_args):
             is_special = True
             break
     return int(is_special and positional_args is not None)
+    
+
