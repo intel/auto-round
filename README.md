@@ -12,7 +12,7 @@ AutoRound
 
 AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference. It's tailored for a wide range of models and consistently delivers noticeable improvements, often significantly outperforming SignRound with the cost of more tuning time for quantization.
 
-our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps, which competes impressively against recent methods without introducing any additional inference overhead. The below image presents an overview of AutoRound.
+Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps, which competes impressively against recent methods without introducing any additional inference overhead. The below image presents an overview of AutoRound.
 
 <div align="center">
 
@@ -47,7 +47,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 from auto_round import AutoRound
 
 bits, group_size, sym = 4, 128, False
-## The device will be detected automatically, or you can specify it.
+##device:Optional["auto", None, "hpu", "cpu", "cuda"]
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=None)
 autoround.quantize()
 output_dir = "./tmp_autoround"
@@ -111,24 +111,16 @@ Please run the quantization code first.
 
 ### CPU
 ```python
-# Please save the quantized model in 'itrex' format first, then refer to the ITREX tutorial for more details on inference with the INT4 model.
-# (https://github.com/intel/intel-extension-for-transformers/tree/main/intel_extension_for_transformers/llm/runtime/neural_speed)
-from intel_extension_for_transformers.transformers import AutoModelForCausalLM, WeightOnlyQuantConfig
+##Install the latest https://github.com/intel/intel-extension-for-transformers from source first.
+from intel_extension_for_transformers.transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
 quantized_model_path = "./tmp_autoround"
-scheme = "sym" if sym else "asym"
-woq_config = WeightOnlyQuantConfig(
-    group_size=group_size, scheme=scheme, use_autoround=True
-)  ##only supports 4 bits currently
-prompt = "There is a girl who likes adventure,"
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, trust_remote_code=True)
-inputs = tokenizer(prompt, return_tensors="pt").input_ids
-model = AutoModelForCausalLM.from_pretrained(
-    quantized_model_path, quantization_config=woq_config, trust_remote_code=True, device="cpu"
-)
-outputs = model.generate(inputs, max_new_tokens=50)
-print(tokenizer.decode(outputs[0]))
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
 
@@ -163,7 +155,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | mistralai/Mixtral-8x7B-Instruct-v0.1 | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh),  [example](./examples/language-modeling/) |
 | mistralai/Mixtral-8x7B-v0.1          | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh), [example](./examples/language-modeling/)                  |
 | meta-llama/Llama-2-7b-chat-hf        | [accuracy](./docs/Llama-2-7b-chat-hf-acc.md), [recipe](./examples/language-modeling/scripts/Llama-2-7b-chat-hf.sh), [example](./examples/language-modeling/)                                                                                                              |
-| Qwen/Qwen1.5-7B-Chat                 | [accuracy](./docs/Qwen1.5-7B-Chat-acc.md), [recipe1](./examples/language-modeling/scripts/Qwen1.5-7B-Chat.sh), [recipe2](./examples/language-modeling/scripts/Qwen1.5-7B-Chat_2.sh), [example](./examples/language-modeling/)      |
+| Qwen/Qwen1.5-7B-Chat                 | [accuracy](./docs/Qwen1.5-7B-Chat-acc.md), [recipe](./examples/language-modeling/scripts/Qwen1.5-7B-Chat.sh), [example](./examples/language-modeling/)      |
 | Salesforce/codegen25-7b-multi        | [example](./examples/code-generation)                                                                                                                                                                                                                              |
 | EleutherAI/gpt-j-6b                  | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
 | huggyllama/llama-7b                  | [example](./examples/language-modeling/)                                                                                                                                                                                                                           |
@@ -184,7 +176,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 ## Comparison with other methods
 
-We provide a [comprehensive analysis](docs/acc.md) with other methods in our accuracy data section. In summary, our approach achieved superior performance compared to GPTQ, scoring 30/32, AWQ with 27/32, HQQ with 15/16, and OmniQuant with a perfect score of 16/16 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, and W2G128, based on the average accuracies of 11 zero-shot tasks..  And the tuning costs are comparable.
+We provide a [comprehensive analysis](docs/acc.md) with other methods in our accuracy data section. In summary, our approach achieved superior performance compared to GPTQ, scoring 30/32, AWQ with 27/32, HQQ with 15/16, and OmniQuant with a perfect score of 16/16 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, and W2G128, based on the average accuracies of 11 zero-shot tasks.  And the tuning costs are comparable.
 
 ## Tips
 1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time. 

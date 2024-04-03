@@ -1,5 +1,5 @@
 ## Due to licensing restrictions, we are unable to release the model. 
-#Recipe 1
+# Recipe
 python3 main.py \
 --model_name Qwen/Qwen1.5-7B-Chat\
 --bits 4 \
@@ -9,4 +9,3 @@ python3 main.py \
 --deployment_device gpu \
 --sym \
 --minmax_lr 0.01 
-
