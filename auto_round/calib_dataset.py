@@ -4,7 +4,7 @@ import random
 import torch
 from torch.utils.data import DataLoader
 
-from .utils import logger, is_local_path
+from .utils import is_local_path, logger
 
 CALIB_DATASETS = {}
 
@@ -110,7 +110,8 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
     """
     from datasets import load_dataset
-    split = 'train'
+
+    split = "train"
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
 
     calib_dataset = load_dataset(dataset_name, split=split)
@@ -153,8 +154,9 @@ def get_dataset(tokenizer, seqlen, dataset_name="madao33/new-title-chinese", spl
 
         return default_tokenizer_function
 
-    split = 'train'
+    split = "train"
     from datasets import load_dataset
+
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
 
     calib_dataset = load_dataset(dataset_name, split=split)
@@ -193,9 +195,10 @@ def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42
     for split in splits:
         dataset = load_dataset(dataset_name, split=split)
         for data in dataset:
-            samples.append({'text': data["text"] + data["code"]})
+            samples.append({"text": data["text"] + data["code"]})
     random.Random(seed).shuffle(samples)
     import datasets
+
     calib_dataset = datasets.Dataset.from_list(samples)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
@@ -219,6 +222,7 @@ def get_custom_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None,
     A dataloader for a custom dataset and split, using the provided tokenizer and sequence length.
     """
     from torch.utils.data import DataLoader
+
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
 
     def load_local_data(data_path):
@@ -249,16 +253,17 @@ def get_custom_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None,
         assert isinstance(text, str), "data must be string"
         text = text.rstrip()
         text = text.rstrip("\n")
-        samples.append({'text': text})
+        samples.append({"text": text})
     random.Random(seed).shuffle(samples)
     import datasets
+
     calib_dataset = datasets.Dataset.from_list(samples)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
     return calib_dataset
 
 
 def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42, bs=4, n_samples=512):
-    dataset_names = dataset_name.split(',')
+    dataset_names = dataset_name.split(",")
     if len(dataset_names) == 1 and dataset_names[0] == "NeelNanda/pile-10k":  ##to guarantee the reproducibility.
         get_dataloader = CALIB_DATASETS.get("legacy-NeelNanda/pile-10k")
         dataloader = get_dataloader(
@@ -304,6 +309,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
         cnt += target_cnt
     if len(datasets) > 1:
         from datasets import concatenate_datasets
+
         dataset_final = concatenate_datasets(datasets)
         dataset_final = dataset_final.shuffle(seed=seed)
         logger.info(dataset_cnt_info)
