@@ -2,8 +2,9 @@ import json
 import random
 
 import torch
+from torch.utils.data import DataLoader
 
-from .utils import logger
+from .utils import logger, is_local_path
 
 CALIB_DATASETS = {}
 
@@ -46,7 +47,8 @@ def get_tokenizer_function(tokenizer, seqlen):
     return default_tokenizer_function
 
 
-@register_dataset("NeelNanda/pile-10k")
+##we keep this for reproduce issue
+@register_dataset("legacy-NeelNanda/pile-10k")
 def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="train", seed=42, bs=4):
     """Returns a dataloader for the specified dataset and split.
 
@@ -92,8 +94,8 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="
     return calib_dataloader
 
 
-@register_dataset("mbpp")
-def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=["train", "validation", "test"], seed=42, bs=4):
+@register_dataset("NeelNanda/pile-10k")
+def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42, bs=4):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -108,65 +110,100 @@ def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=["train", 
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
     """
     from datasets import load_dataset
-    from torch.utils.data import DataLoader
+    split = 'train'
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
 
-    def get_mbpp_tokenizer_function(tokenizer, seqlen):
+    calib_dataset = load_dataset(dataset_name, split=split)
+    calib_dataset = calib_dataset.shuffle(seed=seed)
+    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+
+    return calib_dataset
+
+
+@register_dataset("madao33/new-title-chinese")
+def get_dataset(tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42, bs=4):
+    """Returns a dataloader for the specified dataset and split.
+
+    Args:
+    tokenizer: The tokenizer to be used for tokenization.
+    seqlen: The maximum sequence length.
+    data_name: The name of the dataset.
+    split: The data split to be used (e.g., "train", "test").
+    seed: The random seed for shuffling the dataset.
+    bs: The batch size for the dataloader.
+
+    Returns:
+    A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
+    """
+
+    def get_tokenizer_function(tokenizer, seqlen):
         """Returns a default tokenizer function.
 
         Args:
         tokenizer: The tokenizer to be used for tokenization.
         seqlen: The maximum sequence length.
 
-        Returns: A default tokenizer function that applies the provided tokenizer with truncation and
-        a maximum length of seqlen to the "text" field of examples.
+        Returns: A default tokenizer function that applies the provided tokenizer with truncation and a maximum length of
+        seqlen to the "text" field of examples.
         """
 
         def default_tokenizer_function(examples):
-            example = tokenizer(examples, truncation=True, max_length=seqlen, return_tensors="pt")
-            # example = tokenizer(examples, return_tensors="pt")
+            example = tokenizer(examples["content"], truncation=True, max_length=seqlen)
             return example
 
         return default_tokenizer_function
 
-    tokenizer_function = get_mbpp_tokenizer_function(tokenizer, seqlen)
+    split = 'train'
+    from datasets import load_dataset
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
 
-    @torch.no_grad()
-    def collate_batch(batch):
-        input_ids_new = []
-        attention_mask_new = []
-        for text in batch:
-            token_text = tokenizer_function(text)
-            input_ids, attention_mask = token_text["input_ids"], token_text["attention_mask"]
-            if input_ids.shape[1] < seqlen:
-                continue
-            input_ids = input_ids[:seqlen]
-            input_ids_list = input_ids.tolist()
-            if input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
-                continue
-            attention_mask = attention_mask[:seqlen]
-            attention_mask_new.append(attention_mask)
-            input_ids_new.append(input_ids)
-        if len(input_ids_new) == 0:
-            return None
-        input_ids_new = torch.vstack(input_ids_new)
-        attention_mask_new = torch.vstack(attention_mask_new)
-        res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
-        return res
+    calib_dataset = load_dataset(dataset_name, split=split)
+    calib_dataset = calib_dataset.shuffle(seed=seed)
+    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+
+    return calib_dataset
+
+
+@register_dataset("mbpp")
+def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42, bs=4):
+    """Returns a dataloader for the specified dataset and split.
+
+    Args:
+    tokenizer: The tokenizer to be used for tokenization.
+    seqlen: The maximum sequence length.
+    data_name: The name of the dataset.
+    split: The data split to be used (e.g., "train", "test").
+    seed: The random seed for shuffling the dataset.
+    bs: The batch size for the dataloader.
+
+    Returns:
+    A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
+    """
+    from datasets import load_dataset
+
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
 
     samples = []
     splits = split
+    if splits is None:
+        splits = ["train", "validation", "test"]
+    if isinstance(splits, str):
+        splits = [split]
+
     for split in splits:
         dataset = load_dataset(dataset_name, split=split)
         for data in dataset:
-            samples.append(data["text"] + data["code"])
+            samples.append({'text': data["text"] + data["code"]})
     random.Random(seed).shuffle(samples)
+    import datasets
+    calib_dataset = datasets.Dataset.from_list(samples)
+    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
-    calib_dataloader = DataLoader(samples, batch_size=bs, shuffle=False, collate_fn=collate_batch)
-    return calib_dataloader
+    return calib_dataset
 
 
 @register_dataset("local")
-def get_custom_dataloader(tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, bs=4):
+def get_custom_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, bs=4):
     """Returns a dataloader for a custom dataset and split.
     We allow the input of a jsonl file containing a processed text sample each line.
 
@@ -182,48 +219,7 @@ def get_custom_dataloader(tokenizer, seqlen, dataset_name="./tmp.json", split=No
     A dataloader for a custom dataset and split, using the provided tokenizer and sequence length.
     """
     from torch.utils.data import DataLoader
-
-    def get_custom_tokenizer_function(tokenizer, seqlen):
-        """Returns a default tokenizer function.
-
-        Args:
-        tokenizer: The tokenizer to be used for tokenization.
-        seqlen: The maximum sequence length.
-
-        Returns: A default tokenizer function that applies the provided tokenizer with truncation and
-        a maximum length of seqlen to the "text" field of examples.
-        """
-
-        def default_tokenizer_function(examples):
-            example = tokenizer(examples, truncation=True, max_length=seqlen, return_tensors="pt")
-            return example
-
-        return default_tokenizer_function
-
-    tokenizer_function = get_custom_tokenizer_function(tokenizer, seqlen)
-
-    @torch.no_grad()
-    def collate_batch(batch):
-        input_ids_new = []
-        attention_mask_new = []
-        for text in batch:
-            token_text = tokenizer_function(text)
-            input_ids, attention_mask = token_text["input_ids"], token_text["attention_mask"]
-            if input_ids.shape[1] < seqlen:
-                continue
-            input_ids = input_ids[:seqlen]
-            input_ids_list = input_ids.tolist()
-            if input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
-                continue
-            attention_mask = attention_mask[:seqlen]
-            attention_mask_new.append(attention_mask)
-            input_ids_new.append(input_ids)
-        if len(input_ids_new) == 0:
-            return None
-        input_ids_new = torch.vstack(input_ids_new)
-        attention_mask_new = torch.vstack(attention_mask_new)
-        res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
-        return res
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
 
     def load_local_data(data_path):
         if data_path.endswith(".json"):
@@ -253,8 +249,86 @@ def get_custom_dataloader(tokenizer, seqlen, dataset_name="./tmp.json", split=No
         assert isinstance(text, str), "data must be string"
         text = text.rstrip()
         text = text.rstrip("\n")
-        samples.append(text)
+        samples.append({'text': text})
     random.Random(seed).shuffle(samples)
+    import datasets
+    calib_dataset = datasets.Dataset.from_list(samples)
+    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+    return calib_dataset
 
-    calib_dataloader = DataLoader(samples, batch_size=bs, shuffle=False, collate_fn=collate_batch)
+
+def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42, bs=4, n_samples=512):
+    dataset_names = dataset_name.split(',')
+    if len(dataset_names) == 1 and dataset_names[0] == "NeelNanda/pile-10k":  ##to guarantee the reproducibility.
+        get_dataloader = CALIB_DATASETS.get("legacy-NeelNanda/pile-10k")
+        dataloader = get_dataloader(
+            tokenizer,
+            seqlen,
+            seed=seed,
+            bs=bs,
+            split=split,
+            dataset_name=dataset_name,
+        )
+        return dataloader
+
+    datasets = []
+    for name in dataset_names:
+        if is_local_path(name):
+            get_dataset = CALIB_DATASETS.get("local")
+        else:
+            get_dataset = CALIB_DATASETS.get(name)
+        dataset = get_dataset(
+            tokenizer,
+            seqlen,
+            seed=seed,
+            bs=bs,
+            split=split,
+            dataset_name=name,
+        )
+        dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+        dataset = dataset.filter(lambda example: example["input_ids"].shape[-1] >= seqlen)
+
+        datasets.append(dataset)
+    indices = range(len(datasets))
+    res = sorted(zip(indices, datasets), key=lambda x: len(x[1]))
+    indices = [item[0] for item in res]
+    datasets = [item[1] for item in res]
+    dataset_names = [dataset_names[index] for index in indices]
+    cnt = 0
+    dataset_cnt_info = {}
+    for i in range(len(datasets)):
+        target_cnt = (n_samples - cnt) // (len(datasets) - i)
+        target_cnt = min(target_cnt, len(datasets[i]))
+        datasets[i] = datasets[i].select(range(target_cnt))
+        dataset_cnt_info[dataset_names[i]] = target_cnt
+        cnt += target_cnt
+    if len(datasets) > 1:
+        from datasets import concatenate_datasets
+        dataset_final = concatenate_datasets(datasets)
+        dataset_final = dataset_final.shuffle(seed=seed)
+        logger.info(dataset_cnt_info)
+    else:
+        dataset_final = datasets[0]
+
+    @torch.no_grad()
+    def collate_batch(batch):
+        input_ids_new = []
+        attention_mask_new = []
+        for text in batch:
+            input_ids, attention_mask = text["input_ids"], text["attention_mask"]
+            input_ids = input_ids[:seqlen]
+            input_ids_list = input_ids.tolist()
+            if input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
+                continue
+            attention_mask = attention_mask[:seqlen]
+            attention_mask_new.append(attention_mask)
+            input_ids_new.append(input_ids)
+        if len(input_ids_new) == 0:
+            return None
+        input_ids_new = torch.vstack(input_ids_new)
+        attention_mask_new = torch.vstack(attention_mask_new)
+        res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
+        return res
+
+    calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader

@@ -46,7 +46,6 @@ if __name__ == '__main__':
                         help=" iters")
     
     parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
-                        choices=["NeelNanda/pile-10k", "mbpp", "custom"],
                         help="The dataset for quantization training. It can be a custom one.")
 
     parser.add_argument("--use_quant_input", action='store_true',
