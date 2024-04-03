@@ -588,4 +588,4 @@ class CpuInfo(object):
 
 
 def is_local_path(path):
-    return os.path.isabs(path) and os.path.exists(path)
+    return os.path.exists(path)

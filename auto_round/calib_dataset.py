@@ -1,7 +1,8 @@
 import json
 import random
 import torch
-from utils import logger
+from .utils import logger
+
 CALIB_DATASETS = {}
 
 
@@ -91,7 +92,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="
 
 @register_dataset("mbpp")
 def get_mbpp_dataloader(
-    tokenizer, seqlen, dataset_name="mbpp", split=["train", "validation", "test"], seed=42, bs=4
+        tokenizer, seqlen, dataset_name="mbpp", split=["train", "validation", "test"], seed=42, bs=4
 ):
     """Returns a dataloader for the specified dataset and split.
 
@@ -166,7 +167,7 @@ def get_mbpp_dataloader(
 
 @register_dataset("local")
 def get_custom_dataloader(
-    tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, bs=4
+        tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, bs=4
 ):
     """Returns a dataloader for a custom dataset and split.
     We allow the input of a jsonl file containing a processed text sample each line.
@@ -227,11 +228,13 @@ def get_custom_dataloader(
         return res
 
     def load_local_data(data_path):
-        data = []
-        if data_path.endswith("json"):
+        if data_path.endswith(".json"):
             with open(data_path, "r") as f:
-                for line in f:
-                    data.append(json.loads(line))
+                data = json.load(f)
+            return data
+        elif data_path.endswith(".txt"):
+            with open(data_path) as f:
+                data = [line for line in f]
             return data
         else:
             logger.error(f"invalid local file type,for now only support json ")
@@ -239,7 +242,20 @@ def get_custom_dataloader(
     samples = []
     dataset = load_local_data(dataset_name)
     for data in dataset:
-        samples.append(data["text"])
+        text = data
+        if isinstance(text, str):
+            pass
+        elif isinstance(data, dict) and len(data.keys()) == 1:
+            for item in data.items():
+                text = item[1]
+        elif isinstance(data, dict) and "text" in data.keys():
+            text = data["text"]
+        elif isinstance(data, dict) and "input_ids" in data.keys():
+            text = data['input_ids']
+        assert isinstance(text, str), "data must be string"
+        text = text.rstrip()
+        text = text.rstrip('\n')
+        samples.append(text)
     random.Random(seed).shuffle(samples)
 
     calib_dataloader = DataLoader(samples, batch_size=bs, shuffle=False, collate_fn=collate_batch)
