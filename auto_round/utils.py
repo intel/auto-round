@@ -22,6 +22,7 @@ import cpuinfo
 import psutil
 import torch
 from torch.amp import autocast
+import os
 
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
@@ -584,3 +585,7 @@ class CpuInfo(object):
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
         return 0
+
+
+def is_local_path(path):
+    return os.path.isabs(path) and os.path.exists(path)

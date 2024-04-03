@@ -37,6 +37,7 @@ from .utils import (
     quant_weight,
     sampling_inputs,
     set_module,
+    is_local_path
 )
 
 if is_hpu_available:
@@ -636,8 +637,11 @@ class AutoRound(object):
         """
         if self.dataloader is None:
             from .calib_dataset import CALIB_DATASETS
+            if is_local_path(self.dataset_name):
+                get_dataloader = CALIB_DATASETS.get("local")
+            else:
+                get_dataloader = CALIB_DATASETS.get(self.dataset_name, CALIB_DATASETS["NeelNanda/pile-10k"])
 
-            get_dataloader = CALIB_DATASETS.get(self.dataset_name, CALIB_DATASETS["NeelNanda/pile-10k"])
             self.dataloader = get_dataloader(
                 self.tokenizer,
                 self.seqlen,
@@ -654,6 +658,7 @@ class AutoRound(object):
                 continue
             if isinstance(data, torch.Tensor):
                 input_ids = data.to(self.model.device)
+                data_new = input_ids
 
             elif isinstance(data, str):
                 if self.tokenizer is None:
@@ -671,8 +676,8 @@ class AutoRound(object):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            if total_cnt + input_ids.shape[0] > n_samples:
-                input_ids = input_ids[: n_samples - total_cnt, ...]
+            # if total_cnt + input_ids.shape[0] > n_samples:
+            #     input_ids = input_ids[: n_samples - total_cnt, ...]
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)

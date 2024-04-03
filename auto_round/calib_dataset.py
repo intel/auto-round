@@ -1,8 +1,7 @@
 import json
 import random
-
 import torch
-
+from utils import logger
 CALIB_DATASETS = {}
 
 
@@ -45,7 +44,7 @@ def get_tokenizer_function(tokenizer, seqlen):
 
 
 @register_dataset("NeelNanda/pile-10k")
-def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", data_path=None, split="train", seed=42, bs=4):
+def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="train", seed=42, bs=4):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -92,7 +91,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", data_pa
 
 @register_dataset("mbpp")
 def get_mbpp_dataloader(
-    tokenizer, seqlen, dataset_name="mbpp", data_path=None, split=["train", "validation", "test"], seed=42, bs=4
+    tokenizer, seqlen, dataset_name="mbpp", split=["train", "validation", "test"], seed=42, bs=4
 ):
     """Returns a dataloader for the specified dataset and split.
 
@@ -165,9 +164,9 @@ def get_mbpp_dataloader(
     return calib_dataloader
 
 
-@register_dataset("custom")
+@register_dataset("local")
 def get_custom_dataloader(
-    tokenizer, seqlen, dataset_name="custom", data_path=None, split=["train", "validation", "test"], seed=42, bs=4
+    tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, bs=4
 ):
     """Returns a dataloader for a custom dataset and split.
     We allow the input of a jsonl file containing a processed text sample each line.
@@ -198,7 +197,6 @@ def get_custom_dataloader(
 
         def default_tokenizer_function(examples):
             example = tokenizer(examples, truncation=True, max_length=seqlen, return_tensors="pt")
-            # example = tokenizer(examples, return_tensors="pt")
             return example
 
         return default_tokenizer_function
@@ -228,15 +226,18 @@ def get_custom_dataloader(
         res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
         return res
 
-    def load_custom_data(data_path):
+    def load_local_data(data_path):
         data = []
-        with open(data_path, "r") as f:
-            for line in f:
-                data.append(json.loads(line))
-        return data
+        if data_path.endswith("json"):
+            with open(data_path, "r") as f:
+                for line in f:
+                    data.append(json.loads(line))
+            return data
+        else:
+            logger.error(f"invalid local file type,for now only support json ")
 
     samples = []
-    dataset = load_custom_data(data_path)
+    dataset = load_local_data(dataset_name)
     for data in dataset:
         samples.append(data["text"])
     random.Random(seed).shuffle(samples)
