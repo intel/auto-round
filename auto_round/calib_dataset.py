@@ -49,7 +49,7 @@ def get_tokenizer_function(tokenizer, seqlen):
 
 ##we keep this for reproduce issue
 @register_dataset("legacy-NeelNanda/pile-10k")
-def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="train", seed=42, bs=4):
+def get_pile_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="train", seed=42, bs=4):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -95,7 +95,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="
 
 
 @register_dataset("NeelNanda/pile-10k")
-def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42, bs=4):
+def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42, bs=4):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -122,7 +122,7 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None
 
 
 @register_dataset("madao33/new-title-chinese")
-def get_dataset(tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42, bs=4):
+def get_new_chinese_title_dataset(tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42, bs=4):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -144,8 +144,8 @@ def get_dataset(tokenizer, seqlen, dataset_name="madao33/new-title-chinese", spl
         tokenizer: The tokenizer to be used for tokenization.
         seqlen: The maximum sequence length.
 
-        Returns: A default tokenizer function that applies the provided tokenizer with truncation and a maximum length of
-        seqlen to the "text" field of examples.
+        Returns: A default tokenizer function that applies the provided tokenizer with truncation and a maximum length
+        of seqlen to the "text" field of examples.
         """
 
         def default_tokenizer_function(examples):
@@ -206,7 +206,7 @@ def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42
 
 
 @register_dataset("local")
-def get_custom_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, bs=4):
+def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, bs=4):
     """Returns a dataloader for a custom dataset and split.
     We allow the input of a jsonl file containing a processed text sample each line.
 
