@@ -4,11 +4,12 @@ import sys
 import unittest
 
 sys.path.insert(0, "..")
+import json
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-import json
 
 
 class LLMDataLoader:
@@ -23,19 +24,17 @@ class LLMDataLoader:
 class TestLocalCalibDataset(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        json_data = [{"text": "awefdsfsddfd"},
-             {"text": "fdfdfsdfdfdfd"},
-             {"text": "dfdsfsdfdfdfdf"}]
+        json_data = [{"text": "awefdsfsddfd"}, {"text": "fdfdfsdfdfdfd"}, {"text": "dfdsfsdfdfdfdf"}]
         os.makedirs("./saved", exist_ok=True)
         self.json_file = "./saved/tmp.json"
-        with open(self.json_file, 'w') as json_file:
+        with open(self.json_file, "w") as json_file:
             json.dump(json_data, json_file, indent=4)
 
         self.text_file = "./saved/tmp.txt"
-        txt_data =["awefdsfsddfd", "fdfdfsdfdfdfd", "dfdsfsdfdfdfdf"]
-        with open(self.text_file, 'w') as text_file:
+        txt_data = ["awefdsfsddfd", "fdfdfsdfdfdfd", "dfdsfsdfdfdfdf"]
+        with open(self.text_file, "w") as text_file:
             for data in txt_data:
-                text_file.write(data + '\n')
+                text_file.write(data + "\n")
 
         model_name = "facebook/opt-125m"
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
@@ -51,7 +50,7 @@ class TestLocalCalibDataset(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=5,
-            dataset=self.json_file
+            dataset=self.json_file,
         )
         autoround.quantize()
 
@@ -65,7 +64,7 @@ class TestLocalCalibDataset(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=5,
-            dataset=self.text_file
+            dataset=self.text_file,
         )
         autoround.quantize()
 

@@ -14,6 +14,7 @@
 
 import copy
 import logging
+import os
 import subprocess
 from collections import UserDict
 
@@ -22,7 +23,6 @@ import cpuinfo
 import psutil
 import torch
 from torch.amp import autocast
-import os
 
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)

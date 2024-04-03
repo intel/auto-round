@@ -1,6 +1,8 @@
 import json
 import random
+
 import torch
+
 from .utils import logger
 
 CALIB_DATASETS = {}
@@ -91,9 +93,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="
 
 
 @register_dataset("mbpp")
-def get_mbpp_dataloader(
-        tokenizer, seqlen, dataset_name="mbpp", split=["train", "validation", "test"], seed=42, bs=4
-):
+def get_mbpp_dataloader(tokenizer, seqlen, dataset_name="mbpp", split=["train", "validation", "test"], seed=42, bs=4):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -166,9 +166,7 @@ def get_mbpp_dataloader(
 
 
 @register_dataset("local")
-def get_custom_dataloader(
-        tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, bs=4
-):
+def get_custom_dataloader(tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, bs=4):
     """Returns a dataloader for a custom dataset and split.
     We allow the input of a jsonl file containing a processed text sample each line.
 
@@ -237,7 +235,7 @@ def get_custom_dataloader(
                 data = [line for line in f]
             return data
         else:
-            logger.error(f"invalid local file type,for now only support json ")
+            logger.error("invalid local file type,for now only support json ")
 
     samples = []
     dataset = load_local_data(dataset_name)
@@ -251,10 +249,10 @@ def get_custom_dataloader(
         elif isinstance(data, dict) and "text" in data.keys():
             text = data["text"]
         elif isinstance(data, dict) and "input_ids" in data.keys():
-            text = data['input_ids']
+            text = data["input_ids"]
         assert isinstance(text, str), "data must be string"
         text = text.rstrip()
-        text = text.rstrip('\n')
+        text = text.rstrip("\n")
         samples.append(text)
     random.Random(seed).shuffle(samples)
 

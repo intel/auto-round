@@ -32,12 +32,12 @@ from .utils import (
     get_scale_shape,
     htcore,
     is_hpu_available,
+    is_local_path,
     logger,
     move_input_to_device,
     quant_weight,
     sampling_inputs,
     set_module,
-    is_local_path
 )
 
 if is_hpu_available:
@@ -637,6 +637,7 @@ class AutoRound(object):
         """
         if self.dataloader is None:
             from .calib_dataset import CALIB_DATASETS
+
             if is_local_path(self.dataset_name):
                 get_dataloader = CALIB_DATASETS.get("local")
             else:
