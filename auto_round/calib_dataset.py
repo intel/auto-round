@@ -76,7 +76,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
 
 @register_dataset("madao33/new-title-chinese")
 def get_new_chinese_title_dataset(
-        tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42, bs=4
+    tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42, bs=4
 ):
     """Returns a dataloader for the specified dataset and split.
 
@@ -218,17 +218,17 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
 def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42, bs=4, n_samples=512):
     """Generate a DataLoader for calibration using specified parameters.
 
-        Args:
-            tokenizer (Tokenizer): The tokenizer to use for tokenization.
-            seqlen (int): The exact sequence length. samples < seqlen will be dropped, samples longer than seqlen will be truncated
-            dataset_name (str, optional): The name of the dataset or datasets separated by commas. Defaults to "NeelNanda/pile-10k".
-            split (str, optional): The data split to use. Defaults to None.
-            seed (int, optional): The random seed for reproducibility. Defaults to 42.
-            bs (int, optional): The batch size. Defaults to 4.
-            n_samples (int, optional): The total number of samples to include. Defaults to 512.
+    Args:
+        tokenizer (Tokenizer): The tokenizer to use for tokenization.
+        seqlen (int): The exact sequence length. samples < seqlen will be dropped, samples longer than seqlen will be truncated
+        dataset_name (str, optional): The name of the dataset or datasets separated by commas. Defaults to "NeelNanda/pile-10k".
+        split (str, optional): The data split to use. Defaults to None.
+        seed (int, optional): The random seed for reproducibility. Defaults to 42.
+        bs (int, optional): The batch size. Defaults to 4.
+        n_samples (int, optional): The total number of samples to include. Defaults to 512.
 
-        Returns:
-            DataLoader: The DataLoader for the calibrated dataset.
+    Returns:
+        DataLoader: The DataLoader for the calibrated dataset.
     """
 
     dataset_names = dataset_name.split(",")
