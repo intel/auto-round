@@ -220,8 +220,10 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
 
     Args:
         tokenizer (Tokenizer): The tokenizer to use for tokenization.
-        seqlen (int): The exact sequence length. samples < seqlen will be dropped, samples longer than seqlen will be truncated
-        dataset_name (str, optional): The name of the dataset or datasets separated by commas. Defaults to "NeelNanda/pile-10k".
+        seqlen (int): The exact sequence length. samples < seqlen will be dropped,
+                      samples longer than seqlen will be truncated
+        dataset_name (str, optional): The name of the dataset or datasets separated by commas.
+                                     Defaults to "NeelNanda/pile-10k".
         split (str, optional): The data split to use. Defaults to None.
         seed (int, optional): The random seed for reproducibility. Defaults to 42.
         bs (int, optional): The batch size. Defaults to 4.
