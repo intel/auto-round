@@ -76,7 +76,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
 
 @register_dataset("madao33/new-title-chinese")
 def get_new_chinese_title_dataset(
-        tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42, bs=4
+    tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42, bs=4
 ):
     """Returns a dataloader for the specified dataset and split.
 
@@ -317,6 +317,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
+
 
 # ##we keep this for reproduce issue, do not delete, keep it for a while
 # @register_dataset("legacy-NeelNanda/pile-10k")
