@@ -2974,10 +2974,9 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>14.37</td>    <! c4_new ppl  -->
     <td>11.35</td> <! lm-eval wikitext ppl  -->
   </tr>
-
 </br>
 
-### W2G32
+## W2G32
 <table border="1">
   <tr>
     <th>Model</th>
@@ -3060,7 +3059,6 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>10.71 </td>
     <td>-</td> <! lm-eval wikitext ppl  -->
   </tr>
-
 
   <tr>
     <td rowspan="3">Meta/LLaMA-2-13B </td>
