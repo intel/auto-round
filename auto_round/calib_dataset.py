@@ -234,6 +234,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
     """
 
     dataset_names = dataset_name.split(",")
+
     # if len(dataset_names) == 1 and dataset_names[0] == "NeelNanda/pile-10k":  ##to guarantee the reproducibility.
     #     get_dataloader = CALIB_DATASETS.get("legacy-NeelNanda/pile-10k")
     #     dataloader = get_dataloader(
@@ -245,6 +246,14 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
     #         dataset_name=dataset_name,
     #     )
     #     return dataloader
+    def filter_func(example):
+        if example["input_ids"].shape[-1] < seqlen:
+            return False
+        input_ids = example["input_ids"][:seqlen]
+        input_ids_list = input_ids.tolist()
+        if input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
+            return False
+        return True
 
     datasets = []
     for name in dataset_names:
@@ -261,7 +270,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
             dataset_name=name,
         )
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
-        dataset = dataset.filter(lambda example: example["input_ids"].shape[-1] >= seqlen)
+        dataset = dataset.filter(filter_func)
 
         datasets.append(dataset)
     indices = range(len(datasets))
