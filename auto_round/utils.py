@@ -14,6 +14,7 @@
 
 import copy
 import logging
+import os
 import subprocess
 from collections import UserDict
 
@@ -584,3 +585,7 @@ class CpuInfo(object):
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
         return 0
+
+
+def is_local_path(path):
+    return os.path.exists(path)

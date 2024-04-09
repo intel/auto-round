@@ -44,6 +44,9 @@ if __name__ == '__main__':
 
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
+    
+    parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
+                        help="The dataset for quantization training. It can be a custom one.")
 
     parser.add_argument("--use_quant_input", action='store_true',
                         help="whether to use the output of quantized block to tune the next block")
@@ -254,7 +257,7 @@ if __name__ == '__main__':
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
-                      seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
+                      dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
                       amp=not args.disable_amp, n_samples=args.n_samples,
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,

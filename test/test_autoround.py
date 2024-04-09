@@ -3,7 +3,7 @@ import shutil
 import sys
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, "..")
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -42,6 +42,7 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
+            seqlen=2,
             dataloader=self.llm_dataloader,
         )
         autoround.quantize()
@@ -58,6 +59,7 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
+            seqlen=10,
             dataloader=self.llm_dataloader,
         )
         autoround.quantize()
@@ -71,6 +73,7 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
+            seqlen=10,
             dataloader=self.llm_dataloader,
         )
         autoround.quantize()
@@ -84,6 +87,7 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
+            seqlen=10,
             dataloader=self.llm_dataloader,
         )
         autoround.quantize()
@@ -97,6 +101,7 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
+            seqlen=10,
             dataloader=self.llm_dataloader,
         )
         autoround.quantize()
@@ -110,6 +115,7 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
+            seqlen=10,
             use_quant_input=False,
             dataloader=self.llm_dataloader,
         )
@@ -124,6 +130,7 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
+            seqlen=10,
             enable_minmax_tuning=False,
             dataloader=self.llm_dataloader,
         )
@@ -138,6 +145,7 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
+            seqlen=10,
             enable_minmax_tuning=False,
             use_quant_input=False,
             dataloader=self.llm_dataloader,

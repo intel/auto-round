@@ -18,6 +18,7 @@ import time
 
 import torch
 
+from .calib_dataset import get_dataloader
 from .special_model_handler import check_hidden_state_dim, check_share_attention_mask
 from .utils import (
     CpuInfo,
@@ -32,6 +33,7 @@ from .utils import (
     get_scale_shape,
     htcore,
     is_hpu_available,
+    is_local_path,
     logger,
     move_input_to_device,
     quant_weight,
@@ -634,17 +636,16 @@ class AutoRound(object):
         Args:
             n_samples (int): The number of samples to use for calibration.
         """
-        if self.dataloader is None:
-            from .calib_dataset import CALIB_DATASETS
 
-            get_dataloader = CALIB_DATASETS.get(self.dataset_name, CALIB_DATASETS["NeelNanda/pile-10k"])
+        if self.dataloader is None:
             self.dataloader = get_dataloader(
                 self.tokenizer,
                 self.seqlen,
-                seed=self.seed,
-                bs=self.train_bs,
-                split=self.dataset_split,
-                dataset_name=self.dataset_name,
+                self.dataset_name,
+                self.dataset_split,
+                self.seed,
+                self.train_bs,
+                self.n_samples,
             )
 
         self.start_time = time.time()
@@ -654,6 +655,7 @@ class AutoRound(object):
                 continue
             if isinstance(data, torch.Tensor):
                 input_ids = data.to(self.model.device)
+                data_new = input_ids
 
             elif isinstance(data, str):
                 if self.tokenizer is None:
@@ -671,8 +673,8 @@ class AutoRound(object):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            if total_cnt + input_ids.shape[0] > n_samples:
-                input_ids = input_ids[: n_samples - total_cnt, ...]
+            # if total_cnt + input_ids.shape[0] > n_samples:
+            #     input_ids = input_ids[: n_samples - total_cnt, ...]
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
