@@ -2766,9 +2766,8 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     </tr>
 </table>
 
-</br>
 
-<h3>Other data W4G128</h3>
+## Other data W4G128
 <table border="1">
   <tr>
     <th>Model</th>
@@ -2976,7 +2975,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
   </tr>
 </br>
 
-<h3>W2G32</h3>
+### Other data W2G32
 <table border="1">
   <tr>
     <th>Model</th>
