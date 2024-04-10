@@ -283,7 +283,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
         else:
             target_cnt = len(datasets[i])
             short_ds_len = short_ds_len[1:]
-        datasets[i] = datasets[i].select(range(target_cnt))  
+        datasets[i] = datasets[i].select(range(target_cnt))
         dataset_cnt_info[dataset_names[i]] = target_cnt
         cnt += target_cnt
     if len(datasets) > 1:
