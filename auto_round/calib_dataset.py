@@ -273,16 +273,16 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
         dataset = dataset.filter(filter_func)
 
         datasets.append(dataset)
+    indices = range(len(datasets))
+    res = sorted(zip(indices, datasets), key=lambda x: len(x[1]))
+    indices = [item[0] for item in res]
+    datasets = [item[1] for item in res]
+    dataset_names = [dataset_names[index] for index in indices]
     cnt = 0
     dataset_cnt_info = {}
-    short_ds_len = [len(dataset) for dataset in datasets if len(dataset) < (n_samples // len(datasets))]
     for i in range(len(datasets)):
-        if len(datasets[i]) > (n_samples // len(datasets)):
-            target_cnt = (n_samples - cnt - sum(short_ds_len)) // (len(datasets) - i - len(short_ds_len))
-            target_cnt = min(target_cnt, len(datasets[i]))
-        else:
-            target_cnt = len(datasets[i])
-            short_ds_len = short_ds_len[1:]
+        target_cnt = (n_samples - cnt) // (len(datasets) - i)
+        target_cnt = min(target_cnt, len(datasets[i]))
         datasets[i] = datasets[i].select(range(target_cnt))
         dataset_cnt_info[dataset_names[i]] = target_cnt
         cnt += target_cnt
