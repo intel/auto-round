@@ -2953,7 +2953,6 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>11.37</td>
 
   </tr>
-
   </tr>
     <th>Ours iters=1K,use_quant_input=False </th>
     <td>61.47</td> <! acc avg -->
@@ -2975,7 +2974,9 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
   </tr>
 </br>
 
+</table>  
 
+### Other data W2G32
 <table border="1">
   <tr>
     <th>Model</th>
@@ -3078,7 +3079,6 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>50.93 </td>
     <td>6.73 </td>
     <td>7.90 </td>
-    <td>-</td>
  
   </tr>
   <tr>
@@ -3099,7 +3099,6 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>75.40 </td>
     <td>8.70 </td>
     <td>11.22 </td>
-    <td>-</td>
   </tr>
   <tr>
     <th>Ours iters=1K,minmax_lr=0.002</th>
@@ -3119,9 +3118,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>78.83 </td>
     <td>8.70 </td>
     <td>11.25 </td>
-    <td>-</td>
   </tr>
 </table>
 </table>
 
-### Other data W2G32
