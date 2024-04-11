@@ -363,6 +363,8 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
             for shot in num_fewshot:
                 model_type = "hf"
                 model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code=True'
+                if 'gpu' in model_path:
+                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},autogptq=True,gptq_use_triton=True,trust_remote_code=True'
                 if use_accelerate: # bool(re.search("chatglm", model_path.lower()))
                     model_args += f',parallelize=True'
 
