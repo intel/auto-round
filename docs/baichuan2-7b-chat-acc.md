@@ -6,10 +6,10 @@ We used the following command for evaluation.
 lm_eval --model hf  --model_args pretrained="./",autogptq=True,gptq_use_triton=True,trust_remote_code=True --device cuda:0 --tasks ceval-valid,cmmlu,mmlu,gsm8k --batch_size 16 --num_fewshot 0
 ~~~
 
-| Metric         | BF16   | INT4 sym recipe | INT4 asym recipe |   
-| -------------- | ------ |-----------------|------------------| 
-| Avg.           | 0.6231 | 0.6205          | 0.6186           |  
-| ceval          | 0.6887 | 0.6761          | 0.6820           |
-| cmmlu          | 0.6959 | 0.6870          | 0.6884           |
-| mmlu           | 0.6020 | 0.5974          | 0.5946           |
-| gsm8k          | 0.5057 | 0.5216          | 0.5095           |
+| Metric | BF16   | INT4   |
+|--------|--------|--------|
+| Avg.   | 0.4504 | 0.4470 |
+| mmlu   | 0.5096 | 0.5053 |
+| cmmlu  | 0.5486 | 0.5426 |
+| ceval  | 0.5394 | 0.5223 |
+| gsm8k  | 0.2039 | 0.2176 |
