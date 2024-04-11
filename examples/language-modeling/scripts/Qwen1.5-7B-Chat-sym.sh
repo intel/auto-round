@@ -1,7 +1,6 @@
-## Due to licensing restrictions, we are unable to release the model. 
-# Recipe
+## Due to licensing restrictions, we are unable to release the model.
 python3 main.py \
---model_name Qwen/Qwen1.5-7B-Chat\
+--model_name Qwen/Qwen1.5-7B-Chat \
 --bits 4 \
 --group_size 128 \
 --use_quant_input \
