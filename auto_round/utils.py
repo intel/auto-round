@@ -379,7 +379,7 @@ def collect_round_v(block):
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
             v = m.value.data
-            vs[n] = copy.deepcopy()
+            vs[n] = copy.deepcopy(v)
     return vs
 
 

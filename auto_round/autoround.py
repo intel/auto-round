@@ -961,15 +961,15 @@ class AutoRound(object):
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
-                    best_v = copy.deepcopy(wrapper_linear.value.data.cpu())
-                    best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0).cpu())
-                    best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0).cpu())
+                    best_v = copy.deepcopy(wrapper_linear.value.data)
+                    best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
+                    best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
 
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
-                best_v = copy.deepcopy(wrapper_linear.value.data.cpu())
-                best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0).cpu())
-                best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0).cpu())
+                best_v = copy.deepcopy(wrapper_linear.value.data)
+                best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
+                best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
 
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
