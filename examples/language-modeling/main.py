@@ -263,7 +263,7 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning)  ##TODO args pass
+                      enable_minmax_tuning=not args.disable_minmax_tuning, only_quantize_blocks=False)  ##TODO args pass
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 

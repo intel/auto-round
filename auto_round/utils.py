@@ -379,7 +379,7 @@ def collect_round_v(block):
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
             v = m.value.data
-            vs[n] = copy.deepcopy(v)
+            vs[n] = copy.deepcopy(v.cpu())
     return vs
 
 
@@ -397,8 +397,8 @@ def collect_minmax_scale(block):
     max_scales = {}
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
-            min_scales[n] = copy.deepcopy(torch.clamp(m.min_scale.data, -1, 0))
-            max_scales[n] = copy.deepcopy(torch.clamp(m.max_scale.data, -1, 0))
+            min_scales[n] = copy.deepcopy(torch.clamp(m.min_scale.data, -1, 0).cpu())
+            max_scales[n] = copy.deepcopy(torch.clamp(m.max_scale.data, -1, 0).cpu())
     return min_scales, max_scales
 
 
