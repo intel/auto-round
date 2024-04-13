@@ -206,14 +206,14 @@ if __name__ == '__main__':
         model.seqlen = seqlen
     seqlen = args.seqlen
 
-    if "llama" in model_name:
-        from transformers import LlamaTokenizer
-
-        tokenizer = LlamaTokenizer.from_pretrained(model_name)
-        if tokenizer.pad_token is None:
-            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+    # if "llama" in model_name:
+    #     from transformers import LlamaTokenizer
+    #
+    #     tokenizer = LlamaTokenizer.from_pretrained(model_name)
+    #     if tokenizer.pad_token is None:
+    #         tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    # else:
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
