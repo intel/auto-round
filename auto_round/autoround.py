@@ -402,39 +402,39 @@ class AutoRound(object):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = False,
-            weight_config: dict = {},
-            enable_full_range: bool = False,  ##for symmetric, TODO support later
-            batch_size: int = 8,
-            amp: bool = True,
-            device=None,
-            lr_scheduler=None,
-            dataloader=None,  ## to support later
-            dataset: str = "NeelNanda/pile-10k",
-            dataset_split: str = "train",
-            use_quant_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",  ##only support data_type
-            scale_dtype: str = "fp32",
-            only_quantize_blocks: bool = True,
-            **kwargs,
+        self,
+        model,
+        tokenizer,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = False,
+        weight_config: dict = {},
+        enable_full_range: bool = False,  ##for symmetric, TODO support later
+        batch_size: int = 8,
+        amp: bool = True,
+        device=None,
+        lr_scheduler=None,
+        dataloader=None,  ## to support later
+        dataset: str = "NeelNanda/pile-10k",
+        dataset_split: str = "train",
+        use_quant_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",  ##only support data_type
+        scale_dtype: str = "fp32",
+        only_quantize_blocks: bool = True,
+        **kwargs,
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
@@ -731,7 +731,7 @@ class AutoRound(object):
 
     @torch.no_grad()
     def cache_inter_data(self, block_names, n_samples, layer_names=[], last_cache_name=None):
-        """Save the inputs of block_name for calibration. For layers, we cache both of inputs and output
+        """Save the inputs of block_name for calibration. For layers, we cache both of inputs and output.
 
         This method temporarily replaces the forward method of the model to capture
         the inputs passing through the specified block. It then calibrates the model
@@ -750,11 +750,13 @@ class AutoRound(object):
         self.inputs = {}
         self.to_cached_layers = block_names + layer_names
         tmp_dtype = None
-        if (len(block_names) > 1 or len(
-                layer_names) > 0) and self.low_gpu_mem_usage:  ## have bug if block name is not the first block
+        if (
+            len(block_names) > 1 or len(layer_names) > 0
+        ) and self.low_gpu_mem_usage:  ## have bug if block name is not the first block
             tmp_dtype = self.model.dtype
-            self.model = self.model.to(torch.bfloat16) if self.amp else self.model.to(
-                torch.float32)  ##force to dtype supported on cpu
+            self.model = (
+                self.model.to(torch.bfloat16) if self.amp else self.model.to(torch.float32)
+            )  ##force to dtype supported on cpu
 
         self.last_cache_name = last_cache_name
         if last_cache_name is None and len(block_names) + len(layer_names) == 1:
@@ -979,9 +981,7 @@ class AutoRound(object):
         if not self.not_use_best_mse:
             last_loss = best_loss
             best_iter = last_best_iter
-        dump_info = (
-            f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        )
+        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
         with torch.no_grad():
             # for n, p in wrapper_linear.named_parameters():
@@ -1009,9 +1009,14 @@ class AutoRound(object):
         ##change to block dtype:
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         input_ids = input_ids.to(tmp_dtype)
-        for key in input_others.keys():  ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
+        for (
+            key
+        ) in (
+            input_others.keys()
+        ):  ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
             if isinstance(input_others[key], torch.Tensor) and (
-                    input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16):
+                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+            ):
                 input_others[key] = input_others[key].to(tmp_dtype)
 
         output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device)
@@ -1145,12 +1150,12 @@ class AutoRound(object):
             return None, output
 
     def qdq_weight_round(
-            self,
-            model: torch.nn.Module,
-            inputs,
-            block_names,
-            n_blocks=1,
-            device=torch.device("cpu"),
+        self,
+        model: torch.nn.Module,
+        inputs,
+        block_names,
+        n_blocks=1,
+        device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -1178,7 +1183,7 @@ class AutoRound(object):
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i: i + n_blocks]
+                names = block_names[i : i + n_blocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -1250,7 +1255,7 @@ class AutoRound(object):
         res = all_layer_names - all_layer_names_in_block
         for n, m in self.model.named_modules():
             if isinstance(m, tuple(self.supported_types)):
-                delattr(m, 'tmp_name')
+                delattr(m, "tmp_name")
         return list(res)
 
     def quantize(self):
@@ -1399,40 +1404,40 @@ class AutoOPTRound(AutoRound):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = False,
-            weight_config: dict = {},
-            enable_full_range: bool = False,
-            batch_size: int = 8,
-            amp: bool = True,
-            device="auto",
-            lr_scheduler=None,
-            dataloader=None,
-            dataset: str = "NeelNanda/pile-10k",
-            dataset_split: str = "train",
-            use_quant_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            scale_dtype: str = "fp32",
-            only_quantize_blocks: bool = True,
-            optimizer="AdamW",
-            **kwargs,
+        self,
+        model,
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = False,
+        weight_config: dict = {},
+        enable_full_range: bool = False,
+        batch_size: int = 8,
+        amp: bool = True,
+        device="auto",
+        lr_scheduler=None,
+        dataloader=None,
+        dataset: str = "NeelNanda/pile-10k",
+        dataset_split: str = "train",
+        use_quant_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        scale_dtype: str = "fp32",
+        only_quantize_blocks: bool = True,
+        optimizer="AdamW",
+        **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
             model,
@@ -1484,6 +1489,7 @@ class AutoOPTRound(AutoRound):
         scaler = None
         if self.amp and not check_is_cpu(self.device):
             from torch.cuda.amp import GradScaler
+
             scaler = GradScaler(init_scale=1024, growth_interval=100000)
         return scaler
 
@@ -1555,40 +1561,40 @@ class AutoAdamRound(AutoOPTRound):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = False,
-            weight_config: dict = {},
-            enable_full_range: bool = False,
-            batch_size: int = 8,
-            amp: bool = True,
-            device="auto",
-            lr_scheduler=None,
-            dataloader=None,
-            dataset: str = "NeelNanda/pile-10k",
-            dataset_split: str = "train",
-            use_quant_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            scale_dtype: str = "fp32",
-            only_quantize_blocks: bool = True,
-            optimizer="AdamW",
-            **kwargs,
+        self,
+        model,
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = False,
+        weight_config: dict = {},
+        enable_full_range: bool = False,
+        batch_size: int = 8,
+        amp: bool = True,
+        device="auto",
+        lr_scheduler=None,
+        dataloader=None,
+        dataset: str = "NeelNanda/pile-10k",
+        dataset_split: str = "train",
+        use_quant_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        scale_dtype: str = "fp32",
+        only_quantize_blocks: bool = True,
+        optimizer="AdamW",
+        **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
             model,
