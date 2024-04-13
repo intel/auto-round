@@ -17,6 +17,7 @@ import copy
 import time
 
 import torch
+from torch import autocast
 
 from .calib_dataset import get_dataloader
 from .special_model_handler import check_hidden_state_dim, check_share_attention_mask
@@ -376,39 +377,40 @@ class AutoRound(object):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,  ##for symmetric, TODO support later
-        batch_size: int = 8,
-        amp: bool = True,
-        device=None,
-        lr_scheduler=None,
-        dataloader=None,  ## to support later
-        dataset: str = "NeelNanda/pile-10k",
-        dataset_split: str = "train",
-        use_quant_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",  ##only support data_type
-        scale_dtype: str = "fp32",
-        **kwargs,
+            self,
+            model,
+            tokenizer,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,  ##for symmetric, TODO support later
+            batch_size: int = 8,
+            amp: bool = True,
+            device=None,
+            lr_scheduler=None,
+            dataloader=None,  ## to support later
+            dataset: str = "NeelNanda/pile-10k",
+            dataset_split: str = "train",
+            use_quant_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",  ##only support data_type
+            scale_dtype: str = "fp32",
+            **kwargs,
     ):
+        self.quantized = False
         self.model_orig_dtype = model.dtype
         self.model = model.eval().to("cpu")
         self.amp = amp
@@ -483,6 +485,8 @@ class AutoRound(object):
         self.set_layerwise_config(self.weight_config)
         self.optimizer = self.get_optimizer(None)
         self.check_configs()
+        self.share_attention_mask_flag = None
+        self.hidden_dim_flag = None
         torch.set_printoptions(precision=3, sci_mode=True)
 
     def get_optimizer(self, optimizer):
@@ -673,8 +677,7 @@ class AutoRound(object):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            # if total_cnt + input_ids.shape[0] > n_samples:
-            #     input_ids = input_ids[: n_samples - total_cnt, ...]
+
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
@@ -700,32 +703,40 @@ class AutoRound(object):
             )
 
     @torch.no_grad()
-    def cache_block_input(self, block_name, n_samples):
-        """Save the inputs of the first block for calibration.
+    def cache_inter_data(self, block_names, n_samples, layer_names=[], last_cache_name=None):
+        """Save the inputs of block_name for calibration. For layers, we cache both of inputs and output
 
         This method temporarily replaces the forward method of the model to capture
         the inputs passing through the specified block. It then calibrates the model
         using a specified number of samples. Finally, it restores the original forward
         method and returns the inputs for the specified block.
         Args:
-            block_name (str): The name of the block for which inputs are to be saved.
+            block_names (list): The names of the blocks for which inputs are to be saved.
+            layer_names (list):The names of the layers for which inputs are to be saved.
             n_samples (int): The number of samples to use for calibration.
+            last_cache_name (str, optional): The name of the last layer to be cached,
+                                       we could break the forward in this layer to save time
+
         Returns:
             dict: A dictionary containing the inputs for the specified block.
         """
         self.inputs = {}
-        self.tmp_block_name = block_name
-        self.share_attention_mask_flag = None
-        self.hidden_dim_flag = None
+        self.to_cached_layers = block_names+layer_names
+
+        self.last_cache_name = last_cache_name
+        if last_cache_name is None and len(block_names) + len(layer_names) == 1:
+            self.last_cache_name = block_names[0] if len(block_names) == 1 else layer_names[0]
+
         self._replace_forward()
         self.calib(n_samples)
         self._recover_forward()
-        res = self.inputs[self.tmp_block_name]
-        del self.tmp_block_name
+        res = self.inputs
+        del self.last_cache_name
+        del self.to_cached_layers
         return res
 
     @torch.no_grad()
-    def get_forward_func(self, name):
+    def get_block_forward_func(self, name):
         """Gets the forward function.
 
         Args:
@@ -734,7 +745,7 @@ class AutoRound(object):
             function: The forward function.
         """
 
-        def forward(_, hidden_states, *positional_args, **kwargs):
+        def forward(m, hidden_states, *positional_args, **kwargs):
             """Rewrite forward function, process and collect input data.
 
             Args:
@@ -785,27 +796,32 @@ class AutoRound(object):
                                 self.inputs[name][key] = alibi.to("cpu")
                     elif key not in self.inputs[name].keys():
                         self.inputs[name][key] = move_input_to_device(kwargs[key], device=torch.device("cpu"))
-            raise NotImplementedError
+            if name == self.last_cache_name:
+                raise NotImplementedError
+            else:
+                return m.orig_forward(hidden_states, *positional_args, **kwargs)
 
         return forward
+
+    # @torch.no_grad()
+    # def get_block_forward_func(self, name):
 
     def _recover_forward(self):
         """Recovers the forward function."""
         for n, m in self.model.named_modules():
-            if n == self.tmp_block_name:
+            if n in self.to_cached_layers:
                 m.forward = m.orig_forward
                 delattr(m, "orig_forward")
-                break
 
     def _replace_forward(self):
         """Replaces the forward function."""
         from functools import partial
 
         for n, m in self.model.named_modules():
-            if n == self.tmp_block_name:
+            if n in self.to_cached_layers:
                 m.orig_forward = m.forward
-                m.forward = partial(self.get_forward_func(n), m)
-                break
+                m.forward = partial(self.get_block_forward_func(n), m)
+
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
@@ -820,14 +836,12 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.use_quant_input is True, else (None, output)
         """
-        from torch.amp import autocast
-
-        if not self.low_gpu_mem_usage and input_ids.device != device:
-            input_ids = move_input_to_device(input_ids, device)
-            input_others = move_input_to_device(input_others, device)
-        cache_device = device
-        if self.low_gpu_mem_usage:
-            cache_device = "cpu"
+        # if not self.low_gpu_mem_usage and input_ids.device != device:
+        #     input_ids = move_input_to_device(input_ids, device)
+        #     input_others = move_input_to_device(input_others, device)
+        # cache_device = device
+        # if self.low_gpu_mem_usage:
+        cache_device = "cpu"  ## force cache device to "cpu"
         output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device)
 
         if q_input is not None:
@@ -953,12 +967,12 @@ class AutoRound(object):
             return None, output
 
     def qdq_weight_round(
-        self,
-        model: torch.nn.Module,
-        inputs,
-        block_names,
-        n_blocks=1,
-        device=torch.device("cpu"),
+            self,
+            model: torch.nn.Module,
+            inputs,
+            block_names,
+            n_blocks=1,
+            device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -986,7 +1000,7 @@ class AutoRound(object):
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i : i + n_blocks]
+                names = block_names[i: i + n_blocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -1055,8 +1069,10 @@ class AutoRound(object):
             self.model = self.model.to(self.amp_dtype)
         if not self.low_gpu_mem_usage:
             self.model = self.model.to(self.device)
-        inputs = self.cache_block_input(block_names[0], self.n_samples)
-        del self.inputs
+        all_inputs = self.cache_inter_data([block_names[0]], self.n_samples)
+        inputs = all_inputs[block_names[0]]
+        self.inputs.pop(block_names[0])
+        # del self.inputs
         if "input_ids" in inputs.keys():
             dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
             total_samples = inputs["input_ids"].shape[dim]
@@ -1164,39 +1180,39 @@ class AutoOPTRound(AutoRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataloader=None,
-        dataset: str = "NeelNanda/pile-10k",
-        dataset_split: str = "train",
-        use_quant_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp32",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataloader=None,
+            dataset: str = "NeelNanda/pile-10k",
+            dataset_split: str = "train",
+            use_quant_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp32",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
             model,
@@ -1318,39 +1334,39 @@ class AutoAdamRound(AutoOPTRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataloader=None,
-        dataset: str = "NeelNanda/pile-10k",
-        dataset_split: str = "train",
-        use_quant_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp32",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataloader=None,
+            dataset: str = "NeelNanda/pile-10k",
+            dataset_split: str = "train",
+            use_quant_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp32",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
             model,
