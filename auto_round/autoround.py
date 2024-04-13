@@ -750,8 +750,8 @@ class AutoRound(object):
         self.inputs = {}
         self.to_cached_layers = block_names + layer_names
         tmp_dtype = None
-        if len(block_names) == 1 and len(
-                layer_names) != 0 and self.low_gpu_mem_usage:  ## may have bug if block name is not the first block
+        if (len(block_names) > 1 or len(
+                layer_names) > 0) and self.low_gpu_mem_usage:  ## have bug if block name is not the first block
             tmp_dtype = self.model.dtype
             self.model = self.model.to(torch.bfloat16) if self.amp else self.model.to(
                 torch.float32)  ##force to dtype supported on cpu
@@ -886,6 +886,8 @@ class AutoRound(object):
             cache_device = "cpu"
             layer = layer.to(device)
             inputs = inputs.to(layer.weight.dtype)
+            if q_inputs is not None:
+                q_inputs = q_inputs.to(layer.weight.dtype)
             output = []
             for i in range(0, self.n_samples, self.train_bs):
                 end_index = min(self.n_samples, i + self.train_bs)
@@ -932,11 +934,12 @@ class AutoRound(object):
 
             total_loss = 0
             for _ in range(self.gradient_accumulate_steps):
-                current_input = inputs[indices, ...].to(device)
+                if q_inputs is not None:
+                    current_input = q_inputs[indices, ...].to(device)
+                else:
+                    current_input = inputs[indices, ...].to(device)
 
-                current_output = output[indices, ...]
-
-                current_output = current_output.to(device)
+                current_output = output[indices, ...].to(device)
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         output_q = wrapper_linear(current_input)
@@ -977,17 +980,16 @@ class AutoRound(object):
             last_loss = best_loss
             best_iter = last_best_iter
         dump_info = (
-            f"quantized {layer_name}"
-            f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+            f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
         logger.info(dump_info)
         with torch.no_grad():
-            for n, p in wrapper_linear.named_parameters():
-                p.grad = None
-            torch.cuda.empty_cache()
-            best_v = move_input_to_device(best_v, self.device)
-            best_min_scale = move_input_to_device(best_min_scale, self.device)
-            best_max_scale = move_input_to_device(best_max_scale, self.device)
+            # for n, p in wrapper_linear.named_parameters():
+            #     p.grad = None
+            # torch.cuda.empty_cache()
+            # best_v = move_input_to_device(best_v, self.device)
+            # best_min_scale = move_input_to_device(best_min_scale, self.device)
+            # best_max_scale = move_input_to_device(best_max_scale, self.device)
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
@@ -1127,12 +1129,12 @@ class AutoRound(object):
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
-            for n, p in block.named_parameters():
-                p.grad = None
-            torch.cuda.empty_cache()
-            best_v = move_input_to_device(best_v, self.device)
-            best_min_scale = move_input_to_device(best_min_scale, self.device)
-            best_max_scale = move_input_to_device(best_max_scale, self.device)
+            # for n, p in block.named_parameters():
+            #     p.grad = None
+            # torch.cuda.empty_cache()
+            # best_v = move_input_to_device(best_v, self.device)
+            # best_min_scale = move_input_to_device(best_min_scale, self.device)
+            # best_max_scale = move_input_to_device(best_max_scale, self.device)
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.use_quant_input:
             q_outputs = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device)
@@ -1273,7 +1275,6 @@ class AutoRound(object):
         all_inputs = self.cache_inter_data([block_names[0]], self.n_samples, layer_names=layer_names)
         inputs = all_inputs[block_names[0]]
         self.inputs.pop(block_names[0])
-
         if "input_ids" in inputs.keys():
             dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
             total_samples = inputs["input_ids"].shape[dim]
@@ -1292,13 +1293,19 @@ class AutoRound(object):
         )
 
         ##TODO currently we take all the layers outside blocks as post block layers which is not optimal
-        layer_inputs = all_inputs
-        del self.inputs
-        q_layer_inputs = None
-        # if self.use_quant_input:
-        #     self.cache_inter_data([],)
-        for layer_name in layer_names:
-            self.quant_layer(layer_name, layer_inputs[layer_name], q_layer_inputs, device=self.device)
+        if len(layer_names) > 0:
+            layer_inputs = all_inputs
+            del self.inputs
+            q_layer_inputs = None
+            if self.use_quant_input:
+                if not self.low_gpu_mem_usage:
+                    self.model = self.model.to(self.device)
+                q_layer_inputs = self.cache_inter_data([], self.n_samples, layer_names=layer_names)
+            torch.cuda.empty_cache()
+            self.model = self.model.to("cpu")
+            for layer_name in layer_names:
+                self.quant_layer(layer_name, layer_inputs[layer_name], q_layer_inputs[layer_name], device=self.device)
+                torch.cuda.empty_cache()
 
         for n, m in self.model.named_modules():
             if n in self.weight_config.keys():
