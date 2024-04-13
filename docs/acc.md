@@ -3016,9 +3016,7 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
 </table>
 
 
-
-
-## Other data
+## Other data W4G128
 <table border="1">
   <tr>
     <th>Model</th>
@@ -3102,7 +3100,6 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
     <td>9.83</td>    <! c4_new ppl  -->
     <td>-</td> <! lm-eval wikitext ppl  -->
   </tr>
-
 
   <tr>
     <td rowspan="3">mistralai/Mixtral-8x7B-v0.1 </td>
@@ -3205,7 +3202,6 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
     <td>11.37</td>
 
   </tr>
-
   </tr>
     <th>Ours iters=1K,use_quant_input=False </th>
     <td>61.47</td> <! acc avg -->
@@ -3225,4 +3221,152 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
     <td>14.37</td>    <! c4_new ppl  -->
     <td>11.35</td> <! lm-eval wikitext ppl  -->
   </tr>
+</br>
+
+</table>  
+
+### Other data W2G32
+<table border="1">
+  <tr>
+    <th>Model</th>
+    <th>Method </th>
+    <th>Acc AVG.</th>
+    <th>MMLU</th>
+    <th>Lamb.</th>
+    <th>Hella.</th>
+    <th>Wino.</th>
+    <th>Piqa</th>
+    <th>Truth.</th>
+    <th>Open.</th>
+    <th>Boolq</th>
+    <th>RTE</th>
+    <th>ARC-e</th>
+    <th>ARC-c.</th>
+    <th>wikitext2 ppl
+    <th>ptb_new ppl</th>
+    <th>c4_new ppl</th>
+    <th>lm_eval wikitext ppl</th>
+   
+  </tr>
+  <tr>
+    <td rowspan="3">mistralai/Mistral-7B </td>
+    <th>FP16</th>
+    <td>63.30 </td>
+    <td>61.35 </td>
+    <td>75.68 </td>
+    <td>61.27 </td>
+    <td>74.03 </td>
+    <td>80.79 </td>
+    <td>28.03 </td>
+    <td>32.80 </td>
+    <td>83.67 </td>
+    <td>67.51 </td>
+    <td>80.81 </td>
+    <td>50.34 </td>
+    <td>5.25 </td>
+    <td>35.00 </td>
+    <td>8.38 </td>
+    <td>-</td>
+  </tr>
+
+  </tr>
+    <th>Ours iters=4K,minmax_lr=0.0005  </th>
+    <td>57.16 </td>
+    <td>50.28 </td>
+    <td>67.03 </td>
+    <td>55.37 </td>
+    <td>68.11 </td>
+    <td>77.53 </td>
+    <td>26.44 </td>
+    <td>26.00 </td>
+    <td>80.58 </td>
+    <td>58.12 </td>
+    <td>75.63 </td>
+    <td>43.69 </td>
+    <td>7.07 </td>
+    <td>51.88 </td>
+    <td>10.67 </td>
+    <td>-</td> <! lm-eval wikitext ppl  -->
+  </tr>
+
+  </tr>
+    <th>Ours iters=1K </th>
+    <td>56.44 </td>
+    <td>47.38 </td>
+    <td>67.26 </td>
+    <td>55.06 </td>
+    <td>67.88 </td>
+    <td>77.75 </td>
+    <td>26.19 </td>
+    <td>26.40 </td>
+    <td>78.07 </td>
+    <td>58.12 </td>
+    <td>74.20 </td>
+    <td>42.49 </td>
+    <td>7.14 </td>
+    <td>56.78 </td>
+    <td>10.71 </td>
+    <td>-</td> <! lm-eval wikitext ppl  -->
+  </tr>
+
+  <tr>
+    <td rowspan="3">Meta/LLaMA-2-13B </td>
+    <th>fp16</th>
+    <td>61.42 </td>
+    <td>52.86 </td>
+    <td>76.77 </td>
+    <td>60.04 </td>
+    <td>72.14 </td>
+    <td>79.05 </td>
+    <td>25.95 </td>
+    <td>35.20 </td>
+    <td>80.55 </td>
+    <td>65.34 </td>
+    <td>79.38 </td>
+    <td>48.38 </td>
+    <td>4.88 </td>
+    <td>50.93 </td>
+    <td>6.73 </td>
+    <td>7.90 </td>
+ 
+  </tr>
+  <tr>
+    <th>Ours iters=2K,minmax_lr=0.001</th>
+    <td>57.53 </td>
+    <td>44.42 </td>
+    <td>71.63 </td>
+    <td>55.23 </td>
+    <td>68.03 </td>
+    <td>76.66 </td>
+    <td>24.48 </td>
+    <td>32.00 </td>
+    <td>76.91 </td>
+    <td>65.70 </td>
+    <td>76.09 </td>
+    <td>41.64 </td>
+    <td>6.27 </td>
+    <td>75.40 </td>
+    <td>8.70 </td>
+    <td>11.22 </td>
+  </tr>
+  <tr>
+    <th>Ours iters=1K,minmax_lr=0.002</th>
+    <td>56.95 </td>
+    <td>42.39 </td>
+    <td>70.87 </td>
+    <td>55.15 </td>
+    <td>68.03 </td>
+    <td>77.37 </td>
+    <td>24.11 </td>
+    <td>30.80 </td>
+    <td>77.58 </td>
+    <td>64.62 </td>
+    <td>75.63 </td>
+    <td>39.93 </td>
+    <td>6.26 </td>
+    <td>78.83 </td>
+    <td>8.70 </td>
+    <td>11.25 </td>
+  </tr>
+</table>
 </table>
