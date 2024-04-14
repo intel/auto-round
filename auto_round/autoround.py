@@ -1024,7 +1024,6 @@ class AutoRound(object):
         cache_device = "cpu"  ## force cache device to "cpu"
         ##change to block dtype:
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
-        input_ids = input_ids.to(tmp_dtype)
         for (
             key
         ) in (
