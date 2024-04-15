@@ -1293,7 +1293,7 @@ class AutoRound(object):
         if not self.only_quantize_blocks:
             layer_names = self.gets_layer_names_outside_blocks()
         else:
-            layer_names = None
+            layer_names = []
 
         all_inputs = self.cache_inter_data([block_names[0]], self.n_samples, layer_names=layer_names)
         inputs = all_inputs[block_names[0]]
