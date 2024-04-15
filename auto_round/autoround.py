@@ -422,7 +422,7 @@ class AutoRound(object):
         enable_minmax_tuning: bool = True,
         lr: float = None,
         minmax_lr: float = None,
-        low_gpu_mem_usage: bool = False,
+        low_gpu_mem_usage: bool = True,
         iters: int = 200,
         seqlen: int = 2048,
         n_samples: int = 512,
@@ -437,7 +437,7 @@ class AutoRound(object):
         only_quantize_blocks: bool = False,
         **kwargs,
     ):
-        low_gpu_mem_usage = False
+        low_gpu_mem_usage = False ##TODO delete this later
         self.quantized = False
         self.model_orig_dtype = model.dtype
         self.model = model.eval().to("cpu")
@@ -1443,7 +1443,7 @@ class AutoOPTRound(AutoRound):
         enable_minmax_tuning: bool = True,
         lr: float = None,
         minmax_lr: float = None,
-        low_gpu_mem_usage: bool = False,
+        low_gpu_mem_usage: bool = True,
         iters: int = 200,
         seqlen: int = 2048,
         n_samples: int = 512,
@@ -1600,7 +1600,7 @@ class AutoAdamRound(AutoOPTRound):
         enable_minmax_tuning: bool = True,
         lr: float = None,
         minmax_lr: float = None,
-        low_gpu_mem_usage: bool = False,
+        low_gpu_mem_usage: bool = True,
         iters: int = 200,
         seqlen: int = 2048,
         n_samples: int = 512,
