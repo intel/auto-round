@@ -434,7 +434,7 @@ class AutoRound(object):
         dynamic_max_gap: int = -1,
         data_type: str = "int",  ##only support data_type
         scale_dtype: str = "fp32",
-        only_quantize_blocks: bool = True,
+        only_quantize_blocks: bool = False,
         **kwargs,
     ):
         self.quantized = False
@@ -1454,7 +1454,7 @@ class AutoOPTRound(AutoRound):
         dynamic_max_gap: int = -1,
         data_type: str = "int",
         scale_dtype: str = "fp32",
-        only_quantize_blocks: bool = True,
+        only_quantize_blocks: bool = False,
         optimizer="AdamW",
         **kwargs,
     ):
@@ -1611,7 +1611,7 @@ class AutoAdamRound(AutoOPTRound):
         dynamic_max_gap: int = -1,
         data_type: str = "int",
         scale_dtype: str = "fp32",
-        only_quantize_blocks: bool = True,
+        only_quantize_blocks: bool = False,
         optimizer="AdamW",
         **kwargs,
     ):
