@@ -437,6 +437,7 @@ class AutoRound(object):
         only_quantize_blocks: bool = False,
         **kwargs,
     ):
+        low_gpu_mem_usage = False
         self.quantized = False
         self.model_orig_dtype = model.dtype
         self.model = model.eval().to("cpu")
