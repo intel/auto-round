@@ -72,7 +72,6 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
         logger.error("Fail to save configure file and weights due to {}.".format(e))
     return compressed_model
 
-
 @register_format("itrex_xpu")
 def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
     """Save configure file and weights for CPU backend inference."""
@@ -201,7 +200,7 @@ def pack_model(
             scale_dtype=scale_dtype,
             zp=zp is not None,
             bias=m.bias is not None,
-            device=device,
+            device="cuda" if device == "xpu" else device,
             compression_dtype=compression_dtype,
             compression_dim=compression_dim,
             use_optimum_format=use_optimum_format,  # xpu is False
