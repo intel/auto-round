@@ -159,7 +159,9 @@ if __name__ == '__main__':
             if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
                 tmp_tasks = tasks
                 tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-            tasks = list(set(tasks))
+            seen = set()
+            tmp_tasks = tasks
+            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
         if isinstance(args.tasks, str):
             tasks = ','.join(tasks)
 
