@@ -72,6 +72,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
         logger.error("Fail to save configure file and weights due to {}.".format(e))
     return compressed_model
 
+
 @register_format("itrex_xpu")
 def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
     """Save configure file and weights for CPU backend inference."""
@@ -146,7 +147,7 @@ def pack_model(
             4. parameter name changed, such as 'packed_weight' -> 'qweight'.
             5. zeros is always needed even for sym.
         inplace (bool, optional): Compress the model in place, or copy the model and compress it.
-        
+
     xpu args:
         compression_dtype=torch.int8,
         compression_dim=0,
@@ -203,7 +204,7 @@ def pack_model(
             device=device,
             compression_dtype=compression_dtype,
             compression_dim=compression_dim,
-            use_optimum_format=use_optimum_format, # xpu is False
+            use_optimum_format=use_optimum_format,  # xpu is False
         )
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
