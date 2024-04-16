@@ -196,6 +196,7 @@ if __name__ == '__main__':
     from auto_round import (AutoRound,
                             AutoAdamRound)
 
+    model = model.to(torch.float16)
     model = model.eval()
     # align with GPTQ to eval ppl
     if "opt" in model_name:
@@ -279,6 +280,9 @@ if __name__ == '__main__':
     deployment_device = args.deployment_device.split(',')
     if 'gpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
+    if 'xpu' in deployment_device:
+        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=False, 
+                compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False, device="xpu")
     if "cpu" in deployment_device:
         autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=False)
     if "fake" in deployment_device:
