@@ -621,4 +621,3 @@ def convert_dtype_torch2str(dtype):
         return dtype
     else:
         assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
-

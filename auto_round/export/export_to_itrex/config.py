@@ -25,7 +25,7 @@ from typing import Any, Dict, Tuple, Union
 import torch
 from transformers import PretrainedConfig
 
-from auto_round.utils import logger, convert_dtype_str2torch, convert_dtype_torch2str
+from auto_round.utils import convert_dtype_str2torch, convert_dtype_torch2str, logger
 
 QUANT_CONFIG = "quantize_config.json"
 
@@ -72,8 +72,7 @@ class QuantConfig(PretrainedConfig):
             self.quant_method = "gptq"
         else:
             ### XPU special parameters. ###
-            self.weight_dtype = 'int4_fullrange' # Due to ipex format limitations. Actually, it's int4_clip.
-
+            self.weight_dtype = "int4_fullrange"  # Due to ipex format limitations. Actually, it's int4_clip.
 
     def post_init(self):
         r"""
@@ -85,7 +84,7 @@ class QuantConfig(PretrainedConfig):
 
         if self.group_size not in [-1, 32, 128]:
             raise ValueError("group_size must be an integer in [-1, 32, 128]")
-        
+
     def post_init_xpu(self):
         r"""
         Safety checker for XPU that arguments are correct - also replaces some NoneType arguments with their default values.
@@ -99,9 +98,7 @@ class QuantConfig(PretrainedConfig):
         if self.bits is None:
             self.bits = 4
         elif self.bits not in [4]:
-            raise ValueError(
-                f"Only support quantization to [4] bits but found {self.bits}"
-            )
+            raise ValueError(f"Only support quantization to [4] bits but found {self.bits}")
 
         if self.weight_dtype is None:
             self.weight_dtype = "int4_fullrange"
@@ -112,7 +109,7 @@ class QuantConfig(PretrainedConfig):
             raise ValueError(f"weight_dtype must be a string in 'int4_fullrange', but get {self.weight_dtype}.")
 
         if self.scale_dtype is not None and self.scale_dtype not in ["fp16"]:
-            raise ValueError(f"scale_dtype must be a string in 'fp16'")
+            raise ValueError("scale_dtype must be a string in 'fp16'")
         elif self.scale_dtype is None:
             self.scale_dtype = "fp16"
 
@@ -129,9 +126,7 @@ class QuantConfig(PretrainedConfig):
             raise ValueError("group_size must be a int")
 
         if self.sym is not True:
-            raise ValueError(
-                "asym is not support, only support 'sym' now!"
-            )
+            raise ValueError("asym is not support, only support 'sym' now!")
         self.use_neural_speed = False
 
     def quantization_method(self):
@@ -285,12 +280,24 @@ class QuantConfig(PretrainedConfig):
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         return super().get_config_dict(pretrained_model_name_or_path, _configuration_file=QUANT_CONFIG, **kwargs)
 
-    
     def remove_redundant_parameters(self):
-        remove_parameters = ["calib_dataloader", "dataset", "scheme", "tokenizer",
-        "use_neural_speed", "use_quant_input", "layer_wise", "nsamples",
-        "lr", "minmax_lr", "iters", "use_quant_input", "model_file_base_name",
-        "enable_minmax_tuning", "model_name_or_path"]
+        remove_parameters = [
+            "calib_dataloader",
+            "dataset",
+            "scheme",
+            "tokenizer",
+            "use_neural_speed",
+            "use_quant_input",
+            "layer_wise",
+            "nsamples",
+            "lr",
+            "minmax_lr",
+            "iters",
+            "use_quant_input",
+            "model_file_base_name",
+            "enable_minmax_tuning",
+            "model_name_or_path",
+        ]
         for parameter in remove_parameters:
             if hasattr(self, parameter):
                 delattr(self, parameter)
