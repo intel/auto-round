@@ -681,8 +681,6 @@ class AutoRound(object):
                 bs,
                 self.n_samples,
             )
-
-        self.start_time = time.time()
         total_cnt = 0
         for data in self.dataloader:
             if data is None:
@@ -1295,7 +1293,7 @@ class AutoRound(object):
             layer_names = self.gets_layer_names_outside_blocks()
         else:
             layer_names = []
-
+        self.start_time = time.time()
         all_inputs = self.cache_inter_data([block_names[0]], self.n_samples, layer_names=layer_names)
         inputs = all_inputs[block_names[0]]
         self.inputs.pop(block_names[0])
