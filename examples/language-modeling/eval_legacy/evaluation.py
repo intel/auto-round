@@ -211,7 +211,7 @@ def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrand
         from lm_eval.tasks import ALL_TASKS, get_task_dict
     except:
         raise ImportError("""follow requirements to install dependencies.""")
-
+    print(f"Using {dtype} as evaluation data type.")
     org_s = time.time()
 
     external_tasks = []
@@ -350,6 +350,8 @@ if __name__ == "__main__":
                eval_bs=args.eval_bs, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
+
+
 
 
 

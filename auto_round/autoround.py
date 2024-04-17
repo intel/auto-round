@@ -32,7 +32,7 @@ from .utils import (
     get_module,
     get_scale_shape,
     htcore,
-    is_hpu_available,
+    is_optimum_habana_available,
     is_local_path,
     logger,
     move_input_to_device,
@@ -40,10 +40,6 @@ from .utils import (
     sampling_inputs,
     set_module,
 )
-
-if is_hpu_available:
-    import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-    import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
 
 class WrapperLinear(torch.nn.Module):
@@ -484,6 +480,10 @@ class AutoRound(object):
         self.optimizer = self.get_optimizer(None)
         self.check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
+        if is_optimum_habana_available():
+            logger.info("Optimum Habana is available, import htcore explicitly.")
+            import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
     def get_optimizer(self, optimizer):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.
@@ -514,7 +514,7 @@ class AutoRound(object):
         """
         scale_loss = loss * 1000
         scale_loss.backward()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         return scale_loss
 
@@ -531,7 +531,7 @@ class AutoRound(object):
         """
         optimizer.step()
         # for hpu
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         optimizer.zero_grad()
         lr_schedule.step()
@@ -1256,7 +1256,7 @@ class AutoOPTRound(AutoRound):
             loss = scaler.scale(loss)
 
         loss.backward()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         return loss
 
@@ -1270,7 +1270,7 @@ class AutoOPTRound(AutoRound):
             optimizer.step()
             optimizer.zero_grad()
             lr_schedule.step()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
 
 
@@ -1386,3 +1386,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
