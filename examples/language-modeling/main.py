@@ -89,7 +89,7 @@ if __name__ == '__main__':
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
-    parser.add_argument("--scale_dtype", default='fp32',
+    parser.add_argument("--scale_dtype", default='fp16',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
     parser.add_argument("--tasks",
