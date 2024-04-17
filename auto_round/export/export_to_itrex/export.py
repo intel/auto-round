@@ -56,9 +56,10 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
         minmax_lr=minmax_lr,
         enable_minmax_tuning=enable_minmax_tuning,
         use_quant_input=use_quant_input,
-        scale_dtype=str(scale_dtype),
+        scale_dtype=scale_dtype,
     )
     if quantize_config is not None:
+        quantize_config.post_init()
         config = compressed_model.config
         setattr(config, "quantization_config", quantize_config.to_dict())
         config.save_pretrained(output_dir)
@@ -101,9 +102,12 @@ def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
         minmax_lr=minmax_lr,
         enable_minmax_tuning=enable_minmax_tuning,
         use_quant_input=use_quant_input,
-        scale_dtype=str(scale_dtype),
+        scale_dtype=scale_dtype,
+        export_to_xpu=True,
     )
     if quantize_config is not None:
+        quantize_config.post_init_xpu()
+        quantize_config.remove_redundant_parameters()
         config = compressed_model.config
         setattr(config, "quantization_config", quantize_config.to_dict())
         config.save_pretrained(output_dir)
@@ -209,3 +213,4 @@ def pack_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
     return compressed_model
+

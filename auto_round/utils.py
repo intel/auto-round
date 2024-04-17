@@ -589,3 +589,36 @@ class CpuInfo(object):
 
 def is_local_path(path):
     return os.path.exists(path)
+
+
+def convert_dtype_str2torch(str_dtype):
+    if isinstance(dtype, torch.dtype) or dtype == None:
+        return dtype
+    if str_dtype == "int8":
+        return torch.int8
+    elif str_dtype == "fp32" or str_dtype == "auto":
+        return torch.float
+    elif str_dtype == "fp16":
+        return torch.float16
+    elif str_dtype == "bf16":
+        return torch.bfloat16
+    else:
+        assert False, "Unsupported str dtype {} to torch dtype".format(str_dtype)
+
+
+def convert_dtype_torch2str(dtype):
+    if isinstance(dtype, str) or dtype == None:
+        return dtype
+    if dtype == torch.int8:
+        return "int8"
+    elif dtype == torch.float:
+        return "fp32"
+    elif dtype == torch.float16:
+        return "fp16"
+    elif dtype == torch.bfloat16:
+        return "bf16"
+    elif isinstance(dtype, str) and dtype in ["int8", "fp32", "fp16", "bf16"]:
+        return dtype
+    else:
+        assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
+
