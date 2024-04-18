@@ -93,7 +93,7 @@ if __name__ == '__main__':
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
     parser.add_argument("--tasks",
-                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,", \
+                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
                         "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge,wikitext2,ptb-new,c4-new",
                         help="lm-eval tasks for lm_eval version 0.4")
 
