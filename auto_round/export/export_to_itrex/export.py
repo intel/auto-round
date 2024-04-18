@@ -186,13 +186,18 @@ def pack_model(
             zp = torch.tensor(zp, dtype=torch.int32)
             if device == "xpu":
                 scale = torch.tensor(v["scale"], dtype=torch.float32)
-                zp = None if sym else torch.tensor(v["zero"], dtype=torch.int32)
+                zp = None if sym else torch.tensor(v["zp"], dtype=torch.int32)
         else:
             if not inplace:
                 scale = scale.clone()
                 zp = zp.clone()
-            scale = scale.to(dtype=convert_dtype)
-            zp = zp.to(dtype=torch.int32)
+            if device == "xpu":
+                # Please note that for XPU, the scale data type is forcibly set to fp32
+                scale = scale.to(dtype=torch.float32)
+                zp = None if sym else zp.to(dtype=torch.int32)
+            else:
+                scale = scale.to(dtype=convert_dtype)
+                zp = zp.to(dtype=torch.int32)
 
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
         int_weight = int_weight.type(torch.int32)
@@ -213,3 +218,4 @@ def pack_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
     return compressed_model
+
