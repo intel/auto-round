@@ -56,9 +56,10 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
         minmax_lr=minmax_lr,
         enable_minmax_tuning=enable_minmax_tuning,
         use_quant_input=use_quant_input,
-        scale_dtype=str(scale_dtype),
+        scale_dtype=scale_dtype,
     )
     if quantize_config is not None:
+        quantize_config.post_init()
         config = compressed_model.config
         setattr(config, "quantization_config", quantize_config.to_dict())
         config.save_pretrained(output_dir)
@@ -101,9 +102,12 @@ def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
         minmax_lr=minmax_lr,
         enable_minmax_tuning=enable_minmax_tuning,
         use_quant_input=use_quant_input,
-        scale_dtype=str(scale_dtype),
+        scale_dtype=scale_dtype,
+        export_to_xpu=True,
     )
     if quantize_config is not None:
+        quantize_config.post_init_xpu()
+        quantize_config.remove_redundant_parameters()
         config = compressed_model.config
         setattr(config, "quantization_config", quantize_config.to_dict())
         config.save_pretrained(output_dir)
@@ -182,13 +186,18 @@ def pack_model(
             zp = torch.tensor(zp, dtype=torch.int32)
             if device == "xpu":
                 scale = torch.tensor(v["scale"], dtype=torch.float32)
-                zp = None if sym else torch.tensor(v["zero"], dtype=torch.int32)
+                zp = None if sym else torch.tensor(v["zp"], dtype=torch.int32)
         else:
             if not inplace:
                 scale = scale.clone()
                 zp = zp.clone()
-            scale = scale.to(dtype=convert_dtype)
-            zp = zp.to(dtype=torch.int32)
+            if device == "xpu":
+                # Please note that for XPU, the scale data type is forcibly set to fp32
+                scale = scale.to(dtype=torch.float32)
+                zp = None if sym else zp.to(dtype=torch.int32)
+            else:
+                scale = scale.to(dtype=convert_dtype)
+                zp = zp.to(dtype=torch.int32)
 
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
         int_weight = int_weight.type(torch.int32)
