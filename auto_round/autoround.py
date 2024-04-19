@@ -853,7 +853,7 @@ class AutoRound(object):
             if isinstance(inputs, tuple) or isinstance(input, list):
                 input = inputs[0]
             if name in self.inputs:
-                self.inputs[name] = torch.cat([self.inputs[name], input.to("cpu")], dim=1)
+                self.inputs[name] = torch.cat([self.inputs[name], input.to("cpu")], dim=0)
             else:
                 self.inputs[name] = input.to("cpu")
 
@@ -1174,12 +1174,6 @@ class AutoRound(object):
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
-            # for n, p in block.named_parameters():
-            #     p.grad = None
-            # torch.cuda.empty_cache()
-            # best_v = move_input_to_device(best_v, self.device)
-            # best_min_scale = move_input_to_device(best_min_scale, self.device)
-            # best_max_scale = move_input_to_device(best_max_scale, self.device)
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.use_quant_input:
             q_outputs = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device)
@@ -1328,13 +1322,13 @@ class AutoRound(object):
                 logger.warning(f"force the train batch size to {total_samples} ")
         self.model = self.model.to("cpu")
         torch.cuda.empty_cache()
-        self.qdq_weight_round(
-            self.model,
-            inputs,
-            block_names,
-            n_blocks=self.n_blocks,
-            device=self.device,
-        )
+        # self.qdq_weight_round(
+        #     self.model,
+        #     inputs,
+        #     block_names,
+        #     n_blocks=self.n_blocks,
+        #     device=self.device,
+        # )
 
         ##TODO currently we take all the layers outside blocks as post block layers which is not optimal
         if len(layer_names) > 0:
