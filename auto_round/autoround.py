@@ -1424,7 +1424,7 @@ class AutoRound(object):
         del self.inputs
         inputs = all_inputs[block_names[0]]
 
-        inputs.pop(block_names[0])
+        all_inputs.pop(block_names[0])
         self.inputs = None
         del self.inputs
         if "input_ids" in inputs.keys():
