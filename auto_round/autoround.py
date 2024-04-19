@@ -40,6 +40,7 @@ from .utils import (
     quant_weight,
     sampling_inputs,
     set_module,
+    check_memory_availability,
 )
 
 if is_hpu_available:
@@ -187,7 +188,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
             self.min_scale = torch.tensor(0, device=device)
             self.max_scale = torch.tensor(0, device=device)
 
-    def unwrapper(self, v, min_scale, max_scale):
+    def unwrapper(self, v=0, min_scale=0, max_scale=0):
         """Unwrapper the layer to the original conv1d layer.
 
         Args:
@@ -296,7 +297,7 @@ def wrapper_block(block, enable_minmax_tuning):
 
 
 @torch.no_grad()
-def unwrapper_layer(model, layer, layer_name, v, min_scale, max_scale):
+def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
     Args:
@@ -434,7 +435,6 @@ class AutoRound(object):
         scale_dtype: str = "fp32",
         **kwargs,
     ):
-        low_gpu_mem_usage = False  ##TODO delete this later
         self.quantized = False
         self.model_orig_dtype = model.dtype
         self.model = model.eval().to("cpu")
@@ -888,9 +888,22 @@ class AutoRound(object):
             layer = get_module(self.model, layer_name)
             cache_device = "cpu"
             layer = layer.to(device)
+            avilable_flag,seq_len,train_bs = check_memory_availability(device, inputs, layer.weight, self.seqlen, self.train_bs)
+            if not avilable_flag:
+                # do RTN quantization
+                q_dq_weight, scale, zp = quant_weight(
+                    layer.weight,
+                    num_bits=layer.bits,
+                    group_size=layer.group_size,
+                    sym=layer.sym,
+                    scale_dtype=layer.scale_dtype
+                )
+                layer.weight.data.copy_(q_dq_weight)
+                layer.scale = scale.to("cpu")
+                layer.zp = zp.to("cpu") if zp is not None else None
+                logger.warning(f"Due to memory constraints, the quantized layer {layer_name} is implemented using the RTN method.")
+                return
             inputs = inputs.to(layer.weight.dtype)
-            seq_len = self.seqlen // 2  ##TODO workaround, ugly code to save memory
-
             inputs = inputs[:, :seq_len, :]
             if q_inputs is not None:
                 q_inputs = q_inputs.to(layer.weight.dtype)
@@ -898,7 +911,6 @@ class AutoRound(object):
                     q_inputs = q_inputs[:, :seq_len, :]
 
             output = []
-            train_bs = 1  ##force to one to save memory
             for i in range(0, self.n_samples, train_bs):
                 end_index = min(self.n_samples, i + train_bs)
                 tmp_inputs = inputs[i:end_index, ...].to(device)
@@ -943,65 +955,79 @@ class AutoRound(object):
         for i in range(self.iters):
             if self.sampler == "rand":
                 indices = torch.randperm(n_samples)[:pick_samples]
-
             total_loss = 0
-            for _ in range(gradient_accumulate_steps):
-                if q_inputs is not None:
-                    current_input = q_inputs[indices, ...].to(device)
-                else:
-                    current_input = inputs[indices, ...].to(device)
+            try:
+                OOM_flag = False
+                for _ in range(gradient_accumulate_steps):
+                    if q_inputs is not None:
+                        current_input = q_inputs[indices, ...].to(device)
+                    else:
+                        current_input = inputs[indices, ...].to(device)
 
-                current_output = output[indices, ...].to(device)
-                if self.amp:
-                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        output_q = wrapper_linear(current_input)
-                        loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
-                else:
-                    output_q = WrapperLinear(current_input)
-                    loss = mse_loss(  # pylint: disable=not-callable
-                        output_q.to(torch.float32), current_output.to(torch.float32)
-                    )
+                    current_output = output[indices, ...].to(device)
+                    if self.amp:
+                        with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                            output_q = wrapper_linear(current_input)
+                            loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
+                    else:
+                        output_q = WrapperLinear(current_input)
+                        loss = mse_loss(  # pylint: disable=not-callable
+                            output_q.to(torch.float32), current_output.to(torch.float32)
+                        )
 
-                total_loss += loss.item() / gradient_accumulate_steps
-                if i == 0:
-                    init_loss = total_loss
+                    total_loss += loss.item() / gradient_accumulate_steps
+                    if i == 0:
+                        init_loss = total_loss
 
-                self.scale_loss_and_backward(scaler, loss)
-                torch.cuda.empty_cache()
+                    self.scale_loss_and_backward(scaler, loss)
+                    torch.cuda.empty_cache()
 
-            if total_loss < best_loss:
-                best_loss = total_loss
-                if not self.not_use_best_mse:
+                if total_loss < best_loss:
+                    best_loss = total_loss
+                    if not self.not_use_best_mse:
+                        best_v = copy.deepcopy(wrapper_linear.value.data)
+                        best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
+                        best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
+
+                        last_best_iter = i
+                if self.not_use_best_mse and i == self.iters - 1:
                     best_v = copy.deepcopy(wrapper_linear.value.data)
                     best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
                     best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
 
-                    last_best_iter = i
-            if self.not_use_best_mse and i == self.iters - 1:
-                best_v = copy.deepcopy(wrapper_linear.value.data)
-                best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
-                best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
-
+                if not self.not_use_best_mse:
+                    if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+                        break
+                self.step(scaler, optimizer, lr_schedule)
+            except MemoryError:
+                current_input = current_input.to("cpu")
+                current_output = current_output.to("cpu")
+                torch.cuda.empty_cache()
+                OOM_flag = True
+                break
+                        
+        if not OOM_flag:
+            last_loss = total_loss
+            best_iter = self.iters
             if not self.not_use_best_mse:
-                if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
-                    break
-            self.step(scaler, optimizer, lr_schedule)
-
-        last_loss = total_loss
-        best_iter = self.iters
-        if not self.not_use_best_mse:
-            last_loss = best_loss
-            best_iter = last_best_iter
-        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        logger.info(dump_info)
-        with torch.no_grad():
-            # for n, p in wrapper_linear.named_parameters():
-            #     p.grad = None
-            # torch.cuda.empty_cache()
-            # best_v = move_input_to_device(best_v, self.device)
-            # best_min_scale = move_input_to_device(best_min_scale, self.device)
-            # best_max_scale = move_input_to_device(best_max_scale, self.device)
-            unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
+                last_loss = best_loss
+                best_iter = last_best_iter
+            dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+            logger.info(dump_info)
+            with torch.no_grad():
+                # for n, p in wrapper_linear.named_parameters():
+                #     p.grad = None
+                # torch.cuda.empty_cache()
+                # best_v = move_input_to_device(best_v, self.device)
+                # best_min_scale = move_input_to_device(best_min_scale, self.device)
+                # best_max_scale = move_input_to_device(best_max_scale, self.device)
+                unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
+        else:
+            # RTN layer quantize, unwarp linear? clean up params and relative various
+            del best_loss, best_v, best_min_scale, best_max_scale
+            with torch.no_grad():
+                unwrapper_layer(self.model, wrapper_linear, layer_name)
+            logger.warning(f"Due to memory constraints, the quantized layer {layer_name} is implemented using the RTN method.")
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.

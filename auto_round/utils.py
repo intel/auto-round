@@ -23,7 +23,7 @@ import cpuinfo
 import psutil
 import torch
 from torch.amp import autocast
-
+import numpy as np
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
 logger.propagate = False
@@ -621,3 +621,37 @@ def convert_dtype_torch2str(dtype):
         return dtype
     else:
         assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
+    
+
+def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
+    weight_memory = weight.numel() * weight.element_size()
+    if "cuda" in device:
+        current_gpu_index = torch.cuda.current_device()
+        total_memory = torch.cuda.get_device_properties(current_gpu_index).total_memory
+        used_memory = torch.cuda.memory_allocated(current_gpu_index)
+        free_space = total_memory - used_memory
+    elif "hpu" in device:
+        current_hpu_index = torch.hpu.current_device()
+        total_memory = torch.hpu.get_device_properties(current_hpu_index).total_memory
+        used_memory = torch.hpu.memory_allocated(current_hpu_index)
+        free_space = total_memory - used_memory
+        # return True # TODO check hpu memeory usage states
+    else:
+        return True,seqlen,bs
+    
+    free_space = free_space - weight_memory * 10 # for min_max_scale & grad usage
+    seqlen = org_seqlen
+    bs = org_bs
+    in_feature = weight.shape[1]
+    out_feature = weight.shape[0]
+    while(seqlen >= 128):
+        input_size =  bs * seqlen * in_feature
+        output_size = bs * seqlen * out_feature
+        input_output_memory = 2 * (input_size * inputs.element_size() + output_size * inputs.element_size())
+        if input_output_memory < free_space:
+            return True,seqlen,bs
+        seqlen = seqlen // 2
+        bs = 1
+        
+    return False,seqlen,bs
+
