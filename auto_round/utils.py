@@ -638,7 +638,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         free_space = total_memory - used_memory
         # return True # TODO check hpu memeory usage states
     else:
-        return True, seqlen, bs
+        return True, org_seqlen, org_bs
 
     free_space = free_space - weight_memory * 10  # for min_max_scale & grad usage
     seqlen = org_seqlen
@@ -650,7 +650,6 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         output_size = bs * seqlen * out_feature
         input_output_memory = 2 * (input_size * inputs.element_size() + output_size * inputs.element_size())
         if input_output_memory < free_space:
-            print(f"current seqlen:{seqlen}, bs:{bs}")
             return True, seqlen, bs
         seqlen = seqlen // 2
         bs = 1
