@@ -593,7 +593,7 @@ def is_local_path(path):
 
 
 def convert_dtype_str2torch(str_dtype):
-    if isinstance(str_dtype, torch.dtype) or str_dtype == None:
+    if isinstance(str_dtype, torch.dtype) or str_dtype is None:
         return str_dtype
     if str_dtype == "int8":
         return torch.int8
@@ -608,7 +608,7 @@ def convert_dtype_str2torch(str_dtype):
 
 
 def convert_dtype_torch2str(dtype):
-    if isinstance(dtype, str) or dtype == None:
+    if isinstance(dtype, str) or dtype is None:
         return dtype
     if dtype == torch.int8:
         return "int8"
