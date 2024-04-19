@@ -25,6 +25,7 @@ from .utils import (
     CpuInfo,
     block_forward,
     check_is_cpu,
+    check_memory_availability,
     check_to_quantized,
     collect_minmax_scale,
     collect_round_v,
@@ -40,7 +41,6 @@ from .utils import (
     quant_weight,
     sampling_inputs,
     set_module,
-    check_memory_availability,
 )
 
 if is_hpu_available:
@@ -888,7 +888,9 @@ class AutoRound(object):
             layer = get_module(self.model, layer_name)
             cache_device = "cpu"
             layer = layer.to(device)
-            avilable_flag,seq_len,train_bs = check_memory_availability(device, inputs, layer.weight, self.seqlen, self.train_bs)
+            avilable_flag, seq_len, train_bs = check_memory_availability(
+                device, inputs, layer.weight, self.seqlen, self.train_bs
+            )
             if not avilable_flag:
                 # do RTN quantization
                 q_dq_weight, scale, zp = quant_weight(
@@ -896,12 +898,14 @@ class AutoRound(object):
                     num_bits=layer.bits,
                     group_size=layer.group_size,
                     sym=layer.sym,
-                    scale_dtype=layer.scale_dtype
+                    scale_dtype=layer.scale_dtype,
                 )
                 layer.weight.data.copy_(q_dq_weight)
                 layer.scale = scale.to("cpu")
                 layer.zp = zp.to("cpu") if zp is not None else None
-                logger.warning(f"Due to memory constraints, the quantized layer {layer_name} is implemented using the RTN method.")
+                logger.warning(
+                    f"Due to memory constraints, the quantized layer {layer_name} is implemented using the RTN method."
+                )
                 return
             inputs = inputs.to(layer.weight.dtype)
             inputs = inputs[:, :seq_len, :]
@@ -1005,7 +1009,7 @@ class AutoRound(object):
                 torch.cuda.empty_cache()
                 OOM_flag = True
                 break
-                        
+
         if not OOM_flag:
             last_loss = total_loss
             best_iter = self.iters
@@ -1027,7 +1031,9 @@ class AutoRound(object):
             del best_loss, best_v, best_min_scale, best_max_scale
             with torch.no_grad():
                 unwrapper_layer(self.model, wrapper_linear, layer_name)
-            logger.warning(f"Due to memory constraints, the quantized layer {layer_name} is implemented using the RTN method.")
+            logger.warning(
+                f"Due to memory constraints, the quantized layer {layer_name} is implemented using the RTN method."
+            )
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
