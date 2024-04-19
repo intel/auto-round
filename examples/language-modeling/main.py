@@ -116,8 +116,6 @@ if __name__ == '__main__':
     parser.add_argument("--disable_trust_remote_code", action='store_true',
                         help="Whether to disable trust_remote_code")
 
-    parser.add_argument("--quantize_layers_outside_blocks", action='store_true',
-                        help="Whether to disable quantize_layers_outside_blocks")
 
 
     args = parser.parse_args()
@@ -259,7 +257,7 @@ if __name__ == '__main__':
                 weight_config[n] = {"data_type": "fp"}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
-
+    # weight_config['lm_head'] = {"data_type": "fp"}
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
@@ -267,7 +265,7 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, only_quantize_blocks=not args.quantize_layers_outside_blocks)  ##TODO args pass
+                      enable_minmax_tuning=not args.disable_minmax_tuning)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -297,3 +295,4 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
+

@@ -395,8 +395,6 @@ class AutoRound(object):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
                            have different choices.
-        only_quantize_blocks (bool): Whether to only quantize the layers in blocks, layers like lm-head are outside of blocks
-        **kwargs: Additional keyword arguments.
 
     Returns:
         The quantized model.
@@ -434,7 +432,6 @@ class AutoRound(object):
         dynamic_max_gap: int = -1,
         data_type: str = "int",  ##only support data_type
         scale_dtype: str = "fp32",
-        only_quantize_blocks: bool = True,
         **kwargs,
     ):
         low_gpu_mem_usage = False  ##TODO delete this later
@@ -515,7 +512,6 @@ class AutoRound(object):
         self.check_configs()
         self.share_attention_mask_flag = None
         self.hidden_dim_flag = None
-        self.only_quantize_blocks = only_quantize_blocks
         torch.set_printoptions(precision=3, sci_mode=True)
 
     def get_optimizer(self, optimizer):
@@ -1289,10 +1285,7 @@ class AutoRound(object):
         if not self.low_gpu_mem_usage:
             self.model = self.model.to(self.device)
 
-        if not self.only_quantize_blocks:
-            layer_names = self.gets_layer_names_outside_blocks()
-        else:
-            layer_names = []
+        layer_names = self.gets_layer_names_outside_blocks()
         self.start_time = time.time()
         all_inputs = self.cache_inter_data([block_names[0]], self.n_samples, layer_names=layer_names)
         inputs = all_inputs[block_names[0]]
@@ -1414,8 +1407,6 @@ class AutoOPTRound(AutoRound):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
                            have different choices.
-        only_quantize_blocks (bool): Whether to only quantize the layers in blocks, layers like lm-head are outside of blocks
-        optimizer: string or object
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -1454,7 +1445,6 @@ class AutoOPTRound(AutoRound):
         dynamic_max_gap: int = -1,
         data_type: str = "int",
         scale_dtype: str = "fp32",
-        only_quantize_blocks: bool = True,
         optimizer="AdamW",
         **kwargs,
     ):
@@ -1489,7 +1479,6 @@ class AutoOPTRound(AutoRound):
             dynamic_max_gap,
             data_type,
             scale_dtype,
-            only_quantize_blocks,
             **kwargs,
         )
 
@@ -1572,8 +1561,6 @@ class AutoAdamRound(AutoOPTRound):
         optimizer: string or object
         scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
                            have different choices.
-        only_quantize_blocks (bool): Whether to only quantize the layers in blocks, layers like lm-head are outside of blocks
-        **kwargs: Additional keyword arguments.
 
     Returns:
         The quantized model.
@@ -1611,7 +1598,6 @@ class AutoAdamRound(AutoOPTRound):
         dynamic_max_gap: int = -1,
         data_type: str = "int",
         scale_dtype: str = "fp32",
-        only_quantize_blocks: bool = True,
         optimizer="AdamW",
         **kwargs,
     ):
@@ -1646,7 +1632,7 @@ class AutoAdamRound(AutoOPTRound):
             dynamic_max_gap,
             data_type,
             scale_dtype,
-            only_quantize_blocks,
             optimizer,
             **kwargs,
         )
+

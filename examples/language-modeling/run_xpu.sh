@@ -1,12 +1,8 @@
 #!/bin/bash
-# export CUBLAS_WORKSPACE_CONFIG=':4096:8'
-#export HF_HOME="/models/huggingface/"
-export https_proxy=http://child-jf.intel.com:912
-export http_proxy=http://child-jf.intel.com:912
 
 device=1
 eval_bs=32
-model_name="/models/opt-125m"
+model_name="/facebook/opt-125m"
 
 
 CUDA_VISIBLE_DEVICES=$device \
