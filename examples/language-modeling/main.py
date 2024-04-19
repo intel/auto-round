@@ -194,7 +194,6 @@ if __name__ == '__main__':
     from auto_round import (AutoRound,
                             AutoAdamRound)
 
-    model = model.to(torch.float16)
     model = model.eval()
     # align with GPTQ to eval ppl
     if "opt" in model_name:
@@ -257,7 +256,7 @@ if __name__ == '__main__':
                 weight_config[n] = {"data_type": "fp"}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
-    # weight_config['lm_head'] = {"data_type": "fp"}
+    weight_config['lm_head'] = {"data_type": "int"}
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
