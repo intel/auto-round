@@ -44,7 +44,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
-    
+
     parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
                         help="The dataset for quantization training. It can be a custom one.")
 
@@ -116,7 +116,8 @@ if __name__ == '__main__':
     parser.add_argument("--disable_trust_remote_code", action='store_true',
                         help="Whether to disable trust_remote_code")
 
-
+    parser.add_argument("--quant_lm_head", action='store_true',
+                        help="quant_lm_head")
 
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
@@ -153,6 +154,7 @@ if __name__ == '__main__':
         from eval import eval_model
     else:
         from eval_legacy import eval_model
+
         if isinstance(tasks, list):
             if "mmlu" in tasks:
                 tmp_tasks = tasks
@@ -188,7 +190,8 @@ if __name__ == '__main__':
         model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code
+            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+            trust_remote_code=not args.disable_trust_remote_code
         )
 
     from auto_round import (AutoRound,
@@ -220,20 +223,19 @@ if __name__ == '__main__':
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
 
-    pt_dtype = torch.float16
-    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
-        dtype = 'bfloat16'
-        pt_dtype = torch.bfloat16
-    else:
-        if str(args.device) != "cpu":
-            pt_dtype = torch.float16
-            dtype = 'float16'
-        else:
-            pt_dtype = torch.float32
-            dtype = 'float32'
-
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if args.eval_fp16_baseline:
+        pt_dtype = torch.float16
+        if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
+            dtype = 'bfloat16'
+            pt_dtype = torch.bfloat16
+        else:
+            if str(args.device) != "cpu":
+                pt_dtype = torch.float16
+                dtype = 'float16'
+            else:
+                pt_dtype = torch.float32
+                dtype = 'float32'
         if args.disable_low_gpu_mem_usage:
             model = model.to(torch_device)
         excel_name += "_fp16.xlsx"
@@ -256,7 +258,8 @@ if __name__ == '__main__':
                 weight_config[n] = {"data_type": "fp"}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
-    weight_config['lm_head'] = {"data_type": "int"}
+    if args.quant_lm_head:
+        weight_config['lm_head'] = {"data_type": "int"}
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
@@ -278,8 +281,9 @@ if __name__ == '__main__':
     if 'gpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
     if 'xpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=False, 
-                compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False, device="xpu")
+        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=False,
+                                 compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
+                                 device="xpu")
     if "cpu" in deployment_device:
         autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=False)
     if "fake" in deployment_device:
@@ -294,4 +298,3 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
-
