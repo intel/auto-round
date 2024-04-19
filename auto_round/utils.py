@@ -593,8 +593,8 @@ def is_local_path(path):
 
 
 def convert_dtype_str2torch(str_dtype):
-    if isinstance(dtype, torch.dtype) or dtype == None:
-        return dtype
+    if isinstance(str_dtype, torch.dtype) or str_dtype == None:
+        return str_dtype
     if str_dtype == "int8":
         return torch.int8
     elif str_dtype == "fp32" or str_dtype == "auto":
@@ -636,7 +636,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         total_memory = torch.hpu.get_device_properties(current_hpu_index).total_memory
         used_memory = torch.hpu.memory_allocated(current_hpu_index)
         free_space = total_memory - used_memory
-        # return True # TODO check hpu memeory usage states
+        # return True # TODO check hpu memory usage states
     else:
         return True, org_seqlen, org_bs
 
