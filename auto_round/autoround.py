@@ -402,38 +402,38 @@ class AutoRound(object):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,  ##for symmetric, TODO support later
-        batch_size: int = 8,
-        amp: bool = True,
-        device=None,
-        lr_scheduler=None,
-        dataloader=None,  ## to support later
-        dataset: str = "NeelNanda/pile-10k",
-        dataset_split: str = "train",
-        use_quant_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",  ##only support data_type
-        scale_dtype: str = "fp32",
-        **kwargs,
+            self,
+            model,
+            tokenizer,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,  ##for symmetric, TODO support later
+            batch_size: int = 8,
+            amp: bool = True,
+            device=None,
+            lr_scheduler=None,
+            dataloader=None,  ## to support later
+            dataset: str = "NeelNanda/pile-10k",
+            dataset_split: str = "train",
+            use_quant_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",  ##only support data_type
+            scale_dtype: str = "fp32",
+            **kwargs,
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
@@ -748,7 +748,7 @@ class AutoRound(object):
         self.to_cached_layers = block_names + layer_names
         tmp_dtype = None
         if (
-            len(block_names) > 1 or len(layer_names) > 0
+                len(block_names) > 1 or len(layer_names) > 0
         ) and self.low_gpu_mem_usage:  ## have bug if block name is not the first block
             tmp_dtype = self.model.dtype
             self.model = (
@@ -888,37 +888,13 @@ class AutoRound(object):
             layer = get_module(self.model, layer_name)
             cache_device = "cpu"
             layer = layer.to(device)
-            available_flag, seqlen, train_bs = check_memory_availability(
-                device, inputs, layer.weight, self.seqlen, self.train_bs
-            )
 
-            if not available_flag:
-                # do RTN quantization
-                q_dq_weight, scale, zp = quant_weight(
-                    layer.weight,
-                    num_bits=layer.bits,
-                    group_size=layer.group_size,
-                    sym=layer.sym,
-                    scale_dtype=layer.scale_dtype,
-                )
-                layer.weight.data.copy_(q_dq_weight)
-                layer.scale = scale.to("cpu")
-                layer.zp = zp.to("cpu") if zp is not None else None
-                logger.warning(f"RTN is adopted to quantize  {layer_name} due to memory constraint")
-                return
-            if seqlen != self.seqlen or self.train_bs != train_bs:
-                logger.warning(
-                    f"the seqlen and bs for tuning {layer_name} have been adjusted to {seqlen} and "
-                    f"{train_bs} respectively due to memory constraints"
-                )
             inputs = inputs.to(layer.weight.dtype)
-            inputs = inputs[:, :seqlen, :]
             if q_inputs is not None:
                 q_inputs = q_inputs.to(layer.weight.dtype)
-                if len(inputs.shape) == 3:
-                    q_inputs = q_inputs[:, :seqlen, :]
 
             output = []
+            train_bs = self.train_bs
             for i in range(0, self.n_samples, train_bs):
                 end_index = min(self.n_samples, i + train_bs)
                 tmp_inputs = inputs[i:end_index, ...].to(device)
@@ -964,73 +940,207 @@ class AutoRound(object):
             if self.sampler == "rand":
                 indices = torch.randperm(n_samples)[:pick_samples]
             total_loss = 0
-            try:
-                OOM_flag = False
-                for _ in range(gradient_accumulate_steps):
-                    if q_inputs is not None:
-                        current_input = q_inputs[indices, ...].to(device)
-                    else:
-                        current_input = inputs[indices, ...].to(device)
+            for _ in range(gradient_accumulate_steps):
+                if q_inputs is not None:
+                    current_input = q_inputs[indices, ...].to(device)
+                else:
+                    current_input = inputs[indices, ...].to(device)
 
-                    current_output = output[indices, ...].to(device)
-                    if self.amp:
-                        with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                            output_q = wrapper_linear(current_input)
-                            loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
-                    else:
-                        output_q = WrapperLinear(current_input)
-                        loss = mse_loss(  # pylint: disable=not-callable
-                            output_q.to(torch.float32), current_output.to(torch.float32)
-                        )
+                current_output = output[indices, ...].to(device)
+                if self.amp:
+                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                        output_q = wrapper_linear(current_input)
+                        loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
+                else:
+                    output_q = WrapperLinear(current_input)
+                    loss = mse_loss(  # pylint: disable=not-callable
+                        output_q.to(torch.float32), current_output.to(torch.float32)
+                    )
 
-                    total_loss += loss.item() / gradient_accumulate_steps
-                    if i == 0:
-                        init_loss = total_loss
+                total_loss += loss.item() / gradient_accumulate_steps
+                if i == 0:
+                    init_loss = total_loss
 
-                    self.scale_loss_and_backward(scaler, loss)
-                    torch.cuda.empty_cache()
+                self.scale_loss_and_backward(scaler, loss)
+                torch.cuda.empty_cache()
 
-                if total_loss < best_loss:
-                    best_loss = total_loss
-                    if not self.not_use_best_mse:
-                        best_v = copy.deepcopy(wrapper_linear.value.data)
-                        best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
-                        best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
-
-                        last_best_iter = i
-                if self.not_use_best_mse and i == self.iters - 1:
+            if total_loss < best_loss:
+                best_loss = total_loss
+                if not self.not_use_best_mse:
                     best_v = copy.deepcopy(wrapper_linear.value.data)
                     best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
                     best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
 
-                if not self.not_use_best_mse:
-                    if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
-                        break
-                self.step(scaler, optimizer, lr_schedule)
-            except MemoryError:
-                current_input = current_input.to("cpu")
-                current_output = current_output.to("cpu")
-                torch.cuda.empty_cache()
-                OOM_flag = True
-                break
+                    last_best_iter = i
+            if self.not_use_best_mse and i == self.iters - 1:
+                best_v = copy.deepcopy(wrapper_linear.value.data)
+                best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
+                best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
 
-        if not OOM_flag:
-            last_loss = total_loss
-            best_iter = self.iters
             if not self.not_use_best_mse:
-                last_loss = best_loss
-                best_iter = last_best_iter
-            dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-            logger.info(dump_info)
-            with torch.no_grad():
-                unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
-        else:
-            del best_loss, best_v, best_min_scale, best_max_scale
-            with torch.no_grad():
-                unwrapper_layer(self.model, wrapper_linear, layer_name)
-            logger.warning(
-                f"Due to memory constraints, the quantized layer {layer_name} is implemented using the RTN method."
-            )
+                if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+                    break
+            self.step(scaler, optimizer, lr_schedule)
+
+        last_loss = total_loss
+        best_iter = self.iters
+        if not self.not_use_best_mse:
+            last_loss = best_loss
+            best_iter = last_best_iter
+        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+        logger.info(dump_info)
+        with torch.no_grad():
+            unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
+
+    # def quant_layer(self, layer_name, inputs, q_inputs=None, device=torch.device("cpu")):
+    #     logger.info(f"quantizing layer {layer_name}")
+    #     with torch.no_grad():
+    #         layer = get_module(self.model, layer_name)
+    #         cache_device = "cpu"
+    #         layer = layer.to(device)
+    #         available_flag, seqlen, train_bs = check_memory_availability(
+    #             device, inputs, layer.weight, self.seqlen, self.train_bs
+    #         )
+    #
+    #         if not available_flag:
+    #             # do RTN quantization
+    #             q_dq_weight, scale, zp = quant_weight(
+    #                 layer.weight,
+    #                 num_bits=layer.bits,
+    #                 group_size=layer.group_size,
+    #                 sym=layer.sym,
+    #                 scale_dtype=layer.scale_dtype,
+    #             )
+    #             layer.weight.data.copy_(q_dq_weight)
+    #             layer.scale = scale.to("cpu")
+    #             layer.zp = zp.to("cpu") if zp is not None else None
+    #             logger.warning(f"RTN is adopted to quantize  {layer_name} due to memory constraint")
+    #             return
+    #         if seqlen != self.seqlen or self.train_bs != train_bs:
+    #             logger.warning(
+    #                 f"the seqlen and bs for tuning {layer_name} have been adjusted to {seqlen} and "
+    #                 f"{train_bs} respectively due to memory constraints"
+    #             )
+    #         inputs = inputs.to(layer.weight.dtype)
+    #         inputs = inputs[:, :seqlen, :]
+    #         if q_inputs is not None:
+    #             q_inputs = q_inputs.to(layer.weight.dtype)
+    #             if len(inputs.shape) == 3:
+    #                 q_inputs = q_inputs[:, :seqlen, :]
+    #
+    #         output = []
+    #         for i in range(0, self.n_samples, train_bs):
+    #             end_index = min(self.n_samples, i + train_bs)
+    #             tmp_inputs = inputs[i:end_index, ...].to(device)
+    #             tmp_output = layer.forward(tmp_inputs).to(cache_device)
+    #             output.append(tmp_output)
+    #             torch.cuda.empty_cache()  ##too large for lm head, maybe need to decrease n_sample
+    #
+    #         output = torch.cat(output, dim=0)
+    #         torch.cuda.empty_cache()
+    #
+    #     wrapper_linear = WrapperLinear(layer, self.enable_minmax_tuning).to(device)
+    #     round_params = []
+    #     minmax_params = []
+    #     round_params.append(wrapper_linear.value)
+    #     minmax_params.append(wrapper_linear.min_scale)
+    #     minmax_params.append(wrapper_linear.max_scale)
+    #     if self.enable_minmax_tuning:
+    #         optimizer = self.optimizer(
+    #             [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+    #         )
+    #     else:
+    #         optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+    #     if self.lr_scheduler is None:
+    #         lr_schedule = torch.optim.lr_scheduler.LinearLR(
+    #             optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+    #         )
+    #     else:
+    #         lr_schedule = copy.deepcopy(self.lr_scheduler)
+    #
+    #     pick_samples = train_bs
+    #
+    #     n_samples = inputs.shape[0]
+    #     if self.sampler != "rand":
+    #         indices = torch.randperm(n_samples)[:pick_samples]
+    #     last_best_iter = 0
+    #     best_loss = torch.finfo(torch.float).max
+    #     mse_loss = torch.nn.MSELoss().to(device)
+    #     scaler = self.get_scaler()  # pylint: disable=assignment-from-none
+    #     init_loss = None
+    #     best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
+    #     gradient_accumulate_steps = self.train_bs // train_bs
+    #     for i in range(self.iters):
+    #         if self.sampler == "rand":
+    #             indices = torch.randperm(n_samples)[:pick_samples]
+    #         total_loss = 0
+    #         try:
+    #             OOM_flag = False
+    #             for _ in range(gradient_accumulate_steps):
+    #                 if q_inputs is not None:
+    #                     current_input = q_inputs[indices, ...].to(device)
+    #                 else:
+    #                     current_input = inputs[indices, ...].to(device)
+    #
+    #                 current_output = output[indices, ...].to(device)
+    #                 if self.amp:
+    #                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+    #                         output_q = wrapper_linear(current_input)
+    #                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
+    #                 else:
+    #                     output_q = WrapperLinear(current_input)
+    #                     loss = mse_loss(  # pylint: disable=not-callable
+    #                         output_q.to(torch.float32), current_output.to(torch.float32)
+    #                     )
+    #
+    #                 total_loss += loss.item() / gradient_accumulate_steps
+    #                 if i == 0:
+    #                     init_loss = total_loss
+    #
+    #                 self.scale_loss_and_backward(scaler, loss)
+    #                 torch.cuda.empty_cache()
+    #
+    #             if total_loss < best_loss:
+    #                 best_loss = total_loss
+    #                 if not self.not_use_best_mse:
+    #                     best_v = copy.deepcopy(wrapper_linear.value.data)
+    #                     best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
+    #                     best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
+    #
+    #                     last_best_iter = i
+    #             if self.not_use_best_mse and i == self.iters - 1:
+    #                 best_v = copy.deepcopy(wrapper_linear.value.data)
+    #                 best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
+    #                 best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
+    #
+    #             if not self.not_use_best_mse:
+    #                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+    #                     break
+    #             self.step(scaler, optimizer, lr_schedule)
+    #         except MemoryError:
+    #             current_input = current_input.to("cpu")
+    #             current_output = current_output.to("cpu")
+    #             torch.cuda.empty_cache()
+    #             OOM_flag = True
+    #             break
+    #
+    #     if not OOM_flag:
+    #         last_loss = total_loss
+    #         best_iter = self.iters
+    #         if not self.not_use_best_mse:
+    #             last_loss = best_loss
+    #             best_iter = last_best_iter
+    #         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+    #         logger.info(dump_info)
+    #         with torch.no_grad():
+    #             unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
+    #     else:
+    #         del best_loss, best_v, best_min_scale, best_max_scale
+    #         with torch.no_grad():
+    #             unwrapper_layer(self.model, wrapper_linear, layer_name)
+    #         logger.warning(
+    #             f"Due to memory constraints, the quantized layer {layer_name} is implemented using the RTN method."
+    #         )
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
@@ -1049,12 +1159,12 @@ class AutoRound(object):
         ##change to block dtype:
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         for (
-            key
+                key
         ) in (
-            input_others.keys()
+                input_others.keys()
         ):  ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
             if isinstance(input_others[key], torch.Tensor) and (
-                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+                    input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
             ):
                 input_others[key] = input_others[key].to(tmp_dtype)
 
@@ -1184,12 +1294,12 @@ class AutoRound(object):
             return None, output
 
     def qdq_weight_round(
-        self,
-        model: torch.nn.Module,
-        inputs,
-        block_names,
-        n_blocks=1,
-        device=torch.device("cpu"),
+            self,
+            model: torch.nn.Module,
+            inputs,
+            block_names,
+            n_blocks=1,
+            device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -1217,7 +1327,7 @@ class AutoRound(object):
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i : i + n_blocks]
+                names = block_names[i: i + n_blocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -1314,7 +1424,7 @@ class AutoRound(object):
         inputs = all_inputs[block_names[0]]
         self.inputs.pop(block_names[0])
         if "input_ids" in inputs.keys():
-            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
+            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))  ##polish the code
             total_samples = inputs["input_ids"].shape[dim]
             self.n_samples = total_samples
             if total_samples < self.train_bs:
@@ -1322,13 +1432,13 @@ class AutoRound(object):
                 logger.warning(f"force the train batch size to {total_samples} ")
         self.model = self.model.to("cpu")
         torch.cuda.empty_cache()
-        # self.qdq_weight_round(
-        #     self.model,
-        #     inputs,
-        #     block_names,
-        #     n_blocks=self.n_blocks,
-        #     device=self.device,
-        # )
+        self.qdq_weight_round(
+            self.model,
+            inputs,
+            block_names,
+            n_blocks=self.n_blocks,
+            device=self.device,
+        )
 
         ##TODO currently we take all the layers outside blocks as post block layers which is not optimal
         if len(layer_names) > 0:
@@ -1437,39 +1547,39 @@ class AutoOPTRound(AutoRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataloader=None,
-        dataset: str = "NeelNanda/pile-10k",
-        dataset_split: str = "train",
-        use_quant_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp32",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataloader=None,
+            dataset: str = "NeelNanda/pile-10k",
+            dataset_split: str = "train",
+            use_quant_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp32",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
             model,
@@ -1590,39 +1700,39 @@ class AutoAdamRound(AutoOPTRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataloader=None,
-        dataset: str = "NeelNanda/pile-10k",
-        dataset_split: str = "train",
-        use_quant_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp32",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataloader=None,
+            dataset: str = "NeelNanda/pile-10k",
+            dataset_split: str = "train",
+            use_quant_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp32",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
             model,
