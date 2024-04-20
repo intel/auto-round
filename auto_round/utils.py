@@ -676,10 +676,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         free_space = total_memory - used_memory
     elif "hpu" in device:
         current_hpu_index = torch.hpu.current_device()
-        total_memory = torch.hpu.get_device_properties(current_hpu_index).total_memory
-        used_memory = torch.hpu.memory_allocated(current_hpu_index)
-        free_space = total_memory - used_memory
-        # return True # TODO check hpu memory usage states
+        free_space = torch.hpu.memory_reserved(current_hpu_index)
     else:
         return True, org_seqlen, org_bs
 
