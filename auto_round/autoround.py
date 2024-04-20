@@ -611,7 +611,7 @@ class AutoRound(object):
                     weight_config[n]["group_size"] = self.group_size
                 if "sym" not in weight_config[n].keys():
                     weight_config[n]["sym"] = self.sym
-                if "scale_dtype" not in self.scale_dtype:
+                if "scale_dtype" in weight_config[n].keys():
                     weight_config[n]["scale_dtype"] = self.scale_dtype
             else:
                 weight_config[n] = {}
