@@ -154,7 +154,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_lm_head(self):
         bits, group_size, sym = 4, -1, False
-        weight_config = {'lm_head':"int"}
+        weight_config = {"lm_head": "int"}
         autoround = AutoRound(
             self.model,
             self.tokenizer,
@@ -166,7 +166,7 @@ class TestAutoRound(unittest.TestCase):
             enable_minmax_tuning=False,
             use_quant_input=False,
             dataloader=self.llm_dataloader,
-            weight_config= weight_config
+            weight_config=weight_config,
         )
         autoround.quantize()
 
