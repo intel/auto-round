@@ -82,7 +82,7 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_d
     Returns:
         Quantized and dequantized weight, scale, zero-point
     """
-    maxq = torch.tensor(2 ** num_bits - 1)
+    maxq = torch.tensor(2**num_bits - 1)
     zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=scale_dtype)
     # zeros = torch.zeros(weight.shape[0], device=weight.device)
     if isinstance(min_scale, torch.Tensor):
@@ -121,7 +121,7 @@ def quant_weight_sym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dt
     Returns:
         Quantized and dequantized weight, scale, zero-point
     """
-    maxq = torch.tensor(2 ** num_bits - 1)
+    maxq = torch.tensor(2**num_bits - 1)
     zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=scale_dtype)
     if isinstance(min_scale, torch.Tensor):
         wmin_tmp = torch.minimum(weight.min(1)[0], zeros)
@@ -174,7 +174,7 @@ def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dty
 
 
 def quant_weight(
-        weight, num_bits=4, group_size=-1, sym=False, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16
+    weight, num_bits=4, group_size=-1, sym=False, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16
 ):
     """Quantizes and dequantizes weight, handing the group size issue .
 
@@ -249,15 +249,15 @@ def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
     leng = weight.shape[1] // group_size
     tail_flag = False if weight.shape[1] % group_size == 0 else True
     for i in range(leng):
-        int_weight_tmp = weight[:, i * group_size: (i + 1) * group_size] / scale[:, i].unsqueeze(1)
+        int_weight_tmp = weight[:, i * group_size : (i + 1) * group_size] / scale[:, i].unsqueeze(1)
         if zp is not None:
             int_weight_tmp += zp[:, i].unsqueeze(1)
-        int_weight[:, i * group_size: (i + 1) * group_size] = torch.round(int_weight_tmp)
+        int_weight[:, i * group_size : (i + 1) * group_size] = torch.round(int_weight_tmp)
     if tail_flag:
-        int_weight_tmp = weight[:, leng * group_size:] / scale[:, -1].unsqueeze(1)
+        int_weight_tmp = weight[:, leng * group_size :] / scale[:, -1].unsqueeze(1)
         if zp is not None:
             int_weight_tmp += zp[:, -1].unsqueeze(1)
-        int_weight[:, leng * group_size:] = torch.round(int_weight_tmp)
+        int_weight[:, leng * group_size :] = torch.round(int_weight_tmp)
     return int_weight
 
 
@@ -575,11 +575,11 @@ class CpuInfo(object):
             cmd = "sysctl -n machdep.cpu.core_count"
 
         with subprocess.Popen(
-                args=cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=False,
+            args=cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=False,
         ) as proc:
             proc.wait()
             if proc.stdout:
@@ -589,8 +589,7 @@ class CpuInfo(object):
 
 
 def is_local_path(path):
-    """
-    Checks if a given path exists locally.
+    """Checks if a given path exists locally.
 
     Args:
         path (str): The path to check.
@@ -602,8 +601,7 @@ def is_local_path(path):
 
 
 def convert_dtype_str2torch(str_dtype):
-    """
-    Converts a string dtype to its corresponding PyTorch dtype.
+    """Converts a string dtype to its corresponding PyTorch dtype.
 
     Args:
         str_dtype (str): The string representation of the dtype.
@@ -629,8 +627,7 @@ def convert_dtype_str2torch(str_dtype):
 
 
 def convert_dtype_torch2str(dtype):
-    """
-    Converts a PyTorch dtype to its corresponding string representation.
+    """Converts a PyTorch dtype to its corresponding string representation.
 
     Args:
         dtype: PyTorch dtype or str. The dtype to convert.
@@ -658,8 +655,7 @@ def convert_dtype_torch2str(dtype):
 
 
 def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
-    """
-    Checks the availability of memory on the specified device for processing inputs using a given weight tensor.
+    """Checks the availability of memory on the specified device for processing inputs using a given weight tensor.
 
     Args:
         device (str): The device type ('cuda' for GPU or 'hpu' for HPU).

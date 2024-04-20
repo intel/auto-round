@@ -883,8 +883,7 @@ class AutoRound(object):
                 self.hook_handles.append(hook_handle)
 
     def quant_layer(self, layer_name, inputs, q_inputs=None, device=torch.device("cpu")):
-        """
-        Quantize a specific layer of the model using the provided inputs.
+        """Quantize a specific layer of the model using the provided inputs.
 
         Args:
             layer_name (str): The name of the layer to quantize.
@@ -1214,8 +1213,7 @@ class AutoRound(object):
         torch.cuda.empty_cache()
 
     def save_quantized(self, output_dir=None, format="auto_gptq", inplace=True, **kwargs):
-        """
-        Save the quantized model to the specified output directory in the specified format.
+        """Save the quantized model to the specified output directory in the specified format.
 
         Args:
             output_dir (str, optional): The directory to save the quantized model. Defaults to None.
@@ -1257,8 +1255,7 @@ class AutoRound(object):
 
     @torch.no_grad()
     def gets_layer_names_outside_blocks(self):
-        """
-        Gets the names of layers outside blocks in the model.
+        """Gets the names of layers outside blocks in the model.
 
         Returns:
             list: List of layer names outside blocks.
