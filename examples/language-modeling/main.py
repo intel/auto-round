@@ -235,10 +235,10 @@ if __name__ == '__main__':
         else:
             pt_dtype = torch.float32
             dtype = 'float32'
-            
+
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if "bloom" in model_name:
-        args.disable_low_gpu_mem_usage=True
+        args.disable_low_gpu_mem_usage = True
     if args.eval_fp16_baseline:
         if args.disable_low_gpu_mem_usage:
             model = model.to(torch_device)
