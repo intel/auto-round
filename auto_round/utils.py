@@ -665,7 +665,8 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         org_bs (int): Original batch size.
 
     Returns:
-        tuple: A tuple containing availability status (bool), modified sequence length (int), and modified batch size (int).
+        tuple: A tuple containing availability status (bool), modified sequence length (int),
+               and modified batch size (int).
     """
     weight_memory = weight.numel() * weight.element_size()
     if "cuda" in device:

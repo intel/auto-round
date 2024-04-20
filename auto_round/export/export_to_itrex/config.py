@@ -31,7 +31,7 @@ QUANT_CONFIG = "quantize_config.json"
 
 
 class QuantConfig(PretrainedConfig):
-    """A brief quantization configuration for reference when performing model dequantization."""
+    """A brief quantization configuration for reference when performing model de-quantization."""
 
     def __init__(
         self,
@@ -76,7 +76,8 @@ class QuantConfig(PretrainedConfig):
 
     def post_init(self):
         r"""
-        Safety checker for CPU that arguments are correct - also replaces some NoneType arguments with their default values.
+        Safety checker for CPU that arguments are correct
+        also replaces some NoneType arguments with their default values.
         """
 
         if self.scale_dtype not in ["fp32", "fp16", "bf16"]:
@@ -87,7 +88,8 @@ class QuantConfig(PretrainedConfig):
 
     def post_init_xpu(self):
         r"""
-        Safety checker for XPU that arguments are correct - also replaces some NoneType arguments with their default values.
+        Safety checker for XPU that arguments are correct
+        - also replaces some NoneType arguments with their default values.
         """
 
         if self.compute_dtype is not None and self.compute_dtype not in ["fp16"]:
