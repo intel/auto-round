@@ -20,6 +20,7 @@ from collections import UserDict
 
 # for cpu usage
 import cpuinfo
+import numpy as np
 import psutil
 import torch
 from torch.amp import autocast
@@ -588,4 +589,109 @@ class CpuInfo(object):
 
 
 def is_local_path(path):
+    """Checks if a given path exists locally.
+
+    Args:
+        path (str): The path to check.
+
+    Returns:
+        bool: True if the path exists locally, False otherwise.
+    """
     return os.path.exists(path)
+
+
+def convert_dtype_str2torch(str_dtype):
+    """Converts a string dtype to its corresponding PyTorch dtype.
+
+    Args:
+        str_dtype (str): The string representation of the dtype.
+
+    Returns:
+        torch.dtype: The PyTorch dtype.
+
+    Raises:
+        AssertionError: If the input str_dtype is unsupported.
+    """
+    if isinstance(str_dtype, torch.dtype) or str_dtype is None:
+        return str_dtype
+    if str_dtype == "int8":
+        return torch.int8
+    elif str_dtype == "fp32" or str_dtype == "auto":
+        return torch.float
+    elif str_dtype == "fp16":
+        return torch.float16
+    elif str_dtype == "bf16":
+        return torch.bfloat16
+    else:
+        assert False, "Unsupported str dtype {} to torch dtype".format(str_dtype)
+
+
+def convert_dtype_torch2str(dtype):
+    """Converts a PyTorch dtype to its corresponding string representation.
+
+    Args:
+        dtype: PyTorch dtype or str. The dtype to convert.
+
+    Returns:
+        str: The string representation of the dtype.
+
+    Raises:
+        AssertionError: If the input dtype is unsupported.
+    """
+    if isinstance(dtype, str) or dtype is None:
+        return dtype
+    if dtype == torch.int8:
+        return "int8"
+    elif dtype == torch.float:
+        return "fp32"
+    elif dtype == torch.float16:
+        return "fp16"
+    elif dtype == torch.bfloat16:
+        return "bf16"
+    elif isinstance(dtype, str) and dtype in ["int8", "fp32", "fp16", "bf16"]:
+        return dtype
+    else:
+        assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
+
+
+def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
+    """Checks the availability of memory on the specified device for processing inputs using a given weight tensor.
+
+    Args:
+        device (str): The device type ('cuda' for GPU or 'hpu' for HPU).
+        inputs (torch.Tensor): Input tensor.
+        weight (torch.Tensor): Weight tensor.
+        org_seqlen (int): Original sequence length.
+        org_bs (int): Original batch size.
+
+    Returns:
+        tuple: A tuple containing availability status (bool), modified sequence length (int),
+               and modified batch size (int).
+    """
+    weight_memory = weight.numel() * weight.element_size()
+    if "cuda" in device:
+        current_gpu_index = torch.cuda.current_device()
+        total_memory = torch.cuda.get_device_properties(current_gpu_index).total_memory
+        used_memory = torch.cuda.memory_allocated(current_gpu_index)
+        free_space = total_memory - used_memory
+    elif "hpu" in device:
+        current_hpu_index = torch.hpu.current_device()
+        free_space = torch.hpu.memory_reserved(current_hpu_index)
+    else:
+        return True, org_seqlen, org_bs
+
+    free_space = free_space - weight_memory * 10  # for min_max_scale & grad usage
+    seqlen = org_seqlen
+    bs = org_bs
+    in_feature = weight.shape[1]
+    out_feature = weight.shape[0]
+    while seqlen >= 128:
+        input_size = bs * seqlen * in_feature
+        output_size = bs * seqlen * out_feature
+        input_output_memory = 2 * (input_size * inputs.element_size() + output_size * inputs.element_size())
+        if input_output_memory < free_space:
+            return True, seqlen, bs
+        seqlen = seqlen // 2
+        bs = 1
+
+    return False, seqlen, bs

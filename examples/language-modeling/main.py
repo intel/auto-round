@@ -44,7 +44,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
-    
+
     parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
                         help="The dataset for quantization training. It can be a custom one.")
 
@@ -89,7 +89,7 @@ if __name__ == '__main__':
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
-    parser.add_argument("--scale_dtype", default='fp32',
+    parser.add_argument("--scale_dtype", default='fp16',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
     parser.add_argument("--tasks",
@@ -116,6 +116,8 @@ if __name__ == '__main__':
     parser.add_argument("--disable_trust_remote_code", action='store_true',
                         help="Whether to disable trust_remote_code")
 
+    parser.add_argument("--quant_lm_head", action='store_true',
+                        help="quant_lm_head")
 
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
@@ -152,6 +154,7 @@ if __name__ == '__main__':
         from eval import eval_model
     else:
         from eval_legacy import eval_model
+
         if isinstance(tasks, list):
             if "mmlu" in tasks:
                 tmp_tasks = tasks
@@ -167,7 +170,7 @@ if __name__ == '__main__':
         if use_eval_legacy:
             print("Using the legacy lm_eval(0.3.0)")
         else:
-            print("Using the latest lm_eval(0.4.1)")
+            print(f"Using the latest {res}")
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -187,7 +190,8 @@ if __name__ == '__main__':
         model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code
+            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+            trust_remote_code=not args.disable_trust_remote_code
         )
 
     from auto_round import (AutoRound,
@@ -203,14 +207,14 @@ if __name__ == '__main__':
         model.seqlen = seqlen
     seqlen = args.seqlen
 
-    if "llama" in model_name:
-        from transformers import LlamaTokenizer
-
-        tokenizer = LlamaTokenizer.from_pretrained(model_name)
-        if tokenizer.pad_token is None:
-            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+    # if "llama" in model_name:
+    #     from transformers import LlamaTokenizer
+    #
+    #     tokenizer = LlamaTokenizer.from_pretrained(model_name)
+    #     if tokenizer.pad_token is None:
+    #         tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    # else:
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
@@ -219,6 +223,7 @@ if __name__ == '__main__':
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
 
+    excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     pt_dtype = torch.float16
     if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
         dtype = 'bfloat16'
@@ -233,7 +238,7 @@ if __name__ == '__main__':
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if "bloom" in model_name:
-        args.disable_low_gpu_mem_usage=True
+        args.disable_low_gpu_mem_usage = True
     if args.eval_fp16_baseline:
         if args.disable_low_gpu_mem_usage:
             model = model.to(torch_device)
@@ -257,7 +262,8 @@ if __name__ == '__main__':
                 weight_config[n] = {"data_type": "fp"}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
-
+    if args.quant_lm_head:
+        weight_config['lm_head'] = {"data_type": "int"}
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
@@ -265,7 +271,7 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning)  ##TODO args pass
+                      enable_minmax_tuning=not args.disable_minmax_tuning)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -278,6 +284,10 @@ if __name__ == '__main__':
     deployment_device = args.deployment_device.split(',')
     if 'gpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
+    if 'xpu' in deployment_device:
+        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=False,
+                                 compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
+                                 device="xpu")
     if "cpu" in deployment_device:
         autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=False)
     if "fake" in deployment_device:

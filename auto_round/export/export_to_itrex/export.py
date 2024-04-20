@@ -56,9 +56,58 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
         minmax_lr=minmax_lr,
         enable_minmax_tuning=enable_minmax_tuning,
         use_quant_input=use_quant_input,
-        scale_dtype=str(scale_dtype),
+        scale_dtype=scale_dtype,
     )
     if quantize_config is not None:
+        quantize_config.post_init()
+        config = compressed_model.config
+        setattr(config, "quantization_config", quantize_config.to_dict())
+        config.save_pretrained(output_dir)
+        quantize_config.save_pretrained(output_dir)
+    try:
+        compressed_model.save_pretrained(output_dir, safe_serialization=True)
+        if tokenizer is not None:
+            tokenizer.save_pretrained(output_dir)
+        logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
+    except IOError as e:  # pragma: no cover
+        logger.error("Fail to save configure file and weights due to {}.".format(e))
+    return compressed_model
+
+
+@register_format("itrex_xpu")
+def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
+    """Save configure file and weights for CPU backend inference."""
+    model = kwargs["model"]
+    weight_config = kwargs["weight_config"]
+    sym = kwargs["sym"]
+    bits = kwargs["bits"]
+    group_size = kwargs["group_size"]
+    iters = kwargs["iters"]
+    lr = kwargs["lr"]
+    minmax_lr = kwargs["minmax_lr"]
+    enable_minmax_tuning = kwargs["enable_minmax_tuning"]
+    use_quant_input = kwargs["use_quant_input"]
+    scale_dtype = kwargs["scale_dtype"]
+    tokenizer = kwargs["tokenizer"]
+
+    compressed_model = pack_model(inplace=inplace, **kwargs)
+    if output_dir is None:
+        return compressed_model
+    quantize_config = QuantConfig(
+        bits=bits,
+        group_size=group_size,
+        sym=sym,
+        iters=iters,
+        lr=lr,
+        minmax_lr=minmax_lr,
+        enable_minmax_tuning=enable_minmax_tuning,
+        use_quant_input=use_quant_input,
+        scale_dtype=scale_dtype,
+        export_to_xpu=True,
+    )
+    if quantize_config is not None:
+        quantize_config.post_init_xpu()
+        quantize_config.remove_redundant_parameters()
         config = compressed_model.config
         setattr(config, "quantization_config", quantize_config.to_dict())
         config.save_pretrained(output_dir)
@@ -82,6 +131,7 @@ def pack_model(
     device="cpu",
     use_optimum_format=True,
     inplace=False,
+    **kwargs,
 ):
     """Convert Linear to WeightOnlyLinear for low memory inference.
 
@@ -101,6 +151,13 @@ def pack_model(
             4. parameter name changed, such as 'packed_weight' -> 'qweight'.
             5. zeros is always needed even for sym.
         inplace (bool, optional): Compress the model in place, or copy the model and compress it.
+
+    xpu args:
+        compression_dtype=torch.int8,
+        compression_dim=0,
+        use_optimum_format=False,
+        scale_dtype=convert_dtype_str2torch(config.scale_dtype),
+        device="xpu",
     """
     if inplace:
         compressed_model = model
@@ -127,12 +184,20 @@ def pack_model(
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor(scale, dtype=convert_dtype)
             zp = torch.tensor(zp, dtype=torch.int32)
+            if device == "xpu":
+                scale = torch.tensor(v["scale"], dtype=torch.float32)
+                zp = None if sym else torch.tensor(v["zp"], dtype=torch.int32)
         else:
             if not inplace:
                 scale = scale.clone()
                 zp = zp.clone()
-            scale = scale.to(dtype=convert_dtype)
-            zp = zp.to(dtype=torch.int32)
+            if device == "xpu":
+                # Please note that for XPU, the scale data type is forcibly set to fp32
+                scale = scale.to(dtype=torch.float32)
+                zp = None if sym else zp.to(dtype=torch.int32)
+            else:
+                scale = scale.to(dtype=convert_dtype)
+                zp = zp.to(dtype=torch.int32)
 
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
         int_weight = int_weight.type(torch.int32)
@@ -145,10 +210,11 @@ def pack_model(
             scale_dtype=scale_dtype,
             zp=zp is not None,
             bias=m.bias is not None,
-            device=device,
-            use_optimum_format=True,
+            device="cuda" if device == "xpu" else device,
+            compression_dtype=compression_dtype,
+            compression_dim=compression_dim,
+            use_optimum_format=use_optimum_format,  # xpu is False
         )
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
-
     return compressed_model
