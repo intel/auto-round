@@ -224,18 +224,18 @@ if __name__ == '__main__':
             args.seqlen = seqlen
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
-    if args.eval_fp16_baseline:
-        pt_dtype = torch.float16
-        if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
-            dtype = 'bfloat16'
-            pt_dtype = torch.bfloat16
+    pt_dtype = torch.float16
+    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
+        dtype = 'bfloat16'
+        pt_dtype = torch.bfloat16
+    else:
+        if str(args.device) != "cpu":
+            pt_dtype = torch.float16
+            dtype = 'float16'
         else:
-            if str(args.device) != "cpu":
-                pt_dtype = torch.float16
-                dtype = 'float16'
-            else:
-                pt_dtype = torch.float32
-                dtype = 'float32'
+            pt_dtype = torch.float32
+            dtype = 'float32'
+    if args.eval_fp16_baseline:
         if args.disable_low_gpu_mem_usage:
             model = model.to(torch_device)
         excel_name += "_fp16.xlsx"
