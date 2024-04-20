@@ -170,7 +170,7 @@ if __name__ == '__main__':
         if use_eval_legacy:
             print("Using the legacy lm_eval(0.3.0)")
         else:
-            print("Using the latest lm_eval(0.4.1)")
+            print(f"Using the latest {res}")
 
     model_name = args.model_name
     if model_name[-1] == "/":
