@@ -75,10 +75,8 @@ class QuantConfig(PretrainedConfig):
             self.weight_dtype = "int4_fullrange"  # Due to ipex format limitations. Actually, it's int4_clip.
 
     def post_init(self):
-        r"""
-        Safety checker for CPU that arguments are correct
-        also replaces some NoneType arguments with their default values.
-        """
+        r"""Safety checker for CPU that arguments are correct
+        also replaces some NoneType arguments with their default values."""
 
         if self.scale_dtype not in ["fp32", "fp16", "bf16"]:
             raise ValueError("scale_dtype must be 'fp32', 'fp16' or 'bf16'.")
