@@ -34,13 +34,11 @@ logger.addHandler(fh)
 
 import importlib
 
-
 class LazyImport(object):
     """Lazy import python module till use."""
 
     def __init__(self, module_name):
         """Init LazyImport object.
-
         Args:
            module_name (string): The name of module imported later
         """
@@ -65,15 +63,13 @@ class LazyImport(object):
         self.module = importlib.import_module(module_name)
         function = getattr(self.module, function_name)
         return function(*args, **kwargs)
-
-
+    
 auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
 
 
 def is_optimum_habana_available():
     from transformers.utils.import_utils import is_optimum_available
-
     return is_optimum_available() and importlib.util.find_spec("optimum.habana") is not None
 
 
@@ -528,7 +524,7 @@ def detect_device(device=None):
         if torch.cuda.is_available():
             device = torch.device("cuda")
             logger.info("Using GPU device")
-        elif is_hpu_available:
+        elif is_optimum_habana_available():
             device = torch.device("hpu")
             logger.info("Using HPU device")
         # Use CPU as a fallback
@@ -611,3 +607,4 @@ class CpuInfo(object):
 
 def is_local_path(path):
     return os.path.exists(path)
+
