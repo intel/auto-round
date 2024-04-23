@@ -93,9 +93,8 @@ if __name__ == '__main__':
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
     parser.add_argument("--tasks",
-                        default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
-                                 "mmlu", "wikitext", "truthfulqa_mc1", "truthfulqa_mc2", "openbookqa", "boolq", "rte",
-                                 "arc_easy", "arc_challenge"],
+                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
+                        "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge,wikitext2,ptb-new,c4-new",
                         help="lm-eval tasks for lm_eval version 0.4")
 
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
@@ -162,7 +161,9 @@ if __name__ == '__main__':
             if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
                 tmp_tasks = tasks
                 tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-            tasks = list(set(tasks))
+            seen = set()
+            tmp_tasks = tasks
+            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
         if isinstance(args.tasks, str):
             tasks = ','.join(tasks)
 
@@ -302,3 +303,4 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
+
