@@ -15,7 +15,6 @@ def register_dataset(name):
     Decorator function used before a Pattern subclass.
 
     Args:
-        cls (class): The subclass of register.
         name: A string. Define the dataset type.
 
     Returns:
