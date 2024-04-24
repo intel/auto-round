@@ -7,10 +7,10 @@ For reference, the results of official AWQ-INT4 release are listed.
 lm_eval --model hf  --model_args pretrained="./",autogptq=True,gptq_use_triton=True,trust_remote_code=True --device cuda:0 --tasks ceval-valid,cmmlu,mmlu,gsm8k --batch_size 16 --num_fewshot 0
 ~~~
 
-| Metric | BF16   | INT4   |AWQ-INT4|
-|--------|--------|--------|--------|
-| Avg.   | 0.6043 | 0.5939 | 0.5867 |
-| mmlu   | 0.6163 | 0.6119 | 0.6133 |
-| cmmlu  | 0.7431 | 0.7314 | 0.7312 |
-| ceval  | 0.7355 | 0.7281 | 0.7155 |
-| gsm8k  | 0.3222 | 0.3040 | 0.2866 |
+| Metric | BF16   | INT4   |[01-ai/Yi-6B-Chat-4bits](https://huggingface.co/01-ai/Yi-6B-Chat-4bits)|
+|--------|--------|--------|----------------------|
+| Avg.   | 0.6043 | 0.5939 | 0.5867               |
+| mmlu   | 0.6163 | 0.6119 | 0.6133               |
+| cmmlu  | 0.7431 | 0.7314 | 0.7312               |
+| ceval  | 0.7355 | 0.7281 | 0.7155               |
+| gsm8k  | 0.3222 | 0.3040 | 0.2866               |
