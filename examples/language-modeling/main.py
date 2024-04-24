@@ -164,8 +164,6 @@ if __name__ == '__main__':
             seen = set()
             tmp_tasks = tasks
             tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
-        if isinstance(args.tasks, str):
-            tasks = ','.join(tasks)
 
     if 'fake' in args.deployment_device and not args.disable_eval:
         if use_eval_legacy:
