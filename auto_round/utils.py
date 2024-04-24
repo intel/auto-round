@@ -33,27 +33,49 @@ fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(line
 fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
 
+import importlib
+
+
+class LazyImport(object):
+    """Lazy import python module till use."""
+
+    def __init__(self, module_name):
+        """Init LazyImport object.
+
+        Args:
+           module_name (string): The name of module imported later
+        """
+        self.module_name = module_name
+        self.module = None
+
+    def __getattr__(self, name):
+        """Get the attributes of the module by name."""
+        try:
+            self.module = importlib.import_module(self.module_name)
+            mod = getattr(self.module, name)
+        except:
+            spec = importlib.util.find_spec(str(self.module_name + "." + name))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        return mod
+
+    def __call__(self, *args, **kwargs):
+        """Call the function in that module."""
+        function_name = self.module_name.split(".")[-1]
+        module_name = self.module_name.split(f".{function_name}")[0]
+        self.module = importlib.import_module(module_name)
+        function = getattr(self.module, function_name)
+        return function(*args, **kwargs)
+
+
+auto_gptq = LazyImport("auto_gptq")
+htcore = LazyImport("habana_frameworks.torch.core")
+
 
 def is_optimum_habana_available():
-    import importlib
-
     from transformers.utils.import_utils import is_optimum_available
 
     return is_optimum_available() and importlib.util.find_spec("optimum.habana") is not None
-
-
-try:
-    import habana_frameworks.torch.core as htcore
-    import habana_frameworks.torch.hpu as hthpu
-
-    if is_optimum_habana_available():
-        is_hpu_available = True
-    else:
-        print("Should install optimum-habana when the environment has habana frameworks")
-        is_hpu_available = False
-except ImportError:
-    is_hpu_available = False
-    htcore = None
 
 
 def round_ste(x: torch.Tensor):
@@ -507,7 +529,7 @@ def detect_device(device=None):
         if torch.cuda.is_available():
             device = torch.device("cuda")
             logger.info("Using GPU device")
-        elif is_hpu_available:
+        elif is_optimum_habana_available():
             device = torch.device("hpu")
             logger.info("Using HPU device")
         # Use CPU as a fallback
