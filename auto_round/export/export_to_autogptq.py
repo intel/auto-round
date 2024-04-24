@@ -14,7 +14,6 @@
 
 
 import copy
-import json
 import os
 from os.path import isdir, isfile, join
 from typing import Dict, List, Optional, Union
@@ -43,6 +42,7 @@ from typing import Dict, List, Optional, Union
 import torch
 from safetensors.torch import save_file as safe_save
 
+from auto_round import __version__
 from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
 
@@ -67,7 +67,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
-    ##check module quantized in block, this may have bug for mixed precision quantization
+    # check module quantized in block, this may have bug for mixed precision quantization
     block_name = get_block_names(model)[0]
     first_block = get_module(model, block_name)
     all_to_quantized = True
@@ -214,8 +214,6 @@ def _save_quantized_to_autogptq(
         safetensors_metadata["format"] = "pt"
 
         # Store the quantization configuration as safetensors metadata
-        from auto_round import __version__
-
         safetensors_metadata["autoround_version"] = str(__version__)
         safetensors_metadata["bits"] = str(bits)
         safetensors_metadata["group_size"] = str(group_size)
@@ -230,9 +228,9 @@ def _save_quantized_to_autogptq(
         model_save_name = model_base_name + ".bin"
         torch.save(model.state_dict(), join(save_dir, model_save_name))
 
-    from auto_gptq.modeling._base import BaseQuantizeConfig
+    from auto_gptq.quantization.config import BaseQuantizeConfig, CHECKPOINT_FORMAT, QUANT_METHOD
 
-    quantization_config = BaseQuantizeConfig(
+    config = BaseQuantizeConfig(
         bits=bits,
         group_size=group_size,
         desc_act=False,
@@ -240,24 +238,21 @@ def _save_quantized_to_autogptq(
         true_sequential=False,
         static_groups=False,
         model_file_base_name=model_base_name,
+        quant_method=QUANT_METHOD.GPTQ,
+        checkpoint_format=CHECKPOINT_FORMAT.GPTQ,
     )
-    quantization_config.model_file_base_name = model_base_name
+    config.model_file_base_name = model_base_name
 
-    config_dict = quantization_config.to_dict()
-    config_dict["quant_method"] = "intel/auto-round"
-    config_dict["autoround_version"] = __version__
-    config_dict["iters"] = iters
-    config_dict["lr"] = lr
-    config_dict["minmax_lr"] = minmax_lr
-    config_dict["enable_minmax_tuning"] = enable_minmax_tuning
-    config_dict["use_quant_input"] = use_quant_input
-    config_dict["scale_dtype"] = str(scale_dtype)
+    config.meta_set_quantizer("intel/auto-round", __version__)
+    config.meta_set("iters", iters)
+    config.meta_set("lr", lr)
+    config.meta_set("minmax_lr", minmax_lr)
+    config.meta_set("enable_minmax_tuning", enable_minmax_tuning)
+    config.meta_set("use_quant_input", use_quant_input)
+    config.meta_set("scale_dtype", str(scale_dtype))
     if modules_in_block_to_quantize is not None:
-        config_dict["modules_in_block_to_quantize"] = modules_in_block_to_quantize
+        config.meta_set("modules_in_block_to_quantize", modules_in_block_to_quantize)
 
-    with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
-        json.dump(config_dict, f, indent=2)
-
-    config_dict["quant_method"] = "gptq"  ##hf transformers could only recognize this value
-    model.config.quantization_config = config_dict
+    config.save_pretrained(save_dir)
+    model.config.quantization_config = config
     model.config.save_pretrained(save_dir)
