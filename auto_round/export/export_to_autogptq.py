@@ -228,7 +228,7 @@ def _save_quantized_to_autogptq(
         model_save_name = model_base_name + ".bin"
         torch.save(model.state_dict(), join(save_dir, model_save_name))
 
-    from auto_gptq.quantization.config import BaseQuantizeConfig, CHECKPOINT_FORMAT, QUANT_METHOD
+    from auto_gptq.quantization.config import CHECKPOINT_FORMAT, QUANT_METHOD, BaseQuantizeConfig
 
     config = BaseQuantizeConfig(
         bits=bits,
