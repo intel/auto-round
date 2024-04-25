@@ -45,6 +45,8 @@ from safetensors.torch import save_file as safe_save
 from auto_round import __version__
 from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
+from auto_gptq.quantization.config import CHECKPOINT_FORMAT, QUANT_METHOD, BaseQuantizeConfig
+from auto_gptq.modeling._utils import pack_model
 
 
 @register_format("auto_gptq")
@@ -92,8 +94,6 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
         compressed_model = model.to("cpu")
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
-
-    from auto_gptq.modeling._utils import pack_model
 
     if bits == 3 or use_triton is False:
         if bits == 3 and use_triton is True:
@@ -227,8 +227,6 @@ def _save_quantized_to_autogptq(
     else:
         model_save_name = model_base_name + ".bin"
         torch.save(model.state_dict(), join(save_dir, model_save_name))
-
-    from auto_gptq.quantization.config import CHECKPOINT_FORMAT, QUANT_METHOD, BaseQuantizeConfig
 
     config = BaseQuantizeConfig(
         bits=bits,

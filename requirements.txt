@@ -5,3 +5,4 @@ py-cpuinfo
 sentencepiece
 torch
 transformers
+safetensors
