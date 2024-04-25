@@ -18,10 +18,10 @@ import time
 
 import torch
 from torch import autocast
+from tqdm import tqdm
 
 from .calib_dataset import get_dataloader
 from .special_model_handler import check_hidden_state_dim, check_share_attention_mask
-from tqdm import tqdm
 from .utils import (
     CpuInfo,
     block_forward,
