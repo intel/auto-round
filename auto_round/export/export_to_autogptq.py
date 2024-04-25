@@ -143,10 +143,22 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             use_triton=True,
         )
 
+    config = BaseQuantizeConfig(
+        bits=bits,
+        group_size=group_size,
+        desc_act=False,
+        sym=sym,
+        true_sequential=False,
+        static_groups=False,
+        model_file_base_name=model_base_name,
+        quant_method=QUANT_METHOD.GPTQ,
+        checkpoint_format=CHECKPOINT_FORMAT.GPTQ,
+    )
+
     # convert to gptq v1 from internal v2 format
     compressed_model = convert_gptq_v2_to_v1_format(
         compressed_model,
-        quantize_config=quantize_config,
+        quantize_config=config,
         qlinear_kernel=qlinear_kernel,
     )
 
@@ -156,6 +168,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     _save_quantized_to_autogptq(
         compressed_model,
         output_dir,
+        config=config,
         bits=bits,
         group_size=group_size,
         sym=sym,
@@ -173,9 +186,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
 def _save_quantized_to_autogptq(
     model,
     save_dir: str,
-    bits=4,
-    group_size=128,
-    sym=False,
+    config: BaseQuantizeConfig,
     iters=200,
     lr=5e-3,
     minmax_lr=5e-3,
@@ -233,8 +244,8 @@ def _save_quantized_to_autogptq(
 
         # Store the quantization configuration as safetensors metadata
         safetensors_metadata["autoround_version"] = str(__version__)
-        safetensors_metadata["bits"] = str(bits)
-        safetensors_metadata["group_size"] = str(group_size)
+        safetensors_metadata["bits"] = str(config.bits)
+        safetensors_metadata["group_size"] = str(config.group_size)
         safetensors_metadata["iters"] = str(iters)
         safetensors_metadata["lr"] = str(lr)
         safetensors_metadata["minmax_lr"] = str(minmax_lr)
@@ -246,17 +257,7 @@ def _save_quantized_to_autogptq(
         model_save_name = model_base_name + ".bin"
         torch.save(model.state_dict(), join(save_dir, model_save_name))
 
-    config = BaseQuantizeConfig(
-        bits=bits,
-        group_size=group_size,
-        desc_act=False,
-        sym=sym,
-        true_sequential=False,
-        static_groups=False,
-        model_file_base_name=model_base_name,
-        quant_method=QUANT_METHOD.GPTQ,
-        checkpoint_format=CHECKPOINT_FORMAT.GPTQ,
-    )
+
     config.model_file_base_name = model_base_name
 
     config.meta_set_quantizer("intel/auto-round", __version__)
