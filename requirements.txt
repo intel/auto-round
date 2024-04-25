@@ -2,7 +2,7 @@ accelerate
 auto-gptq
 datasets
 py-cpuinfo
+safetensors
 sentencepiece
 torch
 transformers
-safetensors

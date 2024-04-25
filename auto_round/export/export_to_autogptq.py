@@ -40,13 +40,13 @@ from typing import Dict, List, Optional, Union
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
+from auto_gptq.modeling._utils import pack_model
+from auto_gptq.quantization.config import CHECKPOINT_FORMAT, QUANT_METHOD, BaseQuantizeConfig
 from safetensors.torch import save_file as safe_save
 
 from auto_round import __version__
 from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
-from auto_gptq.quantization.config import CHECKPOINT_FORMAT, QUANT_METHOD, BaseQuantizeConfig
-from auto_gptq.modeling._utils import pack_model
 
 
 @register_format("auto_gptq")
