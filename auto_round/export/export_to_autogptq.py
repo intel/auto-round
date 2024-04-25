@@ -240,7 +240,7 @@ def _save_quantized_to_autogptq(
         safetensors_metadata["format"] = "pt"
 
         # Store the quantization configuration as safetensors metadata
-        safetensors_metadata["autoround_version"] = str(__version__)
+        safetensors_metadata["autoround_version"] = str(autoround_version)
         safetensors_metadata["bits"] = str(config.bits)
         safetensors_metadata["group_size"] = str(config.group_size)
         safetensors_metadata["iters"] = str(iters)
