@@ -251,6 +251,7 @@ def _save_quantized_to_autogptq(
     if modules_in_block_to_quantize is not None:
         config.meta_set("modules_in_block_to_quantize", modules_in_block_to_quantize)
 
+    # TODO why are we saving config twice?
     config.save_pretrained(save_dir)
     model.config.quantization_config = config
     model.config.save_pretrained(save_dir)
