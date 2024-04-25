@@ -143,7 +143,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             use_triton=True,
         )
 
-    # save to gptq v1 format
+    # convert to gptq v1 from internal v2 format
     compressed_model = convert_gptq_v2_to_v1_format(
         compressed_model,
         quantize_config=quantize_config,
