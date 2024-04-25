@@ -3060,6 +3060,67 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>-</td> <! lm-eval wikitext ppl  -->
   </tr>
 
+<tr>
+    <td rowspan="3">Meta/LLaMA-2-7B </td>
+    <th>FP16</th>
+    <td>57.98 </td>
+    <td>42.69 </td>
+    <td>73.90 </td>
+    <td>57.15 </td>
+    <td>68.90 </td>
+    <td>78.07 </td>
+    <td>25.21 </td>
+    <td>31.40 </td>
+    <td>77.74 </td>
+    <td>62.82 </td>
+    <td>76.35 </td>
+    <td>43.52 </td>
+    <td>5.47 </td>
+    <td>37.92 </td>
+    <td>7.26 </td>
+    <td>8.79 </td>
+  </tr>
+
+  </tr>
+    <th>Ours iters=2K,minmax_lr=0.0005  </th>
+    <td>52.32 </td>
+    <td>28.26 </td>
+    <td>64.16 </td>
+    <td>50.66 </td>
+    <td>64.80 </td>
+    <td>75.14 </td>
+    <td>23.87 </td>
+    <td>30.20 </td>
+    <td>71.74 </td>
+    <td>57.76 </td>
+    <td>71.13 </td>
+    <td>37.80 </td>
+    <td>8.54 </td>
+    <td>0.00 </td>
+    <td>10.14 </td>
+    <td>0.00 </td>
+  </tr>
+
+  </tr>
+    <th>Ours iters=1K,minmax_lr=0.002 </th>
+    <td>52.29 </td>
+    <td>27.14 </td>
+    <td>65.48 </td>
+    <td>50.25 </td>
+    <td>66.61 </td>
+    <td>74.54 </td>
+    <td>24.11 </td>
+    <td>29.80 </td>
+    <td>73.30 </td>
+    <td>56.68 </td>
+    <td>70.20 </td>
+    <td>37.12 </td>
+    <td>8.72 </td>
+    <td>1692.95 </td>
+    <td>10.06 </td>
+    <td>12.80 </td>
+  </tr>
+
   <tr>
     <td rowspan="3">Meta/LLaMA-2-13B </td>
     <th>fp16</th>
