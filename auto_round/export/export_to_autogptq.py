@@ -42,7 +42,13 @@ from typing import Dict, List, Optional, Union
 import torch
 from auto_gptq import version as autogptq_version
 from auto_gptq.modeling._utils import convert_gptq_v2_to_v1_format, pack_model
-from auto_gptq.quantization.config import CHECKPOINT_FORMAT, QUANT_METHOD, BaseQuantizeConfig, META_FIELD_PACKER, META_FIELD_QUANTIZER
+from auto_gptq.quantization.config import (
+    CHECKPOINT_FORMAT,
+    META_FIELD_PACKER,
+    META_FIELD_QUANTIZER,
+    QUANT_METHOD,
+    BaseQuantizeConfig,
+)
 from safetensors.torch import save_file as safe_save
 
 from auto_round import __version__ as autoround_version
