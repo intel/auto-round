@@ -5,7 +5,6 @@ python3 main.py \
 --group_size 128 \
 --bits 4 \
 --iters 1000 \
---use_quant_input \
 --quant_lm_head \
 --deployment_device 'gpu' \
 --disable_low_gpu_mem_usage \
@@ -20,7 +19,6 @@ python3 main.py \
 --group_size 128 \
 --bits 4 \
 --iters 1000 \
---use_quant_input \
 --deployment_device 'gpu' \
 --disable_low_gpu_mem_usage \
 --output_dir "./tmp_autoround"

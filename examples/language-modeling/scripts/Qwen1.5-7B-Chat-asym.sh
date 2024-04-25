@@ -6,5 +6,4 @@ python3 main.py \
 --iters 1000 \
 --deployment_device 'gpu' \
 --minmax_lr 2e-3 \
---use_quant_input
 
