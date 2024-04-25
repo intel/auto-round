@@ -40,7 +40,7 @@ from typing import Dict, List, Optional, Union
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
-from auto_gptq.modeling._utils import pack_model
+from auto_gptq.modeling._utils import pack_model, convert_gptq_v2_to_v1_format
 from auto_gptq.quantization.config import CHECKPOINT_FORMAT, QUANT_METHOD, BaseQuantizeConfig
 from safetensors.torch import save_file as safe_save
 
@@ -103,6 +103,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
         compressed_model = copy.deepcopy(model.to("cpu"))
 
     quantizers = {}
+    qlinear_kernel = None
     if bits == 3 or use_triton is False:
         if bits == 3 and use_triton is True:
             logger.warning("triton does not support 3 bits, reset it to False")
@@ -113,7 +114,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
                 continue
             quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
 
-        pack_model(
+        qlinear_kernel = pack_model(
             compressed_model,
             quantizers,
             bits,
@@ -131,7 +132,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             info["zp"] = info["zp"].to(torch.float32)
             quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
 
-        pack_model(
+        qlinear_kernel = pack_model(
             compressed_model,
             quantizers,
             bits,
@@ -141,6 +142,13 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             force_layer_back_to_cpu=True,
             use_triton=True,
         )
+
+    # save to gptq v1 format
+    compressed_model = convert_gptq_v2_to_v1_format(
+        compressed_model,
+        quantize_config=quantize_config,
+        qlinear_kernel=qlinear_kernel,
+    )
 
     if output_dir is None:
         return compressed_model
