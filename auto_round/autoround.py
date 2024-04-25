@@ -1198,7 +1198,8 @@ class AutoRound(object):
                 m = get_module(model, n)
             else:
                 names = block_names[i : i + n_blocks]
-                pbar.set_description(f"Quantizing {i + 1}-{i + n_blocks}/{len(block_names)}, {names}")
+                pbar.set_description(f"Quantizing [{i + 1}-{i + n_blocks}]/{len(block_names)}")
+                logger.info(f"{i + 1}-{i + n_blocks}: {names}")
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
