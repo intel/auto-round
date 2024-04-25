@@ -21,6 +21,7 @@ from torch import autocast
 
 from .calib_dataset import get_dataloader
 from .special_model_handler import check_hidden_state_dim, check_share_attention_mask
+from tqdm import tqdm
 from .utils import (
     CpuInfo,
     block_forward,
@@ -1188,10 +1189,12 @@ class AutoRound(object):
         inputs.pop("input_ids", None)
         input_others = inputs
         torch.cuda.empty_cache()
-        for i in range(0, len(block_names), n_blocks):
+
+        pbar = tqdm(range(0, len(block_names), n_blocks))
+        for i in pbar:
             if n_blocks == 1:
                 n = block_names[i]
-                logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
+                pbar.set_description(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i : i + n_blocks]
