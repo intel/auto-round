@@ -6,8 +6,8 @@ Download the model from hf(coming soon) or follow examples/language-modeling/scr
 lm_eval --model hf --model_args pretrained="Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc",autogptq=True,gptq_use_triton=True --device cuda:0 --tasks lambada_openai,hellaswag,piqa,winogrande,truthfulqa_mc1,openbookqa,boolq,rte,arc_easy,arc_challenge,mmlu --batch_size 32
 ```
 
-| Metric         | FP16   | INT4   |
-| -------------- | ------ | ------ |
+| Metric         | BF16   | INT4   |
+| -------------- |--------| ------ |
 | Avg.           | 0.7000 | 0.6977 |
 | mmlu           | 0.6885 | 0.6824 |
 | lambada_openai | 0.7718 | 0.7790 |

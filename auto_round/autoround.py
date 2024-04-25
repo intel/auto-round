@@ -17,31 +17,31 @@ import copy
 import time
 
 import torch
+from torch import autocast
 
+from .calib_dataset import get_dataloader
+from .special_model_handler import check_hidden_state_dim, check_share_attention_mask
 from .utils import (
     CpuInfo,
     block_forward,
     check_is_cpu,
+    check_memory_availability,
     check_to_quantized,
     collect_minmax_scale,
     collect_round_v,
     detect_device,
-    get_batch_dim,
     get_block_names,
     get_module,
     get_scale_shape,
     htcore,
-    is_hpu_available,
+    is_local_path,
+    is_optimum_habana_available,
     logger,
     move_input_to_device,
     quant_weight,
     sampling_inputs,
     set_module,
 )
-
-if is_hpu_available:
-    import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-    import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
 
 class WrapperLinear(torch.nn.Module):
@@ -184,7 +184,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
             self.min_scale = torch.tensor(0, device=device)
             self.max_scale = torch.tensor(0, device=device)
 
-    def unwrapper(self, v, min_scale, max_scale):
+    def unwrapper(self, v=0, min_scale=0, max_scale=0):
         """Unwrapper the layer to the original conv1d layer.
 
         Args:
@@ -293,6 +293,31 @@ def wrapper_block(block, enable_minmax_tuning):
 
 
 @torch.no_grad()
+def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
+    """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
+
+    Args:
+    block: The input block containing wrapped modules to be unwrapped.
+    vs: A dictionary of scaling parameters for the wrapped modules.
+    min_scales: A dictionary of minimum scaling values for the wrapped modules.
+    max_scales: A dictionary of maximum scaling values for the wrapped modules.
+    """
+
+    if hasattr(layer, "orig_layer"):
+
+        if isinstance(min_scale, torch.Tensor):
+            min_scale = torch.clamp(min_scale, -1, 0)
+            max_scale = torch.clamp(max_scale, -1, 0)
+
+        else:
+            min_scale = torch.tensor(0)
+            max_scale = torch.tensor(0)
+        orig_layer = layer.unwrapper(v, min_scale, max_scale)
+        orig_layer = orig_layer.to("cpu")
+        set_module(model, layer_name, orig_layer)
+
+
+@torch.no_grad()
 def unwrapper_block(block, vs, min_scales, max_scales):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
@@ -367,7 +392,6 @@ class AutoRound(object):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
                            have different choices.
-        **kwargs: Additional keyword arguments.
 
     Returns:
         The quantized model.
@@ -407,6 +431,7 @@ class AutoRound(object):
         scale_dtype: str = "fp32",
         **kwargs,
     ):
+        self.quantized = False
         self.model_orig_dtype = model.dtype
         self.model = model.eval().to("cpu")
         self.amp = amp
@@ -445,7 +470,7 @@ class AutoRound(object):
         self.amp_dtype = torch.float16
         if self.model.dtype != torch.float32:
             self.amp_dtype = self.model.dtype
-        if self.device == "cpu" or self.device == "hpu":
+        if self.device == "cpu" or "hpu" in self.device:
             self.amp_dtype = torch.bfloat16
         if self.amp:
             if self.device == "cpu" and not CpuInfo().bf16:
@@ -481,7 +506,13 @@ class AutoRound(object):
         self.set_layerwise_config(self.weight_config)
         self.optimizer = self.get_optimizer(None)
         self.check_configs()
+        self.share_attention_mask_flag = None
+        self.hidden_dim_flag = None
         torch.set_printoptions(precision=3, sci_mode=True)
+        if is_optimum_habana_available():
+            logger.info("Optimum Habana is available, import htcore explicitly.")
+            import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
     def get_optimizer(self, optimizer):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.
@@ -512,7 +543,7 @@ class AutoRound(object):
         """
         scale_loss = loss * 1000
         scale_loss.backward()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         return scale_loss
 
@@ -529,7 +560,7 @@ class AutoRound(object):
         """
         optimizer.step()
         # for hpu
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         optimizer.zero_grad()
         lr_schedule.step()
@@ -552,6 +583,7 @@ class AutoRound(object):
 
     def set_layerwise_config(self, weight_config):
         """Sets the layer-wise configuration based on the provided weight_config.
+           By default, only quantize layers in blocks.
 
         Args:
         weight_config: The weight configuration.
@@ -559,21 +591,18 @@ class AutoRound(object):
         Returns:
         None
         """
+        layers_in_blocks = self.get_layer_names_in_block()
         for n, m in self.model.named_modules():
-            is_supported_type = False
-            for supported_type in self.supported_types:
-                if isinstance(m, supported_type):
-                    is_supported_type = True
-                    break
-            if not is_supported_type:
+            if not isinstance(m, tuple(self.supported_types)):
                 continue
-            if n not in weight_config.keys():
+            if n not in weight_config.keys() and n in layers_in_blocks:
                 weight_config[n] = {}
                 weight_config[n]["data_type"] = self.data_type
                 weight_config[n]["bits"] = self.bits
                 weight_config[n]["group_size"] = self.group_size
                 weight_config[n]["sym"] = self.sym
-            else:
+                weight_config[n]["scale_dtype"] = self.scale_dtype
+            elif n in weight_config.keys():
                 if "data_type" not in weight_config[n].keys():
                     weight_config[n]["data_type"] = self.data_type
                 if "bits" not in weight_config[n].keys():
@@ -582,7 +611,15 @@ class AutoRound(object):
                     weight_config[n]["group_size"] = self.group_size
                 if "sym" not in weight_config[n].keys():
                     weight_config[n]["sym"] = self.sym
-            weight_config[n]["scale_dtype"] = self.scale_dtype
+                if "scale_dtype" not in weight_config[n].keys():
+                    weight_config[n]["scale_dtype"] = self.scale_dtype
+            else:
+                weight_config[n] = {}
+                weight_config[n]["data_type"] = "float"
+                weight_config[n]["bits"] = 16
+                weight_config[n]["group_size"] = self.group_size
+                weight_config[n]["sym"] = self.sym
+                weight_config[n]["scale_dtype"] = self.scale_dtype
 
             m.data_type = weight_config[n]["data_type"]
             m.bits = weight_config[n]["bits"]
@@ -591,7 +628,7 @@ class AutoRound(object):
             m.scale_dtype = weight_config[n]["scale_dtype"]
 
     @torch.no_grad()
-    def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device, batch_dim):
+    def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
         """Compute the output of a given block of the model for a given input.
 
         Args:
@@ -611,17 +648,19 @@ class AutoRound(object):
         for i in range(0, self.n_samples, bs):
             end_index = min(self.n_samples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = sampling_inputs(input_ids, input_others, indices, self.seqlen)
+            tmp_input_ids, tmp_input_others = sampling_inputs(
+                input_ids, input_others, indices, self.seqlen, self.share_attention_mask_flag, self.input_dim
+            )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
             output.append(tmp_output)
-        output = torch.cat(output, dim=batch_dim)
+        output = torch.cat(output, dim=self.input_dim)
         torch.cuda.empty_cache()
         return output
 
     @torch.no_grad()
-    def calib(self, n_samples):
+    def calib(self, n_samples, bs):
         """Perform calibration for quantization.
 
         This method calibrates the model for quantization by processing a specified
@@ -631,27 +670,26 @@ class AutoRound(object):
         it logs an error and exits.
         Args:
             n_samples (int): The number of samples to use for calibration.
+            bs (int): The number of samples to use for calibration
         """
-        if self.dataloader is None:
-            from .calib_dataset import CALIB_DATASETS
 
-            get_dataloader = CALIB_DATASETS.get(self.dataset_name, CALIB_DATASETS["NeelNanda/pile-10k"])
+        if self.dataloader is None:
             self.dataloader = get_dataloader(
                 self.tokenizer,
                 self.seqlen,
-                seed=self.seed,
-                bs=self.train_bs,
-                split=self.dataset_split,
-                dataset_name=self.dataset_name,
+                self.dataset_name,
+                self.dataset_split,
+                self.seed,
+                bs,
+                self.n_samples,
             )
-
-        self.start_time = time.time()
         total_cnt = 0
         for data in self.dataloader:
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
                 input_ids = data.to(self.model.device)
+                data_new = input_ids
 
             elif isinstance(data, str):
                 if self.tokenizer is None:
@@ -669,8 +707,7 @@ class AutoRound(object):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            if total_cnt + input_ids.shape[0] > n_samples:
-                input_ids = input_ids[: n_samples - total_cnt, ...]
+
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
@@ -696,30 +733,55 @@ class AutoRound(object):
             )
 
     @torch.no_grad()
-    def cache_block_input(self, block_name, n_samples):
-        """Save the inputs of the first block for calibration.
+    def cache_inter_data(self, block_names, n_samples, layer_names=[], last_cache_name=None):
+        """Save the inputs of block_name for calibration. For layers, we cache both of inputs and output.
 
         This method temporarily replaces the forward method of the model to capture
         the inputs passing through the specified block. It then calibrates the model
         using a specified number of samples. Finally, it restores the original forward
         method and returns the inputs for the specified block.
         Args:
-            block_name (str): The name of the block for which inputs are to be saved.
+            block_names (list): The names of the blocks for which inputs are to be saved.
+            layer_names (list):The names of the layers for which inputs are to be saved.
             n_samples (int): The number of samples to use for calibration.
+            last_cache_name (str, optional): The name of the last layer to be cached,
+                                       we could break the forward in this layer to save time
+
         Returns:
             dict: A dictionary containing the inputs for the specified block.
         """
         self.inputs = {}
-        self.tmp_block_name = block_name
+        self.to_cached_layers = block_names + layer_names
+        tmp_dtype = None
+        if (
+            len(block_names) > 1 or len(layer_names) > 0
+        ) and self.low_gpu_mem_usage:  ## have bug if block name is not the first block
+            tmp_dtype = self.model.dtype
+            self.model = (
+                self.model.to(torch.bfloat16) if self.amp else self.model.to(torch.float32)
+            )  ##force to dtype supported on cpu
+
+        self.last_cache_name = last_cache_name
+        if last_cache_name is None and len(block_names) + len(layer_names) == 1:
+            self.last_cache_name = block_names[0] if len(block_names) == 1 else layer_names[0]
+        calib_bs = self.train_bs
+        if not self.low_gpu_mem_usage and len(layer_names) > 1:  ## persume has lm-head
+            calib_bs = 1
+
+        self.hook_handles = []
         self._replace_forward()
-        self.calib(n_samples)
+        self.calib(n_samples, calib_bs)
         self._recover_forward()
-        res = self.inputs[self.tmp_block_name]
-        del self.tmp_block_name
+        res = self.inputs
+        del self.last_cache_name
+        del self.to_cached_layers
+        if tmp_dtype is not None:
+            self.model = self.model.to(tmp_dtype)
+
         return res
 
     @torch.no_grad()
-    def get_forward_func(self, name):
+    def get_block_forward_func(self, name):
         """Gets the forward function.
 
         Args:
@@ -728,10 +790,22 @@ class AutoRound(object):
             function: The forward function.
         """
 
-        def forward(_, hidden_states, *positional_args, **kwargs):
-            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
+        def forward(m, hidden_states, *positional_args, **kwargs):
+            """Rewrite forward function, process and collect input data.
+
+            Args:
+                hidden_states (torch.Tensor): The hidden states tensor.
+                *positional_args: Variable number of positional arguments.
+                **kwargs: Variable number of keyword arguments.
+
+            Returns:
+                NotImplementedError: Getting the first layer inputs and then raise the error to save runtime.
+            """
+            if self.share_attention_mask_flag is None:
+                self.input_dim = check_hidden_state_dim(self.model, positional_args)
+                self.share_attention_mask_flag = check_share_attention_mask(self.model, hidden_states, **kwargs)
             if name in self.inputs:
-                data = torch.cat([self.inputs[name]["input_ids"], hidden_states.to("cpu")], dim=dim)
+                data = torch.cat([self.inputs[name]["input_ids"], hidden_states.to("cpu")], dim=self.input_dim)
                 self.inputs[name]["input_ids"] = data
             else:
                 self.inputs[name] = {}
@@ -748,7 +822,7 @@ class AutoRound(object):
                         if key not in self.inputs[name].keys():
                             self.inputs[name][key] = None
                         if kwargs[key] is not None:
-                            if self.inputs[name][key] is not None:
+                            if (not self.share_attention_mask_flag) and self.inputs[name][key] is not None:
                                 self.inputs[name][key] = torch.cat(
                                     [self.inputs[name][key], kwargs[key].to("cpu")], dim=0
                                 )
@@ -761,33 +835,179 @@ class AutoRound(object):
                             alibi = kwargs[key]
                             batch = kwargs["attention_mask"].shape[0]
                             alibi = alibi.reshape(batch, -1, alibi.shape[1], alibi.shape[2])
-                            if self.inputs[name][key] is not None:
+                            if (not self.share_attention_mask_flag) and self.inputs[name][key] is not None:
                                 self.inputs[name][key] = torch.cat([self.inputs[name][key], alibi.to("cpu")], dim=0)
                             else:
                                 self.inputs[name][key] = alibi.to("cpu")
                     elif key not in self.inputs[name].keys():
                         self.inputs[name][key] = move_input_to_device(kwargs[key], device=torch.device("cpu"))
-            raise NotImplementedError
+            if name == self.last_cache_name:
+                raise NotImplementedError
+            else:
+                return m.orig_forward(hidden_states, *positional_args, **kwargs)
 
         return forward
+
+    @torch.no_grad()
+    def _get_cache_data_hook_for_layer(self, name):
+        """A forward hook to save input max of a module
+        :param name: the module name
+        :return: A hook function."""
+
+        def cache_input_hook(module, inputs, outputs):
+            input = inputs
+            if isinstance(inputs, tuple) or isinstance(input, list):
+                input = inputs[0]
+            if name in self.inputs:
+                self.inputs[name] = torch.cat([self.inputs[name], input.to("cpu")], dim=0)
+            else:
+                self.inputs[name] = input.to("cpu")
+
+        return cache_input_hook
 
     def _recover_forward(self):
         """Recovers the forward function."""
         for n, m in self.model.named_modules():
-            if n == self.tmp_block_name:
+            if hasattr(m, "orig_forward"):
                 m.forward = m.orig_forward
                 delattr(m, "orig_forward")
-                break
+        for hook_handle in self.hook_handles:
+            hook_handle.remove()
+        self.hook_handles = []
 
     def _replace_forward(self):
         """Replaces the forward function."""
         from functools import partial
 
         for n, m in self.model.named_modules():
-            if n == self.tmp_block_name:
+            if n in self.to_cached_layers and not isinstance(m, tuple(self.supported_types)):  ##block
                 m.orig_forward = m.forward
-                m.forward = partial(self.get_forward_func(n), m)
-                break
+                m.forward = partial(self.get_block_forward_func(n), m)
+            elif n in self.to_cached_layers:  ##linear layer or conv1d layer
+                hook_func = self._get_cache_data_hook_for_layer(n)
+                hook_handle = m.register_forward_hook(hook_func)
+                self.hook_handles.append(hook_handle)
+
+    def quant_layer(self, layer_name, inputs, q_inputs=None, device=torch.device("cpu")):
+        """Quantize a specific layer of the model using the provided inputs.
+
+        Args:
+            layer_name (str): The name of the layer to quantize.
+            inputs (torch.Tensor): Input data for quantization.
+            q_inputs (torch.Tensor, optional): Quantized input data. Defaults to None.
+            device (torch.device, optional): The device to use for quantization. Defaults to torch.device("cpu").
+
+        Returns:
+            None
+        """
+        logger.info(f"quantizing layer {layer_name}")
+        with torch.no_grad():
+            layer = get_module(self.model, layer_name)
+            cache_device = "cpu"
+            layer = layer.to(device)
+
+            inputs = inputs.to(layer.weight.dtype)
+            if q_inputs is not None:
+                q_inputs = q_inputs.to(layer.weight.dtype)
+
+            output = []
+            train_bs = self.train_bs
+            for i in range(0, self.n_samples, train_bs):
+                end_index = min(self.n_samples, i + train_bs)
+                tmp_inputs = inputs[i:end_index, ...].to(device)
+                tmp_output = layer.forward(tmp_inputs).to(cache_device)
+                output.append(tmp_output)
+                torch.cuda.empty_cache()  ##too large for lm head, maybe need to decrease n_sample
+
+            output = torch.cat(output, dim=0)
+            torch.cuda.empty_cache()
+
+        wrapper_linear = WrapperLinear(layer, self.enable_minmax_tuning).to(device)
+        round_params = []
+        minmax_params = []
+        round_params.append(wrapper_linear.value)
+        minmax_params.append(wrapper_linear.min_scale)
+        minmax_params.append(wrapper_linear.max_scale)
+        if self.enable_minmax_tuning:
+            optimizer = self.optimizer(
+                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+            )
+        else:
+            optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+        if self.lr_scheduler is None:
+            lr_schedule = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+            )
+        else:
+            lr_schedule = copy.deepcopy(self.lr_scheduler)
+
+        pick_samples = train_bs
+
+        n_samples = inputs.shape[0]
+        if self.sampler != "rand":
+            indices = torch.randperm(n_samples)[:pick_samples]
+        last_best_iter = 0
+        best_loss = torch.finfo(torch.float).max
+        mse_loss = torch.nn.MSELoss().to(device)
+        scaler = self.get_scaler()  # pylint: disable=assignment-from-none
+        init_loss = None
+        best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
+        gradient_accumulate_steps = self.train_bs // train_bs
+        for i in range(self.iters):
+            if self.sampler == "rand":
+                indices = torch.randperm(n_samples)[:pick_samples]
+            total_loss = 0
+            for _ in range(gradient_accumulate_steps):
+                if q_inputs is not None:
+                    current_input = q_inputs[indices, ...].to(device)
+                else:
+                    current_input = inputs[indices, ...].to(device)
+
+                current_output = output[indices, ...].to(device)
+                if self.amp:
+                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                        output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
+                        loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
+                else:
+                    output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
+                    loss = mse_loss(  # pylint: disable=not-callable
+                        output_q.to(torch.float32), current_output.to(torch.float32)
+                    )
+
+                total_loss += loss.item() / gradient_accumulate_steps
+                if i == 0:
+                    init_loss = total_loss
+
+                self.scale_loss_and_backward(scaler, loss)
+                torch.cuda.empty_cache()
+
+            if total_loss < best_loss:
+                best_loss = total_loss
+                if not self.not_use_best_mse:
+                    best_v = copy.deepcopy(wrapper_linear.value.data)
+                    best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
+                    best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
+
+                    last_best_iter = i
+            if self.not_use_best_mse and i == self.iters - 1:
+                best_v = copy.deepcopy(wrapper_linear.value.data)
+                best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
+                best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
+
+            if not self.not_use_best_mse:
+                if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+                    break
+            self.step(scaler, optimizer, lr_schedule)
+
+        last_loss = total_loss
+        best_iter = self.iters
+        if not self.not_use_best_mse:
+            last_loss = best_loss
+            best_iter = last_best_iter
+        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+        logger.info(dump_info)
+        with torch.no_grad():
+            unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
@@ -802,16 +1022,20 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.use_quant_input is True, else (None, output)
         """
-        from torch.amp import autocast
+        cache_device = "cpu"  ## force cache device to "cpu"
+        ##change to block dtype:
+        tmp_dtype = self.amp_dtype if self.amp else torch.float32
+        for (
+            key
+        ) in (
+            input_others.keys()
+        ):  ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
+            if isinstance(input_others[key], torch.Tensor) and (
+                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+            ):
+                input_others[key] = input_others[key].to(tmp_dtype)
 
-        batch_dim = get_batch_dim(input_others)
-        if not self.low_gpu_mem_usage and input_ids.device != device:
-            input_ids = move_input_to_device(input_ids, device)
-            input_others = move_input_to_device(input_others, device)
-        cache_device = device
-        if self.low_gpu_mem_usage:
-            cache_device = "cpu"
-        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device, batch_dim)
+        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device)
 
         if q_input is not None:
             input_ids = q_input.to(cache_device)
@@ -842,7 +1066,7 @@ class AutoRound(object):
 
         pick_samples = self.train_bs
         if len(input_ids.shape) == 3:
-            n_samples = input_ids.shape[batch_dim]
+            n_samples = input_ids.shape[self.input_dim]
         else:
             n_samples = input_ids.shape[0] // self.seqlen
         if self.sampler != "rand":
@@ -860,12 +1084,17 @@ class AutoRound(object):
             total_loss = 0
             for _ in range(self.gradient_accumulate_steps):
                 current_input_ids, current_input_others = sampling_inputs(
-                    input_ids, input_others, indices, seqlen=self.seqlen
+                    input_ids,
+                    input_others,
+                    indices,
+                    seqlen=self.seqlen,
+                    share_attention_mask_flag=self.share_attention_mask_flag,
+                    input_dim=self.input_dim,
                 )
                 if len(input_ids.shape) == 3:
-                    if batch_dim == 0:
+                    if self.input_dim == 0:
                         current_output = output[indices, :, :]
-                    elif batch_dim == 1:
+                    elif self.input_dim == 1:
                         current_output = output[:, indices, :]
                     else:
                         current_output = output[:, :, indices]
@@ -879,7 +1108,7 @@ class AutoRound(object):
                     block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
                 )
                 if self.amp and not check_is_cpu(device):
-                    with autocast(device_type="cuda", dtype=self.amp_dtype):
+                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable
@@ -887,6 +1116,7 @@ class AutoRound(object):
                     )
 
                 total_loss += loss.item() / self.gradient_accumulate_steps
+                torch.cuda.empty_cache()
                 if i == 0:
                     init_loss = total_loss
 
@@ -920,12 +1150,10 @@ class AutoRound(object):
         logger.info(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
-
-        unwrapper_block(block, best_v, best_min_scale, best_max_scale)
+        with torch.no_grad():
+            unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.use_quant_input:
-            q_outputs = self.get_block_outputs(
-                block, input_ids, input_others, self.train_bs, device, cache_device, batch_dim
-            )
+            q_outputs = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device)
 
             return q_outputs, output
 
@@ -980,7 +1208,7 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
             )
-            m.to("cpu")
+            m = m.to("cpu")
             torch.cuda.empty_cache()
 
         del q_input
@@ -991,6 +1219,17 @@ class AutoRound(object):
         torch.cuda.empty_cache()
 
     def save_quantized(self, output_dir=None, format="auto_gptq", inplace=True, **kwargs):
+        """Save the quantized model to the specified output directory in the specified format.
+
+        Args:
+            output_dir (str, optional): The directory to save the quantized model. Defaults to None.
+            format (str, optional): The format in which to save the model. Defaults to "auto_gptq".
+            inplace (bool, optional): Whether to modify the model in place. Defaults to True.
+            **kwargs: Additional keyword arguments specific to the export format.
+
+        Returns:
+            object: The compressed model object.
+        """
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
@@ -1020,6 +1259,74 @@ class AutoRound(object):
         )
         return compressed_model
 
+    #
+    # @torch.no_grad()
+    # def gets_layer_names_outside_blocks(self):
+    #     """Gets the names of layers outside blocks in the model.
+    #
+    #     Returns:
+    #         list: List of layer names outside blocks.
+    #     """
+    #     all_layer_names = set()
+    #     for n, m in self.model.named_modules():
+    #         if isinstance(m, tuple(self.supported_types)):
+    #             m.tmp_name = n
+    #             all_layer_names.add(n)
+    #     block_names = get_block_names(self.model)
+    #     all_layer_names_in_block = set()
+    #     for block_name in block_names:
+    #         block = get_module(self.model, block_name)
+    #         for n, m in block.named_modules():
+    #             if isinstance(m, tuple(self.supported_types)):
+    #                 all_layer_names_in_block.add(m.tmp_name)
+    #
+    #     res = all_layer_names - all_layer_names_in_block
+    #     for n, m in self.model.named_modules():
+    #         if isinstance(m, tuple(self.supported_types)):
+    #             delattr(m, "tmp_name")
+    #     return list(res)
+
+    def get_layer_names_in_block(self):
+        for n, m in self.model.named_modules():
+            if isinstance(m, tuple(self.supported_types)):
+                m.tmp_name = n
+        layers_in_block = []
+        block_names = get_block_names(self.model)
+        for block_name in block_names:
+            block = get_module(self.model, block_name)
+            for n, m in block.named_modules():
+                if hasattr(m, "tmp_name"):
+                    layers_in_block.append(m.tmp_name)
+        for n, m in self.model.named_modules():
+            if hasattr(m, "tmp_name"):
+                delattr(m, "tmp_name")
+        return layers_in_block
+
+    def get_quantized_layer_names_outside_blocks(self):
+        """Gets the names of quantized layers outside blocks in the model.
+
+        Returns:
+            list: List of layer names outside blocks.
+        """
+        if self.weight_config is None or len(self.weight_config) == 0:
+            return []
+
+        layer_names = []
+        all_layers_in_block = self.get_layer_names_in_block()
+
+        for key in self.weight_config.keys():
+            if key in all_layers_in_block:
+                continue
+            try:
+                layer = get_module(self.model, key)
+                if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.weight_config[key]):
+                    layer_names.append(key)
+            except:
+                logger.error(f"could not find layer {key} in the model, exit...")
+                exit()
+
+        return layer_names
+
     def quantize(self):
         """Quantize the model and return the quantized model along with weight configurations.
 
@@ -1035,10 +1342,18 @@ class AutoRound(object):
             self.model = self.model.to(self.amp_dtype)
         if not self.low_gpu_mem_usage:
             self.model = self.model.to(self.device)
-        inputs = self.cache_block_input(block_names[0], self.n_samples)
+
+        layer_names = self.get_quantized_layer_names_outside_blocks()
+        self.start_time = time.time()
+        all_inputs = self.cache_inter_data([block_names[0]], self.n_samples, layer_names=layer_names)
+        del self.inputs
+        inputs = all_inputs[block_names[0]]
+
+        all_inputs.pop(block_names[0])
+        self.inputs = None
         del self.inputs
         if "input_ids" in inputs.keys():
-            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
+            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))  ##polish the code
             total_samples = inputs["input_ids"].shape[dim]
             self.n_samples = total_samples
             if total_samples < self.train_bs:
@@ -1053,6 +1368,22 @@ class AutoRound(object):
             n_blocks=self.n_blocks,
             device=self.device,
         )
+        ##TODO currently we take all the layers outside blocks as post block layers which is not optimal
+        if len(layer_names) > 0:
+            torch.cuda.empty_cache()
+            layer_inputs = all_inputs
+            q_layer_inputs = None
+            if self.use_quant_input:
+                if not self.low_gpu_mem_usage:
+                    self.model = self.model.to(self.device)
+                q_layer_inputs = self.cache_inter_data([], self.n_samples, layer_names=layer_names)
+            self.model = self.model.to("cpu")
+            torch.cuda.empty_cache()
+            for layer_name in layer_names:
+                q_layer_input = q_layer_inputs[layer_name] if self.use_quant_input else None
+                self.quant_layer(layer_name, layer_inputs[layer_name], q_layer_input, device=self.device)
+                torch.cuda.empty_cache()
+
         for n, m in self.model.named_modules():
             if n in self.weight_config.keys():
                 if hasattr(m, "scale"):
@@ -1136,7 +1467,6 @@ class AutoOPTRound(AutoRound):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
                            have different choices.
-        optimizer: string or object
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -1236,7 +1566,7 @@ class AutoOPTRound(AutoRound):
             loss = scaler.scale(loss)
 
         loss.backward()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         return loss
 
@@ -1250,7 +1580,7 @@ class AutoOPTRound(AutoRound):
             optimizer.step()
             optimizer.zero_grad()
             lr_schedule.step()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
 
 
@@ -1291,7 +1621,6 @@ class AutoAdamRound(AutoOPTRound):
         optimizer: string or object
         scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
                            have different choices.
-        **kwargs: Additional keyword arguments.
 
     Returns:
         The quantized model.

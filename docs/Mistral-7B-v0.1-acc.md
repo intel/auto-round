@@ -6,8 +6,8 @@ lm_eval --model hf --model_args pretrained="Intel/Mistral-7B-v0.1-int4-inc",auto
 
 
 
-| Metric         | FP16   | INT4   |
-| -------------- | ------ | ------ |
+| Metric         | BF16   | INT4   |
+| -------------- |--------| ------ |
 | Avg.           | 0.6306 | 0.6308 |
 | mmlu           | 0.5961 | 0.5880 |
 | lambada_openai | 0.7561 | 0.7551 |
