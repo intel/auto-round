@@ -257,7 +257,7 @@ def _save_quantized_to_autogptq(
     config.model_file_base_name = model_base_name
 
     config.meta_set_versionable(META_FIELD_QUANTIZER, "intel/auto-round", autoround_version)
-    config.meta_set_versionable(META_FIELD_PACKER, f"autogptq:{autogptq_version.__version__}")
+    config.meta_set_versionable(META_FIELD_PACKER, "autogptq", autogptq_version.__version__)
     config.meta_set("iters", iters)
     config.meta_set("lr", lr)
     config.meta_set("minmax_lr", minmax_lr)
