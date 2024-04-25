@@ -257,7 +257,6 @@ def _save_quantized_to_autogptq(
         model_save_name = model_base_name + ".bin"
         torch.save(model.state_dict(), join(save_dir, model_save_name))
 
-
     config.model_file_base_name = model_base_name
 
     config.meta_set_quantizer("intel/auto-round", __version__)
