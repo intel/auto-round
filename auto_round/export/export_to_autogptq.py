@@ -40,7 +40,7 @@ from typing import Dict, List, Optional, Union
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
-from auto_gptq.modeling._utils import pack_model, convert_gptq_v2_to_v1_format
+from auto_gptq.modeling._utils import convert_gptq_v2_to_v1_format, pack_model
 from auto_gptq.quantization.config import CHECKPOINT_FORMAT, QUANT_METHOD, BaseQuantizeConfig
 from safetensors.torch import save_file as safe_save
 
