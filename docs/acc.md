@@ -3309,7 +3309,7 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
 
   <tr>
     <td rowspan="3">Meta/LLaMA-2-13B </td>
-    <th>fp16</th>
+    <th>Fp16</th>
     <td>61.42 </td>
     <td>52.86 </td>
     <td>76.77 </td>
