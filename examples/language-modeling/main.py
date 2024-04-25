@@ -129,6 +129,11 @@ if __name__ == '__main__':
         print(
             "amp is deprecated, it has been set to the default, use disable_amp to turn it off")
 
+    deployment_device = args.deployment_device.split(',')
+    if 'gpu' in deployment_device and args.quant_lm_head:
+        raise ValueError("quant_lm_head is not supported for deployment on gpu due to incompatibility with autogptq. "
+                         "Please disable quant_lm_head or remove gpu from deployment_device.")
+
     set_seed(args.seed)
     tasks = args.tasks
     use_eval_legacy = False
@@ -282,7 +287,7 @@ if __name__ == '__main__':
 
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
-    deployment_device = args.deployment_device.split(',')
+
     if 'gpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
     if 'xpu' in deployment_device:
