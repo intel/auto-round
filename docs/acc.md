@@ -3268,27 +3268,6 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
     <td>8.38 </td>
     <td>-</td>
   </tr>
-
-  </tr>
-    <th>Ours iters=4K,minmax_lr=0.0005  </th>
-    <td>57.16 </td>
-    <td>50.28 </td>
-    <td>67.03 </td>
-    <td>55.37 </td>
-    <td>68.11 </td>
-    <td>77.53 </td>
-    <td>26.44 </td>
-    <td>26.00 </td>
-    <td>80.58 </td>
-    <td>58.12 </td>
-    <td>75.63 </td>
-    <td>43.69 </td>
-    <td>7.07 </td>
-    <td>51.88 </td>
-    <td>10.67 </td>
-    <td>-</td> <! lm-eval wikitext ppl  -->
-  </tr>
-
   </tr>
     <th>Ours iters=1K </th>
     <td>56.44 </td>
@@ -3306,6 +3285,25 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
     <td>7.14 </td>
     <td>56.78 </td>
     <td>10.71 </td>
+    <td>-</td> <! lm-eval wikitext ppl  -->
+  </tr>
+  </tr>
+    <th>Ours iters=4K,minmax_lr=0.0005  </th>
+    <td>57.16 </td>
+    <td>50.28 </td>
+    <td>67.03 </td>
+    <td>55.37 </td>
+    <td>68.11 </td>
+    <td>77.53 </td>
+    <td>26.44 </td>
+    <td>26.00 </td>
+    <td>80.58 </td>
+    <td>58.12 </td>
+    <td>75.63 </td>
+    <td>43.69 </td>
+    <td>7.07 </td>
+    <td>51.88 </td>
+    <td>10.67 </td>
     <td>-</td> <! lm-eval wikitext ppl  -->
   </tr>
 
@@ -3330,6 +3328,25 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
     <td>7.90 </td>
  
   </tr>
+<tr>
+    <th>Ours iters=1K,minmax_lr=0.002</th>
+    <td>56.95 </td>
+    <td>42.39 </td>
+    <td>70.87 </td>
+    <td>55.15 </td>
+    <td>68.03 </td>
+    <td>77.37 </td>
+    <td>24.11 </td>
+    <td>30.80 </td>
+    <td>77.58 </td>
+    <td>64.62 </td>
+    <td>75.63 </td>
+    <td>39.93 </td>
+    <td>6.26 </td>
+    <td>78.83 </td>
+    <td>8.70 </td>
+    <td>11.25 </td>
+  </tr>
   <tr>
     <th>Ours iters=2K,minmax_lr=0.001</th>
     <td>57.53 </td>
@@ -3349,25 +3366,7 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
     <td>8.70 </td>
     <td>11.22 </td>
   </tr>
-  <tr>
-    <th>Ours iters=1K,minmax_lr=0.002</th>
-    <td>56.95 </td>
-    <td>42.39 </td>
-    <td>70.87 </td>
-    <td>55.15 </td>
-    <td>68.03 </td>
-    <td>77.37 </td>
-    <td>24.11 </td>
-    <td>30.80 </td>
-    <td>77.58 </td>
-    <td>64.62 </td>
-    <td>75.63 </td>
-    <td>39.93 </td>
-    <td>6.26 </td>
-    <td>78.83 </td>
-    <td>8.70 </td>
-    <td>11.25 </td>
-  </tr>
+
  <tr>
     <td rowspan="3">Meta/LLaMA-2-7B </td>
     <th>FP16</th>
@@ -3388,7 +3387,25 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
     <td>7.26 </td>
     <td>8.79 </td>
   </tr>
-
+  </tr>
+    <th>Ours iters=1K,minmax_lr=0.002 </th>
+    <td>52.29 </td>
+    <td>27.14 </td>
+    <td>65.48 </td>
+    <td>50.25 </td>
+    <td>66.61 </td>
+    <td>74.54 </td>
+    <td>24.11 </td>
+    <td>29.80 </td>
+    <td>73.30 </td>
+    <td>56.68 </td>
+    <td>70.20 </td>
+    <td>37.12 </td>
+    <td>8.72 </td>
+    <td>1692.95 </td>
+    <td>10.06 </td>
+    <td>12.80 </td>
+  </tr>
   </tr>
     <th>Ours iters=2K,minmax_lr=0.0005  </th>
     <td>52.32 </td>
@@ -3409,24 +3426,5 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
     <td>0.00 </td>
   </tr>
 
-  </tr>
-    <th>Ours iters=1K,minmax_lr=0.002 </th>
-    <td>52.29 </td>
-    <td>27.14 </td>
-    <td>65.48 </td>
-    <td>50.25 </td>
-    <td>66.61 </td>
-    <td>74.54 </td>
-    <td>24.11 </td>
-    <td>29.80 </td>
-    <td>73.30 </td>
-    <td>56.68 </td>
-    <td>70.20 </td>
-    <td>37.12 </td>
-    <td>8.72 </td>
-    <td>1692.95 </td>
-    <td>10.06 </td>
-    <td>12.80 </td>
-  </tr>
 </table>
 </table>
