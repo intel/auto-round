@@ -151,7 +151,6 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
         sym=sym,
         true_sequential=False,
         static_groups=False,
-        model_file_base_name=model_base_name,
         quant_method=QUANT_METHOD.GPTQ,
         checkpoint_format=CHECKPOINT_FORMAT.GPTQ,
     )
