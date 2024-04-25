@@ -67,10 +67,11 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     supported_types = kwargs["supported_types"]
 
     # check if quant_lm_head is enabled
-    if weight_config is not None and weight_config.get('lm_head') == {"data_type": "int"}:
-        raise ValueError("quant_lm_head is not supported for deployment on gpu due to incompatibility with autogptq. "
-                         "Please disable quant_lm_head or remove gpu from deployment_device.")
-
+    if weight_config is not None and weight_config.get("lm_head") == {"data_type": "int"}:
+        raise ValueError(
+            "quant_lm_head is not supported for deployment on gpu due to incompatibility with autogptq. "
+            "Please disable quant_lm_head or remove gpu from deployment_device."
+        )
 
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     if tokenizer is not None:
