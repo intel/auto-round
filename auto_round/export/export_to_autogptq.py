@@ -42,7 +42,7 @@ from typing import Dict, List, Optional, Union
 import torch
 from auto_gptq import version as autogptq_version
 from auto_gptq.modeling._utils import convert_gptq_v2_to_v1_format, pack_model
-from auto_gptq.quantization.config import CHECKPOINT_FORMAT, QUANT_METHOD, BaseQuantizeConfig
+from auto_gptq.quantization.config import CHECKPOINT_FORMAT, QUANT_METHOD, BaseQuantizeConfig, META_FIELD_PACKER, META_FIELD_QUANTIZER
 from safetensors.torch import save_file as safe_save
 
 from auto_round import __version__ as autoround_version
@@ -256,8 +256,8 @@ def _save_quantized_to_autogptq(
 
     config.model_file_base_name = model_base_name
 
-    config.meta_set_quantizer("intel/auto-round", autoround_version)
-    config.meta_set("packer", f"autogptq:{autogptq_version.__version__}")
+    config.meta_set_versionable(META_FIELD_QUANTIZER, "intel/auto-round", autoround_version)
+    config.meta_set_versionable(META_FIELD_PACKER, f"autogptq:{autogptq_version.__version__}")
     config.meta_set("iters", iters)
     config.meta_set("lr", lr)
     config.meta_set("minmax_lr", minmax_lr)
