@@ -86,7 +86,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             all_to_quantized = False
         else:
             modules_in_block_to_quantize.append(n)
-    modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
+    modules_in_block_to_quantize = [modules_in_block_to_quantize]  # align with autogptq
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
@@ -95,15 +95,17 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
 
+    quantizers = {}
     if bits == 3 or use_triton is False:
         if bits == 3 and use_triton is True:
             logger.warning("triton does not support 3 bits, reset it to False")
-        quantizers = {}
+
         for key in weight_config:
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
             quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
+
         pack_model(
             compressed_model,
             quantizers,
@@ -115,13 +117,13 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             use_triton=False,
         )
     else:
-        quantizers = {}
         for key in weight_config:
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
             info["zp"] = info["zp"].to(torch.float32)
             quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
+
         pack_model(
             compressed_model,
             quantizers,
@@ -132,6 +134,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             force_layer_back_to_cpu=True,
             use_triton=True,
         )
+
     if output_dir is None:
         return compressed_model
 
