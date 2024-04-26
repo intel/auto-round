@@ -48,8 +48,8 @@ if __name__ == '__main__':
     parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
                         help="The dataset for quantization training. It can be a custom one.")
 
-    parser.add_argument("--use_quanted_input", action='store_true',
-                        help="use_quanted_input is deprecated.")
+    parser.add_argument("--enable_quanted_input", action='store_true',
+                        help="enable_quanted_input is deprecated.")
 
     parser.add_argument("--lr", default=None, type=float,
                         help="learning rate, if None, it will be set to 1.0/iters automatically")
@@ -115,7 +115,7 @@ if __name__ == '__main__':
     parser.add_argument("--disable_trust_remote_code", action='store_true',
                         help="Whether to disable trust_remote_code")
     
-    parser.add_argument("--disuse_quanted_input", action='store_true',
+    parser.add_argument("--disable_quanted_input", action='store_true',
                         help="whether to disuse the output of quantized block to tune the next block")
 
     parser.add_argument("--quant_lm_head", action='store_true',
@@ -131,9 +131,9 @@ if __name__ == '__main__':
     if args.amp:
         print(
             "amp is deprecated, it has been set to the default, use disable_amp to turn it off")
-    if args.use_quanted_input:
+    if args.enable_quanted_input:
         print(
-            "use_quanted_input is deprecated. It has been set to the default; use disuse_quanted_input to turn it off")
+            "enable_quanted_input is deprecated. It has been set to the default; use disable_quanted_input to turn it off")
 
     set_seed(args.seed)
     tasks = args.tasks
@@ -271,7 +271,7 @@ if __name__ == '__main__':
         weight_config['lm_head'] = {"data_type": "int"}
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
-                      minmax_lr=args.minmax_lr, use_quanted_input=not args.disuse_quanted_input, device=device_str,
+                      minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
                       amp=not args.disable_amp, n_samples=args.n_samples,
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,

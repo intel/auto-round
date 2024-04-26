@@ -14,4 +14,4 @@ python3 main.py \
 --enable_minmax_tuning \
 --output_dir "./tmp_signround" \
 --amp \
---disuse_quanted_input
+--disable_quanted_input
