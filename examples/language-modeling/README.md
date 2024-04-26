@@ -18,7 +18,8 @@ The transformers version required varies across different types of models. Here,
 | facebook/opt-6.7b | 4.28/4.30/4.34/4.36 |
 | tiiuae/falcon-7b | 4.28/4.30/4.34/4.36 |
 | mosaicml/mpt-7b | 4.28/4.30/4.34/4.36 |
-| bigscience/bloom-7b1 | 4.28/4.30/4.34/4.36 |
+| bigscience/bloom-3b | 4.28/4.30/4.34/4.36 |
+| facebook/opt-2.7b | 4.28/4.30/4.34/4.36 |
 | baichuan-inc/Baichuan2-7B-Chat | 4.36 |
 | Qwen/Qwen-7B | 4.28/4.30/4.34/4.36 |
 | THUDM/chatglm3-6b | 4.34/4.36 |

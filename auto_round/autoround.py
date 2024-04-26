@@ -25,6 +25,7 @@ from .utils import (
     CpuInfo,
     block_forward,
     check_is_cpu,
+    check_memory_availability,
     check_to_quantized,
     collect_minmax_scale,
     collect_round_v,
@@ -33,18 +34,14 @@ from .utils import (
     get_module,
     get_scale_shape,
     htcore,
-    is_hpu_available,
     is_local_path,
+    is_optimum_habana_available,
     logger,
     move_input_to_device,
     quant_weight,
     sampling_inputs,
     set_module,
 )
-
-if is_hpu_available:
-    import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-    import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
 
 class WrapperLinear(torch.nn.Module):
@@ -187,7 +184,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
             self.min_scale = torch.tensor(0, device=device)
             self.max_scale = torch.tensor(0, device=device)
 
-    def unwrapper(self, v, min_scale, max_scale):
+    def unwrapper(self, v=0, min_scale=0, max_scale=0):
         """Unwrapper the layer to the original conv1d layer.
 
         Args:
@@ -296,7 +293,7 @@ def wrapper_block(block, enable_minmax_tuning):
 
 
 @torch.no_grad()
-def unwrapper_layer(model, layer, layer_name, v, min_scale, max_scale):
+def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
     Args:
@@ -395,8 +392,6 @@ class AutoRound(object):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
                            have different choices.
-        only_quantize_blocks (bool): Whether to only quantize the layers in blocks, layers like lm-head are outside of blocks
-        **kwargs: Additional keyword arguments.
 
     Returns:
         The quantized model.
@@ -434,10 +429,8 @@ class AutoRound(object):
         dynamic_max_gap: int = -1,
         data_type: str = "int",  ##only support data_type
         scale_dtype: str = "fp32",
-        only_quantize_blocks: bool = False,
         **kwargs,
     ):
-        low_gpu_mem_usage = False  ##TODO delete this later
         self.quantized = False
         self.model_orig_dtype = model.dtype
         self.model = model.eval().to("cpu")
@@ -459,6 +452,7 @@ class AutoRound(object):
         except:
             pass
         self.weight_config = weight_config
+        self.weight_config['lm_head'] = {"data_type": "int"} # Hard code for specific purposes
         self.dataset_split = dataset_split
         self.seed = seed
         self.tokenizer = tokenizer
@@ -515,8 +509,11 @@ class AutoRound(object):
         self.check_configs()
         self.share_attention_mask_flag = None
         self.hidden_dim_flag = None
-        self.only_quantize_blocks = only_quantize_blocks
         torch.set_printoptions(precision=3, sci_mode=True)
+        if is_optimum_habana_available():
+            logger.info("Optimum Habana is available, import htcore explicitly.")
+            import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
 
     def get_optimizer(self, optimizer):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.
@@ -547,7 +544,7 @@ class AutoRound(object):
         """
         scale_loss = loss * 1000
         scale_loss.backward()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         return scale_loss
 
@@ -564,7 +561,7 @@ class AutoRound(object):
         """
         optimizer.step()
         # for hpu
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         optimizer.zero_grad()
         lr_schedule.step()
@@ -587,6 +584,7 @@ class AutoRound(object):
 
     def set_layerwise_config(self, weight_config):
         """Sets the layer-wise configuration based on the provided weight_config.
+           By default, only quantize layers in blocks.
 
         Args:
         weight_config: The weight configuration.
@@ -594,21 +592,18 @@ class AutoRound(object):
         Returns:
         None
         """
+        layers_in_blocks = self.get_layer_names_in_block()
         for n, m in self.model.named_modules():
-            is_supported_type = False
-            for supported_type in self.supported_types:
-                if isinstance(m, supported_type):
-                    is_supported_type = True
-                    break
-            if not is_supported_type:
+            if not isinstance(m, tuple(self.supported_types)):
                 continue
-            if n not in weight_config.keys():
+            if n not in weight_config.keys() and n in layers_in_blocks:
                 weight_config[n] = {}
                 weight_config[n]["data_type"] = self.data_type
                 weight_config[n]["bits"] = self.bits
                 weight_config[n]["group_size"] = self.group_size
                 weight_config[n]["sym"] = self.sym
-            else:
+                weight_config[n]["scale_dtype"] = self.scale_dtype
+            elif n in weight_config.keys():
                 if "data_type" not in weight_config[n].keys():
                     weight_config[n]["data_type"] = self.data_type
                 if "bits" not in weight_config[n].keys():
@@ -617,7 +612,15 @@ class AutoRound(object):
                     weight_config[n]["group_size"] = self.group_size
                 if "sym" not in weight_config[n].keys():
                     weight_config[n]["sym"] = self.sym
-            weight_config[n]["scale_dtype"] = self.scale_dtype
+                if "scale_dtype" not in weight_config[n].keys():
+                    weight_config[n]["scale_dtype"] = self.scale_dtype
+            else:
+                weight_config[n] = {}
+                weight_config[n]["data_type"] = "float"
+                weight_config[n]["bits"] = 16
+                weight_config[n]["group_size"] = self.group_size
+                weight_config[n]["sym"] = self.sym
+                weight_config[n]["scale_dtype"] = self.scale_dtype
 
             m.data_type = weight_config[n]["data_type"]
             m.bits = weight_config[n]["bits"]
@@ -681,8 +684,6 @@ class AutoRound(object):
                 bs,
                 self.n_samples,
             )
-
-        self.start_time = time.time()
         total_cnt = 0
         for data in self.dataloader:
             if data is None:
@@ -859,7 +860,7 @@ class AutoRound(object):
             if isinstance(inputs, tuple) or isinstance(input, list):
                 input = inputs[0]
             if name in self.inputs:
-                self.inputs[name] = torch.cat([self.inputs[name], input.to("cpu")], dim=1)
+                self.inputs[name] = torch.cat([self.inputs[name], input.to("cpu")], dim=0)
             else:
                 self.inputs[name] = input.to("cpu")
 
@@ -889,22 +890,29 @@ class AutoRound(object):
                 self.hook_handles.append(hook_handle)
 
     def quant_layer(self, layer_name, inputs, q_inputs=None, device=torch.device("cpu")):
+        """Quantize a specific layer of the model using the provided inputs.
+
+        Args:
+            layer_name (str): The name of the layer to quantize.
+            inputs (torch.Tensor): Input data for quantization.
+            q_inputs (torch.Tensor, optional): Quantized input data. Defaults to None.
+            device (torch.device, optional): The device to use for quantization. Defaults to torch.device("cpu").
+
+        Returns:
+            None
+        """
         logger.info(f"quantizing layer {layer_name}")
         with torch.no_grad():
             layer = get_module(self.model, layer_name)
             cache_device = "cpu"
             layer = layer.to(device)
-            inputs = inputs.to(layer.weight.dtype)
-            seq_len = self.seqlen // 2  ##TODO workaround, ugly code to save memory
 
-            inputs = inputs[:, :seq_len, :]
+            inputs = inputs.to(layer.weight.dtype)
             if q_inputs is not None:
                 q_inputs = q_inputs.to(layer.weight.dtype)
-                if len(inputs.shape) == 3:
-                    q_inputs = q_inputs[:, :seq_len, :]
 
             output = []
-            train_bs = 1  ##force to one to save memory
+            train_bs = self.train_bs
             for i in range(0, self.n_samples, train_bs):
                 end_index = min(self.n_samples, i + train_bs)
                 tmp_inputs = inputs[i:end_index, ...].to(device)
@@ -949,7 +957,6 @@ class AutoRound(object):
         for i in range(self.iters):
             if self.sampler == "rand":
                 indices = torch.randperm(n_samples)[:pick_samples]
-
             total_loss = 0
             for _ in range(gradient_accumulate_steps):
                 if q_inputs is not None:
@@ -960,10 +967,10 @@ class AutoRound(object):
                 current_output = output[indices, ...].to(device)
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        output_q = wrapper_linear(current_input)
+                        output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
-                    output_q = WrapperLinear(current_input)
+                    output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
@@ -1001,12 +1008,6 @@ class AutoRound(object):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
         with torch.no_grad():
-            # for n, p in wrapper_linear.named_parameters():
-            #     p.grad = None
-            # torch.cuda.empty_cache()
-            # best_v = move_input_to_device(best_v, self.device)
-            # best_min_scale = move_input_to_device(best_min_scale, self.device)
-            # best_max_scale = move_input_to_device(best_max_scale, self.device)
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
@@ -1151,12 +1152,6 @@ class AutoRound(object):
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
-            # for n, p in block.named_parameters():
-            #     p.grad = None
-            # torch.cuda.empty_cache()
-            # best_v = move_input_to_device(best_v, self.device)
-            # best_min_scale = move_input_to_device(best_min_scale, self.device)
-            # best_max_scale = move_input_to_device(best_max_scale, self.device)
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.use_quant_input:
             q_outputs = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device)
@@ -1225,6 +1220,17 @@ class AutoRound(object):
         torch.cuda.empty_cache()
 
     def save_quantized(self, output_dir=None, format="auto_gptq", inplace=True, **kwargs):
+        """Save the quantized model to the specified output directory in the specified format.
+
+        Args:
+            output_dir (str, optional): The directory to save the quantized model. Defaults to None.
+            format (str, optional): The format in which to save the model. Defaults to "auto_gptq".
+            inplace (bool, optional): Whether to modify the model in place. Defaults to True.
+            **kwargs: Additional keyword arguments specific to the export format.
+
+        Returns:
+            object: The compressed model object.
+        """
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
@@ -1254,26 +1260,73 @@ class AutoRound(object):
         )
         return compressed_model
 
-    @torch.no_grad()
-    def gets_layer_names_outside_blocks(self):
-        all_layer_names = set()
+    #
+    # @torch.no_grad()
+    # def gets_layer_names_outside_blocks(self):
+    #     """Gets the names of layers outside blocks in the model.
+    #
+    #     Returns:
+    #         list: List of layer names outside blocks.
+    #     """
+    #     all_layer_names = set()
+    #     for n, m in self.model.named_modules():
+    #         if isinstance(m, tuple(self.supported_types)):
+    #             m.tmp_name = n
+    #             all_layer_names.add(n)
+    #     block_names = get_block_names(self.model)
+    #     all_layer_names_in_block = set()
+    #     for block_name in block_names:
+    #         block = get_module(self.model, block_name)
+    #         for n, m in block.named_modules():
+    #             if isinstance(m, tuple(self.supported_types)):
+    #                 all_layer_names_in_block.add(m.tmp_name)
+    #
+    #     res = all_layer_names - all_layer_names_in_block
+    #     for n, m in self.model.named_modules():
+    #         if isinstance(m, tuple(self.supported_types)):
+    #             delattr(m, "tmp_name")
+    #     return list(res)
+
+    def get_layer_names_in_block(self):
         for n, m in self.model.named_modules():
             if isinstance(m, tuple(self.supported_types)):
                 m.tmp_name = n
-                all_layer_names.add(n)
+        layers_in_block = []
         block_names = get_block_names(self.model)
-        all_layer_names_in_block = set()
         for block_name in block_names:
             block = get_module(self.model, block_name)
             for n, m in block.named_modules():
-                if isinstance(m, tuple(self.supported_types)):
-                    all_layer_names_in_block.add(m.tmp_name)
-
-        res = all_layer_names - all_layer_names_in_block
+                if hasattr(m, "tmp_name"):
+                    layers_in_block.append(m.tmp_name)
         for n, m in self.model.named_modules():
-            if isinstance(m, tuple(self.supported_types)):
+            if hasattr(m, "tmp_name"):
                 delattr(m, "tmp_name")
-        return list(res)
+        return layers_in_block
+
+    def get_quantized_layer_names_outside_blocks(self):
+        """Gets the names of quantized layers outside blocks in the model.
+
+        Returns:
+            list: List of layer names outside blocks.
+        """
+        if self.weight_config is None or len(self.weight_config) == 0:
+            return []
+
+        layer_names = []
+        all_layers_in_block = self.get_layer_names_in_block()
+
+        for key in self.weight_config.keys():
+            if key in all_layers_in_block:
+                continue
+            try:
+                layer = get_module(self.model, key)
+                if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.weight_config[key]):
+                    layer_names.append(key)
+            except:
+                logger.error(f"could not find layer {key} in the model, exit...")
+                exit()
+
+        return layer_names
 
     def quantize(self):
         """Quantize the model and return the quantized model along with weight configurations.
@@ -1291,16 +1344,17 @@ class AutoRound(object):
         if not self.low_gpu_mem_usage:
             self.model = self.model.to(self.device)
 
-        if not self.only_quantize_blocks:
-            layer_names = self.gets_layer_names_outside_blocks()
-        else:
-            layer_names = []
-
+        layer_names = self.get_quantized_layer_names_outside_blocks()
+        self.start_time = time.time()
         all_inputs = self.cache_inter_data([block_names[0]], self.n_samples, layer_names=layer_names)
+        del self.inputs
         inputs = all_inputs[block_names[0]]
-        self.inputs.pop(block_names[0])
+
+        all_inputs.pop(block_names[0])
+        self.inputs = None
+        del self.inputs
         if "input_ids" in inputs.keys():
-            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
+            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))  ##polish the code
             total_samples = inputs["input_ids"].shape[dim]
             self.n_samples = total_samples
             if total_samples < self.train_bs:
@@ -1315,12 +1369,10 @@ class AutoRound(object):
             n_blocks=self.n_blocks,
             device=self.device,
         )
-
         ##TODO currently we take all the layers outside blocks as post block layers which is not optimal
         if len(layer_names) > 0:
             torch.cuda.empty_cache()
             layer_inputs = all_inputs
-            del self.inputs
             q_layer_inputs = None
             if self.use_quant_input:
                 if not self.low_gpu_mem_usage:
@@ -1416,8 +1468,6 @@ class AutoOPTRound(AutoRound):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
                            have different choices.
-        only_quantize_blocks (bool): Whether to only quantize the layers in blocks, layers like lm-head are outside of blocks
-        optimizer: string or object
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -1456,7 +1506,6 @@ class AutoOPTRound(AutoRound):
         dynamic_max_gap: int = -1,
         data_type: str = "int",
         scale_dtype: str = "fp32",
-        only_quantize_blocks: bool = False,
         optimizer="AdamW",
         **kwargs,
     ):
@@ -1491,7 +1540,6 @@ class AutoOPTRound(AutoRound):
             dynamic_max_gap,
             data_type,
             scale_dtype,
-            only_quantize_blocks,
             **kwargs,
         )
 
@@ -1519,7 +1567,7 @@ class AutoOPTRound(AutoRound):
             loss = scaler.scale(loss)
 
         loss.backward()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
         return loss
 
@@ -1533,7 +1581,7 @@ class AutoOPTRound(AutoRound):
             optimizer.step()
             optimizer.zero_grad()
             lr_schedule.step()
-        if is_hpu_available:
+        if is_optimum_habana_available():
             htcore.mark_step()
 
 
@@ -1574,8 +1622,6 @@ class AutoAdamRound(AutoOPTRound):
         optimizer: string or object
         scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
                            have different choices.
-        only_quantize_blocks (bool): Whether to only quantize the layers in blocks, layers like lm-head are outside of blocks
-        **kwargs: Additional keyword arguments.
 
     Returns:
         The quantized model.
@@ -1613,7 +1659,6 @@ class AutoAdamRound(AutoOPTRound):
         dynamic_max_gap: int = -1,
         data_type: str = "int",
         scale_dtype: str = "fp32",
-        only_quantize_blocks: bool = False,
         optimizer="AdamW",
         **kwargs,
     ):
@@ -1648,7 +1693,7 @@ class AutoAdamRound(AutoOPTRound):
             dynamic_max_gap,
             data_type,
             scale_dtype,
-            only_quantize_blocks,
             optimizer,
             **kwargs,
         )
+

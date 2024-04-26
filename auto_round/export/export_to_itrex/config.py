@@ -25,18 +25,18 @@ from typing import Any, Dict, Tuple, Union
 import torch
 from transformers import PretrainedConfig
 
-from auto_round.utils import logger
+from auto_round.utils import convert_dtype_str2torch, convert_dtype_torch2str, logger
 
 QUANT_CONFIG = "quantize_config.json"
 
 
 class QuantConfig(PretrainedConfig):
-    """A brief quantization configuration for reference when performing model dequantization."""
+    """A brief quantization configuration for reference when performing model de-quantization."""
 
     def __init__(
         self,
         bits=4,
-        scale_dtype="torch.float32",
+        scale_dtype="fp32",
         group_size=128,
         sym=False,
         quant_method="autoround",
@@ -47,11 +47,12 @@ class QuantConfig(PretrainedConfig):
         lr=0.001,
         minmax_lr=0.001,
         use_quant_input=True,
+        compute_dtype=None,
         **kwargs,
     ):
         self.bits = bits
         self.group_size = group_size
-        self.scale_dtype = scale_dtype
+        self.scale_dtype = convert_dtype_torch2str(scale_dtype)
         self.sym = sym
         self.quant_method = quant_method
         self.model_name_or_path = model_name_or_path
@@ -61,23 +62,72 @@ class QuantConfig(PretrainedConfig):
         self.lr = lr
         self.minmax_lr = minmax_lr
         self.use_quant_input = use_quant_input
+        self.compute_dtype = convert_dtype_torch2str(compute_dtype)
 
-        ### Redundant parameters, will be removed later. ###
-        self.damp_percent = 0.01
-        self.desc_act = False
-        self.true_sequential = False
-        self.quant_method = "gptq"
+        if "export_to_xpu" not in kwargs or not kwargs["export_to_xpu"]:
+            ### Redundant parameters, will be removed later. ###
+            self.damp_percent = 0.01
+            self.desc_act = False
+            self.true_sequential = False
+            self.quant_method = "gptq"
+        else:
+            ### XPU special parameters. ###
+            self.weight_dtype = "int4_fullrange"  # Due to ipex format limitations. Actually, it's int4_clip.
 
     def post_init(self):
-        r"""
-        Safety checker that arguments are correct - also replaces some NoneType arguments with their default values.
-        """
+        r"""Safety checker for CPU that arguments are correct
+        also replaces some NoneType arguments with their default values."""
 
-        if self.scale_dtype not in ["torch.float32", "torch.float16", "torch.bfloat16"]:
+        if self.scale_dtype not in ["fp32", "fp16", "bf16"]:
             raise ValueError("scale_dtype must be 'fp32', 'fp16' or 'bf16'.")
 
         if self.group_size not in [-1, 32, 128]:
             raise ValueError("group_size must be an integer in [-1, 32, 128]")
+
+    def post_init_xpu(self):
+        r"""
+        Safety checker for XPU that arguments are correct
+        - also replaces some NoneType arguments with their default values.
+        """
+
+        if self.compute_dtype is not None and self.compute_dtype not in ["fp16"]:
+            raise ValueError("compute_dtype must be 'fp16'.")
+        elif self.compute_dtype is None:
+            self.compute_dtype = "fp16"
+
+        if self.bits is None:
+            self.bits = 4
+        elif self.bits not in [4]:
+            raise ValueError(f"Only support quantization to [4] bits but found {self.bits}")
+
+        if self.weight_dtype is None:
+            self.weight_dtype = "int4_fullrange"
+
+        elif self.weight_dtype not in [
+            "int4_fullrange",
+        ]:
+            raise ValueError(f"weight_dtype must be a string in 'int4_fullrange', but get {self.weight_dtype}.")
+
+        if self.scale_dtype is not None and self.scale_dtype not in ["fp16"]:
+            raise ValueError("scale_dtype must be a string in 'fp16'")
+        elif self.scale_dtype is None:
+            self.scale_dtype = "fp16"
+
+        # if not isinstance(self.use_double_quant, bool):
+        #     raise ValueError("use_double_quant must be a boolean")
+
+        # if self.use_double_quant and not isinstance(self.double_quant_dtype, str):
+        #     raise ValueError("double_quant_dtype must be a string")
+
+        # if self.use_double_quant and not isinstance(self.scale_dtype, str):
+        #     raise ValueError("scale_dtype must be a string")
+
+        if not isinstance(self.group_size, int):
+            raise ValueError("group_size must be a int")
+
+        if self.sym is not True:
+            raise ValueError("asym is not support, only support 'sym' now!")
+        self.use_neural_speed = False
 
     def quantization_method(self):
         r"""This method returns the quantization method used for the model."""
@@ -229,3 +279,25 @@ class QuantConfig(PretrainedConfig):
         cls, pretrained_model_name_or_path: Union[str, os.PathLike], **kwargs
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         return super().get_config_dict(pretrained_model_name_or_path, _configuration_file=QUANT_CONFIG, **kwargs)
+
+    def remove_redundant_parameters(self):
+        remove_parameters = [
+            "calib_dataloader",
+            "dataset",
+            "scheme",
+            "tokenizer",
+            "use_neural_speed",
+            "use_quant_input",
+            "layer_wise",
+            "nsamples",
+            "lr",
+            "minmax_lr",
+            "iters",
+            "use_quant_input",
+            "model_file_base_name",
+            "enable_minmax_tuning",
+            "model_name_or_path",
+        ]
+        for parameter in remove_parameters:
+            if hasattr(self, parameter):
+                delattr(self, parameter)
