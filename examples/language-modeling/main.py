@@ -273,6 +273,8 @@ if __name__ == '__main__':
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
     if args.quant_lm_head:
         weight_config['lm_head'] = {"data_type": "int"}
+
+    print(f"weight_config: {weight_config}")
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
