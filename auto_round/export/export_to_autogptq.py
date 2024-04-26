@@ -80,7 +80,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
                 break
         if not is_supported_type:
             continue
-        if not check_to_quantized(m):
+        if not check_to_quantized(m, n):
             all_to_quantized = False
         else:
             modules_in_block_to_quantize.append(n)
@@ -101,7 +101,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
         quantizers = {}
         for key in weight_config:
             info = weight_config[key]
-            if not check_to_quantized(info):
+            if not check_to_quantized(info, key):
                 continue
             quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
         pack_model(
@@ -118,7 +118,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
         quantizers = {}
         for key in weight_config:
             info = weight_config[key]
-            if not check_to_quantized(info):
+            if not check_to_quantized(info, key):
                 continue
             info["zp"] = info["zp"].to(torch.float32)
             quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
@@ -261,3 +261,4 @@ def _save_quantized_to_autogptq(
     config_dict["quant_method"] = "gptq"  ##hf transformers could only recognize this value
     model.config.quantization_config = config_dict
     model.config.save_pretrained(save_dir)
+

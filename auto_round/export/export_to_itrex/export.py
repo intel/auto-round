@@ -170,17 +170,23 @@ def pack_model(
         q_config = weight_config
     for k, v in q_config.items():
         logger.info(f"Packing {k}")
-        if "float" in v["data_type"]:
+        try:
+            if "float" in v["data_type"]:
+                continue
+            dtype = v["data_type"]
+            num_bits = v["bits"]
+            group_size = v["group_size"]
+            sym = v["sym"]
+            scale_dtype = v["scale_dtype"]
+            scale, zp = v["scale"], v["zp"]
+        except:
+            logger.info(f"The {k} layer lacks quantization information, skipping packaging.")
             continue
-        dtype = v["data_type"]
-        num_bits = v["bits"]
-        group_size = v["group_size"]
-        sym = v["sym"]
-        scale_dtype = v["scale_dtype"]
+        
         m = get_module(compressed_model, k)
         fp_weight = m.weight.data
-        scale, zp = v["scale"], v["zp"]
         convert_dtype = scale_dtype
+            
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor(scale, dtype=convert_dtype)
             zp = torch.tensor(zp, dtype=torch.int32)
@@ -218,3 +224,4 @@ def pack_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
     return compressed_model
+
