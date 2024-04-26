@@ -1006,7 +1006,9 @@ class AutoRound(object):
             last_loss = best_loss
             best_iter = last_best_iter
 
-        logger.info(f"quantized {layer_name}:  [ iter (first): 0, loss: {init_loss:.6f}] -> [ iter (best): ({best_iter}), loss: {last_loss:.6f} ]")
+        logger.info(
+            f"quantized {layer_name}:  [ iter (first): 0, loss: {init_loss:.6f}] -> [ iter (best): ({best_iter}), loss: {last_loss:.6f} ]"
+        )
         with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
 
