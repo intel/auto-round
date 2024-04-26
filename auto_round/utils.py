@@ -505,9 +505,9 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
 def check_to_quantized(config, name=None):
     try:
         if isinstance(config, dict):
-                if config["bits"] > 8 or "fp" in config["data_type"] or "float" in config["data_type"]:
-                    return False
-                return True
+            if config["bits"] > 8 or "fp" in config["data_type"] or "float" in config["data_type"]:
+                return False
+            return True
         else:
             if config.bits > 8 or "fp" in config.data_type or "float" in config.data_type:
                 return False
@@ -721,4 +721,3 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         bs = 1
 
     return False, seqlen, bs
-

@@ -261,4 +261,3 @@ def _save_quantized_to_autogptq(
     config_dict["quant_method"] = "gptq"  ##hf transformers could only recognize this value
     model.config.quantization_config = config_dict
     model.config.save_pretrained(save_dir)
-
