@@ -133,7 +133,7 @@ if __name__ == '__main__':
             "amp is deprecated, it has been set to the default, use disable_amp to turn it off")
     if args.use_quanted_input:
         print(
-            "use_quanted_input is deprecated, it has been set to the default; use disuse_quanted_input to turn it off")
+            "use_quanted_input is deprecated. It has been set to the default; use disuse_quanted_input to turn it off")
 
     set_seed(args.seed)
     tasks = args.tasks
