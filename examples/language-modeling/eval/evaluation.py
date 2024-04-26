@@ -343,6 +343,8 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
     org_s = time.time()
     print(f"Using {dtype} as evaluation data type.")
     external_tasks = []
+    if isinstance(tasks, str):
+        tasks = tasks.split(',')
     for each in EXT_TASKS:
         if each in tasks:
             external_tasks.append(each)
