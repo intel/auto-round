@@ -130,9 +130,11 @@ if __name__ == '__main__':
             "amp is deprecated, it has been set to the default, use disable_amp to turn it off")
 
     deployment_device = args.deployment_device.split(',')
-    if 'gpu' in deployment_device and args.quant_lm_head:
-        raise ValueError("quant_lm_head is not supported for deployment on gpu due to incompatibility with autogptq. "
-                         "Please disable quant_lm_head or remove gpu from deployment_device.")
+
+    # TODO re-enable after testing
+    # if 'gpu' in deployment_device and args.quant_lm_head:
+    #     raise ValueError("quant_lm_head is not supported for deployment on gpu due to incompatibility with autogptq. "
+    #                      "Please disable quant_lm_head or remove gpu from deployment_device.")
 
     set_seed(args.seed)
     tasks = args.tasks
