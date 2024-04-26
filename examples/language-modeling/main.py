@@ -149,6 +149,9 @@ if __name__ == '__main__':
 
 
     res = get_library_version("lm-eval")
+    if not args.disable_eval and res is None:
+        raise ValueError("Please install lm-eval")
+
     if res == "0.3.0":
         use_eval_legacy = True
 
