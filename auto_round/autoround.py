@@ -1005,8 +1005,8 @@ class AutoRound(object):
         if not self.not_use_best_mse:
             last_loss = best_loss
             best_iter = last_best_iter
-        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        logger.info(dump_info)
+
+        logger.info(f"quantized {layer_name}:  [ iter (first): 0, loss: {init_loss:.6f}] -> [ iter (best): ({best_iter}), loss: {last_loss:.6f} ]")
         with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
 
@@ -1144,11 +1144,13 @@ class AutoRound(object):
         if not self.not_use_best_mse:
             last_loss = best_loss
             best_iter = last_best_iter
-        dump_info = (
+
+        logger.info(
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
-            f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+            f"layers in the block: [ iter (first): 0, loss: {init_loss:.6f} ] "
+            f"-> [ iter (best): {best_iter}, loss: {last_loss:.6f} ]"
         )
-        logger.info(dump_info)
+
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
