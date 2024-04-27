@@ -1,13 +1,11 @@
-Due to licensing restrictions, we are unable to release the model.
-
-lm-eval 0.4.2 is used
+Due to licensing restrictions, we are unable to release the model. lm-eval 0.4.2 is used
 
 For evaluating w4g128 without quantized lm-head, 
 ```bash
 lm_eval --model hf --model_args pretrained="./",autogptq=True,gptq_use_triton=True --device cuda:0 --tasks lambada_openai,hellaswag,piqa,winogrande,truthfulqa_mc1,openbookqa,boolq,rte,arc_easy,arc_challenge,mmlu --batch_size 16
 ```
 
-For evaluating w4g128 with quantized lm-head, we opted to evaluate the qdq model instead,since we encountered an issue evaluating the model with lm-head quantized model. In our assessment, we found that its accuracy closely matches that of the real quantized model in most cases except for some small models like opt-125m.
+To assess the performance of w4g128 with a quantized lm-head, we chose to evaluate the qdq model instead. This decision was made due to the lack of support for lm-head quantization in AutoGPTQ, which results in random initialization of the lm-head.
 
 
 | Metric           | **BF16** | w4g128 w/o lm-head | w4g128 with lm-head qdq |

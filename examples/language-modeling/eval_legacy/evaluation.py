@@ -215,6 +215,8 @@ def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrand
     org_s = time.time()
 
     external_tasks = []
+    if isinstance(tasks, str):
+        tasks = tasks.split(',')
     for each in EXT_TASKS:
         if each in tasks:
             external_tasks.append(each)
