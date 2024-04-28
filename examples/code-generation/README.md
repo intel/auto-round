@@ -19,14 +19,14 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Salesforce/codegen25-7b-mult
 ```
 - **Reduced GPU Memory Usage and Adjusted Training Batch Size:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Salesforce/codegen25-7b-multi --amp --bits 4 --group_size -1 --low_gpu_mem_usage --train_bs 1 --gradient_accumulate_steps 8 --disable_quanted_input
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Salesforce/codegen25-7b-multi --amp --bits 4 --group_size -1 --low_gpu_mem_usage --train_bs 1 --gradient_accumulate_steps 8 
 ```
 - **Utilizing the AdamW Optimizer:**
 Include the flag `--adam`. Note that AdamW is less effective than Sign gradient descent in many scenarios we tested.
 
 - **Running the Original SignRound:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Salesforce/codegen25-7b-multi --amp --bits 4 --group_size -1 --iters 400 --lr 0.0025 --minmax_lr 0.0025 --disable_quanted_input
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Salesforce/codegen25-7b-multi --amp --bits 4 --group_size -1 --iters 400 --lr 0.0025 --minmax_lr 0.0025
 ```
  `--enable_minmax_tuning` is strongly recommended 
 
