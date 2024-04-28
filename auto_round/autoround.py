@@ -374,8 +374,8 @@ class AutoRound(object):
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
         dataset_split (str): The split of the dataset to be used (default is "train").
-        enable_quanted_input (bool): Whether to use the output of the previous quantized block as the input for the current
-                                block (default is True).
+        enable_quanted_input (bool): Whether to use the output of the previous quantized block as 
+                                the input for the current block (default is True).
         enable_minmax_tuning (bool): Whether to enable weight min-max tuning (default is True).
         lr (float): The learning rate (default is None, will be set to 1.0/iters).
         minmax_lr (float): The learning rate for min-max tuning (default is None, it will be set to lr automatically).
