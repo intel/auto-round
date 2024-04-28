@@ -182,11 +182,11 @@ def pack_model(
         except:
             logger.info(f"The {k} layer lacks quantization information, skipping packaging.")
             continue
-        
+
         m = get_module(compressed_model, k)
         fp_weight = m.weight.data
         convert_dtype = scale_dtype
-            
+
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor(scale, dtype=convert_dtype)
             zp = torch.tensor(zp, dtype=torch.int32)
@@ -224,4 +224,3 @@ def pack_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
     return compressed_model
-
