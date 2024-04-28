@@ -18,6 +18,7 @@ import json
 import os
 from os.path import isdir, isfile, join
 from typing import Dict, List, Optional, Union
+from ..utils import convert_dtype_torch2str_hf
 
 # MIT License
 #
@@ -80,7 +81,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
                 break
         if not is_supported_type:
             continue
-        if not check_to_quantized(m, n):
+        if not check_to_quantized(m):
             all_to_quantized = False
         else:
             modules_in_block_to_quantize.append(n)
@@ -101,7 +102,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
         quantizers = {}
         for key in weight_config:
             info = weight_config[key]
-            if not check_to_quantized(info, key):
+            if not check_to_quantized(info):
                 continue
             quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
         pack_model(
@@ -118,7 +119,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
         quantizers = {}
         for key in weight_config:
             info = weight_config[key]
-            if not check_to_quantized(info, key):
+            if not check_to_quantized(info):
                 continue
             info["zp"] = info["zp"].to(torch.float32)
             quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
@@ -224,7 +225,7 @@ def _save_quantized_to_autogptq(
         safetensors_metadata["minmax_lr"] = str(minmax_lr)
         safetensors_metadata["enable_minmax_tuning"] = str(enable_minmax_tuning)
         safetensors_metadata["use_quant_input"] = str(use_quant_input)
-        safetensors_metadata["scale_dtype"] = str(scale_dtype)
+        safetensors_metadata["scale_dtype"] = convert_dtype_torch2str_hf(scale_dtype)
         safe_save(state_dict, join(save_dir, model_save_name), safetensors_metadata)
     else:
         model_save_name = model_base_name + ".bin"
@@ -251,7 +252,7 @@ def _save_quantized_to_autogptq(
     config_dict["minmax_lr"] = minmax_lr
     config_dict["enable_minmax_tuning"] = enable_minmax_tuning
     config_dict["use_quant_input"] = use_quant_input
-    config_dict["scale_dtype"] = str(scale_dtype)
+    config_dict["scale_dtype"] = convert_dtype_torch2str_hf(scale_dtype)
     if modules_in_block_to_quantize is not None:
         config_dict["modules_in_block_to_quantize"] = modules_in_block_to_quantize
 
@@ -261,3 +262,4 @@ def _save_quantized_to_autogptq(
     config_dict["quant_method"] = "gptq"  ##hf transformers could only recognize this value
     model.config.quantization_config = config_dict
     model.config.save_pretrained(save_dir)
+

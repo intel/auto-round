@@ -1319,6 +1319,8 @@ class AutoRound(object):
                 continue
             try:
                 layer = get_module(self.model, key)
+                if layer == self.model:
+                    raise ModuleNotFoundError
                 if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.weight_config[key]):
                     layer_names.append(key)
             except:
@@ -1695,3 +1697,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
