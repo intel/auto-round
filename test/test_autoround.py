@@ -106,7 +106,7 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
-    def test_disable_use_quant_input(self):
+    def test_disable_enable_quanted_input(self):
         bits, group_size, sym = 4, -1, True
         autoround = AutoRound(
             self.model,
@@ -116,7 +116,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=10,
-            use_quant_input=False,
+            enable_quanted_input=False,
             dataloader=self.llm_dataloader,
         )
         autoround.quantize()
@@ -147,7 +147,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=10,
             enable_minmax_tuning=False,
-            use_quant_input=False,
+            enable_quanted_input=False,
             dataloader=self.llm_dataloader,
         )
         autoround.quantize()
@@ -164,7 +164,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=10,
             enable_minmax_tuning=False,
-            use_quant_input=False,
+            enable_quanted_input=False,
             dataloader=self.llm_dataloader,
             weight_config=weight_config,
         )

@@ -59,7 +59,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     lr = kwargs["lr"]
     minmax_lr = kwargs["minmax_lr"]
     enable_minmax_tuning = kwargs["enable_minmax_tuning"]
-    use_quant_input = kwargs["use_quant_input"]
+    enable_quanted_input = kwargs["enable_quanted_input"]
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
@@ -145,7 +145,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
         lr=lr,
         minmax_lr=minmax_lr,
         enable_minmax_tuning=enable_minmax_tuning,
-        use_quant_input=use_quant_input,
+        enable_quanted_input=enable_quanted_input,
         scale_dtype=scale_dtype,
         use_safetensors=True,
         modules_in_block_to_quantize=modules_in_block_to_quantize,
@@ -162,7 +162,7 @@ def _save_quantized_to_autogptq(
     lr=5e-3,
     minmax_lr=5e-3,
     enable_minmax_tuning=True,
-    use_quant_input=True,
+    enable_quanted_input=True,
     use_safetensors: bool = True,
     scale_dtype=torch.float32,
     safetensors_metadata: Optional[Dict[str, str]] = None,
@@ -223,7 +223,7 @@ def _save_quantized_to_autogptq(
         safetensors_metadata["lr"] = str(lr)
         safetensors_metadata["minmax_lr"] = str(minmax_lr)
         safetensors_metadata["enable_minmax_tuning"] = str(enable_minmax_tuning)
-        safetensors_metadata["use_quant_input"] = str(use_quant_input)
+        safetensors_metadata["enable_quanted_input"] = str(enable_quanted_input)
         safetensors_metadata["scale_dtype"] = str(scale_dtype)
         safe_save(state_dict, join(save_dir, model_save_name), safetensors_metadata)
     else:
@@ -250,7 +250,7 @@ def _save_quantized_to_autogptq(
     config_dict["lr"] = lr
     config_dict["minmax_lr"] = minmax_lr
     config_dict["enable_minmax_tuning"] = enable_minmax_tuning
-    config_dict["use_quant_input"] = use_quant_input
+    config_dict["enable_quanted_input"] = enable_quanted_input
     config_dict["scale_dtype"] = str(scale_dtype)
     if modules_in_block_to_quantize is not None:
         config_dict["modules_in_block_to_quantize"] = modules_in_block_to_quantize

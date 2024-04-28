@@ -77,7 +77,7 @@ autoround.save_quantized(output_dir)
 
 - `sym (bool)`: Whether to use symmetric quantization.
 
-- `use_quant_input (bool)`: Whether to use the output of the previous quantized block as the input for the current
+- `enable_quanted_input (bool)`: Whether to use the output of the previous quantized block as the input for the current
   block (default is True).
 
 - `enable_minmax_tuning (bool)`: Whether to enable weight min-max tuning (default is True).
@@ -193,7 +193,7 @@ average accuracies of 11 zero-shot tasks.
 
 1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time.
 
-2 Setting 'use_quant_input' to False has been observed to occasionally yield improved results.
+2 Setting 'enable_quanted_input' to False has been observed to occasionally yield improved results.
 
 3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 

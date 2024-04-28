@@ -374,8 +374,8 @@ class AutoRound(object):
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
         dataset_split (str): The split of the dataset to be used (default is "train").
-        use_quant_input (bool): Whether to use the output of the previous quantized block as the input for the current
-                                block (default is True).
+        enable_quanted_input (bool): Whether to use the output of the previous quantized block as
+                                the input for the current block (default is True).
         enable_minmax_tuning (bool): Whether to enable weight min-max tuning (default is True).
         lr (float): The learning rate (default is None, will be set to 1.0/iters).
         minmax_lr (float): The learning rate for min-max tuning (default is None, it will be set to lr automatically).
@@ -413,7 +413,7 @@ class AutoRound(object):
         dataloader=None,  ## to support later
         dataset: str = "NeelNanda/pile-10k",
         dataset_split: str = "train",
-        use_quant_input: bool = True,
+        enable_quanted_input: bool = True,
         enable_minmax_tuning: bool = True,
         lr: float = None,
         minmax_lr: float = None,
@@ -435,7 +435,7 @@ class AutoRound(object):
         self.model_orig_dtype = model.dtype
         self.model = model.eval().to("cpu")
         self.amp = amp
-        self.use_quant_input = use_quant_input
+        self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
         self.n_samples = n_samples
         self.n_blocks = n_blocks
@@ -1020,7 +1020,7 @@ class AutoRound(object):
         device: The device for quantization.
 
         Returns:
-        Tuple: (q_outputs, output) if self.use_quant_input is True, else (None, output)
+        Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
         cache_device = "cpu"  ## force cache device to "cpu"
         ##change to block dtype:
@@ -1152,7 +1152,7 @@ class AutoRound(object):
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
-        if self.use_quant_input:
+        if self.enable_quanted_input:
             q_outputs = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device)
 
             return q_outputs, output
@@ -1251,7 +1251,7 @@ class AutoRound(object):
             lr=self.lr,
             minmax_lr=self.minmax_lr,
             enable_minmax_tuning=self.enable_minmax_tuning,
-            use_quant_input=self.use_quant_input,
+            enable_quanted_input=self.enable_quanted_input,
             scale_dtype=self.scale_dtype,
             tokenizer=self.tokenizer,
             supported_types=self.supported_types,
@@ -1373,14 +1373,14 @@ class AutoRound(object):
             torch.cuda.empty_cache()
             layer_inputs = all_inputs
             q_layer_inputs = None
-            if self.use_quant_input:
+            if self.enable_quanted_input:
                 if not self.low_gpu_mem_usage:
                     self.model = self.model.to(self.device)
                 q_layer_inputs = self.cache_inter_data([], self.n_samples, layer_names=layer_names)
             self.model = self.model.to("cpu")
             torch.cuda.empty_cache()
             for layer_name in layer_names:
-                q_layer_input = q_layer_inputs[layer_name] if self.use_quant_input else None
+                q_layer_input = q_layer_inputs[layer_name] if self.enable_quanted_input else None
                 self.quant_layer(layer_name, layer_inputs[layer_name], q_layer_input, device=self.device)
                 torch.cuda.empty_cache()
 
@@ -1450,7 +1450,7 @@ class AutoOPTRound(AutoRound):
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
         dataset_split (str): The split of the dataset to be used (default is "train").
-        use_quant_input (bool): Whether to use quantized input data (default is True).
+        enable_quanted_input (bool): Whether to use quantized input data (default is True).
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
@@ -1489,7 +1489,7 @@ class AutoOPTRound(AutoRound):
         dataloader=None,
         dataset: str = "NeelNanda/pile-10k",
         dataset_split: str = "train",
-        use_quant_input: bool = True,
+        enable_quanted_input: bool = True,
         enable_minmax_tuning: bool = True,
         lr: float = None,
         minmax_lr: float = None,
@@ -1523,7 +1523,7 @@ class AutoOPTRound(AutoRound):
             dataloader,
             dataset,
             dataset_split,
-            use_quant_input,
+            enable_quanted_input,
             enable_minmax_tuning,
             lr,
             minmax_lr,
@@ -1603,7 +1603,7 @@ class AutoAdamRound(AutoOPTRound):
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
         dataset_split (str): The split of the dataset to be used (default is "train").
-        use_quant_input (bool): Whether to use quantized input data (default is True).
+        enable_quanted_input (bool): Whether to use quantized input data (default is True).
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
@@ -1642,7 +1642,7 @@ class AutoAdamRound(AutoOPTRound):
         dataloader=None,
         dataset: str = "NeelNanda/pile-10k",
         dataset_split: str = "train",
-        use_quant_input: bool = True,
+        enable_quanted_input: bool = True,
         enable_minmax_tuning: bool = True,
         lr: float = None,
         minmax_lr: float = None,
@@ -1676,7 +1676,7 @@ class AutoAdamRound(AutoOPTRound):
             dataloader,
             dataset,
             dataset_split,
-            use_quant_input,
+            enable_quanted_input,
             enable_minmax_tuning,
             lr,
             minmax_lr,

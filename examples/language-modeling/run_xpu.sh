@@ -12,7 +12,6 @@ python3 main.py \
 --group_size 128 \
 --bits 4 \
 --iters 10 \
---use_quant_input \
 --deployment_device 'xpu,fake' \
 --quantize_layers_outside_blocks \
 --disable_low_gpu_mem_usage \
