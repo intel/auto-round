@@ -969,7 +969,7 @@ class AutoRound(object):
                     current_output = layer(org_input)
                     if q_inputs is not None:
                         org_input = org_input.to(cache_device)
-                        
+
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
@@ -1699,4 +1699,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
