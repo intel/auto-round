@@ -901,26 +901,11 @@ class AutoRound(object):
             None
         """
         logger.info(f"quantizing layer {layer_name}")
-        with torch.no_grad():
-            layer = get_module(self.model, layer_name)
-            cache_device = "cpu"
-            layer = layer.to(device)
-
-            inputs = inputs.to(layer.weight.dtype)
-            if q_inputs is not None:
-                q_inputs = q_inputs.to(layer.weight.dtype)
-
-            output = []
-            train_bs = self.train_bs
-            for i in range(0, self.n_samples, train_bs):
-                end_index = min(self.n_samples, i + train_bs)
-                tmp_inputs = inputs[i:end_index, ...].to(device)
-                tmp_output = layer.forward(tmp_inputs).to(cache_device)
-                output.append(tmp_output)
-                torch.cuda.empty_cache()  ##too large for lm head, maybe need to decrease n_sample
-
-            output = torch.cat(output, dim=0)
-            torch.cuda.empty_cache()
+        layer = get_module(self.model, layer_name)
+        layer = layer.to(device)
+        inputs = inputs.to(layer.weight.dtype)
+        if q_inputs is not None:
+            q_inputs = q_inputs.to(layer.weight.dtype)
 
         wrapper_linear = WrapperLinear(layer, self.enable_minmax_tuning).to(device)
         round_params = []
@@ -941,8 +926,8 @@ class AutoRound(object):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
+        train_bs = self.train_bs
         pick_samples = train_bs
-
         n_samples = inputs.shape[0]
         if self.sampler != "rand":
             indices = torch.randperm(n_samples)[:pick_samples]
@@ -954,16 +939,20 @@ class AutoRound(object):
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
         gradient_accumulate_steps = self.train_bs // train_bs
         for i in range(self.iters):
-            if self.sampler == "rand":
-                indices = torch.randperm(n_samples)[:pick_samples]
             total_loss = 0
             for _ in range(gradient_accumulate_steps):
+                org_input = None
+                if self.sampler == "rand":
+                    indices = torch.randperm(n_samples)[:pick_samples]
                 if q_inputs is not None:
                     current_input = q_inputs[indices, ...].to(device)
+                    org_input = inputs[indices, ...].to(device)
                 else:
                     current_input = inputs[indices, ...].to(device)
+                    org_input = current_input
+                with torch.no_grad():
+                    current_output = layer(org_input)
 
-                current_output = output[indices, ...].to(device)
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
@@ -973,7 +962,6 @@ class AutoRound(object):
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
-
                 total_loss += loss.item() / gradient_accumulate_steps
                 if i == 0:
                     init_loss = total_loss
@@ -1078,11 +1066,10 @@ class AutoRound(object):
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
         for i in range(self.iters):
-            if self.sampler == "rand":
-                indices = torch.randperm(n_samples)[:pick_samples]
-
             total_loss = 0
             for _ in range(self.gradient_accumulate_steps):
+                if self.sampler == "rand":
+                    indices = torch.randperm(n_samples)[:pick_samples]
                 current_input_ids, current_input_others = sampling_inputs(
                     input_ids,
                     input_others,
@@ -1121,6 +1108,7 @@ class AutoRound(object):
                     init_loss = total_loss
 
                 self.scale_loss_and_backward(scaler, loss)
+                torch.cuda.empty_cache()
 
             if total_loss < best_loss:
                 best_loss = total_loss
