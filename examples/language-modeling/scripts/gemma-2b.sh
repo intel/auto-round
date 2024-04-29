@@ -7,6 +7,5 @@ python3 main.py \
 --group_size 128 \
 --bits 4 \
 --iters 400 \
---use_quant_input \
 --deployment_device 'gpu' \
 --output_dir "./tmp_autoround"

@@ -64,7 +64,7 @@ if __name__ == '__main__':
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
 
-    parser.add_argument("--use_quant_input", action='store_true',
+    parser.add_argument("--enable_quanted_input", action='store_true',
                         help="whether to use the output of quantized block to tune the next block")
 
     parser.add_argument("--lr", default=None, type=float,
@@ -248,7 +248,7 @@ if __name__ == '__main__':
     autoround = round(model, tokenizer, args.bits, args.group_size, dataloader=data, sym=args.sym,
                       batch_size=args.train_bs,
                       seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
-                      minmax_lr=args.minmax_lr, use_quant_input=args.use_quant_input, device=device_str,
+                      minmax_lr=args.minmax_lr, enable_quanted_input=args.enable_quanted_input, device=device_str,
                       amp=args.amp, n_samples=args.n_samples, low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config)  ##TODO args pass

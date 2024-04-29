@@ -7,7 +7,7 @@ For GPTQ, we have enabled act-order and true-seqential, and also activated stati
 
 For Omniquant, we adhere to the official settings, which include running for 20 epochs and disabling 'let'. We conducted calibration tests using sample sizes of 512 and 128, as well as a sample size of 512 with a batch size of 4. Our findings show that using a sample size of 512 typically results in comparable or slight higher performance for models <=13B. Therefore, we present the results based on the sample size of 512. For 70B models, due the the NAN loss issue and to reduce the tuning cost, we adopted 128 samples for calibration.
 
-For AutoRound, we used the default setting, iters 200, use_quant_input and enable_minmax_tuning, both the lr and minmax_lr are set to 1/iters,i.e. 5e-3.
+For AutoRound, we used the default setting, iters 200, enable_quanted_input and enable_minmax_tuning, both the lr and minmax_lr are set to 1/iters,i.e. 5e-3.
 
 With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar, while HQQ is much faster and Omniquant is noticebal slower.
 
@@ -3082,7 +3082,7 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
   </tr>
 
   </tr>
-    <th>Ours iters=1K,use_quant_input=False, minmax_lr=0.002</th>
+    <th>Ours iters=1K,disable_quanted_input, minmax_lr=0.002</th>
     <td>67.70</td> <! acc avg -->
     <td>60.57</td> <! MMLU -->
     <td>73.74</td> <! Lambada_openai -->
@@ -3142,7 +3142,7 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
     <td>-</td>
   </tr>
   <tr>
-    <th>Ours iters=1K,use_quant_input=False 
+    <th>Ours iters=1K,disable_quanted_input 
     <td>66.78</td>
     <td>68.68</td>
     <td>78.61</td>
@@ -3203,7 +3203,7 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
 
   </tr>
   </tr>
-    <th>Ours iters=1K,use_quant_input=False </th>
+    <th>Ours iters=1K,disable_quanted_input </th>
     <td>61.47</td> <! acc avg -->
     <td>55.41</td> <! MMLU -->
     <td>61.77</td> <! Lambada_openai -->
