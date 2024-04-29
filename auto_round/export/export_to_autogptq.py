@@ -48,7 +48,7 @@ from auto_round.utils import check_to_quantized, get_block_names, get_module, lo
 
 
 @register_format("auto_gptq")
-def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwargs):
+def save_quantized_as_autogptq(output_dir, use_triton=False, use_marlin=False, use_tritonv2=False, inplace=True, **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
     model = kwargs["model"]
     weight_config = kwargs["weight_config"]
@@ -114,24 +114,67 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             force_layer_back_to_cpu=True,
             use_triton=False,
         )
-    else:
-        quantizers = {}
-        for key in weight_config:
-            info = weight_config[key]
-            if not check_to_quantized(info):
-                continue
-            info["zp"] = info["zp"].to(torch.float32)
-            quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
-        pack_model(
-            compressed_model,
-            quantizers,
-            bits,
-            group_size,
-            use_cuda_fp16=True,
-            desc_act=False,
-            force_layer_back_to_cpu=True,
-            use_triton=True,
-        )
+    try:
+        if not (use_triton or use_marlin or use_tritonv2):
+            raise ValueError("All use_* flags are false; at least one must be true.")
+
+        if use_triton is True:
+            quantizers = {}
+            for key in weight_config:
+                info = weight_config[key]
+                if not check_to_quantized(info):
+                    continue
+                info["zp"] = info["zp"].to(torch.float32)
+                quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
+            pack_model(
+                compressed_model,
+                quantizers,
+                bits,
+                group_size,
+                use_cuda_fp16=True,
+                desc_act=False,
+                force_layer_back_to_cpu=True,
+                use_triton=True,
+            )
+        elif use_marlin is True:
+            quantizers = {}
+            for key in weight_config:
+                info = weight_config[key]
+                if not check_to_quantized(info):
+                    continue
+                info["zp"] = info["zp"].to(torch.float32)
+                quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
+            pack_model(
+                compressed_model,
+                quantizers,
+                bits,
+                group_size,
+                use_cuda_fp16=True,
+                desc_act=False,
+                force_layer_back_to_cpu=True,
+                use_marlin=True,
+            )
+        elif use_tritonv2 is True:
+            quantizers = {}
+            for key in weight_config:
+                info = weight_config[key]
+                if not check_to_quantized(info):
+                    continue
+                info["zp"] = info["zp"].to(torch.float32)
+                quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
+            pack_model(
+                compressed_model,
+                quantizers,
+                bits,
+                group_size,
+                use_cuda_fp16=True,
+                desc_act=False,
+                force_layer_back_to_cpu=True,
+                use_tritonv2=True,
+            )
+    except ValueError as e:
+        print(e)
+        raise e
     if output_dir is None:
         return compressed_model
 
