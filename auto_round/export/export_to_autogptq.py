@@ -48,7 +48,9 @@ from auto_round.utils import check_to_quantized, get_block_names, get_module, lo
 
 
 @register_format("auto_gptq")
-def save_quantized_as_autogptq(output_dir, use_triton=False, use_marlin=False, use_tritonv2=False, inplace=True, **kwargs):
+def save_quantized_as_autogptq(
+    output_dir, use_triton=False, use_marlin=False, use_tritonv2=False, inplace=True, **kwargs
+):
     """Export the model to autogptq format to easily leverage cuda kernel."""
     model = kwargs["model"]
     weight_config = kwargs["weight_config"]
