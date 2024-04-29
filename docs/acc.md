@@ -3249,7 +3249,7 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
    
   </tr>
   <tr>
-    <td rowspan="3">mistralai/Mistral-7B </td>
+    <td rowspan="3">mistralai/Mistral-7B-v0.1 </td>
     <th>FP16</th>
     <td>63.30 </td>
     <td>61.35 </td>
@@ -3308,7 +3308,7 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
   </tr>
 
   <tr>
-    <td rowspan="3">Meta/LLaMA-2-13B </td>
+    <td rowspan="3">meta-llama/Llama-2-13b-hf </td>
     <th>FP16</th>
     <td>61.42 </td>
     <td>52.86 </td>
@@ -3368,7 +3368,7 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
   </tr>
 
  <tr>
-    <td rowspan="3">Meta/LLaMA-2-7B </td>
+    <td rowspan="3">meta-llama/Llama-2-7b-hf </td>
     <th>FP16</th>
     <td>57.98 </td>
     <td>42.69 </td>
@@ -3421,9 +3421,9 @@ With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar,
     <td>71.13 </td>
     <td>37.80 </td>
     <td>8.54 </td>
-    <td>0.00 </td>
+    <td>NAN </td>
     <td>10.14 </td>
-    <td>0.00 </td>
+    <td>NAN </td>
   </tr>
 
 </table>
