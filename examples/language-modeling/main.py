@@ -287,14 +287,15 @@ if __name__ == '__main__':
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
     deployment_device = args.deployment_device.split(',')
+    inplace = True if len(deployment_device) < 2 else False
     if 'gpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=False)
+        autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=inplace)
     if 'xpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=False,
+        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
                                  device="xpu")
     if "cpu" in deployment_device:
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=False)
+        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
     if "fake" in deployment_device:
         model = model.to("cpu")
         model.save_pretrained(output_dir)
