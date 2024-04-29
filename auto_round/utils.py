@@ -292,8 +292,7 @@ def get_module(module, key):
     """
     name_list = key.split(".")
     for name in name_list:
-        if hasattr(module, name):
-            module = getattr(module, name)
+        module = getattr(module, name)
     return module
 
 

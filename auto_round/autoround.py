@@ -1317,15 +1317,9 @@ class AutoRound(object):
         for key in self.weight_config.keys():
             if key in all_layers_in_block:
                 continue
-            try:
-                layer = get_module(self.model, key)
-                if layer == self.model:
-                    raise ModuleNotFoundError
-                if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.weight_config[key]):
-                    layer_names.append(key)
-            except:
-                logger.error(f"could not find layer {key} in the model, exit...")
-                exit()
+            layer = get_module(self.model, key)
+            if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.weight_config[key]):
+                layer_names.append(key)
 
         return layer_names
 
