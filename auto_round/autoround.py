@@ -925,7 +925,7 @@ class AutoRound(object):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
-            
+
         train_bs = self.train_bs
         pick_samples = train_bs
         n_samples = inputs.shape[0]
@@ -952,7 +952,7 @@ class AutoRound(object):
                     org_input = current_input
                 with torch.no_grad():
                     current_output = layer(org_input)
-                        
+
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
@@ -1682,4 +1682,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
