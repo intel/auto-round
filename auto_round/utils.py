@@ -671,11 +671,10 @@ def convert_dtype_torch2str(dtype):
         return dtype
     else:
         assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
-        
-        
+
+
 def convert_dtype_torch2str_hf(dtype):
     """Converts a PyTorch dtype to its corresponding huggingface string dtype, e.g. torch.float32 -> 'float32'.
-    
 
     Args:
         dtype: PyTorch dtype or str. The dtype to convert.
@@ -689,14 +688,14 @@ def convert_dtype_torch2str_hf(dtype):
     if dtype is None:
         return dtype
     if isinstance(dtype, str):
-        if 'float' not in dtype and 'int' not in dtype:
+        if "float" not in dtype and "int" not in dtype:
             dtype = convert_dtype_str2torch(dtype)
         else:
             return dtype
     str_dtype = str(dtype)
-    if '.' not in str_dtype:
+    if "." not in str_dtype:
         assert False, "Unsupported pytorch dtype {} to huggingface str dtype".format(dtype)
-    str_dtype = str_dtype.split('.')[1]
+    str_dtype = str_dtype.split(".")[1]
     return str_dtype
 
 
@@ -741,4 +740,3 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         bs = 1
 
     return False, seqlen, bs
-

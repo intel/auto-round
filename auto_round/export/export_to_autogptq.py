@@ -18,7 +18,6 @@ import json
 import os
 from os.path import isdir, isfile, join
 from typing import Dict, List, Optional, Union
-from ..utils import convert_dtype_torch2str_hf
 
 # MIT License
 #
@@ -46,6 +45,8 @@ from safetensors.torch import save_file as safe_save
 
 from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
+
+from ..utils import convert_dtype_torch2str_hf
 
 
 @register_format("auto_gptq")
@@ -262,4 +263,3 @@ def _save_quantized_to_autogptq(
     config_dict["quant_method"] = "gptq"  ##hf transformers could only recognize this value
     model.config.quantization_config = config_dict
     model.config.save_pretrained(save_dir)
-
