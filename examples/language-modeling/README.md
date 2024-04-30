@@ -68,7 +68,7 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 
 
 - **Enable quantized lm-head:**
 
---disable_low_gpu_mem_usage is strongly recommended if the whole model could fit to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing n_samples,e.g. 128 to alleviate the issue.
+--disable_low_gpu_mem_usage is strongly recommended if the whole model could fit to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing n_samples,e.g. 128, to alleviate the issue.
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1 --quant_lm_head --disable_low_gpu_mem_usage
 ```
