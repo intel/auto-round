@@ -61,10 +61,18 @@ pip install -r requirements.txt
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1
 ```
-- **Reduced GPU Memory Usage and Adjusted Training Batch Size:**
+- **Reduced GPU Memory Usage:**
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1  --train_bs 1 --gradient_accumulate_steps 8
 ```
+
+- **Enable quantized lm-head:**
+
+--disable_low_gpu_mem_usage is strongly recommended if the whole model could fit to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing n_samples,e.g. 128 to alleviate the issue.
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1 --quant_lm_head --disable_low_gpu_mem_usage
+```
+
 - **Utilizing the AdamW Optimizer:**
 
 Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
@@ -73,7 +81,6 @@ Include the flag `--adam`. Note that AdamW is less effective than sign gradient 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1 --iters 400 --lr 0.0025 --disable_minmax_tuning --disable_quanted_input
 ```
-
 
 - **Running on Intel Gaudi2**
 ```bash
