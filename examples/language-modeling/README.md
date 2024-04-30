@@ -47,7 +47,7 @@ See more about loading [huggingface dataset](https://huggingface.co/docs/dataset
 - Option 2: Register your dataset following the [code](../../auto_round/calib_dataset.py) and pass the new dataset&split args to initialize AutoRound object.
 - Option 3: Following the [code](./main_customized_data.py) to pass list of string or list of inputs to dataloader.
 
-Combination of different datasets has been supported, --dataset "./tmp.json,NeelNanda/pile-10k". Please note that samples with seqence length < args.seq will be dropped.
+Combination of different datasets has been supported, --dataset "./tmp.json,NeelNanda/pile-10k". Please note that samples with sequence length < args.seq will be dropped.
 
 <br />
 
