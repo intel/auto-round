@@ -11,7 +11,7 @@ import transformers
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, './')
-from .parse_results import result_parser
+from eval_legacy.parse_results import result_parser
 import time
 EXT_TASKS = ['wikitext2', 'ptb', 'c4', 'ptb-new', 'c4-new']
 fewshots_dict = {}
@@ -345,6 +345,9 @@ if __name__ == "__main__":
     test_tasks = ['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
                   "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte", "arc_easy",
                   "arc_challenge"]
+    seen = set()
+    tmp_tasks = test_tasks
+    test_tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
     model_name = args.model_name.rstrip('/')
     excel_name = model_name.split('/')[-1] + ".xlsx"
     eval_model(model_path=args.model_name,
