@@ -46,7 +46,7 @@ class QuantConfig(PretrainedConfig):
         iters=1000,
         lr=0.001,
         minmax_lr=0.001,
-        use_quant_input=True,
+        enable_quanted_input=True,
         compute_dtype=None,
         **kwargs,
     ):
@@ -61,7 +61,7 @@ class QuantConfig(PretrainedConfig):
         self.iters = iters
         self.lr = lr
         self.minmax_lr = minmax_lr
-        self.use_quant_input = use_quant_input
+        self.enable_quanted_input = enable_quanted_input
         self.compute_dtype = convert_dtype_torch2str(compute_dtype)
 
         if "export_to_xpu" not in kwargs or not kwargs["export_to_xpu"]:
@@ -287,13 +287,13 @@ class QuantConfig(PretrainedConfig):
             "scheme",
             "tokenizer",
             "use_neural_speed",
-            "use_quant_input",
+            "enable_quanted_input",
             "layer_wise",
             "nsamples",
             "lr",
             "minmax_lr",
             "iters",
-            "use_quant_input",
+            "enable_quanted_input",
             "model_file_base_name",
             "enable_minmax_tuning",
             "model_name_or_path",

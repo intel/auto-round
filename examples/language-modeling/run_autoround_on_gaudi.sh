@@ -10,7 +10,6 @@ python3 main.py \
   --group_size 128 \
   --bits 4 \
   --enable_minmax_tuning \
-  --use_quant_input \
   --eval_bs $eval_bs \
   --output_dir "./tmp_autoround"
 

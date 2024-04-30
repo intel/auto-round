@@ -18,9 +18,12 @@ The transformers version required varies across different types of models. Here,
 | facebook/opt-6.7b | 4.28/4.30/4.34/4.36 |
 | tiiuae/falcon-7b | 4.28/4.30/4.34/4.36 |
 | mosaicml/mpt-7b | 4.28/4.30/4.34/4.36 |
+| mosaicml/mpt-7b-chat | 4.34 |
+| bigscience/bloom-3b | 4.28/4.30/4.34/4.36 |
 | bigscience/bloom-7b1 | 4.28/4.30/4.34/4.36 |
 | baichuan-inc/Baichuan2-7B-Chat | 4.36 |
 | Qwen/Qwen-7B | 4.28/4.30/4.34/4.36 |
+| Qwen/Qwen1.5-7B-Chat | 4.38/4.40 |
 | THUDM/chatglm3-6b | 4.34/4.36 |
 | mistralai/Mistral-7B-v0.1 | 4.34/4.36 |
 | MBZUAI/LaMini-GPT-124M | 4.34/4.36 |
@@ -30,6 +33,7 @@ The transformers version required varies across different types of models. Here,
 | Intel/neural-chat-7b-v3 | 4.34/4.36 |
 | rinna/bilingual-gpt-neox-4b | 4.36 |
 | microsoft/phi-2 | 4.36 |
+| google/gemma-7b | 4.38/4.40 |
 
 
 ## 2. Prepare Calibration Dataset
@@ -54,7 +58,7 @@ pip install -r requirements.txt
 
 - **Default Settings:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1  --use_quant_input
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1
 ```
 - **Reduced GPU Memory Usage and Adjusted Training Batch Size:**
 ```bash
@@ -66,7 +70,7 @@ Include the flag `--adam`. Note that AdamW is less effective than sign gradient 
 
 - **Running the Original SignRound:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1 --iters 400 --lr 0.0025 --disable_minmax_tuning
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1 --iters 400 --lr 0.0025 --disable_minmax_tuning --disable_quanted_input
 ```
 
 
@@ -86,12 +90,12 @@ Due to the large size of the model, the quantization and evaluation processes ma
 
 - You can set up multi-GPU cards for the quantization example, which will only use the first card for quantization and then evaluate with all GPU cards.
 ```bash
-CUDA_VISIBLE_DEVICES=1,2 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --deployment_device fake,cpu --output_dir /save_model_path/
+CUDA_VISIBLE_DEVICES=1,2 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --deployment_device fake,cpu --output_dir /save_model_path/ 
 ```
 
 - Enable 'disable_eval' for the quantization example, save the qdq model by setting 'deployment_device=fake', and then set up multi-GPU cards for the evaluation script.
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --disable_eval --deployment_device fake --output_dir /save_model_path/
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --disable_eval --deployment_device fake --output_dir /save_model_path/ 
 
 CUDA_VISIBLE_DEVICES=1,2 python3 eval/evaluation.py --model_name /save_model_path/ --eval_bs 8 --tasks mmlu,lambada_openai,ptb --excel_path /result_excel/save_path/
 ```
@@ -113,6 +117,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 

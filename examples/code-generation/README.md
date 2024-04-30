@@ -15,11 +15,11 @@ See more about loading [huggingface dataset](https://huggingface.co/docs/dataset
 Enter into the examples folder
 - **Default Settings:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Salesforce/codegen25-7b-multi --amp --bits 4 --group_size -1 --enable_minmax_tuning --use_quant_input
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Salesforce/codegen25-7b-multi --amp --bits 4 --group_size -1 --enable_minmax_tuning
 ```
 - **Reduced GPU Memory Usage and Adjusted Training Batch Size:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Salesforce/codegen25-7b-multi --amp --bits 4 --group_size -1 --low_gpu_mem_usage --train_bs 1 --gradient_accumulate_steps 8
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Salesforce/codegen25-7b-multi --amp --bits 4 --group_size -1 --low_gpu_mem_usage --train_bs 1 --gradient_accumulate_steps 8 
 ```
 - **Utilizing the AdamW Optimizer:**
 Include the flag `--adam`. Note that AdamW is less effective than Sign gradient descent in many scenarios we tested.
@@ -45,7 +45,7 @@ Please follow https://github.com/bigcode-project/bigcode-evaluation-harness to e
     <th>0.2854</th>
   </tr>
   <tr>
-    <th>AutoRound use_quant_input=False</th>
+    <th>AutoRound enable_quanted_input=False</th>
     <th>0.2841</th>
   </tr>
 </table>
