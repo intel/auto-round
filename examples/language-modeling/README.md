@@ -39,10 +39,11 @@ The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in 
 See more about loading [huggingface dataset](https://huggingface.co/docs/datasets/main/en/quickstart)
 
 ### Customized Dataset
-- Following the [code](./main_customized_data.py) to pass list of string or list of inputs to dataloader.
+- Option 1: Pass a local json file path to dataset argument
+- Option 2: Register your dataset/dataloader following the [code](../../auto_round/calib_dataset.py) and pass the new dataset&split args to initialize AutoRound object.
+- Option 3 : Following the [code](./main_customized_data.py) to pass list of string or list of inputs to dataloader.
 
-- Register your dataset/dataloader following the [code](../../auto_round/calib_dataset.py) and pass the new dataset&split args to initialize AutoRound object.
-
+Combination of different datastes has been supported, --dataset "./tmp.json,NeelNanda/pile-10k". Please note that samples with seqence length < args.seq will be dropped.
 
 <br />
 
