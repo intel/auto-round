@@ -43,10 +43,11 @@ The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in 
 See more about loading [huggingface dataset](https://huggingface.co/docs/datasets/main/en/quickstart)
 
 ### Customized Dataset
-- Following the [code](./main_customized_data.py) to pass list of string or list of inputs to dataloader.
+- Option 1: Pass a local json file path to dataset argument
+- Option 2: Register your dataset following the [code](../../auto_round/calib_dataset.py) and pass the new dataset&split args to initialize AutoRound object.
+- Option 3: Following the [code](./main_customized_data.py) to pass list of string or list of inputs to dataloader.
 
-- Register your dataset/dataloader following the [code](../../auto_round/calib_dataset.py) and pass the new dataset&split args to initialize AutoRound object.
-
+Combination of different datasets has been supported, --dataset "./tmp.json,NeelNanda/pile-10k". Please note that samples with sequence length < args.seq will be dropped.
 
 <br />
 
@@ -60,10 +61,18 @@ pip install -r requirements.txt
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1
 ```
-- **Reduced GPU Memory Usage and Adjusted Training Batch Size:**
+- **Reduced GPU Memory Usage:**
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1  --train_bs 1 --gradient_accumulate_steps 8
 ```
+
+- **Enable quantized lm-head:**
+
+--disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing n_samples,e.g. 128, to alleviate the issue.
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1 --quant_lm_head --disable_low_gpu_mem_usage
+```
+
 - **Utilizing the AdamW Optimizer:**
 
 Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
@@ -72,7 +81,6 @@ Include the flag `--adam`. Note that AdamW is less effective than sign gradient 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1 --iters 400 --lr 0.0025 --disable_minmax_tuning --disable_quanted_input
 ```
-
 
 - **Running on Intel Gaudi2**
 ```bash
