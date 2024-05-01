@@ -94,7 +94,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--tasks",
                         default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                        "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge,wikitext2,ptb-new,c4-new",
+                                "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge,wikitext2,ptb-new,c4-new",
                         help="lm-eval tasks for lm_eval version 0.4")
 
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
@@ -114,7 +114,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--disable_trust_remote_code", action='store_true',
                         help="Whether to disable trust_remote_code")
-    
+
     parser.add_argument("--disable_quanted_input", action='store_true',
                         help="whether to disuse the output of quantized block to tune the next block")
 
@@ -268,10 +268,23 @@ if __name__ == '__main__':
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
     if args.quant_lm_head:
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(model_name)
         weight_config['lm_head'] = {"data_type": "int"}
-        if not args.disable_low_gpu_mem_usage:
-            print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
-                  f"gpu")
+        if config.tie_word_embeddings:
+            if hasattr(model, "_tied_weights_keys"):
+                tied_keys = model._tied_weights_keys
+                for item in tied_keys:
+                    if "lm_head" in item:##TODO extend to encoder-decoder layer, seq classification model
+                        args.quant_lm_head = False
+                        print(
+                            f"warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
+                            f"supported currently")
+                        break
+    if args.quant_lm_head and not args.disable_low_gpu_mem_usage:
+        print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
+              f"gpu")
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
@@ -311,4 +324,3 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
-
