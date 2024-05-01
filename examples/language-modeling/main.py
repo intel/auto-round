@@ -283,6 +283,7 @@ if __name__ == '__main__':
                         break
     if args.quant_lm_head:
         weight_config['lm_head'] = {"data_type": "int"}
+
     if args.quant_lm_head and not args.disable_low_gpu_mem_usage:
         print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
               f"gpu")
