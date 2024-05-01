@@ -269,6 +269,9 @@ if __name__ == '__main__':
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
     if args.quant_lm_head:
         weight_config['lm_head'] = {"data_type": "int"}
+        if not args.disable_low_gpu_mem_usage:
+            print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
+                  f"gpu")
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
