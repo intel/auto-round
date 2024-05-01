@@ -271,7 +271,6 @@ if __name__ == '__main__':
         from transformers import AutoConfig
 
         config = AutoConfig.from_pretrained(model_name)
-        weight_config['lm_head'] = {"data_type": "int"}
         if config.tie_word_embeddings:
             if hasattr(model, "_tied_weights_keys"):
                 tied_keys = model._tied_weights_keys
@@ -282,6 +281,9 @@ if __name__ == '__main__':
                             f"warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
                             f"supported currently")
                         break
+    if args.quant_lm_head:
+        weight_config['lm_head'] = {"data_type": "int"}
+
     if args.quant_lm_head and not args.disable_low_gpu_mem_usage:
         print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
               f"gpu")
