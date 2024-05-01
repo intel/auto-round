@@ -276,7 +276,7 @@ if __name__ == '__main__':
             if hasattr(model, "_tied_weights_keys"):
                 tied_keys = model._tied_weights_keys
                 for item in tied_keys:
-                    if "lm_head" in item:##TODO extend to encoder-decoder layer, seq classifaction model
+                    if "lm_head" in item:##TODO extend to encoder-decoder layer, seq classification model
                         args.quant_lm_head = False
                         print(
                             f"warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
