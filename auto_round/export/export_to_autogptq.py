@@ -270,7 +270,7 @@ def _save_quantized_to_autogptq(
     config.meta_set("lr", lr)
     config.meta_set("minmax_lr", minmax_lr)
     config.meta_set("enable_minmax_tuning", enable_minmax_tuning)
-    config.meta_set("enable_quanted_input", use_quant_input)
+    config.meta_set("enable_quanted_input", enable_quanted_input)
     config.meta_set("scale_dtype", convert_dtype_torch2str_hf(scale_dtype))
     if modules_in_block_to_quantize is not None:
         config.meta_set("modules_in_block_to_quantize", modules_in_block_to_quantize)
