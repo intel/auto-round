@@ -14,7 +14,6 @@
 
 
 import copy
-import json
 import os
 from os.path import isdir, isfile, join
 from typing import Dict, List, Optional, Union
@@ -41,8 +40,18 @@ from typing import Dict, List, Optional, Union
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
+from auto_gptq import version as autogptq_version
+from auto_gptq.modeling._utils import convert_gptq_v2_to_v1_format, pack_model
+from auto_gptq.quantization.config import (
+    CHECKPOINT_FORMAT,
+    META_FIELD_PACKER,
+    META_FIELD_QUANTIZER,
+    QUANT_METHOD,
+    BaseQuantizeConfig,
+)
 from safetensors.torch import save_file as safe_save
 
+from auto_round import __version__ as autoround_version
 from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
 
@@ -66,10 +75,17 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
 
+    # check if quant_lm_head is enabled
+    if weight_config is not None and weight_config.get("lm_head") == {"data_type": "int"}:
+        raise ValueError(
+            "quant_lm_head is not supported for deployment on gpu due to incompatibility with autogptq. "
+            "Please disable quant_lm_head or remove gpu from deployment_device."
+        )
+
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
-    ##check module quantized in block, this may have bug for mixed precision quantization
+    # check module quantized in block, this may have bug for mixed precision quantization
     block_name = get_block_names(model)[0]
     first_block = get_module(model, block_name)
     all_to_quantized = True
@@ -86,7 +102,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             all_to_quantized = False
         else:
             modules_in_block_to_quantize.append(n)
-    modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
+    modules_in_block_to_quantize = [modules_in_block_to_quantize]  # align with autogptq
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
@@ -95,18 +111,19 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
 
-    from auto_gptq.modeling._utils import pack_model
-
+    quantizers = {}
+    qlinear_kernel = None
     if bits == 3 or use_triton is False:
         if bits == 3 and use_triton is True:
             logger.warning("triton does not support 3 bits, reset it to False")
-        quantizers = {}
+
         for key in weight_config:
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
             quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
-        pack_model(
+
+        qlinear_kernel = pack_model(
             compressed_model,
             quantizers,
             bits,
@@ -117,14 +134,14 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             use_triton=False,
         )
     else:
-        quantizers = {}
         for key in weight_config:
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
             info["zp"] = info["zp"].to(torch.float32)
             quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
-        pack_model(
+
+        qlinear_kernel = pack_model(
             compressed_model,
             quantizers,
             bits,
@@ -134,15 +151,32 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             force_layer_back_to_cpu=True,
             use_triton=True,
         )
+
+    config = BaseQuantizeConfig(
+        bits=bits,
+        group_size=group_size,
+        desc_act=False,
+        sym=sym,
+        true_sequential=False,
+        static_groups=False,
+        quant_method=QUANT_METHOD.GPTQ,
+        checkpoint_format=CHECKPOINT_FORMAT.GPTQ,
+    )
+
+    # convert to gptq v1 from internal v2 format
+    compressed_model = convert_gptq_v2_to_v1_format(
+        compressed_model,
+        quantize_config=config,
+        qlinear_kernel=qlinear_kernel,
+    )
+
     if output_dir is None:
         return compressed_model
 
     _save_quantized_to_autogptq(
         compressed_model,
         output_dir,
-        bits=bits,
-        group_size=group_size,
-        sym=sym,
+        config=config,
         iters=iters,
         lr=lr,
         minmax_lr=minmax_lr,
@@ -157,9 +191,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
 def _save_quantized_to_autogptq(
     model,
     save_dir: str,
-    bits=4,
-    group_size=128,
-    sym=False,
+    config: BaseQuantizeConfig,
     iters=200,
     lr=5e-3,
     minmax_lr=5e-3,
@@ -216,11 +248,9 @@ def _save_quantized_to_autogptq(
         safetensors_metadata["format"] = "pt"
 
         # Store the quantization configuration as safetensors metadata
-        from auto_round import __version__
-
-        safetensors_metadata["autoround_version"] = str(__version__)
-        safetensors_metadata["bits"] = str(bits)
-        safetensors_metadata["group_size"] = str(group_size)
+        safetensors_metadata["autoround_version"] = str(autoround_version)
+        safetensors_metadata["bits"] = str(config.bits)
+        safetensors_metadata["group_size"] = str(config.group_size)
         safetensors_metadata["iters"] = str(iters)
         safetensors_metadata["lr"] = str(lr)
         safetensors_metadata["minmax_lr"] = str(minmax_lr)
@@ -232,34 +262,19 @@ def _save_quantized_to_autogptq(
         model_save_name = model_base_name + ".bin"
         torch.save(model.state_dict(), join(save_dir, model_save_name))
 
-    from auto_gptq.modeling._base import BaseQuantizeConfig
+    config.model_file_base_name = model_base_name
 
-    quantization_config = BaseQuantizeConfig(
-        bits=bits,
-        group_size=group_size,
-        desc_act=False,
-        sym=sym,
-        true_sequential=False,
-        static_groups=False,
-        model_file_base_name=model_base_name,
-    )
-    quantization_config.model_file_base_name = model_base_name
-
-    config_dict = quantization_config.to_dict()
-    config_dict["quant_method"] = "intel/auto-round"
-    config_dict["autoround_version"] = __version__
-    config_dict["iters"] = iters
-    config_dict["lr"] = lr
-    config_dict["minmax_lr"] = minmax_lr
-    config_dict["enable_minmax_tuning"] = enable_minmax_tuning
-    config_dict["enable_quanted_input"] = enable_quanted_input
-    config_dict["scale_dtype"] = convert_dtype_torch2str_hf(scale_dtype)
+    config.meta_set_versionable(META_FIELD_QUANTIZER, "intel/auto-round", autoround_version)
+    config.meta_set_versionable(META_FIELD_PACKER, "autogptq", autogptq_version.__version__)
+    config.meta_set("iters", iters)
+    config.meta_set("lr", lr)
+    config.meta_set("minmax_lr", minmax_lr)
+    config.meta_set("enable_minmax_tuning", enable_minmax_tuning)
+    config.meta_set("enable_quanted_input", enable_quanted_input)
+    config.meta_set("scale_dtype", convert_dtype_torch2str_hf(scale_dtype))
     if modules_in_block_to_quantize is not None:
-        config_dict["modules_in_block_to_quantize"] = modules_in_block_to_quantize
+        config.meta_set("modules_in_block_to_quantize", modules_in_block_to_quantize)
 
-    with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
-        json.dump(config_dict, f, indent=2)
-
-    config_dict["quant_method"] = "gptq"  ##hf transformers could only recognize this value
-    model.config.quantization_config = config_dict
+    config.save_pretrained(save_dir)
+    model.config.quantization_config = config
     model.config.save_pretrained(save_dir)

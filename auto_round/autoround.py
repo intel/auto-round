@@ -18,6 +18,7 @@ import time
 
 import torch
 from torch import autocast
+from tqdm import tqdm
 
 from .calib_dataset import get_dataloader
 from .special_model_handler import check_hidden_state_dim, check_share_attention_mask
@@ -992,8 +993,10 @@ class AutoRound(object):
         if not self.not_use_best_mse:
             last_loss = best_loss
             best_iter = last_best_iter
-        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        logger.info(dump_info)
+
+        logger.info(
+            f"Quantized {layer_name}:  [ first iter: 0, loss: {init_loss:.7f}] -> [ best iter: ({best_iter}), loss: {last_loss:.7f} ]"
+        )
         with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
 
@@ -1131,11 +1134,13 @@ class AutoRound(object):
         if not self.not_use_best_mse:
             last_loss = best_loss
             best_iter = last_best_iter
-        dump_info = (
-            f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
-            f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+
+        logger.info(
+            f"Quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+            f"layers in the block: [ first iter: 0, loss: {init_loss:.7f} ] "
+            f"-> [ best iter: {best_iter}, loss: {last_loss:.7f} ]"
         )
-        logger.info(dump_info)
+
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
@@ -1176,14 +1181,17 @@ class AutoRound(object):
         inputs.pop("input_ids", None)
         input_others = inputs
         torch.cuda.empty_cache()
-        for i in range(0, len(block_names), n_blocks):
+
+        pbar = tqdm(range(0, len(block_names), n_blocks))
+        for i in pbar:
             if n_blocks == 1:
                 n = block_names[i]
-                logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
+                pbar.set_description(f"Quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i : i + n_blocks]
-                logger.info(names)
+                pbar.set_description(f"Quantizing [{i + 1}-{i + n_blocks}]/{len(block_names)}")
+                logger.info(f"[{i + 1}-{i + n_blocks}]: {names}")
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 

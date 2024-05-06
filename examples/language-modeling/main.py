@@ -135,6 +135,13 @@ if __name__ == '__main__':
         print(
             "enable_quanted_input is deprecated. It has been set to the default; use disable_quanted_input to turn it off")
 
+    deployment_device = args.deployment_device.split(',')
+
+    # TODO re-enable after testing
+    # if 'gpu' in deployment_device and args.quant_lm_head:
+    #     raise ValueError("quant_lm_head is not supported for deployment on gpu due to incompatibility with autogptq. "
+    #                      "Please disable quant_lm_head or remove gpu from deployment_device.")
+
     set_seed(args.seed)
     tasks = args.tasks
     use_eval_legacy = False
@@ -150,6 +157,9 @@ if __name__ == '__main__':
 
 
     res = get_library_version("lm-eval")
+    if not args.disable_eval and res is None:
+        raise ValueError("Please install lm-eval")
+
     if res == "0.3.0":
         use_eval_legacy = True
 
@@ -175,7 +185,7 @@ if __name__ == '__main__':
         if use_eval_legacy:
             print("Using the legacy lm_eval(0.3.0)")
         else:
-            print(f"Using the latest {res}")
+            print(f"Using the latest lm_eval({res})")
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -263,10 +273,10 @@ if __name__ == '__main__':
     weight_config = {}
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
-            if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
+            if m.weight.shape[1] % 32 != 0:
                 weight_config[n] = {"data_type": "fp"}
                 print(
-                    f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
+                    f"{n} will not be quantized due to its infeatures not being divisible by 32, resulting in an exporting issue to autogptq")
     if args.quant_lm_head:
         from transformers import AutoConfig
 
@@ -284,9 +294,7 @@ if __name__ == '__main__':
     if args.quant_lm_head:
         weight_config['lm_head'] = {"data_type": "int"}
 
-    if args.quant_lm_head and not args.disable_low_gpu_mem_usage:
-        print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
-              f"gpu")
+    print(f"weight_config: {weight_config}")
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
@@ -304,6 +312,7 @@ if __name__ == '__main__':
 
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
+
     deployment_device = args.deployment_device.split(',')
     inplace = True if len(deployment_device) < 2 else False
     if 'gpu' in deployment_device:
