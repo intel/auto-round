@@ -13,4 +13,5 @@ python3 main.py \
 --seqlen 128 \
 --enable_minmax_tuning \
 --output_dir "./tmp_signround" \
---amp
+--amp \
+--disable_quanted_input

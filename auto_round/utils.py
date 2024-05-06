@@ -292,9 +292,7 @@ def get_module(module, key):
     """
     name_list = key.split(".")
     for name in name_list:
-        if hasattr(module, name):
-            module = getattr(module, name)
-            module = module
+        module = getattr(module, name, None)
     return module
 
 
@@ -311,8 +309,6 @@ def set_module(model, key, new_module):
     for name in name_list[:-1]:
         if hasattr(module, name):
             module = getattr(module, name)
-        else:
-            module = module
     setattr(module, name_list[-1], new_module)
 
 
@@ -674,6 +670,32 @@ def convert_dtype_torch2str(dtype):
         return dtype
     else:
         assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
+
+
+def convert_dtype_torch2str_hf(dtype):
+    """Converts a PyTorch dtype to its corresponding huggingface string dtype, e.g. torch.float32 -> 'float32'.
+
+    Args:
+        dtype: PyTorch dtype or str. The dtype to convert.
+
+    Returns:
+         str: The string representation of the dtype.
+
+    Raises:
+        AssertionError: If the input str_dtype is unsupported.
+    """
+    if dtype is None:
+        return dtype
+    if isinstance(dtype, str):
+        if "float" not in dtype and "int" not in dtype:
+            dtype = convert_dtype_str2torch(dtype)
+        else:
+            return dtype
+    str_dtype = str(dtype)
+    if "." not in str_dtype:
+        assert False, "Unsupported pytorch dtype {} to huggingface str dtype".format(dtype)
+    str_dtype = str_dtype.split(".")[1]
+    return str_dtype
 
 
 def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):

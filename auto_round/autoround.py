@@ -375,8 +375,8 @@ class AutoRound(object):
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
         dataset_split (str): The split of the dataset to be used (default is "train").
-        use_quant_input (bool): Whether to use the output of the previous quantized block as the input for the current
-                                block (default is True).
+        enable_quanted_input (bool): Whether to use the output of the previous quantized block as
+                                the input for the current block (default is True).
         enable_minmax_tuning (bool): Whether to enable weight min-max tuning (default is True).
         lr (float): The learning rate (default is None, will be set to 1.0/iters).
         minmax_lr (float): The learning rate for min-max tuning (default is None, it will be set to lr automatically).
@@ -414,7 +414,7 @@ class AutoRound(object):
         dataloader=None,  ## to support later
         dataset: str = "NeelNanda/pile-10k",
         dataset_split: str = "train",
-        use_quant_input: bool = True,
+        enable_quanted_input: bool = True,
         enable_minmax_tuning: bool = True,
         lr: float = None,
         minmax_lr: float = None,
@@ -436,7 +436,7 @@ class AutoRound(object):
         self.model_orig_dtype = model.dtype
         self.model = model.eval().to("cpu")
         self.amp = amp
-        self.use_quant_input = use_quant_input
+        self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
         self.n_samples = n_samples
         self.n_blocks = n_blocks
@@ -902,26 +902,11 @@ class AutoRound(object):
             None
         """
         logger.info(f"quantizing layer {layer_name}")
-        with torch.no_grad():
-            layer = get_module(self.model, layer_name)
-            cache_device = "cpu"
-            layer = layer.to(device)
-
-            inputs = inputs.to(layer.weight.dtype)
-            if q_inputs is not None:
-                q_inputs = q_inputs.to(layer.weight.dtype)
-
-            output = []
-            train_bs = self.train_bs
-            for i in range(0, self.n_samples, train_bs):
-                end_index = min(self.n_samples, i + train_bs)
-                tmp_inputs = inputs[i:end_index, ...].to(device)
-                tmp_output = layer.forward(tmp_inputs).to(cache_device)
-                output.append(tmp_output)
-                torch.cuda.empty_cache()  ##too large for lm head, maybe need to decrease n_sample
-
-            output = torch.cat(output, dim=0)
-            torch.cuda.empty_cache()
+        layer = get_module(self.model, layer_name)
+        layer = layer.to(device)
+        inputs = inputs.to(layer.weight.dtype)
+        if q_inputs is not None:
+            q_inputs = q_inputs.to(layer.weight.dtype)
 
         wrapper_linear = WrapperLinear(layer, self.enable_minmax_tuning).to(device)
         round_params = []
@@ -942,8 +927,8 @@ class AutoRound(object):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
+        train_bs = self.train_bs
         pick_samples = train_bs
-
         n_samples = inputs.shape[0]
         if self.sampler != "rand":
             indices = torch.randperm(n_samples)[:pick_samples]
@@ -955,16 +940,20 @@ class AutoRound(object):
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
         gradient_accumulate_steps = self.train_bs // train_bs
         for i in range(self.iters):
-            if self.sampler == "rand":
-                indices = torch.randperm(n_samples)[:pick_samples]
             total_loss = 0
             for _ in range(gradient_accumulate_steps):
+                org_input = None
+                if self.sampler == "rand":
+                    indices = torch.randperm(n_samples)[:pick_samples]
                 if q_inputs is not None:
                     current_input = q_inputs[indices, ...].to(device)
+                    org_input = inputs[indices, ...].to(device)
                 else:
                     current_input = inputs[indices, ...].to(device)
+                    org_input = current_input
+                with torch.no_grad():
+                    current_output = layer(org_input)
 
-                current_output = output[indices, ...].to(device)
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
@@ -974,7 +963,6 @@ class AutoRound(object):
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
-
                 total_loss += loss.item() / gradient_accumulate_steps
                 if i == 0:
                     init_loss = total_loss
@@ -1023,7 +1011,7 @@ class AutoRound(object):
         device: The device for quantization.
 
         Returns:
-        Tuple: (q_outputs, output) if self.use_quant_input is True, else (None, output)
+        Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
         cache_device = "cpu"  ## force cache device to "cpu"
         ##change to block dtype:
@@ -1081,11 +1069,10 @@ class AutoRound(object):
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
         for i in range(self.iters):
-            if self.sampler == "rand":
-                indices = torch.randperm(n_samples)[:pick_samples]
-
             total_loss = 0
             for _ in range(self.gradient_accumulate_steps):
+                if self.sampler == "rand":
+                    indices = torch.randperm(n_samples)[:pick_samples]
                 current_input_ids, current_input_others = sampling_inputs(
                     input_ids,
                     input_others,
@@ -1124,6 +1111,7 @@ class AutoRound(object):
                     init_loss = total_loss
 
                 self.scale_loss_and_backward(scaler, loss)
+                torch.cuda.empty_cache()
 
             if total_loss < best_loss:
                 best_loss = total_loss
@@ -1157,7 +1145,7 @@ class AutoRound(object):
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
-        if self.use_quant_input:
+        if self.enable_quanted_input:
             q_outputs = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, cache_device)
 
             return q_outputs, output
@@ -1259,7 +1247,7 @@ class AutoRound(object):
             lr=self.lr,
             minmax_lr=self.minmax_lr,
             enable_minmax_tuning=self.enable_minmax_tuning,
-            use_quant_input=self.use_quant_input,
+            enable_quanted_input=self.enable_quanted_input,
             scale_dtype=self.scale_dtype,
             tokenizer=self.tokenizer,
             supported_types=self.supported_types,
@@ -1325,13 +1313,12 @@ class AutoRound(object):
         for key in self.weight_config.keys():
             if key in all_layers_in_block:
                 continue
-            try:
-                layer = get_module(self.model, key)
-                if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.weight_config[key]):
-                    layer_names.append(key)
-            except:
+            layer = get_module(self.model, key)
+            if layer is None:
                 logger.error(f"could not find layer {key} in the model, exit...")
                 exit()
+            if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.weight_config[key]):
+                layer_names.append(key)
 
         return layer_names
 
@@ -1381,14 +1368,14 @@ class AutoRound(object):
             torch.cuda.empty_cache()
             layer_inputs = all_inputs
             q_layer_inputs = None
-            if self.use_quant_input:
+            if self.enable_quanted_input:
                 if not self.low_gpu_mem_usage:
                     self.model = self.model.to(self.device)
                 q_layer_inputs = self.cache_inter_data([], self.n_samples, layer_names=layer_names)
             self.model = self.model.to("cpu")
             torch.cuda.empty_cache()
             for layer_name in layer_names:
-                q_layer_input = q_layer_inputs[layer_name] if self.use_quant_input else None
+                q_layer_input = q_layer_inputs[layer_name] if self.enable_quanted_input else None
                 self.quant_layer(layer_name, layer_inputs[layer_name], q_layer_input, device=self.device)
                 torch.cuda.empty_cache()
 
@@ -1458,7 +1445,7 @@ class AutoOPTRound(AutoRound):
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
         dataset_split (str): The split of the dataset to be used (default is "train").
-        use_quant_input (bool): Whether to use quantized input data (default is True).
+        enable_quanted_input (bool): Whether to use quantized input data (default is True).
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
@@ -1497,7 +1484,7 @@ class AutoOPTRound(AutoRound):
         dataloader=None,
         dataset: str = "NeelNanda/pile-10k",
         dataset_split: str = "train",
-        use_quant_input: bool = True,
+        enable_quanted_input: bool = True,
         enable_minmax_tuning: bool = True,
         lr: float = None,
         minmax_lr: float = None,
@@ -1531,7 +1518,7 @@ class AutoOPTRound(AutoRound):
             dataloader,
             dataset,
             dataset_split,
-            use_quant_input,
+            enable_quanted_input,
             enable_minmax_tuning,
             lr,
             minmax_lr,
@@ -1611,7 +1598,7 @@ class AutoAdamRound(AutoOPTRound):
         dataloader: The dataloader for input data (to be supported in future).
         dataset_name (str): The default dataset name (default is "NeelNanda/pile-10k").
         dataset_split (str): The split of the dataset to be used (default is "train").
-        use_quant_input (bool): Whether to use quantized input data (default is True).
+        enable_quanted_input (bool): Whether to use quantized input data (default is True).
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
@@ -1650,7 +1637,7 @@ class AutoAdamRound(AutoOPTRound):
         dataloader=None,
         dataset: str = "NeelNanda/pile-10k",
         dataset_split: str = "train",
-        use_quant_input: bool = True,
+        enable_quanted_input: bool = True,
         enable_minmax_tuning: bool = True,
         lr: float = None,
         minmax_lr: float = None,
@@ -1684,7 +1671,7 @@ class AutoAdamRound(AutoOPTRound):
             dataloader,
             dataset,
             dataset_split,
-            use_quant_input,
+            enable_quanted_input,
             enable_minmax_tuning,
             lr,
             minmax_lr,

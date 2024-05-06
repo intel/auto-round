@@ -40,7 +40,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     lr = kwargs["lr"]
     minmax_lr = kwargs["minmax_lr"]
     enable_minmax_tuning = kwargs["enable_minmax_tuning"]
-    use_quant_input = kwargs["use_quant_input"]
+    enable_quanted_input = kwargs["enable_quanted_input"]
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
 
@@ -55,7 +55,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
         lr=lr,
         minmax_lr=minmax_lr,
         enable_minmax_tuning=enable_minmax_tuning,
-        use_quant_input=use_quant_input,
+        enable_quanted_input=enable_quanted_input,
         scale_dtype=scale_dtype,
     )
     if quantize_config is not None:
@@ -86,7 +86,7 @@ def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
     lr = kwargs["lr"]
     minmax_lr = kwargs["minmax_lr"]
     enable_minmax_tuning = kwargs["enable_minmax_tuning"]
-    use_quant_input = kwargs["use_quant_input"]
+    enable_quanted_input = kwargs["enable_quanted_input"]
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
 
@@ -101,7 +101,7 @@ def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
         lr=lr,
         minmax_lr=minmax_lr,
         enable_minmax_tuning=enable_minmax_tuning,
-        use_quant_input=use_quant_input,
+        enable_quanted_input=enable_quanted_input,
         scale_dtype=scale_dtype,
         export_to_xpu=True,
     )
