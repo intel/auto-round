@@ -107,10 +107,6 @@ autoround.save_quantized(output_dir)
 
 - `dataset (str)`: The default dataset name for tuning (default is "NeelNanda/pile-10k").
 
-- `dataset_split (str)`: The split of the dataset to be used for tuning (default is "train").
-
-- `dataloader`: The dataloader for tuning data.
-
 - `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
   or mixed precision.
 
@@ -173,7 +169,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | facebook/opt-2.7b       | [accuracy](./docs/opt-2.7b-acc.md), [recipe](./examples/language-modeling/scripts/opt-2.7b.sh), [example](./examples/language-modeling/)                                                                                                                |
 | bigscience/bloom-3b       | [accuracy](./docs/bloom-3B-acc.md), [recipe](./examples/language-modeling/scripts/bloom-3b.sh), [example](./examples/language-modeling/)                                                                                                                |
 | EleutherAI/gpt-j-6b       | [accuracy](./docs/gpt-j-6B-acc.md), [recipe](./examples/language-modeling/scripts/gpt-j-6b.sh), [example](./examples/language-modeling/)                                                                                                                |
-| Salesforce/codegen25-7b-multi        | [example](./examples/code-generation)                                                                                                                                                                                                                                     |
+| Salesforce/codegen25-7b-multi        | [example](./examples/language-modeling/)                                                                                                                                                                                                                                     |
 | huggyllama/llama-7b                  | [example](./examples/language-modeling/)                                                                                                                                                                                                                                  |
 | mosaicml/mpt-7b                      | [example](./examples/language-modeling/)                                                                                                                                                                                                                                  |
 | THUDM/chatglm3-6b                    | [example](./examples/language-modeling/)                                                                                                                                                                                                                                  |
