@@ -102,6 +102,8 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             logger.warning("triton does not support 3 bits, reset it to False")
         quantizers = {}
         for key in weight_config:
+            if key == "lm_head":
+                continue
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
@@ -119,6 +121,8 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     else:
         quantizers = {}
         for key in weight_config:
+            if key == "lm_head":
+                continue
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
