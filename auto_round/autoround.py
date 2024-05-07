@@ -678,7 +678,7 @@ class AutoRound(object):
 
             elif isinstance(data, str):
                 if self.tokenizer is None:
-                    logger.error("please provide tokenizer for string input,")
+                    logger.error("please provide tokenizer for string input")
                     exit()
                 data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
                 data_new = {}

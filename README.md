@@ -105,7 +105,7 @@ autoround.save_quantized(output_dir)
 
 - `low_gpu_mem_usage (bool)`: Whether to save GPU memory at the cost of a little tuning time (default is True).
 
-- `dataset (str)`: The default dataset name for tuning (default is "NeelNanda/pile-10k").
+- `dataset (str)`: The default dataset name for tuning (default is "NeelNanda/pile-10k"). Local json file and combination of datasets have been supported, e.g. "./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test"
 
 - `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
   or mixed precision.
