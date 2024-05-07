@@ -44,10 +44,28 @@ See more about loading [huggingface dataset](https://huggingface.co/docs/dataset
 
 ### Customized Dataset
 - Option 1: Pass a local json file path to dataset argument
-- Option 2: Register your dataset following the [code](../../auto_round/calib_dataset.py) and pass the new dataset&split args to initialize AutoRound object.
-- Option 3: Following the [code](./main_customized_data.py) to pass list of string or list of inputs to dataloader.
+- Option 2: Register your dataset following the [code](../../auto_round/calib_dataset.py) and pass the new dataset&split args to initialize AutoRound object,e.g. autoround=Autoround(dataset="NeelNanda/pile-10k:train",...)
+- Option 3: pass list of string or list of input_ids to dataset.
+~~~python
+def customized_data():
+    ##Important Notice!!! Autoround will drop data < args.seqlen and truncate data to args.seqlen
+    data = ["AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference" * 240]
+    data.append("AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference")
+    return data
 
-Combination of different datasets has been supported, --dataset "./tmp.json,NeelNanda/pile-10k". Please note that samples with sequence length < args.seq will be dropped.
+
+def customized_data_with_tokenizer(tokenizer, seqlen=2048):
+    ##Import notice!!! Autoround will drop data < args.seqlen
+    data = ["AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference" * 240]
+    data.append("AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference")
+    tokens = []
+    for d in data:
+        token = tokenizer(d, truncation=True, max_length=seqlen, return_tensors="pt").data
+        tokens.append(token)
+    return tokens
+~~~
+
+Combination of different datasets has been supported, --dataset "./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test". Please note that samples with sequence length < args.seq will be dropped.
 
 <br />
 
@@ -59,18 +77,18 @@ pip install -r requirements.txt
 
 - **Default Settings:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128
 ```
 - **Reduced GPU Memory Usage:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1  --train_bs 1 --gradient_accumulate_steps 8
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128  --train_bs 1 --gradient_accumulate_steps 8
 ```
 
 - **Enable quantized lm-head:**
 
 --disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing n_samples,e.g. 128, to alleviate the issue.
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1 --quant_lm_head --disable_low_gpu_mem_usage
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128 --quant_lm_head --disable_low_gpu_mem_usage
 ```
 
 - **Utilizing the AdamW Optimizer:**
@@ -79,9 +97,15 @@ Include the flag `--adam`. Note that AdamW is less effective than sign gradient 
 
 - **Running the Original SignRound:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size -1 --iters 400 --lr 0.0025 --disable_minmax_tuning --disable_quanted_input
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128 --iters 400 --lr 0.0025 --disable_minmax_tuning --disable_quanted_input
 ```
 
+- **Code generation LLM:**
+
+We utilized mbpp for calibration, but your own training dataset is highly recommended. Please note that samples with seqlen < args.seqlen will be dropped in current version.
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Salesforce/codegen25-7b-multi --bits 4 --group_size 128 --dataset "mbpp" --seqlen 128 "
+```
 - **Running on Intel Gaudi2**
 ```bash
 bash run_autoround_on_gaudi.sh 
