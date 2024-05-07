@@ -1547,7 +1547,8 @@ class AutoAdamRound(AutoOPTRound):
         amp (bool): Whether to use automatic mixed precision (default is True).
         device: The device to be used for training (default is "auto").
         lr_scheduler: The learning rate scheduler to be used.
-        dataset (Union[str, list, tuple, torch.utils.data.DataLoader]): The default dataset name (default is "NeelNanda/pile-10k").
+        dataset (Union[str, list, tuple, torch.utils.data.DataLoader]):
+                The default dataset name (default is "NeelNanda/pile-10k").
         enable_quanted_input (bool): Whether to use quantized input data (default is True).
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
