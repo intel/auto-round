@@ -73,9 +73,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
 
 
 @register_dataset("madao33/new-title-chinese")
-def get_new_chinese_title_dataset(
-    tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42
-):
+def get_new_chinese_title_dataset(tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -141,7 +139,7 @@ def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42
     if splits is None:
         splits = ["train", "validation", "test"]
     if isinstance(splits, str):
-        splits = splits.split('+')
+        splits = splits.split("+")
 
     for split in splits:
         dataset = load_dataset(dataset_name, split=split)
