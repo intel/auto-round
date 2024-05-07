@@ -86,7 +86,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             all_to_quantized = False
         else:
             modules_in_block_to_quantize.append(n)
-    modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
+    modules_in_block_to_quantize = [modules_in_block_to_quantize]
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
@@ -102,7 +102,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             logger.warning("triton does not support 3 bits, reset it to False")
         quantizers = {}
         for key in weight_config:
-            if key == "lm_head":
+            if key == "lm_head":  ##TODO remove this after pr 87 is merged
                 continue
             info = weight_config[key]
             if not check_to_quantized(info):
@@ -121,7 +121,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     else:
         quantizers = {}
         for key in weight_config:
-            if key == "lm_head":
+            if key == "lm_head":  ##TODO remove this after pr 87 is merged
                 continue
             info = weight_config[key]
             if not check_to_quantized(info):
@@ -159,20 +159,20 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
 
 
 def _save_quantized_to_autogptq(
-    model,
-    save_dir: str,
-    bits=4,
-    group_size=128,
-    sym=False,
-    iters=200,
-    lr=5e-3,
-    minmax_lr=5e-3,
-    enable_minmax_tuning=True,
-    enable_quanted_input=True,
-    use_safetensors: bool = True,
-    scale_dtype=torch.float32,
-    safetensors_metadata: Optional[Dict[str, str]] = None,
-    modules_in_block_to_quantize=None,
+        model,
+        save_dir: str,
+        bits=4,
+        group_size=128,
+        sym=False,
+        iters=200,
+        lr=5e-3,
+        minmax_lr=5e-3,
+        enable_minmax_tuning=True,
+        enable_quanted_input=True,
+        use_safetensors: bool = True,
+        scale_dtype=torch.float32,
+        safetensors_metadata: Optional[Dict[str, str]] = None,
+        modules_in_block_to_quantize=None,
 ):
     """Save quantized model and configs to local disk for cuda."""
     os.makedirs(save_dir, exist_ok=True)
