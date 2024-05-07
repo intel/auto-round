@@ -18,8 +18,9 @@ import time
 from typing import Optional, Union
 
 import torch
-from torch import autocast
 import transformers
+from torch import autocast
+
 from .calib_dataset import get_dataloader
 from .special_model_handler import check_hidden_state_dim, check_share_attention_mask
 from .utils import (
@@ -391,36 +392,36 @@ class AutoRound(object):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = False,
-            weight_config: dict = {},
-            enable_full_range: bool = False,  ##for symmetric, TODO support later
-            batch_size: int = 8,
-            amp: bool = True,
-            device=None,
-            lr_scheduler=None,
-            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-            enable_quanted_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",  ##only support int for now
-            scale_dtype: str = "fp32",
-            **kwargs,
+        self,
+        model,
+        tokenizer,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = False,
+        weight_config: dict = {},
+        enable_full_range: bool = False,  ##for symmetric, TODO support later
+        batch_size: int = 8,
+        amp: bool = True,
+        device=None,
+        lr_scheduler=None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        enable_quanted_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",  ##only support int for now
+        scale_dtype: str = "fp32",
+        **kwargs,
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
@@ -461,7 +462,8 @@ class AutoRound(object):
                 self.amp = False
                 self.model = self.model.to(torch.float32)
                 logger.warning(
-                    f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type.")
+                    f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type."
+                )
             else:
                 self.model = self.model.to(self.amp_dtype)
         else:
@@ -739,7 +741,7 @@ class AutoRound(object):
         self.to_cached_layers = block_names + layer_names
         tmp_dtype = None
         if (
-                len(block_names) > 1 or len(layer_names) > 0
+            len(block_names) > 1 or len(layer_names) > 0
         ) and self.low_gpu_mem_usage:  ## have bug if block name is not the first block
             tmp_dtype = self.model.dtype
             self.model = (
@@ -999,12 +1001,12 @@ class AutoRound(object):
         ##change to block dtype:
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         for (
-                key
+            key
         ) in (
-                input_others.keys()
+            input_others.keys()
         ):  ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
             if isinstance(input_others[key], torch.Tensor) and (
-                    input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
             ):
                 input_others[key] = input_others[key].to(tmp_dtype)
 
@@ -1134,12 +1136,12 @@ class AutoRound(object):
             return None, output
 
     def qdq_weight_round(
-            self,
-            model: torch.nn.Module,
-            inputs,
-            block_names,
-            n_blocks=1,
-            device=torch.device("cpu"),
+        self,
+        model: torch.nn.Module,
+        inputs,
+        block_names,
+        n_blocks=1,
+        device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -1167,7 +1169,7 @@ class AutoRound(object):
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i: i + n_blocks]
+                names = block_names[i : i + n_blocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -1233,8 +1235,7 @@ class AutoRound(object):
         return compressed_model
 
     def get_layer_names_in_block(self):
-        """
-        Retrieves the names of layers within each block of the model.
+        """Retrieves the names of layers within each block of the model.
 
         Returns:
             list: A list of strings, where each string is the name of a layer
@@ -1425,37 +1426,37 @@ class AutoOPTRound(AutoRound):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = False,
-            weight_config: dict = {},
-            enable_full_range: bool = False,
-            batch_size: int = 8,
-            amp: bool = True,
-            device="auto",
-            lr_scheduler=None,
-            dataset: str = "NeelNanda/pile-10k",
-            enable_quanted_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            scale_dtype: str = "fp32",
-            optimizer="AdamW",
-            **kwargs,
+        self,
+        model,
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = False,
+        weight_config: dict = {},
+        enable_full_range: bool = False,
+        batch_size: int = 8,
+        amp: bool = True,
+        device="auto",
+        lr_scheduler=None,
+        dataset: str = "NeelNanda/pile-10k",
+        enable_quanted_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        scale_dtype: str = "fp32",
+        optimizer="AdamW",
+        **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
             model,
@@ -1572,37 +1573,37 @@ class AutoAdamRound(AutoOPTRound):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = False,
-            weight_config: dict = {},
-            enable_full_range: bool = False,
-            batch_size: int = 8,
-            amp: bool = True,
-            device="auto",
-            lr_scheduler=None,
-            dataset: str = "NeelNanda/pile-10k",
-            enable_quanted_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
-            iters: int = 200,
-            seqlen: int = 2048,
-            n_samples: int = 512,
-            sampler: str = "rand",
-            seed: int = 42,
-            n_blocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            scale_dtype: str = "fp32",
-            optimizer="AdamW",
-            **kwargs,
+        self,
+        model,
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = False,
+        weight_config: dict = {},
+        enable_full_range: bool = False,
+        batch_size: int = 8,
+        amp: bool = True,
+        device="auto",
+        lr_scheduler=None,
+        dataset: str = "NeelNanda/pile-10k",
+        enable_quanted_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = True,
+        iters: int = 200,
+        seqlen: int = 2048,
+        n_samples: int = 512,
+        sampler: str = "rand",
+        seed: int = 42,
+        n_blocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        scale_dtype: str = "fp32",
+        optimizer="AdamW",
+        **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
             model,
