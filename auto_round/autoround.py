@@ -710,7 +710,7 @@ class AutoRound(object):
         if total_cnt == 0:
             logger.error(
                 f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
-                f"dataloader or decease the sequence length"
+                f"dataset or decease the sequence length"
             )
             exit()
         elif total_cnt < n_samples:
@@ -1400,8 +1400,7 @@ class AutoOPTRound(AutoRound):
         amp (bool): Whether to use automatic mixed precision (default is True).
         device: The device to be used for training (default is "auto").
         lr_scheduler: The learning rate scheduler to be used.
-        dataloader: The dataloader for input data (to be supported in future).
-        dataset (str): The default dataset name (default is "NeelNanda/pile-10k").
+        dataset: The default dataset name (default is "NeelNanda/pile-10k").
         enable_quanted_input (bool): Whether to use quantized input data (default is True).
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
@@ -1438,7 +1437,7 @@ class AutoOPTRound(AutoRound):
         amp: bool = True,
         device="auto",
         lr_scheduler=None,
-        dataset: str = "NeelNanda/pile-10k",
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         enable_quanted_input: bool = True,
         enable_minmax_tuning: bool = True,
         lr: float = None,
@@ -1548,7 +1547,7 @@ class AutoAdamRound(AutoOPTRound):
         amp (bool): Whether to use automatic mixed precision (default is True).
         device: The device to be used for training (default is "auto").
         lr_scheduler: The learning rate scheduler to be used.
-        dataset(str): The default dataset name (default is "NeelNanda/pile-10k").
+        dataset (Union[str, list, tuple, torch.utils.data.DataLoader]): The default dataset name (default is "NeelNanda/pile-10k").
         enable_quanted_input (bool): Whether to use quantized input data (default is True).
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
@@ -1585,7 +1584,7 @@ class AutoAdamRound(AutoOPTRound):
         amp: bool = True,
         device="auto",
         lr_scheduler=None,
-        dataset: str = "NeelNanda/pile-10k",
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         enable_quanted_input: bool = True,
         enable_minmax_tuning: bool = True,
         lr: float = None,
