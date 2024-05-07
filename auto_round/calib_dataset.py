@@ -239,6 +239,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
 
     datasets = []
     for name in dataset_names:
+        split = None
         if ":" in name:
             name, split = name.split(":")
         if is_local_path(name):
