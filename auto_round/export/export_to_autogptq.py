@@ -18,7 +18,7 @@ import json
 import os
 from os.path import isdir, isfile, join
 from typing import Dict, List, Optional, Union
-from auto_gptq.modeling._utils import pack_model
+
 # MIT License
 #
 # Copyright (c) 2023 潘其威(William)
@@ -41,14 +41,14 @@ from auto_gptq.modeling._utils import pack_model
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
+from auto_gptq.modeling._utils import pack_model
 from safetensors.torch import save_file as safe_save
 
 from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
 
 
-
-def configure_quantizers(quantizers,weight_config):
+def configure_quantizers(quantizers, weight_config):
     for key in weight_config:
         info = weight_config[key]
         if not check_to_quantized(info):
@@ -57,6 +57,7 @@ def configure_quantizers(quantizers,weight_config):
         info["zp"] = info["zp"].to(torch.float32)
         quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
     return quantizers
+
 
 def pack_compressed_model(use_flag, quantizers, compressed_model, bits, group_size):
     if use_flag not in ("use_triton", "use_marlin", "use_tritonv2"):
@@ -71,8 +72,10 @@ def pack_compressed_model(use_flag, quantizers, compressed_model, bits, group_si
         force_layer_back_to_cpu=True,
         use_triton=use_flag == "use_triton",
         use_marlin=use_flag == "use_marlin",
-        use_tritonv2=use_flag == "use_tritonv2"
+        use_tritonv2=use_flag == "use_tritonv2",
     )
+
+
 @register_format("auto_gptq")
 def save_quantized_as_autogptq(
     output_dir, use_triton=False, use_marlin=False, use_tritonv2=False, inplace=True, **kwargs
@@ -122,6 +125,7 @@ def save_quantized_as_autogptq(
         compressed_model = copy.deepcopy(model.to("cpu"))
 
     from auto_gptq.modeling._utils import pack_model
+
     if use_triton:
         use_flag = "use_triton"
     elif use_marlin:
