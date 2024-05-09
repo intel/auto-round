@@ -997,7 +997,11 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
-        cache_device = "cpu"  ## force cache device to "cpu"
+        if self.low_gpu_mem_usage:
+            cache_device = "cpu"  ## force cache device to "cpu"
+        else:
+            cache_device = device
+
         ##change to block dtype:
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         for (
@@ -1090,7 +1094,7 @@ class AutoRound(object):
                     )
 
                 total_loss += loss.item() / self.gradient_accumulate_steps
-                torch.cuda.empty_cache()
+                # torch.cuda.empty_cache()
                 if i == 0:
                     init_loss = total_loss
 
