@@ -86,7 +86,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             all_to_quantized = False
         else:
             modules_in_block_to_quantize.append(n)
-    modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
+    modules_in_block_to_quantize = [modules_in_block_to_quantize]
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
@@ -102,6 +102,8 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             logger.warning("triton does not support 3 bits, reset it to False")
         quantizers = {}
         for key in weight_config:
+            if key == "lm_head":  ##TODO remove this after pr 87 is merged
+                continue
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
@@ -119,6 +121,8 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     else:
         quantizers = {}
         for key in weight_config:
+            if key == "lm_head":  ##TODO remove this after pr 87 is merged
+                continue
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
