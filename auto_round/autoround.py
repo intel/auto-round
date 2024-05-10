@@ -393,36 +393,36 @@ class AutoRound(object):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,  ##for symmetric, TODO support later
-        batch_size: int = 8,
-        amp: bool = True,
-        device=None,
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",  ##only support int for now
-        scale_dtype: str = "fp32",
-        **kwargs,
+            self,
+            model,
+            tokenizer,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,  ##for symmetric, TODO support later
+            batch_size: int = 8,
+            amp: bool = True,
+            device=None,
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",  ##only support int for now
+            scale_dtype: str = "fp32",
+            **kwargs,
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
@@ -959,7 +959,6 @@ class AutoRound(object):
                     init_loss = total_loss
 
                 self.scale_loss_and_backward(scaler, loss)
-                torch.cuda.empty_cache()
 
             if total_loss < best_loss:
                 best_loss = total_loss
@@ -1003,15 +1002,6 @@ class AutoRound(object):
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
 
-        ##change to block dtype:
-        ##tmp_dtype = self.amp_dtype if self.amp else torch.float32
-        ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage##TODO,change
-        # for key in input_others.keys():
-        #     if isinstance(input_others[key], torch.Tensor) and (
-        #             input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
-        #     ):
-        #         input_others[key] = input_others[key].to(tmp_dtype)
-
         output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, self.cache_device)
 
         if q_input is not None:
@@ -1045,10 +1035,6 @@ class AutoRound(object):
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
         pick_samples = self.train_bs
-        # if len(input_ids.shape) == 3:
-        #     n_samples = input_ids.shape[self.input_dim]
-        # else:
-        #     n_samples = input_ids.shape[0] // self.seqlen
         n_samples = len(input_ids)
         if self.sampler != "rand":
             indices = torch.randperm(n_samples)[:pick_samples]
@@ -1098,7 +1084,6 @@ class AutoRound(object):
                 best_loss = total_loss
                 if not self.not_use_best_mse:
                     # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
-                    copy_iter = time.time()
                     best_v = collect_round_v(block)
                     best_min_scale, best_max_scale = collect_minmax_scale(block)
                     last_best_iter = i
@@ -1143,12 +1128,12 @@ class AutoRound(object):
             return None, output
 
     def quant_blocks(
-        self,
-        model: torch.nn.Module,
-        inputs,
-        block_names,
-        n_blocks=1,
-        device=torch.device("cpu"),
+            self,
+            model: torch.nn.Module,
+            inputs,
+            block_names,
+            n_blocks=1,
+            device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -1170,15 +1155,30 @@ class AutoRound(object):
         inputs.pop("input_ids", None)
         input_others = inputs
         torch.cuda.empty_cache()
-        input_ids = move_input_to_device(input_ids, device)
-        input_others = move_input_to_device(input_others, device)
+        input_ids = move_input_to_device(input_ids, self.cache_device)
+        input_others = move_input_to_device(input_others, self.cache_device)
+        ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage##TODO,change
+        ##change to block dtype:
+        tmp_dtype = self.amp_dtype if self.amp else torch.float32
+        for i in range(len(input_ids)):
+            input_ids[i] = input_ids[i].to(tmp_dtype)
+
+        for key in input_others.keys():
+            if isinstance(input_others[key], torch.Tensor) and (
+                    input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+            ):
+                input_others[key] = input_others[key].to(tmp_dtype)
+            elif isinstance(input_others[key], list):
+                for i in range(len(input_others[key])):
+                    input_others[key][i].to(tmp_dtype)
+
         for i in range(0, len(block_names), n_blocks):
             if n_blocks == 1:
                 n = block_names[i]
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i : i + n_blocks]
+                names = block_names[i: i + n_blocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -1448,37 +1448,37 @@ class AutoOPTRound(AutoRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp32",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp32",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
             model,
@@ -1596,37 +1596,37 @@ class AutoAdamRound(AutoOPTRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp32",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp32",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
             model,

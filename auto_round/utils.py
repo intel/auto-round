@@ -439,18 +439,12 @@ def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_ma
     """
     current_input_ids = [input_ids[i] for i in indices]
     current_input_ids = torch.cat(current_input_ids, dim=input_dim)
-    # else:
-    #     raise  NotImplementedError
-    #     n_samples = input_ids.shape[0] // seqlen  ##TODO,may have bug
-    #     current_input_ids = input_ids.view(n_samples, seqlen, -1)
-    #     current_input_ids = current_input_ids[indices, :, :]
-    #     current_input_ids = current_input_ids.reshape(-1, input.shape[-1])
+
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
         if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key):
             current_input_others[key] = None
             if input_others[key] is not None:
-                # current_input_others[key] = input_others[key][indices, ...]
                 current_input_others[key] = [input_others[key][i] for i in indices]
                 current_input_others[key] = torch.cat(current_input_others[key], dim=0)
 
