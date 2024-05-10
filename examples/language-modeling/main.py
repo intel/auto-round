@@ -253,8 +253,6 @@ if __name__ == '__main__':
                    device=torch_device, excel_file=excel_name)
         exit()
 
-    if args.disable_low_gpu_mem_usage:
-        model = model.to(torch_device)
 
     round = AutoRound
     if args.adam:
