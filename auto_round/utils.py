@@ -347,7 +347,7 @@ def move_input_to_device(input, device=torch.device("cpu")):
             input[inp] = move_input_to_device(input[inp], device)
 
     elif isinstance(input, list) or isinstance(input, tuple):
-        if len(input) > 0 and input[0].device != device:
+        if len(input) > 0 and input[0].device == device:
             return input
         input_res = []
         for inp in input:
