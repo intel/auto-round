@@ -452,7 +452,7 @@ class AutoRound(object):
         except:
             pass
         self.weight_config = weight_config
-        self.weight_config["lm_head"] = {"data_type": "int"}  # Hard code for specific purposes
+        # self.weight_config["lm_head"] = {"data_type": "int"}  # Hard code for specific purposes
         self.dataset_split = dataset_split
         self.seed = seed
         self.tokenizer = tokenizer
