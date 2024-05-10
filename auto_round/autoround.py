@@ -1071,20 +1071,10 @@ class AutoRound(object):
                     share_attention_mask_flag=self.share_attention_mask_flag,
                     input_dim=self.input_dim,
                 )
-                if len(input_ids[0].shape) == 3:
-                    # if self.input_dim == 0:
-                    #     current_output = output[indices, :, :]
-                    # elif self.input_dim == 1:
-                    #     current_output = output[:, indices, :]
-                    # else:
-                    #     current_output = output[:, :, indices]
-                    current_output = [output[i] for i in indices]
-                    current_output = torch.cat(current_output, dim=self.input_dim)
-                else:
-                    raise NotImplementedError
-                    current_output = output.view(n_samples, self.seqlen, -1)  ##TODO fix the bug
-                    current_output = current_output[indices, :, :]
-                    current_output = current_output.reshape(-1, current_output.shape[-1])
+
+                current_output = [output[i] for i in indices]
+                current_output = torch.cat(current_output, dim=self.input_dim)
+
                 current_output = move_input_to_device(current_output, device)
 
                 output_q = block_forward(
@@ -1099,17 +1089,16 @@ class AutoRound(object):
                     )
 
                 total_loss += loss.item() / self.gradient_accumulate_steps
-                # torch.cuda.empty_cache()
                 if i == 0:
                     init_loss = total_loss
 
                 self.scale_loss_and_backward(scaler, loss)
-                torch.cuda.empty_cache()
 
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
                     # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
+                    copy_iter = time.time()
                     best_v = collect_round_v(block)
                     best_min_scale, best_max_scale = collect_minmax_scale(block)
                     last_best_iter = i
