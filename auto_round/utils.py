@@ -423,6 +423,7 @@ def collect_minmax_scale(block):
             max_scales[n] = copy.deepcopy(torch.clamp(m.max_scale.data, -1, 0))
     return min_scales, max_scales
 
+
 @torch.no_grad()
 def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_mask_flag=False, input_dim=0):
     """Samples inputs based on the given indices and sequence length.
