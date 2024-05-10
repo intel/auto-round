@@ -421,7 +421,7 @@ class AutoRound(object):
             not_use_best_mse: bool = False,
             dynamic_max_gap: int = -1,
             data_type: str = "int",  ##only support int for now
-            scale_dtype: str = "fp32",
+            scale_dtype: str = "fp16",
             **kwargs,
     ):
         self.quantized = False
@@ -1476,7 +1476,7 @@ class AutoOPTRound(AutoRound):
             not_use_best_mse: bool = False,
             dynamic_max_gap: int = -1,
             data_type: str = "int",
-            scale_dtype: str = "fp32",
+            scale_dtype: str = "fp16",
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1624,7 +1624,7 @@ class AutoAdamRound(AutoOPTRound):
             not_use_best_mse: bool = False,
             dynamic_max_gap: int = -1,
             data_type: str = "int",
-            scale_dtype: str = "fp32",
+            scale_dtype: str = "fp16",
             optimizer="AdamW",
             **kwargs,
     ):
