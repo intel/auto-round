@@ -184,7 +184,7 @@ def get_loaders(
         return get_c4(nsamples, seed, seqlen, tokenizer)
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def eval_ppl_same_with_gptq(model, testenc, dev):
     print('Evaluating ...', flush=True)
 

@@ -216,7 +216,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         Returns:
         torch.Tensor: The output tensor after applying the convolutional transformation with quantized weights.
         """
-        with torch.no_grad():
+        with torch.inference_mode():
             self.min_scale.clamp_(-1, 0)
             self.max_scale.clamp_(-1, 0)
         weight_q, _, _ = quant_weight(
@@ -289,7 +289,7 @@ def wrapper_block(block, enable_minmax_tuning):
     return quantized_layers, unquantized_layers
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
@@ -314,7 +314,7 @@ def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
         set_module(model, layer_name, orig_layer)
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def unwrapper_block(block, vs, min_scales, max_scales):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
@@ -616,7 +616,7 @@ class AutoRound(object):
             m.sym = weight_config[n]["sym"]
             m.scale_dtype = weight_config[n]["scale_dtype"]
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
         """Compute the output of a given block of the model for a given input.
 
@@ -648,7 +648,7 @@ class AutoRound(object):
 
         return output  ##return list instead
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def calib(self, n_samples, bs):
         """Perform calibration for quantization.
 
@@ -723,7 +723,7 @@ class AutoRound(object):
                 f"Valid samples size:{total_cnt}, Target sample size:{n_samples}"
             )
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def cache_inter_data(self, block_names, n_samples, layer_names=[], last_cache_name=None):
         """Save the inputs of block_name for calibration. For layers, we cache both of inputs and output.
 
@@ -768,7 +768,7 @@ class AutoRound(object):
 
         return res
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def get_block_forward_func(self, name):
         """Gets the forward function.
 
@@ -836,7 +836,7 @@ class AutoRound(object):
 
         return forward
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _get_cache_data_hook_for_layer(self, name):
         """A forward hook to save input max of a module
         :param name: the module name
@@ -942,7 +942,7 @@ class AutoRound(object):
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
                     org_input = current_input
-                with torch.no_grad():
+                with torch.inference_mode():
                     current_output = layer(org_input)
 
                 if self.amp:
@@ -985,7 +985,7 @@ class AutoRound(object):
             best_iter = last_best_iter
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
-        with torch.no_grad():
+        with torch.inference_mode():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
@@ -1108,7 +1108,7 @@ class AutoRound(object):
         logger.info(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
-        with torch.no_grad():
+        with torch.inference_mode():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.enable_quanted_input:
 
