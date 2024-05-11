@@ -330,7 +330,7 @@ def get_scale_shape(weight, group_size):
     return shape
 
 
-def move_input_to_device(input, device=torch.device("cpu")):
+def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
 
     Args:
@@ -344,14 +344,14 @@ def move_input_to_device(input, device=torch.device("cpu")):
         return input.to(device)
     if isinstance(input, dict) or isinstance(input, UserDict):
         for inp in input.keys():
-            input[inp] = move_input_to_device(input[inp], device)
+            input[inp] = to_device(input[inp], device)
 
     elif isinstance(input, list) or isinstance(input, tuple):
         if len(input) > 0 and input[0].device == device:
             return input
         input_res = []
         for inp in input:
-            input_res.append(move_input_to_device(inp, device))
+            input_res.append(to_device(inp, device))
         input = input_res
     return input
 
@@ -470,8 +470,8 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
     """
     if input_ids.device != device:
         # input_ids, input_others = move_to_device(input_ids, input_others, device)
-        input_ids = move_input_to_device(input_ids, device)
-        input_others = move_input_to_device(input_others, device)
+        input_ids = to_device(input_ids, device)
+        input_others = to_device(input_others, device)
     if "alibi" in input_others.keys():
         attention_mask = input_others["attention_mask"]
         alibi = input_others["alibi"]

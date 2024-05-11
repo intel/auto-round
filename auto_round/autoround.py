@@ -38,7 +38,7 @@ from .utils import (
     htcore,
     is_optimum_habana_available,
     logger,
-    move_input_to_device,
+    to_device,
     quant_weight,
     sampling_inputs,
     set_module,
@@ -447,11 +447,7 @@ class AutoRound(object):
         self.device = detect_device(device)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
-        if self.low_gpu_mem_usage:
-            self.cache_device = torch.device("cpu")  ## force cache device to "cpu"
-        else:
-            self.cache_device = device
-
+        self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else device
         logger.info(f"using {self.model.dtype} for quantization tuning")
         self.dataset = dataset
         self.iters = iters
@@ -470,11 +466,9 @@ class AutoRound(object):
         self.not_use_best_mse = not_use_best_mse
         self.dynamic_max_gap = dynamic_max_gap
         self.enable_full_range = enable_full_range
-        assert self.enable_full_range is False, "only support enable_full_range=False currently"
         self.lr_scheduler = lr_scheduler
         self.set_layerwise_config(self.weight_config)
         self.optimizer = self.get_optimizer(None)
-        self.check_configs()
         self.share_attention_mask_flag = None
         self.hidden_dim_flag = None
         torch.set_printoptions(precision=3, sci_mode=True)
@@ -482,77 +476,7 @@ class AutoRound(object):
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
-
-    def set_amp_dtype(self):
-        self.amp_dtype = torch.float16
-        if self.model.dtype != torch.float32:
-            self.amp_dtype = self.model.dtype
-        if self.device == "cpu" or "hpu" in self.device:
-            self.amp_dtype = torch.bfloat16
-        if self.amp:
-            if self.device == "cpu" and not CpuInfo().bf16:
-                self.amp = False
-                self.amp_dtype = torch.float32
-                self.model = self.model.to(torch.float32)
-                logger.warning(
-                    f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type."
-                )
-            else:
-                self.model = self.model.to(self.amp_dtype)
-        else:
-            self.amp_dtype = torch.float32
-            self.model = self.model.to(torch.float32)
-
-    def get_optimizer(self, optimizer):
-        """Returns the specified optimizer. In SignRound, we fix the optimizer.
-
-        Args:
-        optimizer: The optimizer to be used.
-
-        Returns:
-        The specified optimizer.
-        """
-        from auto_round.sign_sgd import SGD
-
-        return SGD
-
-    def get_scaler(self):
-        """Returns scaler, in SignRound, no need to use scaler."""
-        return None
-
-    def scale_loss_and_backward(self, scaler, loss):
-        """Scales the loss and performs backward pass.
-
-        Args:
-        scaler: The scaler to be used.
-        loss: The loss to be scaled.
-
-        Returns:
-        The scaled loss.
-        """
-        scale_loss = loss * 1000
-        scale_loss.backward()
-        if is_optimum_habana_available():
-            htcore.mark_step()
-        return scale_loss
-
-    def step(self, scaler, optimizer, lr_schedule):
-        """Performs a step in the optimization process.
-
-        Args:
-        scaler: The scaler to be used.
-        optimizer: The optimizer for the step.
-        lr_schedule: The learning rate schedule.
-
-        Returns:
-        None
-        """
-        optimizer.step()
-        # for hpu
-        if is_optimum_habana_available():
-            htcore.mark_step()
-        optimizer.zero_grad()
-        lr_schedule.step()
+        self.check_configs()
 
     def check_configs(self):
         """Checks if the configurations are valid.
@@ -568,7 +492,142 @@ class AutoRound(object):
         assert self.seqlen > 0, "seqlen must be positive"
         assert self.n_blocks > 0, "n_blocks must be positive"
         assert self.gradient_accumulate_steps > 0, "gradient accumulate step must be positive"
+        assert self.enable_full_range is False, "only support enable_full_range=False currently"
         # assert self.tokenizer != None or self.dataloader != None
+
+    def quantize(self):
+        """Quantize the model and return the quantized model along with weight configurations.
+        the entry of AutoRound
+
+        Returns:
+        The quantized model and weight configurations.
+        """
+        # logger.info("cache block input")
+        block_names = get_block_names(self.model)
+        if len(block_names) == 0:
+            logger.warning("could not find blocks, exit with original model")
+            return self.model, self.weight_config
+
+        if self.amp:
+            self.model = self.model.to(self.amp_dtype)
+
+        layer_names = self.get_quantized_layer_names_outside_blocks()
+        self.start_time = time.time()
+        all_inputs = self.try_cache_inter_data_gpucpu([block_names[0]], self.n_samples, layer_names=layer_names)
+        del self.inputs
+        inputs = all_inputs[block_names[0]]
+
+        all_inputs.pop(block_names[0])
+        self.inputs = None
+        del self.inputs
+        if "input_ids" in inputs.keys():
+            total_samples = len(inputs["input_ids"])
+            self.n_samples = total_samples
+            if total_samples < self.train_bs:
+                self.train_bs = total_samples
+                logger.warning(f"force the train batch size to {total_samples} ")
+
+        self.model = self.model.to("cpu")
+        torch.cuda.empty_cache()
+        self.quant_blocks(
+            self.model,
+            inputs,
+            block_names,
+            n_blocks=self.n_blocks,
+            device=self.device,
+        )
+
+        self.quant_layers(layer_names, all_inputs)
+
+        self.dump_data_to_weight_config()
+
+        end_time = time.time()
+        cost_time = end_time - self.start_time
+        logger.info(f"quantization tuning time {cost_time}")
+
+        ## dump a summary
+        quantized_layers = []
+        unquantized_layers = []
+        for n, m in self.model.named_modules():
+            if isinstance(m, tuple(self.supported_types)):
+                if self.weight_config[n]["bits"] == 16:
+                    unquantized_layers.append(n)
+                else:
+                    quantized_layers.append(n)
+        summary_info = (
+            f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
+        )
+        if len(unquantized_layers) > 0:
+            summary_info += f",  {unquantized_layers} have not been quantized"
+        logger.info(summary_info)
+
+
+        self.quantized = True
+        self.model = self.model.to(self.model_orig_dtype)
+        return self.model, self.weight_config
+
+    def dump_data_to_weight_config(self):
+        """
+          dump quantization scale and zp to  weight configuration
+          Args:
+
+          Returns:
+              None
+        """
+        for n, m in self.model.named_modules():
+            if n not in self.weight_config.keys():
+                continue
+            if hasattr(m, "scale"):
+                self.weight_config[n]["scale"] = m.scale
+                self.weight_config[n]["zp"] = m.zp
+                if self.group_size <= 0:
+                    self.weight_config[n]["g_idx"] = torch.tensor(
+                        [0 for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu"
+                    )
+                else:
+                    self.weight_config[n]["g_idx"] = torch.tensor(
+                        [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu"
+                    )
+                delattr(m, "scale")
+                delattr(m, "zp")
+            else:
+                self.weight_config[n]["data_type"] = "float"
+                if self.amp_dtype == torch.bfloat16:
+                    self.weight_config[n]["data_type"] = "bfloat"
+                self.weight_config[n]["bits"] = 16
+                self.weight_config[n]["group_size"] = None
+                self.weight_config[n]["sym"] = None
+
+    def quant_layers(self, layer_names, layer_inputs):
+        """
+            Quantizes specified layers based on inputs and configuration.
+
+            Args:
+                layer_names (list): List of layer names to quantize.
+                layer_inputs (dict): Dictionary mapping layer names to input data.
+
+            Returns:
+                None
+        """
+        ##TODO currently we take all the layers outside blocks as post block layers which is not optimal
+        if len(layer_names) == 0:
+            return
+        q_layer_inputs = None
+        if self.enable_quanted_input:
+            q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.n_samples, layer_names=layer_names)
+
+        self.model = self.model.to("cpu")
+        torch.cuda.empty_cache()
+        for layer_name in layer_names:
+            layer_input = layer_inputs[layer_name]
+            layer_input = to_device(layer_input, self.cache_device)
+            q_layer_input = q_layer_inputs[layer_name] if self.enable_quanted_input else None
+            q_layer_input = to_device(q_layer_input, self.cache_device)
+            self.quant_layer(layer_name, layer_inputs[layer_name], q_layer_input, device=self.device)
+            for i in range(len(layer_inputs)):
+                layer_input[i] = None
+                q_layer_input[i] = None
+            torch.cuda.empty_cache()
 
     def set_layerwise_config(self, weight_config):
         """Sets the layer-wise configuration based on the provided weight_config.
@@ -646,7 +705,7 @@ class AutoRound(object):
             output.extend(list(torch.split(tmp_output, 1, dim=self.input_dim)))
         torch.cuda.empty_cache()
 
-        return output  ##return list instead
+        return output
 
     @torch.inference_mode()
     def calib(self, n_samples, bs):
@@ -663,7 +722,7 @@ class AutoRound(object):
         """
 
         if isinstance(self.dataset, str):
-            dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
+            dataset = self.dataset.replace(" ", "") ##remove all whitespaces
             self.dataloader = get_dataloader(
                 self.tokenizer,
                 self.seqlen,
@@ -722,6 +781,19 @@ class AutoRound(object):
                 f"Insufficient number of samples collected may affect the quantification. "
                 f"Valid samples size:{total_cnt}, Target sample size:{n_samples}"
             )
+
+    @torch.inference_mode()
+    def try_cache_inter_data_gpucpu(self, block_names, n_samples, layer_names=[], last_cache_name=None):
+        try:
+            self.model = self.model.to(self.device)
+            all_inputs = self.cache_inter_data(block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name)
+            self.model = self.model.to("cpu")
+        except:
+            logger.info("switch to cpu to cache inputs")
+            self.model = self.model.to("cpu")
+            torch.cuda.empty_cache()
+            all_inputs = self.cache_inter_data(block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name)
+        return all_inputs
 
     @torch.inference_mode()
     def cache_inter_data(self, block_names, n_samples, layer_names=[], last_cache_name=None):
@@ -801,7 +873,7 @@ class AutoRound(object):
             if "positional_inputs" not in self.inputs[name]:
                 self.inputs[name]["positional_inputs"] = []
             for idx, item in enumerate(positional_args):
-                self.inputs[name]["positional_inputs"] = move_input_to_device(positional_args)
+                self.inputs[name]["positional_inputs"] = to_device(positional_args)
 
             for key in kwargs.keys():
                 if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) or (key == "alibi"):
@@ -828,7 +900,7 @@ class AutoRound(object):
                                 self.inputs[name][key] = list(torch.split(alibi.to("cpu"), 1, dim=0))
 
                     elif key not in self.inputs[name].keys():
-                        self.inputs[name][key] = move_input_to_device(kwargs[key], device=torch.device("cpu"))
+                        self.inputs[name][key] = to_device(kwargs[key], device=torch.device("cpu"))
             if name == self.last_cache_name:
                 raise NotImplementedError
             else:
@@ -1061,7 +1133,7 @@ class AutoRound(object):
                 current_output = [output[i] for i in indices]
                 current_output = torch.cat(current_output, dim=self.input_dim)
 
-                current_output = move_input_to_device(current_output, device)
+                current_output = to_device(current_output, device)
 
                 output_q = block_forward(
                     block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
@@ -1155,10 +1227,9 @@ class AutoRound(object):
         inputs.pop("input_ids", None)
         input_others = inputs
         torch.cuda.empty_cache()
-        input_ids = move_input_to_device(input_ids, self.cache_device)
-        input_others = move_input_to_device(input_others, self.cache_device)
-        ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage##TODO,change
-        ##change to block dtype:
+        input_ids = to_device(input_ids, self.cache_device)
+        input_others = to_device(input_others, self.cache_device)
+        ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
         tmp_dtype = self.amp_dtype if self.amp else torch.float32
         for i in range(len(input_ids)):
             input_ids[i] = input_ids[i].to(tmp_dtype)
@@ -1289,124 +1360,76 @@ class AutoRound(object):
 
         return layer_names
 
-    def quantize(self):
-        """Quantize the model and return the quantized model along with weight configurations.
+    def set_amp_dtype(self):
+        self.amp_dtype = torch.float16
+        if self.model.dtype != torch.float32:
+            self.amp_dtype = self.model.dtype
+        if self.device == "cpu" or "hpu" in self.device:
+            self.amp_dtype = torch.bfloat16
+        if self.amp:
+            if self.device == "cpu" and not CpuInfo().bf16:
+                self.amp = False
+                self.amp_dtype = torch.float32
+                self.model = self.model.to(torch.float32)
+                logger.warning(
+                    f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type."
+                )
+            else:
+                self.model = self.model.to(self.amp_dtype)
+        else:
+            self.amp_dtype = torch.float32
+            self.model = self.model.to(torch.float32)
+
+    def get_optimizer(self, optimizer):
+        """Returns the specified optimizer. In SignRound, we fix the optimizer.
+
+        Args:
+        optimizer: The optimizer to be used.
 
         Returns:
-        The quantized model and weight configurations.
+        The specified optimizer.
         """
-        # logger.info("cache block input")
-        block_names = get_block_names(self.model)
-        if len(block_names) == 0:
-            logger.warning("could not find blocks, exit with original model")
-            return self.model, self.weight_config
-        if self.amp:
-            self.model = self.model.to(self.amp_dtype)
+        from auto_round.sign_sgd import SGD
 
-        layer_names = self.get_quantized_layer_names_outside_blocks()
-        self.start_time = time.time()
-        try:
-            self.model = self.model.to(self.device)
-            all_inputs = self.cache_inter_data([block_names[0]], self.n_samples, layer_names=layer_names)
-            self.model = self.model.to("cpu")
-        except:
-            logger.info("switch to cpu to cache inputs")
-            self.model = self.model.to("cpu")
-            torch.cuda.empty_cache()
-            all_inputs = self.cache_inter_data([block_names[0]], self.n_samples, layer_names=layer_names)
-        del self.inputs
-        inputs = all_inputs[block_names[0]]
+        return SGD
 
-        all_inputs.pop(block_names[0])
-        self.inputs = None
-        del self.inputs
-        if "input_ids" in inputs.keys():
-            total_samples = len(inputs["input_ids"])
-            self.n_samples = total_samples
-            if total_samples < self.train_bs:
-                self.train_bs = total_samples
-                logger.warning(f"force the train batch size to {total_samples} ")
-        self.model = self.model.to("cpu")
-        torch.cuda.empty_cache()
-        self.quant_blocks(
-            self.model,
-            inputs,
-            block_names,
-            n_blocks=self.n_blocks,
-            device=self.device,
-        )
-        ##TODO currently we take all the layers outside blocks as post block layers which is not optimal
-        if len(layer_names) > 0:
-            torch.cuda.empty_cache()
-            layer_inputs = all_inputs
-            q_layer_inputs = None
-            if self.enable_quanted_input:
-                try:
-                    self.model = self.model.to(self.device)
-                    q_layer_inputs = self.cache_inter_data([block_names[0]], self.n_samples, layer_names=layer_names)
-                    self.model = self.model.to("cpu")
-                except:
-                    self.model = self.model.to("cpu")
-                    q_layer_inputs = self.cache_inter_data([block_names[0]], self.n_samples, layer_names=layer_names)
-            self.model = self.model.to("cpu")
-            torch.cuda.empty_cache()
-            for layer_name in layer_names:
-                layer_input = layer_inputs[layer_name]
-                layer_input = move_input_to_device(layer_input, self.cache_device)
-                q_layer_input = q_layer_inputs[layer_name] if self.enable_quanted_input else None
-                q_layer_input = move_input_to_device(q_layer_input, self.cache_device)
-                self.quant_layer(layer_name, layer_inputs[layer_name], q_layer_input, device=self.device)
-                for i in range(len(layer_inputs)):
-                    layer_input[i] = None
-                    q_layer_input[i] = None
-                    torch.cuda.empty_cache()
+    def get_scaler(self):
+        """Returns scaler, in SignRound, no need to use scaler."""
+        return None
 
-        for n, m in self.model.named_modules():
-            if n in self.weight_config.keys():
-                if hasattr(m, "scale"):
-                    self.weight_config[n]["scale"] = m.scale
-                    self.weight_config[n]["zp"] = m.zp
-                    if self.group_size <= 0:
-                        self.weight_config[n]["g_idx"] = torch.tensor(
-                            [0 for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu"
-                        )
-                    else:
-                        self.weight_config[n]["g_idx"] = torch.tensor(
-                            [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu"
-                        )
-                    delattr(m, "scale")
-                    delattr(m, "zp")
-                else:
-                    self.weight_config[n]["data_type"] = "float"
-                    if self.amp_dtype == torch.bfloat16:
-                        self.weight_config[n]["data_type"] = "bfloat"
-                    self.weight_config[n]["bits"] = 16
-                    self.weight_config[n]["group_size"] = None
-                    self.weight_config[n]["sym"] = None
+    def scale_loss_and_backward(self, scaler, loss):
+        """Scales the loss and performs backward pass.
 
-        end_time = time.time()
-        cost_time = end_time - self.start_time
-        logger.info(f"quantization tuning time {cost_time}")
-        ## dump a summary
-        quantized_layers = []
-        unquantized_layers = []
-        for n, m in self.model.named_modules():
-            if isinstance(m, tuple(self.supported_types)):
-                if self.weight_config[n]["bits"] == 16:
-                    unquantized_layers.append(n)
-                else:
-                    quantized_layers.append(n)
-        summary_info = (
-            f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
-        )
-        if len(unquantized_layers) > 0:
-            summary_info += f",  {unquantized_layers} have not been quantized"
+        Args:
+        scaler: The scaler to be used.
+        loss: The loss to be scaled.
 
-        logger.info(summary_info)
+        Returns:
+        The scaled loss.
+        """
+        scale_loss = loss * 1000
+        scale_loss.backward()
+        if is_optimum_habana_available():
+            htcore.mark_step()
+        return scale_loss
 
-        self.quantized = True
-        self.model = self.model.to(self.model_orig_dtype)
-        return self.model, self.weight_config
+    def step(self, scaler, optimizer, lr_schedule):
+        """Performs a step in the optimization process.
+
+        Args:
+        scaler: The scaler to be used.
+        optimizer: The optimizer for the step.
+        lr_schedule: The learning rate schedule.
+
+        Returns:
+        None
+        """
+        optimizer.step()
+        # for hpu
+        if is_optimum_habana_available():
+            htcore.mark_step()
+        optimizer.zero_grad()
+        lr_schedule.step()
 
 
 class AutoOPTRound(AutoRound):
