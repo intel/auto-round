@@ -1312,6 +1312,7 @@ class AutoRound(object):
         except:
             logger.info("switch to cpu to cache inputs")
             self.model = self.model.to("cpu")
+            torch.cuda.empty_cache()
             all_inputs = self.cache_inter_data([block_names[0]], self.n_samples, layer_names=layer_names)
         del self.inputs
         inputs = all_inputs[block_names[0]]
