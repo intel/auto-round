@@ -38,10 +38,10 @@ from .utils import (
     htcore,
     is_optimum_habana_available,
     logger,
-    to_device,
     quant_weight,
     sampling_inputs,
     set_module,
+    to_device,
 )
 
 
@@ -497,7 +497,7 @@ class AutoRound(object):
 
     def quantize(self):
         """Quantize the model and return the quantized model along with weight configurations.
-        the entry of AutoRound
+        the entry of AutoRound.
 
         Returns:
         The quantized model and weight configurations.
@@ -561,18 +561,17 @@ class AutoRound(object):
             summary_info += f",  {unquantized_layers} have not been quantized"
         logger.info(summary_info)
 
-
         self.quantized = True
         self.model = self.model.to(self.model_orig_dtype)
         return self.model, self.weight_config
 
     def dump_data_to_weight_config(self):
         """
-          dump quantization scale and zp to  weight configuration
-          Args:
+        dump quantization scale and zp to  weight configuration
+        Args:
 
-          Returns:
-              None
+        Returns:
+            None
         """
         for n, m in self.model.named_modules():
             if n not in self.weight_config.keys():
@@ -599,15 +598,14 @@ class AutoRound(object):
                 self.weight_config[n]["sym"] = None
 
     def quant_layers(self, layer_names, layer_inputs):
-        """
-            Quantizes specified layers based on inputs and configuration.
+        """Quantizes specified layers based on inputs and configuration.
 
-            Args:
-                layer_names (list): List of layer names to quantize.
-                layer_inputs (dict): Dictionary mapping layer names to input data.
+        Args:
+            layer_names (list): List of layer names to quantize.
+            layer_inputs (dict): Dictionary mapping layer names to input data.
 
-            Returns:
-                None
+        Returns:
+            None
         """
         ##TODO currently we take all the layers outside blocks as post block layers which is not optimal
         if len(layer_names) == 0:
@@ -722,7 +720,7 @@ class AutoRound(object):
         """
 
         if isinstance(self.dataset, str):
-            dataset = self.dataset.replace(" ", "") ##remove all whitespaces
+            dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
             self.dataloader = get_dataloader(
                 self.tokenizer,
                 self.seqlen,
@@ -786,13 +784,17 @@ class AutoRound(object):
     def try_cache_inter_data_gpucpu(self, block_names, n_samples, layer_names=[], last_cache_name=None):
         try:
             self.model = self.model.to(self.device)
-            all_inputs = self.cache_inter_data(block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name)
+            all_inputs = self.cache_inter_data(
+                block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name
+            )
             self.model = self.model.to("cpu")
         except:
             logger.info("switch to cpu to cache inputs")
             self.model = self.model.to("cpu")
             torch.cuda.empty_cache()
-            all_inputs = self.cache_inter_data(block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name)
+            all_inputs = self.cache_inter_data(
+                block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name
+            )
         return all_inputs
 
     @torch.inference_mode()
