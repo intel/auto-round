@@ -253,7 +253,6 @@ if __name__ == '__main__':
                    device=torch_device, excel_file=excel_name)
         exit()
 
-
     round = AutoRound
     if args.adam:
         round = AutoAdamRound
@@ -268,17 +267,16 @@ if __name__ == '__main__':
     if args.quant_lm_head:
         from transformers import AutoConfig
 
-        config = AutoConfig.from_pretrained(model_name)
-        if config.tie_word_embeddings:
-            if hasattr(model, "_tied_weights_keys"):
-                tied_keys = model._tied_weights_keys
-                for item in tied_keys:
-                    if "lm_head" in item:##TODO extend to encoder-decoder layer, seq classification model
-                        args.quant_lm_head = False
-                        print(
-                            f"warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
-                            f"supported currently")
-                        break
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        if config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
+            tied_keys = model._tied_weights_keys
+            for item in tied_keys:
+                if "lm_head" in item:  ##TODO extend to encoder-decoder layer, seq classification model
+                    args.quant_lm_head = False
+                    print(
+                        f"warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
+                        f"supported currently")
+                    break
     if args.quant_lm_head:
         weight_config['lm_head'] = {"data_type": "int"}
 
