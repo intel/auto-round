@@ -216,7 +216,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         Returns:
         torch.Tensor: The output tensor after applying the convolutional transformation with quantized weights.
         """
-        with torch.inference_mode():
+        with torch.no_grad():
             self.min_scale.clamp_(-1, 0)
             self.max_scale.clamp_(-1, 0)
         weight_q, _, _ = quant_weight(
@@ -289,7 +289,7 @@ def wrapper_block(block, enable_minmax_tuning):
     return quantized_layers, unquantized_layers
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
@@ -314,7 +314,7 @@ def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
         set_module(model, layer_name, orig_layer)
 
 
-@torch.inference_mode()
+@torch.no_grad()
 def unwrapper_block(block, vs, min_scales, max_scales):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
@@ -393,36 +393,36 @@ class AutoRound(object):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,  ##for symmetric, TODO support later
-        batch_size: int = 8,
-        amp: bool = True,
-        device=None,
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",  ##only support int for now
-        scale_dtype: str = "fp16",
-        **kwargs,
+            self,
+            model,
+            tokenizer,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,  ##for symmetric, TODO support later
+            batch_size: int = 8,
+            amp: bool = True,
+            device=None,
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",  ##only support int for now
+            scale_dtype: str = "fp16",
+            **kwargs,
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
@@ -673,7 +673,7 @@ class AutoRound(object):
             m.sym = weight_config[n]["sym"]
             m.scale_dtype = weight_config[n]["scale_dtype"]
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
         """Compute the output of a given block of the model for a given input.
 
@@ -705,7 +705,7 @@ class AutoRound(object):
 
         return output
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def calib(self, n_samples, bs):
         """Perform calibration for quantization.
 
@@ -780,7 +780,7 @@ class AutoRound(object):
                 f"Valid samples size:{total_cnt}, Target sample size:{n_samples}"
             )
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, n_samples, layer_names=[], last_cache_name=None):
         try:
             self.model = self.model.to(self.device)
@@ -797,7 +797,7 @@ class AutoRound(object):
             )
         return all_inputs
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def cache_inter_data(self, block_names, n_samples, layer_names=[], last_cache_name=None):
         """Save the inputs of block_name for calibration. For layers, we cache both of inputs and output.
 
@@ -842,7 +842,7 @@ class AutoRound(object):
 
         return res
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def get_block_forward_func(self, name):
         """Gets the forward function.
 
@@ -910,7 +910,7 @@ class AutoRound(object):
 
         return forward
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def _get_cache_data_hook_for_layer(self, name):
         """A forward hook to save input max of a module
         :param name: the module name
@@ -973,7 +973,7 @@ class AutoRound(object):
         wrapper_linear = WrapperLinear(layer, self.enable_minmax_tuning).to(device)
         round_params = []
         minmax_params = []
-        round_params.append(wrapper_linear.value)
+        # round_params.append(wrapper_linear.value)
         minmax_params.append(wrapper_linear.min_scale)
         minmax_params.append(wrapper_linear.max_scale)
         if self.enable_minmax_tuning:
@@ -1016,7 +1016,7 @@ class AutoRound(object):
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
                     org_input = current_input
-                with torch.inference_mode():
+                with torch.no_grad():
                     current_output = layer(org_input)
 
                 if self.amp:
@@ -1059,7 +1059,7 @@ class AutoRound(object):
             best_iter = last_best_iter
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
-        with torch.inference_mode():
+        with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
@@ -1182,7 +1182,7 @@ class AutoRound(object):
         logger.info(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
-        with torch.inference_mode():
+        with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.enable_quanted_input:
 
@@ -1202,12 +1202,12 @@ class AutoRound(object):
             return None, output
 
     def quant_blocks(
-        self,
-        model: torch.nn.Module,
-        inputs,
-        block_names,
-        n_blocks=1,
-        device=torch.device("cpu"),
+            self,
+            model: torch.nn.Module,
+            inputs,
+            block_names,
+            n_blocks=1,
+            device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -1238,7 +1238,7 @@ class AutoRound(object):
 
         for key in input_others.keys():
             if isinstance(input_others[key], torch.Tensor) and (
-                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+                    input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
             ):
                 input_others[key] = input_others[key].to(tmp_dtype)
             elif isinstance(input_others[key], list):
@@ -1251,7 +1251,7 @@ class AutoRound(object):
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i : i + n_blocks]
+                names = block_names[i: i + n_blocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -1474,37 +1474,37 @@ class AutoOPTRound(AutoRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp16",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp16",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
             model,
@@ -1622,37 +1622,37 @@ class AutoAdamRound(AutoOPTRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp16",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp16",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
             model,

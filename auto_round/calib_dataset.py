@@ -279,7 +279,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
     else:
         dataset_final = datasets[0]
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def collate_batch(batch):
         input_ids_new = []
         attention_mask_new = []
