@@ -783,6 +783,21 @@ class AutoRound(object):
 
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, n_samples, layer_names=[], last_cache_name=None):
+        """
+            Attempts to cache intermediate data on GPU，if failed, then using CPU.
+
+            Args:
+                block_names (list): List of block names to cache data for.
+                n_samples (int): Number of samples to use for caching.
+                layer_names (list, optional): List of layer names to cache data for. Defaults to [].
+                last_cache_name (str, optional): Name of the last cache. Defaults to None.
+
+            Returns:
+                all_inputs: Cached intermediate data.
+
+            Raises:
+                Exception: If caching on GPU fails, switches to CPU and caches there.
+            """
         try:
             self.model = self.model.to(self.device)
             all_inputs = self.cache_inter_data(
