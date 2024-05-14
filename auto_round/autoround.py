@@ -973,7 +973,7 @@ class AutoRound(object):
         wrapper_linear = WrapperLinear(layer, self.enable_minmax_tuning).to(device)
         round_params = []
         minmax_params = []
-        # round_params.append(wrapper_linear.value)
+        round_params.append(wrapper_linear.value)
         minmax_params.append(wrapper_linear.min_scale)
         minmax_params.append(wrapper_linear.max_scale)
         if self.enable_minmax_tuning:
