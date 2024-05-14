@@ -173,6 +173,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.num_bits = self.orig_layer.bits
         self.group_size = self.orig_layer.group_size
         self.sym = self.orig_layer.sym
+        self.scale_dtype = self.orig_layer.scale_dtype
         device = self.orig_layer.weight.device
         self.weight_t = self.orig_layer.weight.t()
         self.value = torch.nn.Parameter(torch.zeros(self.weight_t.shape, device=device), requires_grad=True)
@@ -1057,10 +1058,10 @@ class AutoRound(object):
         if not self.not_use_best_mse:
             last_loss = best_loss
             best_iter = last_best_iter
-        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        logger.info(dump_info)
         with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
+        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+        logger.info(dump_info)
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
