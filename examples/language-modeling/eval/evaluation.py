@@ -326,7 +326,7 @@ def simple_evaluate(
 
 
 def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
-               eval_bs=32, use_accelerate=True, dtype="float16", limit=None,
+               eval_bs=32, use_accelerate=True, dtype=None, limit=None, trust_remote_code=True,
                device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
     print("evaluation with official lm-eval", flush=True)
     try:
@@ -339,9 +339,18 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
     
     except:
         raise ImportError("""follow requirements to install dependencies.""")
-    import collections
+    
     org_s = time.time()
+    if dtype == None:
+        from eval.utils import convert_dtype_torch2str_hf
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+        if hasattr(config, "torch_dtype"):
+            dtype = convert_dtype_torch2str_hf(config.torch_dtype)
+        else:
+            dtype = "float16"
     print(f"Using {dtype} as evaluation data type.")
+    
     external_tasks = []
     if isinstance(tasks, str):
         tasks = tasks.split(',')
@@ -361,9 +370,9 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
             task_s = time.time()
             for shot in num_fewshot:
                 model_type = "hf"
-                model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code=True'
+                model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code={trust_remote_code}'
                 if 'gpu' in model_path:
-                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},autogptq=True,gptq_use_triton=True,trust_remote_code=True'
+                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},autogptq=True,gptq_use_triton=True,trust_remote_code={trust_remote_code}'
                 if use_accelerate: # bool(re.search("chatglm", model_path.lower()))
                     model_args += f',parallelize=True'
 
@@ -513,3 +522,4 @@ if __name__ == "__main__":
                eval_bs=args.eval_bs, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
+

@@ -215,3 +215,84 @@ def eval_ppl_same_with_gptq(model, testenc, dev):
     return ppl.item()
 
 
+def convert_dtype_str2torch(str_dtype):
+    """Converts a string dtype to its corresponding PyTorch dtype.
+
+    Args:
+        str_dtype (str): The string representation of the dtype.
+
+    Returns:
+        torch.dtype: The PyTorch dtype.
+
+    Raises:
+        AssertionError: If the input str_dtype is unsupported.
+    """
+    if isinstance(str_dtype, torch.dtype) or str_dtype is None:
+        return str_dtype
+    if str_dtype == "int8":
+        return torch.int8
+    elif str_dtype == "fp32" or str_dtype == "auto":
+        return torch.float
+    elif str_dtype == "fp16":
+        return torch.float16
+    elif str_dtype == "bf16":
+        return torch.bfloat16
+    else:
+        assert False, "Unsupported str dtype {} to torch dtype".format(str_dtype)
+
+
+def convert_dtype_torch2str(dtype):
+    """Converts a PyTorch dtype to its corresponding string representation.
+
+    Args:
+        dtype: PyTorch dtype or str. The dtype to convert.
+
+    Returns:
+        str: The string representation of the dtype.
+
+    Raises:
+        AssertionError: If the input dtype is unsupported.
+    """
+    if isinstance(dtype, str) or dtype is None:
+        return dtype
+    if dtype == torch.int8:
+        return "int8"
+    elif dtype == torch.float:
+        return "fp32"
+    elif dtype == torch.float16:
+        return "fp16"
+    elif dtype == torch.bfloat16:
+        return "bf16"
+    elif isinstance(dtype, str) and dtype in ["int8", "fp32", "fp16", "bf16"]:
+        return dtype
+    else:
+        assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
+
+
+def convert_dtype_torch2str_hf(dtype):
+    """Converts a PyTorch dtype to its corresponding huggingface string dtype, e.g. torch.float32 -> 'float32'.
+
+    Args:
+        dtype: PyTorch dtype or str. The dtype to convert.
+
+    Returns:
+         str: The string representation of the dtype.
+
+    Raises:
+        AssertionError: If the input str_dtype is unsupported.
+    """
+    if dtype is None:
+        return dtype
+    if isinstance(dtype, str):
+        if "float" not in dtype and "int" not in dtype:
+            dtype = convert_dtype_str2torch(dtype)
+        else:
+            return dtype
+    str_dtype = str(dtype)
+    if "." not in str_dtype:
+        assert False, "Unsupported pytorch dtype {} to huggingface str dtype".format(dtype)
+    str_dtype = str_dtype.split(".")[1]
+    return str_dtype
+
+
+
