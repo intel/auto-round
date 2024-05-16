@@ -37,17 +37,16 @@ from auto_gptq.modeling._utils import pack_model
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 # AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,git
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
+from auto_gptq.modeling._utils import pack_model
 from safetensors.torch import save_file as safe_save
-
 from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
 
 from ..utils import convert_dtype_torch2str_hf
-
 
 
 
@@ -127,23 +126,23 @@ def save_quantized_as_autogptq(
         else:
             modules_in_block_to_quantize.append(n)
     modules_in_block_to_quantize = [modules_in_block_to_quantize]
+    if use_triton:
+        use_flag = "use_triton"
+    elif use_marlin:
+        use_flag = "use_marlin"
+        model=model.half()# For marlin，Only `torch.half` weights are supported.  
+    elif use_tritonv2:
+        use_flag = "use_tritonv2"
+    else:
+        raise ValueError("No valid compression flag is set (use_triton, use_marlin, use_tritonv2).")
     if all_to_quantized:
         modules_in_block_to_quantize = None
-
     if inplace:
         compressed_model = model.to("cpu")
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
 
     from auto_gptq.modeling._utils import pack_model
-    if use_triton:
-        use_flag = "use_triton"
-    elif use_marlin:
-        use_flag = "use_marlin"
-    elif use_tritonv2:
-        use_flag = "use_tritonv2"
-    else:
-        raise ValueError("No valid compression flag is set (use_triton, use_marlin, use_tritonv2).")
     if bits == 3 or use_triton is False:
         if bits == 3 and use_triton is True:
             logger.warning("triton does not support 3 bits, reset it to False")
@@ -172,7 +171,6 @@ def save_quantized_as_autogptq(
         use_safetensors=True,
         modules_in_block_to_quantize=modules_in_block_to_quantize,
     )
-
 
 def _save_quantized_to_autogptq(
     model,
