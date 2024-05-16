@@ -46,16 +46,30 @@ from safetensors.torch import save_file as safe_save
 from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
 
+from ..utils import convert_dtype_torch2str_hf
 
 
-def configure_quantizers(quantizers,weight_config):
-    for key in weight_config:
-        info = weight_config[key]
-        if not check_to_quantized(info):
-            continue
-        # Convert zero point to float32, which is a common operation across all conditions
-        info["zp"] = info["zp"].to(torch.float32)
-        quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
+
+
+
+def configure_quantizers(quantizers,weight_config,bits):
+    if bits==3:
+        for key in weight_config:
+            if key == "lm_head":  ##TODO remove this after pr 87 is merged
+                continue
+            info = weight_config[key]
+            if not check_to_quantized(info):
+                continue
+            quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
+    else:
+        for key in weight_config:
+            if key == "lm_head":  ##TODO remove this after pr 87 is merged
+                continue
+            info = weight_config[key]
+            if not check_to_quantized(info):
+                continue
+            info["zp"] = info["zp"].to(torch.float32)
+            quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
     return quantizers
 
 def pack_compressed_model(use_flag, quantizers, compressed_model, bits, group_size):
@@ -112,7 +126,7 @@ def save_quantized_as_autogptq(
             all_to_quantized = False
         else:
             modules_in_block_to_quantize.append(n)
-    modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
+    modules_in_block_to_quantize = [modules_in_block_to_quantize]
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
@@ -134,24 +148,11 @@ def save_quantized_as_autogptq(
         if bits == 3 and use_triton is True:
             logger.warning("triton does not support 3 bits, reset it to False")
         quantizers = {}
-        for key in weight_config:
-            info = weight_config[key]
-            if not check_to_quantized(info):
-                continue
-            quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
-        pack_model(
-            compressed_model,
-            quantizers,
-            bits,
-            group_size,
-            use_cuda_fp16=True,
-            desc_act=False,
-            force_layer_back_to_cpu=True,
-            use_triton=False,
-        )
+        quantizers = configure_quantizers(quantizers, weight_config,bits)
+        pack_compressed_model(use_flag, quantizers, compressed_model, bits, group_size)
     else:
         quantizers = {}
-        quantizers = configure_quantizers(quantizers, weight_config)
+        quantizers = configure_quantizers(quantizers, weight_config,bits)
         pack_compressed_model(use_flag, quantizers, compressed_model, bits, group_size)
     if output_dir is None:
         return compressed_model
@@ -245,7 +246,7 @@ def _save_quantized_to_autogptq(
         safetensors_metadata["minmax_lr"] = str(minmax_lr)
         safetensors_metadata["enable_minmax_tuning"] = str(enable_minmax_tuning)
         safetensors_metadata["enable_quanted_input"] = str(enable_quanted_input)
-        safetensors_metadata["scale_dtype"] = str(scale_dtype)
+        safetensors_metadata["scale_dtype"] = convert_dtype_torch2str_hf(scale_dtype)
         safe_save(state_dict, join(save_dir, model_save_name), safetensors_metadata)
     else:
         model_save_name = model_base_name + ".bin"
@@ -272,7 +273,7 @@ def _save_quantized_to_autogptq(
     config_dict["minmax_lr"] = minmax_lr
     config_dict["enable_minmax_tuning"] = enable_minmax_tuning
     config_dict["enable_quanted_input"] = enable_quanted_input
-    config_dict["scale_dtype"] = str(scale_dtype)
+    config_dict["scale_dtype"] = convert_dtype_torch2str_hf(scale_dtype)
     if modules_in_block_to_quantize is not None:
         config_dict["modules_in_block_to_quantize"] = modules_in_block_to_quantize
 
