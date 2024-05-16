@@ -43,6 +43,7 @@ from typing import Dict, List, Optional, Union
 import torch
 from auto_gptq.modeling._utils import pack_model
 from safetensors.torch import save_file as safe_save
+
 from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
 
@@ -131,7 +132,7 @@ def save_quantized_as_autogptq(
         use_flag = "use_triton"
     elif use_marlin:
         use_flag = "use_marlin"
-        model=model.half()# For marlin Only `torch.half` weights are supported.
+        model = model.half()  # For marlin Only `torch.half` weights are supported.
     elif use_tritonv2:
         use_flag = "use_tritonv2"
     else:
@@ -144,6 +145,7 @@ def save_quantized_as_autogptq(
         compressed_model = copy.deepcopy(model.to("cpu"))
 
     from auto_gptq.modeling._utils import pack_model
+
     if bits == 3 or use_triton is False:
         if bits == 3 and use_triton is True:
             logger.warning("triton does not support 3 bits, reset it to False")
@@ -172,6 +174,7 @@ def save_quantized_as_autogptq(
         use_safetensors=True,
         modules_in_block_to_quantize=modules_in_block_to_quantize,
     )
+
 
 def _save_quantized_to_autogptq(
     model,
