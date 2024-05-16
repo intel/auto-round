@@ -968,7 +968,6 @@ class AutoRound(object):
                     init_loss = total_loss
 
                 self.scale_loss_and_backward(scaler, loss)
-                torch.cuda.empty_cache()
 
             if total_loss < best_loss:
                 best_loss = total_loss
@@ -1106,12 +1105,10 @@ class AutoRound(object):
                     )
 
                 total_loss += loss.item() / self.gradient_accumulate_steps
-                torch.cuda.empty_cache()
                 if i == 0:
                     init_loss = total_loss
 
                 self.scale_loss_and_backward(scaler, loss)
-                torch.cuda.empty_cache()
 
             if total_loss < best_loss:
                 best_loss = total_loss
