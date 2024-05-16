@@ -7,4 +7,4 @@ python3 main.py \
 --deployment_device 'gpu' \
 --disable_trust_remote_code \
 --output_dir "./tmp_autoround" \
---disable_quanted_input \
+--disable_quanted_input
