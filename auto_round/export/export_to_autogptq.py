@@ -41,6 +41,7 @@ from auto_gptq.modeling._utils import pack_model
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
+from auto_gptq.modeling._utils import pack_model
 from safetensors.torch import save_file as safe_save
 
 from auto_round.export.register import register_format
