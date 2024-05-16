@@ -24,6 +24,9 @@ image presents an overview of AutoRound.
 
 <div align="left">
 
+## What's New
+* [2024/05] AutoRound performs well in [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)
+
 ## Prerequisites
 
 - Python 3.9 or higher

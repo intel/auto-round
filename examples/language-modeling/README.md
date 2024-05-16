@@ -86,11 +86,11 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 
 
 - **Speedup the tuning:**
 
-disable_low_gpu_mem_usage and set the n_sample to 128 or change the train bs to 4, at the cost of potential little accuracy drop
+disable_low_gpu_mem_usage(more gpu memory) or set the n_sample to 128( little accuracy drop) or change the train bs to 4(little accuracy drop) or combine them
 
 - **Enable quantized lm-head:**
 
---disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing n_samples,e.g. 128, to alleviate the issue.
+Currently only supporte in Intel xpu,however, we found the fake tuning could improve the accuracy is some scenarios. --disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing n_samples,e.g. 128, to alleviate the issue.
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128 --quant_lm_head --disable_low_gpu_mem_usage
 ```
