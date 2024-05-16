@@ -19,7 +19,6 @@ The transformers version required varies across different types of models. Here,
 | tiiuae/falcon-7b | 4.28/4.30/4.34/4.36 |
 | mosaicml/mpt-7b | 4.28/4.30/4.34/4.36 |
 | mosaicml/mpt-7b-chat | 4.34 |
-| bigscience/bloom-3b | 4.28/4.30/4.34/4.36 |
 | bigscience/bloom-7b1 | 4.28/4.30/4.34/4.36 |
 | baichuan-inc/Baichuan2-7B-Chat | 4.36 |
 | Qwen/Qwen-7B | 4.28/4.30/4.34/4.36 |
@@ -34,6 +33,7 @@ The transformers version required varies across different types of models. Here,
 | rinna/bilingual-gpt-neox-4b | 4.36 |
 | microsoft/phi-2 | 4.36 |
 | google/gemma-7b | 4.38/4.40 |
+| Salesforce/codegen25-7b-multi | 4.33.2|
 
 
 ## 2. Prepare Calibration Dataset
@@ -84,9 +84,13 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128  --train_bs 1 --gradient_accumulate_steps 8
 ```
 
+- **Speedup the tuning:**
+
+disable_low_gpu_mem_usage(more gpu memory) or set the n_sample to 128( little accuracy drop) or change the train bs to 4(little accuracy drop) or combine them
+
 - **Enable quantized lm-head:**
 
---disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing n_samples,e.g. 128, to alleviate the issue.
+Currently only support in Intel xpu,however, we found the fake tuning could improve the accuracy is some scenarios. --disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing n_samples,e.g. 128, to alleviate the issue.
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128 --quant_lm_head --disable_low_gpu_mem_usage
 ```
