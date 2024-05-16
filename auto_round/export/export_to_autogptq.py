@@ -130,7 +130,7 @@ def save_quantized_as_autogptq(
         use_flag = "use_triton"
     elif use_marlin:
         use_flag = "use_marlin"
-        model=model.half()# For marlin，Only `torch.half` weights are supported.  
+        model=model.half()# For marlin Only `torch.half` weights are supported.
     elif use_tritonv2:
         use_flag = "use_tritonv2"
     else:
