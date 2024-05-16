@@ -43,7 +43,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            dataloader=self.llm_dataloader,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
         if torch.cuda.is_available():
@@ -60,7 +60,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=10,
-            dataloader=self.llm_dataloader,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -74,7 +74,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=10,
-            dataloader=self.llm_dataloader,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -88,7 +88,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=10,
-            dataloader=self.llm_dataloader,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -102,7 +102,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=10,
-            dataloader=self.llm_dataloader,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -117,7 +117,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=10,
             enable_quanted_input=False,
-            dataloader=self.llm_dataloader,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -132,7 +132,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=10,
             enable_minmax_tuning=False,
-            dataloader=self.llm_dataloader,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -148,7 +148,7 @@ class TestAutoRound(unittest.TestCase):
             seqlen=10,
             enable_minmax_tuning=False,
             enable_quanted_input=False,
-            dataloader=self.llm_dataloader,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -165,7 +165,7 @@ class TestAutoRound(unittest.TestCase):
             seqlen=10,
             enable_minmax_tuning=False,
             enable_quanted_input=False,
-            dataloader=self.llm_dataloader,
+            dataset=self.llm_dataloader,
             weight_config=weight_config,
         )
         autoround.quantize()

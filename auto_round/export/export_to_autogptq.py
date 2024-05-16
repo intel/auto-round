@@ -50,9 +50,6 @@ from auto_round.utils import check_to_quantized, get_block_names, get_module, lo
 from ..utils import convert_dtype_torch2str_hf
 
 
-
-
-
 def configure_quantizers(quantizers,weight_config,bits):
     if bits==3:
         for key in weight_config:

@@ -94,7 +94,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--tasks",
                         default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                        "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge,wikitext2,ptb-new,c4-new",
+                                "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge,wikitext2,ptb-new,c4-new",
                         help="lm-eval tasks for lm_eval version 0.4")
 
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
@@ -114,7 +114,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--disable_trust_remote_code", action='store_true',
                         help="Whether to disable trust_remote_code")
-    
+
     parser.add_argument("--disable_quanted_input", action='store_true',
                         help="whether to disuse the output of quantized block to tune the next block")
 
@@ -253,9 +253,6 @@ if __name__ == '__main__':
                    device=torch_device, excel_file=excel_name)
         exit()
 
-    if args.disable_low_gpu_mem_usage:
-        model = model.to(torch_device)
-
     round = AutoRound
     if args.adam:
         round = AutoAdamRound
@@ -267,8 +264,26 @@ if __name__ == '__main__':
                 weight_config[n] = {"data_type": "fp"}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
+    lm_head_layer_name = "lm_head"
     if args.quant_lm_head:
-        weight_config['lm_head'] = {"data_type": "int"}
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        if config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
+            tied_keys = model._tied_weights_keys
+            for item in tied_keys:
+                if lm_head_layer_name in item:  ##TODO extend to encoder-decoder layer, seq classification model
+                    args.quant_lm_head = False
+                    print(
+                        f"warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
+                        f"supported currently")
+                    break
+    if args.quant_lm_head:
+        weight_config[lm_head_layer_name] = {"data_type": "int"}
+
+    if args.quant_lm_head and not args.disable_low_gpu_mem_usage:
+        print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
+              f"gpu")
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
@@ -287,14 +302,15 @@ if __name__ == '__main__':
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
     deployment_device = args.deployment_device.split(',')
+    inplace = True if len(deployment_device) < 2 else False
     if 'gpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_tritonv2=True, inplace=False)
     if 'xpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=False,
+        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
                                  device="xpu")
     if "cpu" in deployment_device:
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=False)
+        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
     if "fake" in deployment_device:
         model = model.to("cpu")
         model.save_pretrained(output_dir)
@@ -307,4 +323,3 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
-
