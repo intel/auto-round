@@ -24,6 +24,9 @@ image presents an overview of AutoRound.
 
 <div align="left">
 
+## What's New
+* [2024/05] AutoRound performs well in [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)
+
 ## Prerequisites
 
 - Python 3.9 or higher
@@ -69,16 +72,16 @@ autoround.save_quantized(output_dir)
 
 - `model`: The PyTorch model to be quantized.
 
-- `tokenizer`: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
+- `tokenizer`: An optional tokenizer for processing input data. If none, a dataset must be provided.
 
 - `bits (int)`: Number of bits for quantization (default is 4).
 
 - `group_size (int)`: Size of the quantization group (default is 128).
 
-- `sym (bool)`: Whether to use symmetric quantization.
+- `sym (bool)`: Whether to use symmetric quantization (default is False).
 
 - `enable_quanted_input (bool)`: Whether to use the output of the previous quantized block as the input for the current
-  block (default is True).
+  block for tuning (default is True).
 
 - `enable_minmax_tuning (bool)`: Whether to enable weight min-max tuning (default is True).
 
@@ -94,7 +97,7 @@ autoround.save_quantized(output_dir)
 
 - `batch_size (int)`: Batch size for training (default is 8).
 
-- `scale_dtype (str)`: The data type of quantization scale to be used (default is "float32"), different kernels have
+- `scale_dtype (str)`: The data type of quantization scale to be used (default is "float16"), different kernels have
   different choices.
 
 - `amp (bool)`: Whether to use automatic mixed precision (default is True).
@@ -103,13 +106,9 @@ autoround.save_quantized(output_dir)
 
 - `gradient_accumulate_steps (int)`: Number of gradient accumulation steps (default is 1).
 
-- `low_gpu_mem_usage (bool)`: Whether to save GPU memory at the cost of a little tuning time (default is True).
+- `low_gpu_mem_usage (bool)`: Whether to save GPU memory at the cost of ~20% more tuning time (default is True).
 
-- `dataset (str)`: The default dataset name for tuning (default is "NeelNanda/pile-10k").
-
-- `dataset_split (str)`: The split of the dataset to be used for tuning (default is "train").
-
-- `dataloader`: The dataloader for tuning data.
+- `dataset Union[str, list, tuple, torch.utils.data.DataLoader]`: The dataset name for tuning (default is "NeelNanda/pile-10k"). Local json file and combination of datasets have been supported, e.g. "./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test"
 
 - `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
   or mixed precision.
@@ -173,7 +172,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | facebook/opt-2.7b       | [accuracy](./docs/opt-2.7b-acc.md), [recipe](./examples/language-modeling/scripts/opt-2.7b.sh), [example](./examples/language-modeling/)                                                                                                                |
 | bigscience/bloom-3b       | [accuracy](./docs/bloom-3B-acc.md), [recipe](./examples/language-modeling/scripts/bloom-3b.sh), [example](./examples/language-modeling/)                                                                                                                |
 | EleutherAI/gpt-j-6b       | [accuracy](./docs/gpt-j-6B-acc.md), [recipe](./examples/language-modeling/scripts/gpt-j-6b.sh), [example](./examples/language-modeling/)                                                                                                                |
-| Salesforce/codegen25-7b-multi        | [example](./examples/code-generation)                                                                                                                                                                                                                                     |
+| Salesforce/codegen25-7b-multi        | [example](./examples/language-modeling/)                                                                                                                                                                                                                                     |
 | huggyllama/llama-7b                  | [example](./examples/language-modeling/)                                                                                                                                                                                                                                  |
 | mosaicml/mpt-7b                      | [example](./examples/language-modeling/)                                                                                                                                                                                                                                  |
 | THUDM/chatglm3-6b                    | [example](./examples/language-modeling/)                                                                                                                                                                                                                                  |

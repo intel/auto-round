@@ -43,7 +43,7 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=10,
-            dataloader=self.llm_dataloader,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 

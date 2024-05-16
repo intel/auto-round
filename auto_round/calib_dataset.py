@@ -47,7 +47,7 @@ def get_tokenizer_function(tokenizer, seqlen):
 
 
 @register_dataset("NeelNanda/pile-10k")
-def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42, bs=4):
+def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -56,7 +56,6 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     data_name: The name of the dataset.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
-    bs: The batch size for the dataloader.
 
     Returns:
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
@@ -74,9 +73,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
 
 
 @register_dataset("madao33/new-title-chinese")
-def get_new_chinese_title_dataset(
-    tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42, bs=4
-):
+def get_new_chinese_title_dataset(tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -85,7 +82,6 @@ def get_new_chinese_title_dataset(
     data_name: The name of the dataset.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
-    bs: The batch size for the dataloader.
 
     Returns:
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
@@ -121,7 +117,7 @@ def get_new_chinese_title_dataset(
 
 
 @register_dataset("mbpp")
-def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42, bs=4):
+def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -130,7 +126,6 @@ def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42
     data_name: The name of the dataset.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
-    bs: The batch size for the dataloader.
 
     Returns:
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
@@ -144,7 +139,7 @@ def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42
     if splits is None:
         splits = ["train", "validation", "test"]
     if isinstance(splits, str):
-        splits = [split]
+        splits = splits.split("+")
 
     for split in splits:
         dataset = load_dataset(dataset_name, split=split)
@@ -160,7 +155,7 @@ def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42
 
 
 @register_dataset("local")
-def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, bs=4):
+def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42):
     """Returns a dataloader for a custom dataset and split.
     We allow the input of a json or text file containing a processed text sample each line.
 
@@ -170,7 +165,6 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
     data_name: The name or path of the dataset, which is a jsonl file.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
-    bs: The batch size for the dataloader.
 
     Returns:
     A dataloader for a custom dataset and split, using the provided tokenizer and sequence length.
@@ -214,7 +208,7 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
     return calib_dataset
 
 
-def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42, bs=4, n_samples=512):
+def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, bs=8, n_samples=512):
     """Generate a DataLoader for calibration using specified parameters.
 
     Args:
@@ -234,17 +228,6 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
 
     dataset_names = dataset_name.split(",")
 
-    # if len(dataset_names) == 1 and dataset_names[0] == "NeelNanda/pile-10k":  ##to guarantee the reproducibility.
-    #     get_dataloader = CALIB_DATASETS.get("legacy-NeelNanda/pile-10k")
-    #     dataloader = get_dataloader(
-    #         tokenizer,
-    #         seqlen,
-    #         seed=seed,
-    #         bs=bs,
-    #         split=split,
-    #         dataset_name=dataset_name,
-    #     )
-    #     return dataloader
     def filter_func(example):
         if example["input_ids"].shape[-1] < seqlen:
             return False
@@ -256,6 +239,9 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
 
     datasets = []
     for name in dataset_names:
+        split = None
+        if ":" in name:
+            name, split = name.split(":")
         if is_local_path(name):
             get_dataset = CALIB_DATASETS.get("local")
         else:
@@ -264,7 +250,6 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
             tokenizer,
             seqlen,
             seed=seed,
-            bs=bs,
             split=split,
             dataset_name=name,
         )
@@ -316,50 +301,3 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=N
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
-
-
-# ##we keep this for reproduce issue, do not delete, keep it for a while
-# @register_dataset("legacy-NeelNanda/pile-10k")
-# def get_pile_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split="train", seed=42, bs=4):
-#     """Returns a dataloader for the specified dataset and split.
-#
-#     Args:
-#     tokenizer: The tokenizer to be used for tokenization.
-#     seqlen: The maximum sequence length.
-#     data_name: The name of the dataset.
-#     split: The data split to be used (e.g., "train", "test").
-#     seed: The random seed for shuffling the dataset.
-#     bs: The batch size for the dataloader.
-#
-#     Returns:
-#     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
-#     """
-#     from datasets import load_dataset
-#     from torch.utils.data import DataLoader
-#
-#     tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
-#
-#     @torch.no_grad()
-#     def collate_batch(batch):
-#         input_ids_new = []
-#         for text in batch:
-#             input_ids = text["input_ids"]
-#             if input_ids.shape[0] < seqlen:
-#                 continue
-#             input_ids = input_ids[:seqlen]
-#             input_ids_list = input_ids.tolist()
-#             if input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
-#                 continue
-#             input_ids_new.append(input_ids)
-#         if len(input_ids_new) == 0:
-#             return None
-#         tmp = torch.vstack(input_ids_new)
-#         res = {"input_ids": tmp}
-#         return res
-#
-#     calib_dataset = load_dataset(dataset_name, split=split)
-#     calib_dataset = calib_dataset.shuffle(seed=seed)
-#     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
-#     calib_dataset.set_format(type="torch", columns=["input_ids"])
-#     calib_dataloader = DataLoader(calib_dataset, batch_size=bs, shuffle=False, collate_fn=collate_batch)
-#     return calib_dataloader

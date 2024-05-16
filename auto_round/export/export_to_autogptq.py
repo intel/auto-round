@@ -18,7 +18,7 @@ import json
 import os
 from os.path import isdir, isfile, join
 from typing import Dict, List, Optional, Union
-from auto_gptq.modeling._utils import pack_model
+
 # MIT License
 #
 # Copyright (c) 2023 潘其威(William)
@@ -49,10 +49,8 @@ from auto_round.utils import check_to_quantized, get_block_names, get_module, lo
 from ..utils import convert_dtype_torch2str_hf
 
 
-
-
-def configure_quantizers(quantizers,weight_config,bits):
-    if bits==3:
+def configure_quantizers(quantizers, weight_config, bits):
+    if bits == 3:
         for key in weight_config:
             if key == "lm_head":  ##TODO remove this after pr 87 is merged
                 continue
@@ -71,6 +69,7 @@ def configure_quantizers(quantizers,weight_config,bits):
             quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
     return quantizers
 
+
 def pack_compressed_model(use_flag, quantizers, compressed_model, bits, group_size):
     if use_flag not in ("use_triton", "use_marlin", "use_tritonv2"):
         raise ValueError("All use_* flags are false; at least one must be true.")
@@ -84,8 +83,10 @@ def pack_compressed_model(use_flag, quantizers, compressed_model, bits, group_si
         force_layer_back_to_cpu=True,
         use_triton=use_flag == "use_triton",
         use_marlin=use_flag == "use_marlin",
-        use_tritonv2=use_flag == "use_tritonv2"
+        use_tritonv2=use_flag == "use_tritonv2",
     )
+
+
 @register_format("auto_gptq")
 def save_quantized_as_autogptq(
     output_dir, use_triton=False, use_marlin=False, use_tritonv2=False, inplace=True, **kwargs
@@ -147,11 +148,11 @@ def save_quantized_as_autogptq(
         if bits == 3 and use_triton is True:
             logger.warning("triton does not support 3 bits, reset it to False")
         quantizers = {}
-        quantizers = configure_quantizers(quantizers, weight_config,bits)
+        quantizers = configure_quantizers(quantizers, weight_config, bits)
         pack_compressed_model(use_flag, quantizers, compressed_model, bits, group_size)
     else:
         quantizers = {}
-        quantizers = configure_quantizers(quantizers, weight_config,bits)
+        quantizers = configure_quantizers(quantizers, weight_config, bits)
         pack_compressed_model(use_flag, quantizers, compressed_model, bits, group_size)
     if output_dir is None:
         return compressed_model

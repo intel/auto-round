@@ -292,9 +292,7 @@ def get_module(module, key):
     """
     name_list = key.split(".")
     for name in name_list:
-        if hasattr(module, name):
-            module = getattr(module, name)
-            module = module
+        module = getattr(module, name, None)
     return module
 
 
@@ -311,8 +309,6 @@ def set_module(model, key, new_module):
     for name in name_list[:-1]:
         if hasattr(module, name):
             module = getattr(module, name)
-        else:
-            module = module
     setattr(module, name_list[-1], new_module)
 
 
@@ -334,7 +330,7 @@ def get_scale_shape(weight, group_size):
     return shape
 
 
-def move_input_to_device(input, device=torch.device("cpu")):
+def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
 
     Args:
@@ -344,16 +340,24 @@ def move_input_to_device(input, device=torch.device("cpu")):
     Returns:
     The input data on the specified device.
     """
+    if input is None:
+        return None
     if isinstance(input, torch.Tensor):
         return input.to(device)
     if isinstance(input, dict) or isinstance(input, UserDict):
         for inp in input.keys():
-            input[inp] = move_input_to_device(input[inp], device)
+            input[inp] = to_device(input[inp], device)
+
     elif isinstance(input, list) or isinstance(input, tuple):
+        if len(input) == 0:
+            return input
         input_res = []
         for inp in input:
-            input_res.append(move_input_to_device(inp, device))
+            input_res.append(to_device(inp, device))
+        if isinstance(input, tuple):
+            input_res = tuple(input_res)
         input = input_res
+
     return input
 
 
@@ -425,11 +429,12 @@ def collect_minmax_scale(block):
     return min_scales, max_scales
 
 
+@torch.no_grad()
 def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_mask_flag=False, input_dim=0):
     """Samples inputs based on the given indices and sequence length.
 
     Args:
-    input_ids: The input tensor containing IDs.
+    input_ids: The list of input tensor containing  input_ids.
     input_others: A dictionary containing other input data.
     indices: The indices to sample from the input.
     seqlen: The sequence length.
@@ -438,22 +443,17 @@ def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_ma
     current_input_ids: The sampled input IDs.
     current_input_others: The sampled other input data.
     """
-    if len(input_ids.shape) == 3:
-        if bool(input_dim):
-            current_input_ids = input_ids[:, indices, :]
-        else:
-            current_input_ids = input_ids[indices, :, :]
-    else:
-        n_samples = input_ids.shape[0] // seqlen
-        current_input_ids = input_ids.view(n_samples, seqlen, -1)
-        current_input_ids = current_input_ids[indices, :, :]
-        current_input_ids = current_input_ids.reshape(-1, input.shape[-1])
+    current_input_ids = [input_ids[i] for i in indices]
+    current_input_ids = torch.cat(current_input_ids, dim=input_dim)
+
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
         if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key):
             current_input_others[key] = None
             if input_others[key] is not None:
-                current_input_others[key] = input_others[key][indices, ...]
+                current_input_others[key] = [input_others[key][i] for i in indices]
+                current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+
         else:
             current_input_others[key] = input_others[key]
 
@@ -476,8 +476,8 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
     """
     if input_ids.device != device:
         # input_ids, input_others = move_to_device(input_ids, input_others, device)
-        input_ids = move_input_to_device(input_ids, device)
-        input_others = move_input_to_device(input_others, device)
+        input_ids = to_device(input_ids, device)
+        input_others = to_device(input_others, device)
     if "alibi" in input_others.keys():
         attention_mask = input_others["attention_mask"]
         alibi = input_others["alibi"]
@@ -638,11 +638,11 @@ def convert_dtype_str2torch(str_dtype):
         return str_dtype
     if str_dtype == "int8":
         return torch.int8
-    elif str_dtype == "fp32" or str_dtype == "auto":
+    elif str_dtype == "fp32" or str_dtype == "float32" or str_dtype == "auto":
         return torch.float
-    elif str_dtype == "fp16":
+    elif str_dtype == "fp16" or str_dtype == "float16":
         return torch.float16
-    elif str_dtype == "bf16":
+    elif str_dtype == "bf16" or str_dtype == "bfloat16":
         return torch.bfloat16
     else:
         assert False, "Unsupported str dtype {} to torch dtype".format(str_dtype)
@@ -674,6 +674,32 @@ def convert_dtype_torch2str(dtype):
         return dtype
     else:
         assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
+
+
+def convert_dtype_torch2str_hf(dtype):
+    """Converts a PyTorch dtype to its corresponding huggingface string dtype, e.g. torch.float32 -> 'float32'.
+
+    Args:
+        dtype: PyTorch dtype or str. The dtype to convert.
+
+    Returns:
+         str: The string representation of the dtype.
+
+    Raises:
+        AssertionError: If the input str_dtype is unsupported.
+    """
+    if dtype is None:
+        return dtype
+    if isinstance(dtype, str):
+        if "float" not in dtype and "int" not in dtype:
+            dtype = convert_dtype_str2torch(dtype)
+        else:
+            return dtype
+    str_dtype = str(dtype)
+    if "." not in str_dtype:
+        assert False, "Unsupported pytorch dtype {} to huggingface str dtype".format(dtype)
+    str_dtype = str_dtype.split(".")[1]
+    return str_dtype
 
 
 def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
