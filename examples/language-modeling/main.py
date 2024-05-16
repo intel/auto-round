@@ -203,6 +203,8 @@ if __name__ == '__main__':
                             AutoAdamRound)
 
     model = model.eval()
+    if args.deployment_device == "gpu":  ##autogptq kerenel runs on fp16
+        model = model.to(torch.float16)
     # align with GPTQ to eval ppl
     if "opt" in model_name:
         seqlen = model.config.max_position_embeddings
