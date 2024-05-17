@@ -570,7 +570,7 @@ class AutoRound(object):
         logger.info(summary_info)
 
         self.quantized = True
-        self.model = self.model.to(self.model_orig_dtype)
+        ##self.model = self.model.to(self.model_orig_dtype)##keep it as amp dtype
         return self.model, self.weight_config
 
     def dump_data_to_weight_config(self):
