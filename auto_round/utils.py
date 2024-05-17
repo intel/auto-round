@@ -114,7 +114,7 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_d
         wmin = torch.minimum(wmax_tmp, wmin_tmp)
     else:
         wmin = torch.clamp(weight.min(1)[0], max=0)
-        wmax =torch.clamp(weight.max(1)[0], min=0)
+        wmax = torch.clamp(weight.max(1)[0], min=0)
 
     tmp = (wmin == 0) & (wmax == 0)
     wmin[tmp] = -1
