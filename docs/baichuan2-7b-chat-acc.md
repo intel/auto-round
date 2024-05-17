@@ -8,8 +8,8 @@ lm_eval --model hf  --model_args pretrained="./",autogptq=True,gptq_use_triton=T
 
 | Metric | BF16   | INT4   |
 |--------|--------|--------|
-| Avg.   | 0.4504 | 0.4470 |
-| mmlu   | 0.5096 | 0.5053 |
-| cmmlu  | 0.5486 | 0.5426 |
-| ceval  | 0.5394 | 0.5223 |
-| gsm8k  | 0.2039 | 0.2176 |
+| Avg.   | 0.4504 | 0.4498 |
+| mmlu   | 0.5096 | 0.5077 |
+| cmmlu  | 0.5486 | 0.5433 |
+| ceval  | 0.5394 | 0.5327 |
+| gsm8k  | 0.2039 | 0.2153 |
