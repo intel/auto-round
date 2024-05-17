@@ -105,18 +105,16 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_d
         Quantized and dequantized weight, scale, zero-point
     """
     maxq = torch.tensor(2**num_bits - 1)
-    zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=scale_dtype)
-    # zeros = torch.zeros(weight.shape[0], device=weight.device)
     if isinstance(min_scale, torch.Tensor):
-        wmin_tmp = torch.minimum(weight.min(1)[0], zeros)
-        wmax_tmp = torch.maximum(weight.max(1)[0], zeros)
+        wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
         wmin_tmp *= min_scale + 1.0
         wmax_tmp *= max_scale + 1.0
         wmax = torch.maximum(wmax_tmp, wmin_tmp)
         wmin = torch.minimum(wmax_tmp, wmin_tmp)
     else:
-        wmin = torch.minimum(weight.min(1)[0], zeros)
-        wmax = torch.maximum(weight.max(1)[0], zeros)
+        wmin = torch.clamp(weight.min(1)[0], max=0)
+        wmax = torch.clamp(weight.max(1)[0], min=0)
 
     tmp = (wmin == 0) & (wmax == 0)
     wmin[tmp] = -1
@@ -144,17 +142,16 @@ def quant_weight_sym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dt
         Quantized and dequantized weight, scale, zero-point
     """
     maxq = torch.tensor(2**num_bits - 1)
-    zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=scale_dtype)
     if isinstance(min_scale, torch.Tensor):
-        wmin_tmp = torch.minimum(weight.min(1)[0], zeros)
-        wmax_tmp = torch.maximum(weight.max(1)[0], zeros)
+        wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
         wmin_tmp *= min_scale + 1.0
         wmax_tmp *= max_scale + 1.0
         wmax = torch.maximum(wmax_tmp, wmin_tmp)
         wmin = torch.minimum(wmax_tmp, wmin_tmp)
     else:
-        wmin = torch.minimum(weight.min(1)[0], zeros)
-        wmax = torch.maximum(weight.max(1)[0], zeros)
+        wmin = torch.clamp(weight.min(1)[0], max=0)
+        wmax = torch.clamp(weight.max(1)[0], min=0)
     wmax_new = torch.max(wmin.abs(), wmax)
     tmp = wmin < 0
     wmin_new = wmin.clone()  ##must clone, otherwise inplace backward will occur

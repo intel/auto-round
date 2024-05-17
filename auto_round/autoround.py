@@ -69,22 +69,25 @@ class WrapperLinear(torch.nn.Module):
         self.group_size = self.orig_layer.group_size
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
+        weight_dtype = self.orig_layer.weight.dtype
+        weight_dtype = torch.float32  ##TODO revert the change to check the accuracy
         self.value = torch.nn.Parameter(
-            torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device), requires_grad=True
+            torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
+            requires_grad=True,
         )
         self.enable_minmax_tuning = enable_minmax_tuning
         shape = get_scale_shape(self.orig_layer.weight, self.group_size)
-
+        weight_dtype = self.orig_layer.weight.dtype
         if self.enable_minmax_tuning:
             self.min_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=self.orig_layer.weight.device), requires_grad=True
+                torch.zeros(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
             )
             self.max_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=self.orig_layer.weight.device), requires_grad=True
+                torch.zeros(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
             )
         else:
-            self.min_scale = torch.tensor(0, device=self.orig_layer.weight.device)
-            self.max_scale = torch.tensor(0, device=self.orig_layer.weight.device)
+            self.min_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
+            self.max_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
 
     def unwrapper(self, v, min_scale, max_scale):
         """Unwrapper the layer to the original layer.
@@ -174,17 +177,26 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.group_size = self.orig_layer.group_size
         self.sym = self.orig_layer.sym
         self.scale_dtype = self.orig_layer.scale_dtype
+        weight_dtype = self.orig_layer.weight.dtype
+        weight_dtype = torch.float32  ##TODO revert the change to check the accuracy
+
         device = self.orig_layer.weight.device
         self.weight_t = self.orig_layer.weight.t()
-        self.value = torch.nn.Parameter(torch.zeros(self.weight_t.shape, device=device), requires_grad=True)
+        self.value = torch.nn.Parameter(
+            torch.zeros(self.weight_t.shape, device=device, dtype=weight_dtype), requires_grad=True
+        )
         shape = get_scale_shape(self.weight_t, self.group_size)
 
         if enable_minmax_tuning:
-            self.min_scale = torch.nn.Parameter(torch.zeros(shape, device=device), requires_grad=True)
-            self.max_scale = torch.nn.Parameter(torch.zeros(shape, device=device), requires_grad=True)
+            self.min_scale = torch.nn.Parameter(
+                torch.zeros(shape, device=device, dtype=weight_dtype), requires_grad=True
+            )
+            self.max_scale = torch.nn.Parameter(
+                torch.zeros(shape, device=device, dtype=weight_dtype), requires_grad=True
+            )
         else:
-            self.min_scale = torch.tensor(0, device=device)
-            self.max_scale = torch.tensor(0, device=device)
+            self.min_scale = torch.tensor(0, device=device, dtype=weight_dtype)
+            self.max_scale = torch.tensor(0, device=device, dtype=weight_dtype)
 
     def unwrapper(self, v=0, min_scale=0, max_scale=0):
         """Unwrapper the layer to the original conv1d layer.
@@ -563,7 +575,7 @@ class AutoRound(object):
         logger.info(summary_info)
 
         self.quantized = True
-        self.model = self.model.to(self.model_orig_dtype)
+        ##self.model = self.model.to(self.model_orig_dtype)##keep it as amp dtype
         return self.model, self.weight_config
 
     def dump_data_to_weight_config(self):

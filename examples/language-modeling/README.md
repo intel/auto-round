@@ -80,13 +80,19 @@ pip install -r requirements.txt
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128
 ```
 - **Reduced GPU Memory Usage:**
-```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128  --train_bs 1 --gradient_accumulate_steps 8
-```
 
+set "--train_bs 1 --gradient_accumulate_steps 8" (more tuning cost)
+
+reduce the train bs to 4(potential accuracy drop) 
 - **Speedup the tuning:**
 
-disable_low_gpu_mem_usage(more gpu memory) or set the n_sample to 128( little accuracy drop) or change the train bs to 4(little accuracy drop) or combine them
+disable_low_gpu_mem_usage(more gpu memory)
+
+reduce the train bs to 4(little accuracy drop) 
+
+reduce the seqlen to 512(potential large accuracy drop)
+
+or combine them
 
 - **Enable quantized lm-head:**
 
