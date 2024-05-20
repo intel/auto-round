@@ -854,9 +854,6 @@ class AutoRound(object):
         if last_cache_name is None and len(block_names) + len(layer_names) == 1:
             self.last_cache_name = block_names[0] if len(block_names) == 1 else layer_names[0]
         calib_bs = self.train_bs
-        if not self.low_gpu_mem_usage and len(layer_names) > 1:  ## persume has lm-head
-            calib_bs = 1
-
         self.hook_handles = []
         self._replace_forward()
         self.calib(n_samples, calib_bs)
@@ -1027,7 +1024,7 @@ class AutoRound(object):
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
-        gradient_accumulate_steps = self.train_bs // train_bs
+        gradient_accumulate_steps = self.gradient_accumulate_steps
         for i in range(self.iters):
             total_loss = 0
             for _ in range(gradient_accumulate_steps):
