@@ -1,15 +1,12 @@
 #!/bin/bash
 set -x
 model_name="Intel/neural-chat-7b-v3-3"
-eval_bs=1
 
 python3 main.py \
-  --amp \
   --model_name $model_name \
-  --device "hpu" \
   --group_size 128 \
   --bits 4 \
-  --enable_minmax_tuning \
-  --eval_bs $eval_bs \
+  --deployment_device "fake" \
   --output_dir "./tmp_autoround"
+
 
