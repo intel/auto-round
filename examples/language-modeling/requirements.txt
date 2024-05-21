@@ -15,4 +15,4 @@ auto-gptq
 openpyxl
 wandb
 py-cpuinfo
-
+autoawq

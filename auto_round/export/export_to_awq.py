@@ -105,17 +105,11 @@ def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
     from awq.modules.linear import WQLinear_GEMM
     from awq.utils.utils import clear_memory
     from awq import AutoAWQForCausalLM
-    import sys
 
     q_linear_module = WQLinear_GEMM
     awq_model = AutoAWQForCausalLM.from_pretrained(model_path)
-    logger.info(f"lyt_debug Approximate memory usage of compressed_model: {sizeof_fmt(sys.getsizeof(compressed_model))}, device: {compressed_model.device}")
-    logger.info(f"lyt_debug Approximate memory usage of model: {sizeof_fmt(sys.getsizeof(model))}, device: {model.device}")
-    try:
-        logger.info(f"lyt_debug Approximate memory usage of awq_model: {sizeof_fmt(sys.getsizeof(awq_model))}")
-    except:
-        logger.info("lyt_debug awq model unable to calc")
     self_modules = awq_model.get_model_layers(compressed_model)
+    del awq_model # release memory
     for i in range(len(self_modules)):
         module = self_modules[i]
         named_linears = get_named_linears(module)
@@ -173,8 +167,6 @@ def save_quantized(
             return x
 
     # Save model and config files with empty state dict
-    from awq.models._config import AwqConfig
-    
     model.config.quantization_config = quant_config
     model.generation_config.do_sample = True
     model.save_pretrained(save_dir, state_dict=EmptyModule().state_dict())
@@ -211,6 +203,7 @@ def save_quantized(
         with open(f"{save_dir}/{model_name}.index.json", "w+") as file:
             file.write(json.dumps(index, indent=4))
 
+    # save quantize_config
     with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
         json.dump(quant_config, f, indent=2)
     
@@ -232,3 +225,8 @@ def sizeof_fmt(num, suffix='B'):
 
 
 
+def get_size(model):
+    total = 0
+    for param in model.parameters():
+        total += param.nelement() * param.element_size()
+    return total

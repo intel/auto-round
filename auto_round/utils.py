@@ -743,3 +743,42 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         bs = 1
 
     return False, seqlen, bs
+
+
+def get_named_linears(module):
+    """Get the name, linear_op pairs of a given module.
+
+    Args:
+    module: A module to be searched.
+    """
+    return {name: m for name, m in module.named_modules() if isinstance(m, torch.nn.Linear)}
+
+
+def set_op_by_name(layer, name, new_module):
+    levels = name.split(".")
+    if len(levels) > 1:
+        mod_ = layer
+        for l_idx in range(len(levels) - 1):
+            if levels[l_idx].isdigit():
+                mod_ = mod_[int(levels[l_idx])]
+            else:
+                mod_ = getattr(mod_, levels[l_idx])
+        setattr(mod_, levels[-1], new_module)
+    else:
+        setattr(layer, name, new_module)
+
+
+def get_module_name(model, module_to_find):
+    """Get the name of a given module in a model.
+
+    Args:
+    model: The model.
+    module_to_find: A module to be found.
+
+    Returns:
+    name: The corresponding name of the given module.
+    """
+    for name, module in model.named_modules():
+        if module is module_to_find:
+            return name
+    return None

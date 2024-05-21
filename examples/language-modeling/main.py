@@ -2,6 +2,8 @@ import argparse
 import sys
 
 sys.path.insert(0, '../..')
+sys.path.insert(0, '/home/lyt/ChineseLLM_quant/AR_debug/auto-round')
+print(f"lyt_dbeug sys.path： {sys.path}")
 parser = argparse.ArgumentParser()
 import torch
 import os
@@ -139,6 +141,14 @@ if __name__ == '__main__':
     tasks = args.tasks
     use_eval_legacy = False
     import subprocess
+
+
+    import logging
+
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+    logger.info("lyt_debug This is an info message")
 
 
     def get_library_version(library_name):
@@ -309,6 +319,7 @@ if __name__ == '__main__':
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
                                  device="xpu")
+    autoround.save_quantized(f'{export_dir}-awq', format="auto_awq", inplace=inplace, model_path=args.model_name)
     if "cpu" in deployment_device:
         autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
     if "fake" in deployment_device:
