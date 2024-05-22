@@ -41,11 +41,9 @@ import torch.nn as nn
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
-from safetensors.torch import save_file as safe_save
 import transformers
 from auto_round.export.register import register_format
-from auto_round.utils import check_to_quantized, get_block_names, get_module, logger, set_module
-
+from auto_round.utils import get_block_names, get_module, set_module,logger
 
 def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transformers.modeling_utils.Conv1D]):
     """Retrieves the names of layers within each block of the model.
@@ -84,53 +82,19 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     return res
 
 
-# def save_quantiezed(output_dir,inplace=True,backend="gptq:triton",**kwargs):
-#     model = kwargs["model"]
-#     weight_config = kwargs["weight_config"]
-#     sym = kwargs["sym"]
-#     bits = kwargs["bits"]
-#     group_size = kwargs["group_size"]
-#     iters = kwargs["iters"]
-#     lr = kwargs["lr"]
-#     minmax_lr = kwargs["minmax_lr"]
-#     enable_minmax_tuning = kwargs["enable_minmax_tuning"]
-#     enable_quanted_input = kwargs["enable_quanted_input"]
-#     scale_dtype = kwargs["scale_dtype"]
-#     tokenizer = kwargs["tokenizer"]
-#     supported_types = kwargs["supported_types"]
-#     data_type = kwargs["data_type"]
-#     ##dataset_name =
-#     ##n_samples
-#     ##seqlen
-#     ## train_bs
-#     logger.info(f"Saving quantized model to autoround format with {backend} backend, this may take a while...")
-#     if tokenizer is not None:
-#         tokenizer.save_pretrained(output_dir)
-#     layer_names_in_block = get_layer_names_in_block(model)
-#     dump_weight_config={}
-#     for layer_name in weight_config:
-#         if layer_name not in layer_names_in_block:
-#             dump_weight_config[layer_name] = weight_config[layer_name]
-#         else:
-#             neq_keys = check_neq_config(weight_config[layer_name],data_type=data_type,bits = bits,group_size=group_size,sym=sym)
-#             if len(neq_keys)>0:
-#                 dump_weight_config[layer_name]={}
-#             for key in neq_keys:
-#                 dump_weight_config[layer_name][key] = weight_config[layer_name][key]
+# def get_device(obj: Union[torch.Tensor, nn.Module]):
+#     if isinstance(obj, torch.Tensor):
+#         return obj.device
+#     return next(obj.parameters()).device
 
 
-def get_device(obj: Union[torch.Tensor, nn.Module]):
-    if isinstance(obj, torch.Tensor):
-        return obj.device
-    return next(obj.parameters()).device
-
-
-def pack_and_save_gptq(output_dir, inplace=True, backend="gptq:triton", **kwargs):
+@register_format("autoround")
+def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav2", **kwargs):
     from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
     model = kwargs['model']
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-
+    layer_names_in_block = get_layer_names_in_block(model)
     use_triton = False
     disable_exllamav2 = False
     disable_exllamav1 = False
@@ -157,8 +121,9 @@ def pack_and_save_gptq(output_dir, inplace=True, backend="gptq:triton", **kwargs
     weight_config = kwargs['weight_config']
     for name in weight_config.keys():
         config = kwargs['weight_config'][name]
-        if config["data_type"] != "int" and config["bits"] > 16:
+        if config["data_type"] != "int" and config["bits"] >= 16:
             continue
+        logger.info(f"packing {name}")
         tmp_use_triton = use_triton
         tmp_use_qigen = use_qigen
         bits = config["bits"]
@@ -168,7 +133,7 @@ def pack_and_save_gptq(output_dir, inplace=True, backend="gptq:triton", **kwargs
         if bits not in [2, 4]:
             tmp_use_qigen = False
         layer = get_module(model, name)
-        device = get_device(layer)
+        device = "cpu"
         QuantLinear = dynamically_import_QuantLinear(
             use_triton=tmp_use_triton,
             desc_act=False,
@@ -202,16 +167,43 @@ def pack_and_save_gptq(output_dir, inplace=True, backend="gptq:triton", **kwargs
 
         new_layer.device = device
         set_module(model, name, new_layer)
-        qlayers = new_layer
+        qlayer = new_layer
         scale = weight_config[name]["scale"]
-        zero = weight_config[name]["zero"]
+        zero = weight_config[name]["zp"]
         # so far can only pack layer on CPU
-        qlayers[name].to("cpu")
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu"),
-        qlayers[name].pack(layer, scale, zero, None)
-        qlayers[name].to(device)
-
-    ## TODO save config and to output dir
+        qlayer.to("cpu")
+        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu")
+        qlayer.pack(layer, scale, zero, None)
+        qlayer.to(device)
+    quantization_config = kwargs["serialization_dict"]
+    quantization_config["quant_method"] = "intel/auto-round"
+    quantization_config["backend"] = backend
+    extra_config = {}
+    for layer_name in weight_config:
+        if weight_config[layer_name]["data_type"] != "int" and weight_config[layer_name]["bits"] >= 16:
+            continue
+        if layer_name not in layer_names_in_block:
+            extra_config[layer_name] = {}
+            extra_config[layer_name]["bits"] = weight_config[layer_name]["bits"]
+            extra_config[layer_name]["data_type"] = weight_config[layer_name]["data_type"]
+            extra_config[layer_name]["group_size"] = weight_config[layer_name]["group_size"]
+            extra_config[layer_name]["sym"] = weight_config[layer_name]["sym"]
+        else:
+            neq_keys = check_neq_config(weight_config[layer_name], data_type=quantization_config['data_type'],
+                                        bits=quantization_config['bits'], group_size=quantization_config['group_size'],
+                                        sym=quantization_config['sym'])
+            if len(neq_keys) > 0:
+                extra_config[layer_name] = {}
+            for key in neq_keys:
+                extra_config[layer_name][key] = weight_config[layer_name][key]
+    if len(extra_config) > 0:
+        quantization_config["extra_config"] = extra_config
+    if hasattr(model, "config"):
+        model.config.quantization_config = quantization_config
+    tokenizer = kwargs["tokenizer"]
+    if tokenizer is not None:
+        tokenizer.save_pretrained(output_dir)
+    save(model, output_dir)
 
 
 def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
@@ -238,6 +230,7 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     """
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    GPTQ_CONFIG = "quantize_config.json"  ##TODO change
-    with open(os.path.join(save_dir, GPTQ_CONFIG), "w", encoding="utf-8") as f:
-        json.dump(self.to_dict(), f, indent=2)
+    config_file = "quantize_config.json"
+    if hasattr(model, "config") and hasattr(model.config, "quantize_config"):
+        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
+            json.dump(model.config.quantization_config, f, indent=2)

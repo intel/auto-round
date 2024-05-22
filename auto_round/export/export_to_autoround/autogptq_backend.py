@@ -134,7 +134,10 @@ class AutoHfQuantizer:
     def from_config(cls, quantization_config: Union[QuantizationConfigMixin, Dict], **kwargs):
         # Convert it to a QuantizationConfig if the q_config is a dict
         if isinstance(quantization_config, dict):
-            quantization_config = AutoQuantizationConfig.from_dict(quantization_config)
+            if "autoround" in quantization_config["quant_method"]:
+                quantization_config = AutoRoundConfig.from_dict(quantization_config)
+            else:
+                quantization_config = AutoQuantizationConfig.from_dict(quantization_config)
         print("AUTOROUND INTERFACE", flush=True)
         quant_method = quantization_config.quant_method
 
@@ -146,14 +149,14 @@ class AutoHfQuantizer:
             else:
                 quant_method += "_4bit"
 
-        if quant_method not in AUTO_QUANTIZER_MAPPING.keys():
-            raise ValueError(
-                f"Unknown quantization type, got {quant_method} - supported types are:"
-                f" {list(AUTO_QUANTIZER_MAPPING.keys())}"
-            )
+        # if quant_method not in AUTO_QUANTIZER_MAPPING.keys():
+        #     raise ValueError(
+        #         f"Unknown quantization type, got {quant_method} - supported types are:"
+        #         f" {list(AUTO_QUANTIZER_MAPPING.keys())}"
+        #     )
 
         ##target_cls = AUTO_QUANTIZER_MAPPING[quant_method]
-        target_cls = AutoRoundQuantizer  ##changed by wenhauch
+        target_cls = AutoRoundQuantizer  ##TODO change back changed by wenhauch
         return target_cls(quantization_config, **kwargs)
 
     @classmethod
@@ -164,9 +167,9 @@ class AutoHfQuantizer:
 
     @classmethod
     def merge_quantization_configs(
-        cls,
-        quantization_config: Union[dict, QuantizationConfigMixin],
-        quantization_config_from_args: Optional[QuantizationConfigMixin],
+            cls,
+            quantization_config: Union[dict, QuantizationConfigMixin],
+            quantization_config_from_args: Optional[QuantizationConfigMixin],
     ):
         """Handles situations where both quantization_config from args and quantization_config from model config are present."""
         if quantization_config_from_args is not None:
@@ -178,7 +181,7 @@ class AutoHfQuantizer:
             warning_msg = ""
 
         if isinstance(quantization_config, dict):
-            quantization_config = AutoQuantizationConfig.from_dict(quantization_config)
+            quantization_config = AutoRoundConfig.from_dict(quantization_config)
 
         if isinstance(quantization_config, (GPTQConfig, AwqConfig)) and quantization_config_from_args is not None:
             # special case for GPTQ / AWQ config collision
@@ -210,24 +213,23 @@ class AutoRoundConfig(QuantizationConfigMixin):
     """
 
     def __init__(
-        self,
-        bits: int,
-        tokenizer: Any = None,
-        dataset: str = None,
-        group_size: int = 128,
-        sym: bool = True,
-        backend="gptq:triton",
-        iters: int = 200,
-        weight_config: dict = None,
-        enable_quanted_input=True,
-        enable_minmax_tuning=True,
-        lr=None,
-        minmax_lr=None,
-        n_samples=512,
-        seqlen=2048,
-        **kwargs,
+            self,
+            bits: int,
+            tokenizer: Any = None,
+            dataset: str = None,
+            group_size: int = 128,
+            sym: bool = False,
+            backend="gptq:exllamav2",
+            iters: int = 200,
+            weight_config: dict = None,
+            enable_quanted_input=True,
+            enable_minmax_tuning=True,
+            lr=None,
+            minmax_lr=None,
+            n_samples=512,
+            seqlen=2048,
+            **kwargs,
     ):
-        self.quant_method = QuantizationMethod.GPTQ
         self.bits = bits
         self.tokenizer = tokenizer
         self.dataset = dataset
@@ -242,7 +244,9 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.minmax_lr = minmax_lr
         self.n_samples = n_samples
         self.seqlen = seqlen
-        self.kwargs = kwargs
+        if kwargs is not None:
+            for key in kwargs.keys():
+                setattr(self, key, kwargs[key])
 
         self.post_init()
 
@@ -390,7 +394,7 @@ class AutoRoundQuantizer(HfQuantizer):
         """
         if self.bits == 4 and not self.disable_exllama:
             if get_device(model) == torch.device("cpu") or (
-                hasattr(model, "hf_device_map") and any(d in model.hf_device_map for d in ["cpu", "disk"])
+                    hasattr(model, "hf_device_map") and any(d in model.hf_device_map for d in ["cpu", "disk"])
             ):
                 raise ValueError(
                     "Found modules on cpu/disk. Using Exllama or Exllamav2 backend requires all the modules to be on GPU."
