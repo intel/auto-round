@@ -80,13 +80,13 @@ def get_device(obj: Union[torch.Tensor, nn.Module]):
     return next(obj.parameters()).device
 
 
-def get_layers(module: nn.Module, layers=[Conv1D, nn.Conv2d, nn.Linear], prefix: Optional[str] = None, name: str = ""):
+def get_layers(module: nn.Module, layers=[Conv1D, nn.Linear], prefix: Optional[str] = None, name: str = ""):
     """
     Get all the layers with a specific prefix in the module
     Args:
         module (`nn.Module`):
             The module that contains our layers
-        layers (`list`, defaults to `[Conv1D, nn.Conv2d, nn.Linear]`):
+        layers (`list`, defaults to `[Conv1D, nn.Linear]`):
             Type of the layers that we want to get
         prefix (`Optional[str]`, defaults to `None`):
             Prefix of layers
@@ -94,7 +94,7 @@ def get_layers(module: nn.Module, layers=[Conv1D, nn.Conv2d, nn.Linear], prefix:
             Used for recursion. Don't modify
 
     Returns:
-        `Dict[str,Union[Conv1D, nn.Conv2d, nn.Linear]]`: Mapping of the name of the layer and the actual layer
+        `Dict[str,Union[Conv1D, nn.Linear]]`: Mapping of the name of the layer and the actual layer
     """
     for layer in layers:
         if isinstance(module, layer):
@@ -274,7 +274,7 @@ class AutoRoundQuantizer(HfQuantizer):
     """
 
     requires_calibration = False
-    required_packages = ["optimum", "auto_gptq"]  ##TODO change
+    required_packages = ["auto_gptq"]  ##TODO change
     optimum_quantizer = None
 
     def __init__(self, quantization_config: QuantizationConfigMixin, **kwargs):
