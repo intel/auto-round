@@ -18,7 +18,7 @@ import json
 import os
 from os.path import isdir, isfile, join
 from typing import Dict, List, Optional, Union
-import torch.nn as nn
+
 # MIT License
 #
 # Copyright (c) 2023 潘其威(William)
@@ -41,8 +41,10 @@ import torch.nn as nn
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
-from safetensors.torch import save_file as safe_save
+import torch.nn as nn
 import transformers
+from safetensors.torch import save_file as safe_save
+
 from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger, set_module
 
@@ -127,7 +129,8 @@ def get_device(obj: Union[torch.Tensor, nn.Module]):
 
 def pack_and_save_gptq(output_dir, inplace=True, backend="gptq:triton", **kwargs):
     from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
-    model = kwargs['model']
+
+    model = kwargs["model"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
 
@@ -154,9 +157,9 @@ def pack_and_save_gptq(output_dir, inplace=True, backend="gptq:triton", **kwargs
         disable_marlin = True
         disable_exllamav2 = True
         disable_exllamav1 = True
-    weight_config = kwargs['weight_config']
+    weight_config = kwargs["weight_config"]
     for name in weight_config.keys():
-        config = kwargs['weight_config'][name]
+        config = kwargs["weight_config"][name]
         if config["data_type"] != "int" and config["bits"] > 16:
             continue
         tmp_use_triton = use_triton
@@ -177,7 +180,7 @@ def pack_and_save_gptq(output_dir, inplace=True, backend="gptq:triton", **kwargs
             disable_exllama=disable_exllamav1,
             disable_exllamav2=disable_exllamav2,
             disable_marlin=disable_marlin,
-            use_qigen=tmp_use_qigen
+            use_qigen=tmp_use_qigen,
         )
 
         if isinstance(layer, nn.Linear):
@@ -207,7 +210,11 @@ def pack_and_save_gptq(output_dir, inplace=True, backend="gptq:triton", **kwargs
         zero = weight_config[name]["zero"]
         # so far can only pack layer on CPU
         qlayers[name].to("cpu")
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu"),
+        layer, scale, zero = (
+            layer.to("cpu"),
+            scale.to("cpu"),
+            zero.to("cpu"),
+        )
         qlayers[name].pack(layer, scale, zero, None)
         qlayers[name].to(device)
 
@@ -215,8 +222,7 @@ def pack_and_save_gptq(output_dir, inplace=True, backend="gptq:triton", **kwargs
 
 
 def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
-    """
-    Save model state dict and configs
+    """Save model state dict and configs.
 
     Args:
         model (`nn.Module`):
@@ -234,7 +240,6 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
             </Tip>
         safe_serialization (`bool`, defaults to `True`):
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
-
     """
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)

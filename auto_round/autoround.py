@@ -1324,8 +1324,7 @@ class AutoRound(object):
             scale_dtype=self.scale_dtype,
             tokenizer=self.tokenizer,
             supported_types=self.supported_types,
-            data_type = self.data_type
-            **kwargs,
+            data_type=self.data_type**kwargs,
         )
         return compressed_model
 
