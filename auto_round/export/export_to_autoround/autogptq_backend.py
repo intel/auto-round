@@ -310,7 +310,7 @@ class AutoRoundQuantizer(HfQuantizer):
         self.block_name_to_quantize = get_block_name_with_pattern(model)
         block_name = self.block_name_to_quantize
         layers_to_be_replaced = get_layers(model, prefix=block_name)
-        layers_to_be_replaced["lm_head"] = model.lm_head ##TODO hard coded
+        layers_to_be_replaced["lm_head"] = model.lm_head  ##TODO hard coded
         self.modules_in_block_to_quantize = None
         if self.modules_in_block_to_quantize is not None:
             layers_to_keep = sum(self.modules_in_block_to_quantize, [])
@@ -364,7 +364,7 @@ class AutoRoundQuantizer(HfQuantizer):
                     in_features = layer.weight.shape[0]
                     out_features = layer.weight.shape[1]
                 # bias = layer.bias is not None and torch.any(layer.bias)
-                bias = True ## autogptq always set bias to True
+                bias = True  ## autogptq always set bias to True
 
                 new_layer = QuantLinear(
                     self.bits,
