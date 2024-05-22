@@ -41,12 +41,8 @@ from typing import Dict, List, Optional, Union
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
-<<<<<<< HEAD
-=======
 import torch.nn as nn
->>>>>>> 208ea37c9fda78913ac589fb45fc14c8c37c313c
 import transformers
-from safetensors.torch import save_file as safe_save
 
 from auto_round.export.register import register_format
 from auto_round.utils import get_block_names, get_module, set_module,logger
