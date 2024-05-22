@@ -1,15 +1,16 @@
-from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
-from transformers.utils.quantization_config import QuantizationConfigMixin, QuantizationMethod, GPTQConfig, AwqConfig
-from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
+import importlib.util
 import warnings
 from dataclasses import dataclass
-from typing import Any, Tuple, Union, List, Dict, Optional
+from logging import getLogger
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import torch
 import torch.nn as nn
-from transformers.pytorch_utils import Conv1D
 from packaging import version
-import importlib.util
-from logging import getLogger
+from transformers.pytorch_utils import Conv1D
+from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
+from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
+from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
 logger = getLogger(__name__)
 import sys
@@ -79,8 +80,7 @@ def get_device(obj: Union[torch.Tensor, nn.Module]):
     return next(obj.parameters()).device
 
 
-def get_layers(module: nn.Module, layers=[Conv1D, nn.Conv2d, nn.Linear], prefix: Optional[str] = None,
-               name: str = ""):
+def get_layers(module: nn.Module, layers=[Conv1D, nn.Conv2d, nn.Linear], prefix: Optional[str] = None, name: str = ""):
     """
     Get all the layers with a specific prefix in the module
     Args:
@@ -105,14 +105,12 @@ def get_layers(module: nn.Module, layers=[Conv1D, nn.Conv2d, nn.Linear], prefix:
                 return {name: module}
     res = {}
     for name1, child in module.named_children():
-        res.update(
-            get_layers(child, layers=layers, prefix=prefix, name=name + "." + name1 if name != "" else name1))
+        res.update(get_layers(child, layers=layers, prefix=prefix, name=name + "." + name1 if name != "" else name1))
     return res
 
 
 def get_block_name_with_pattern(model: nn.Module):
-    """
-    Get the name of the module that contains the transformers blocks by checking if any modules has a specific pattern
+    """Get the name of the module that contains the transformers blocks by checking if any modules has a specific pattern.
 
     Args:
         model (`nn.Module`):
@@ -129,10 +127,8 @@ def get_block_name_with_pattern(model: nn.Module):
 
 
 class AutoHfQuantizer:
-    """
-     The Auto-HF quantizer class that takes care of automatically instantiating to the correct
-    `HfQuantizer` given the `QuantizationConfig`.
-    """
+    """The Auto-HF quantizer class that takes care of automatically instantiating to the correct
+    `HfQuantizer` given the `QuantizationConfig`."""
 
     @classmethod
     def from_config(cls, quantization_config: Union[QuantizationConfigMixin, Dict], **kwargs):
@@ -168,13 +164,11 @@ class AutoHfQuantizer:
 
     @classmethod
     def merge_quantization_configs(
-            cls,
-            quantization_config: Union[dict, QuantizationConfigMixin],
-            quantization_config_from_args: Optional[QuantizationConfigMixin],
+        cls,
+        quantization_config: Union[dict, QuantizationConfigMixin],
+        quantization_config_from_args: Optional[QuantizationConfigMixin],
     ):
-        """
-        handles situations where both quantization_config from args and quantization_config from model config are present.
-        """
+        """Handles situations where both quantization_config from args and quantization_config from model config are present."""
         if quantization_config_from_args is not None:
             warning_msg = (
                 "You passed `quantization_config` or equivalent parameters to `from_pretrained` but the model you're loading"
@@ -201,8 +195,7 @@ class AutoHfQuantizer:
 
 @dataclass
 class AutoRoundConfig(QuantizationConfigMixin):
-    """
-    This is a wrapper class about all possible attributes and features that you can play with a model that has been
+    """This is a wrapper class about all possible attributes and features that you can play with a model that has been
     loaded using `optimum` api for gptq quantization relying on auto_gptq backend.
 
     Args:
@@ -214,27 +207,25 @@ class AutoRoundConfig(QuantizationConfigMixin):
                 - A string, the *model id* of a predefined tokenizer hosted inside a model repo on huggingface.co.
                 - A path to a *directory* containing vocabulary files required by the tokenizer, for instance saved
                     using the [`~PreTrainedTokenizer.save_pretrained`] method, e.g., `./my_model_directory/`.
-
     """
 
     def __init__(
-            self,
-            bits: int,
-            tokenizer: Any = None,
-            dataset: str = None,
-            group_size: int = 128,
-            sym: bool = True,
-            backend="gptq:triton",
-            iters: int = 200,
-            weight_config: dict = None,
-            enable_quanted_input=True,
-            enable_minmax_tuning=True,
-            lr=None,
-            minmax_lr=None,
-            n_samples=512,
-            seqlen=2048,
-            **kwargs
-
+        self,
+        bits: int,
+        tokenizer: Any = None,
+        dataset: str = None,
+        group_size: int = 128,
+        sym: bool = True,
+        backend="gptq:triton",
+        iters: int = 200,
+        weight_config: dict = None,
+        enable_quanted_input=True,
+        enable_minmax_tuning=True,
+        lr=None,
+        minmax_lr=None,
+        n_samples=512,
+        seqlen=2048,
+        **kwargs,
     ):
         self.quant_method = QuantizationMethod.GPTQ
         self.bits = bits
@@ -263,9 +254,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
         # return loading_attibutes_dict
 
     def post_init(self):
-        r"""
-        Safety checker that arguments are correct
-        """
+        r"""Safety checker that arguments are correct."""
         if self.bits not in [2, 3, 4, 8]:
             raise ValueError(f"Only support quantization to [2,3,4,8] bits but found {self.bits}")
         if self.group_size != -1 and self.group_size <= 0:
@@ -299,13 +288,9 @@ class AutoRoundQuantizer(HfQuantizer):
         if not gptq_supports_cpu and not torch.cuda.is_available():
             raise RuntimeError("GPU is required to quantize or run quantize model.")
         elif not is_auto_gptq_available():
-            raise ImportError(
-                "Loading a GPTQ quantized model requires auto-gptq library (`pip install auto-gptq`)"
-            )
+            raise ImportError("Loading a GPTQ quantized model requires auto-gptq library (`pip install auto-gptq`)")
         elif version.parse(importlib.metadata.version("auto_gptq")) < version.parse("0.4.2"):
-            raise ImportError(
-                "You need a version of auto_gptq >= 0.4.2 to use GPTQ: `pip install --upgrade auto-gptq`"
-            )
+            raise ImportError("You need a version of auto_gptq >= 0.4.2 to use GPTQ: `pip install --upgrade auto-gptq`")
 
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:
@@ -315,13 +300,11 @@ class AutoRoundQuantizer(HfQuantizer):
         return torch_dtype
 
     def convert_model(self, model: nn.Module):
-        """
-        Convert the model to a GPTQ model by getting and replacing the layers.
+        """Convert the model to a GPTQ model by getting and replacing the layers.
 
         Args:
             model (`nn.Module`):
                 Model to be converted
-
         """
 
         self.block_name_to_quantize = get_block_name_with_pattern(model)
@@ -341,8 +324,7 @@ class AutoRoundQuantizer(HfQuantizer):
         return model
 
     def _replace_by_quant_layers(self, module: nn.Module, names: List[str], name: str = ""):
-        """
-        Replaces linear layers in `module` by `QuantLinear`
+        """Replaces linear layers in `module` by `QuantLinear`
 
         Args:
             module (`nn.Module`):
@@ -362,7 +344,7 @@ class AutoRoundQuantizer(HfQuantizer):
             group_size=self.group_size,
             bits=self.bits,
             disable_exllama=True,
-            disable_exllamav2=False
+            disable_exllamav2=False,
         )
         if isinstance(module, QuantLinear):
             return
@@ -400,8 +382,7 @@ class AutoRoundQuantizer(HfQuantizer):
             self._replace_by_quant_layers(child, names, name + "." + name1 if name != "" else name1)
 
     def post_init_model(self, model):
-        """
-        Post-initialization that require device information, for example buffers initialization on device.
+        """Post-initialization that require device information, for example buffers initialization on device.
 
         Args:
             model (`nn.Module`):
@@ -409,7 +390,7 @@ class AutoRoundQuantizer(HfQuantizer):
         """
         if self.bits == 4 and not self.disable_exllama:
             if get_device(model) == torch.device("cpu") or (
-                    hasattr(model, "hf_device_map") and any(d in model.hf_device_map for d in ["cpu", "disk"])
+                hasattr(model, "hf_device_map") and any(d in model.hf_device_map for d in ["cpu", "disk"])
             ):
                 raise ValueError(
                     "Found modules on cpu/disk. Using Exllama or Exllamav2 backend requires all the modules to be on GPU."
