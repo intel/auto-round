@@ -18,7 +18,7 @@ import json
 import os
 from os.path import isdir, isfile, join
 from typing import Dict, List, Optional, Union
-import torch.nn as nn
+
 # MIT License
 #
 # Copyright (c) 2023 潘其威(William)
@@ -41,7 +41,13 @@ import torch.nn as nn
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
+<<<<<<< HEAD
+=======
+import torch.nn as nn
+>>>>>>> 208ea37c9fda78913ac589fb45fc14c8c37c313c
 import transformers
+from safetensors.torch import save_file as safe_save
+
 from auto_round.export.register import register_format
 from auto_round.utils import get_block_names, get_module, set_module,logger
 
@@ -91,7 +97,8 @@ def check_neq_config(config, data_type, bits, group_size, sym):
 @register_format("autoround")
 def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav2", **kwargs):
     from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
-    model = kwargs['model']
+
+    model = kwargs["model"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
     layer_names_in_block = get_layer_names_in_block(model)
@@ -118,8 +125,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
         disable_marlin = True
         disable_exllamav2 = True
         disable_exllamav1 = True
-    weight_config = kwargs['weight_config']
+    weight_config = kwargs["weight_config"]
     for name in weight_config.keys():
+
         config = kwargs['weight_config'][name]
         if config["data_type"] != "int" and config["bits"] >= 16:
             continue
@@ -142,7 +150,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
             disable_exllama=disable_exllamav1,
             disable_exllamav2=disable_exllamav2,
             disable_marlin=disable_marlin,
-            use_qigen=tmp_use_qigen
+            use_qigen=tmp_use_qigen,
         )
 
         if isinstance(layer, nn.Linear):
@@ -207,8 +215,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
 
 
 def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
-    """
-    Save model state dict and configs
+    """Save model state dict and configs.
 
     Args:
         model (`nn.Module`):
@@ -226,7 +233,6 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
             </Tip>
         safe_serialization (`bool`, defaults to `True`):
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
-
     """
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)

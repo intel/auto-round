@@ -1339,7 +1339,7 @@ class AutoRound(object):
             supported_types=self.supported_types,
             data_type=self.data_type,
             serialization_dict=self.serialization_dict,
-            **kwargs,
+            **kwargs
         )
         return compressed_model
 
