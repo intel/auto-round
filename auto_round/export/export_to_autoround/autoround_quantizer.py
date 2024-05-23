@@ -31,7 +31,7 @@ import warnings
 from dataclasses import dataclass
 from logging import getLogger
 from typing import Any, Dict, List, Optional, Tuple, Union
-
+from transformers.modeling_utils import PreTrainedModel
 import torch
 import torch.nn as nn
 from packaging import version

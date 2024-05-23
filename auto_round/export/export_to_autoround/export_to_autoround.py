@@ -112,7 +112,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
 
         bits = config["bits"]
         group_size = config["group_size"]
-        use_triton, disable_exllamav1, disable_exllamav2, disable_marlin, use_qigen = get_autogptq_backend_config(
+        use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
             backend, bits
         )
 
@@ -199,7 +199,7 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "10GB", safe_ser
 
     Args:
         model (`nn.Module`):
-            Model to be saved. The model can be wrapped or unwraped.
+            Model to be saved. The model can be wrapped or unwrapped.
         save_dir (`str`):
             Directory to which to save. Will be created if it doesn't exist.
         max_shard_size (`str`, defaults to `"10GB"`):
