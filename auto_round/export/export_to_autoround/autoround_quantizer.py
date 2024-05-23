@@ -367,7 +367,7 @@ class AutoRoundQuantizer(HfQuantizer):
                 in_features,
                 out_features,
                 bias,
-                weight_dtype=layer.weight.dtype, # pylint: disable=E1123
+                weight_dtype=layer.weight.dtype,  # pylint: disable=E1123
             )
 
             new_layer.device = device
