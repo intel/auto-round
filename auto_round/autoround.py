@@ -1310,8 +1310,6 @@ class AutoRound(object):
             )
             m = m.to("cpu")
             torch.cuda.empty_cache()
-            if i==0:##TODO delete
-                break
 
         del q_input
         del input_ids
