@@ -204,17 +204,3 @@ def save_quantized(
     with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
         json.dump(quant_config, f, indent=2)
 
-
-def sizeof_fmt(num, suffix="B"):
-    for unit in ["", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"]:
-        if abs(num) < 1024.0:
-            return f"{num:3.1f}{unit}{suffix}"
-        num /= 1024.0
-    return f"{num:.1f}Yi{suffix}"
-
-
-def get_size(model):
-    total = 0
-    for param in model.parameters():
-        total += param.nelement() * param.element_size()
-    return total
