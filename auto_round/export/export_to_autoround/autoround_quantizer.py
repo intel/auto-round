@@ -144,10 +144,12 @@ class AutoHfQuantizer:
             quantization_config: Union[dict, QuantizationConfigMixin],
             quantization_config_from_args: Optional[QuantizationConfigMixin],
     ):
-        """Handles situations where both quantization_config from args and quantization_config from model config are present."""
+        """Handles situations where both quantization_config
+        from args and quantization_config from model config are present."""
         if quantization_config_from_args is not None:
             warning_msg = (
-                "You passed `quantization_config` or equivalent parameters to `from_pretrained` but the model you're loading"
+                "You passed `quantization_config` or equivalent parameters to "
+                "`from_pretrained` but the model you're loading"
                 " already has a `quantization_config` attribute. The `quantization_config` from the model will be used."
             )
         else:
@@ -363,7 +365,7 @@ class AutoRoundQuantizer(HfQuantizer):
                 in_features,
                 out_features,
                 bias,
-                weight_dtype=layer.weight.dtype,  ### pylint: disable=E1123
+                weight_dtype=layer.weight.dtype, # pylint: disable=E1123
             )
 
             new_layer.device = device
@@ -382,8 +384,10 @@ class AutoRoundQuantizer(HfQuantizer):
         #             hasattr(model, "hf_device_map") and any(d in model.hf_device_map for d in ["cpu", "disk"])
         #     ):
         #         raise ValueError(
-        #             "Found modules on cpu/disk. Using Exllama or Exllamav2 backend requires all the modules to be on GPU."
-        #             "You can deactivate exllama backend by setting `disable_exllama=True` in the quantization config object"
+        #             "Found modules on cpu/disk. Using Exllama
+        #             or Exllamav2 backend requires all the modules to be on GPU."
+        #             "You can deactivate exllama backend by
+        #             setting `disable_exllama=True` in the quantization config object"
         #         )
 
         class StoreAttr(object):
