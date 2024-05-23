@@ -203,4 +203,3 @@ def save_quantized(
     # save quantize_config
     with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
         json.dump(quant_config, f, indent=2)
-
