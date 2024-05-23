@@ -558,6 +558,10 @@ def evaluate(
 
 
 if __name__ == "__main__":
+
+    import sys
+
+    sys.path.insert(0, '../../')
     import time
     import argparse
 
@@ -566,10 +570,10 @@ if __name__ == "__main__":
         "--model_name", default="/models/opt-125m/"
     )
     parser.add_argument(
-        "--eval_bs", default=32,
+        "--eval_bs", default=1,
     )
     parser.add_argument("--tasks",
-                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
+                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,truthfulqa_mc1," \
                                 "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
                         help="lm-eval tasks for lm_eval version 0.4.2")
 

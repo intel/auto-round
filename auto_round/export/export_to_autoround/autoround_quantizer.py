@@ -80,7 +80,8 @@ def is_auto_gptq_available():
             return True
         else:
             raise ImportError(
-                f"Found an incompatible version of auto-gptq. Found version {version_autogptq}, but only version above {AUTOGPTQ_MINIMUM_VERSION} are supported"
+                f"Found an incompatible version of auto-gptq. Found version {version_autogptq},"
+                f" but only version above {AUTOGPTQ_MINIMUM_VERSION} are supported"
             )
 
 
@@ -109,7 +110,7 @@ class AutoHfQuantizer:
             if "auto-round" in quantization_config["quant_method"]:
                 quantization_config = AutoRoundConfig.from_dict(quantization_config)
             else:
-                quantization_config = AutoQuantizationConfig.from_dict(quantization_config)
+                quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
         quant_method = quantization_config.quant_method
 
         # Again, we need a special care for bnb as we have a single quantization config
@@ -139,9 +140,9 @@ class AutoHfQuantizer:
 
     @classmethod
     def merge_quantization_configs(
-        cls,
-        quantization_config: Union[dict, QuantizationConfigMixin],
-        quantization_config_from_args: Optional[QuantizationConfigMixin],
+            cls,
+            quantization_config: Union[dict, QuantizationConfigMixin],
+            quantization_config_from_args: Optional[QuantizationConfigMixin],
     ):
         """Handles situations where both quantization_config from args and quantization_config from model config are present."""
         if quantization_config_from_args is not None:
@@ -160,7 +161,8 @@ class AutoHfQuantizer:
             loading_attr_dict = quantization_config_from_args.get_loading_attributes()
             for attr, val in loading_attr_dict.items():
                 setattr(quantization_config, attr, val)
-            warning_msg += f"However, loading attributes (e.g. {list(loading_attr_dict.keys())}) will be overwritten with the one you passed to `from_pretrained`. The rest will be ignored."
+            warning_msg += (f"However, loading attributes (e.g. {list(loading_attr_dict.keys())}) "
+                            f"will be overwritten with the one you passed to `from_pretrained`. The rest will be ignored.")
 
         if warning_msg != "":
             warnings.warn(warning_msg)
@@ -185,22 +187,22 @@ class AutoRoundConfig(QuantizationConfigMixin):
     """
 
     def __init__(
-        self,
-        bits: int,
-        tokenizer: Any = None,
-        dataset: str = None,
-        group_size: int = 128,
-        sym: bool = False,
-        backend="gptq:exllamav2",
-        iters: int = 200,
-        weight_config: dict = None,
-        enable_quanted_input=True,
-        enable_minmax_tuning=True,
-        lr=None,
-        minmax_lr=None,
-        n_samples=512,
-        seqlen=2048,
-        **kwargs,
+            self,
+            bits: int,
+            tokenizer: Any = None,
+            dataset: str = None,
+            group_size: int = 128,
+            sym: bool = False,
+            backend="gptq:exllamav2",
+            iters: int = 200,
+            weight_config: dict = None,
+            enable_quanted_input=True,
+            enable_minmax_tuning=True,
+            lr=None,
+            minmax_lr=None,
+            n_samples=512,
+            seqlen=2048,
+            **kwargs,
     ):
         self.bits = bits
         self.tokenizer = tokenizer
@@ -361,8 +363,7 @@ class AutoRoundQuantizer(HfQuantizer):
                 in_features,
                 out_features,
                 bias,
-                use_cuda_fp16=True,
-                weight_dtype=layer.weight.dtype,
+                weight_dtype=layer.weight.dtype,  ### pylint: disable=E1123
             )
 
             new_layer.device = device

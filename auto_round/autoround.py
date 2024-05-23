@@ -831,6 +831,7 @@ class AutoRound(object):
                 block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name
             )
             self.model = self.model.to("cpu")
+            torch.cuda.empty_cache()
         except:
             logger.info("switch to cpu to cache inputs")
             self.model = self.model.to("cpu")
@@ -1030,10 +1031,7 @@ class AutoRound(object):
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
         train_bs = self.train_bs
-        pick_samples = train_bs
         n_samples = len(inputs)
-        if self.sampler != "rand":
-            indices = torch.randperm(n_samples)[:pick_samples]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         mse_loss = torch.nn.MSELoss().to(device)
@@ -1041,6 +1039,11 @@ class AutoRound(object):
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
         gradient_accumulate_steps = self.gradient_accumulate_steps
+        gradient_accumulate_steps = self.train_bs ##Force to low gpu
+        train_bs = 1 ##Force to low gpu
+        pick_samples = train_bs
+        if self.sampler != "rand":
+            indices = torch.randperm(n_samples)[:pick_samples]
         for i in range(self.iters):
             total_loss = 0
             for _ in range(gradient_accumulate_steps):
@@ -1307,6 +1310,8 @@ class AutoRound(object):
             )
             m = m.to("cpu")
             torch.cuda.empty_cache()
+            if i==0:##TODO delete
+                break
 
         del q_input
         del input_ids
