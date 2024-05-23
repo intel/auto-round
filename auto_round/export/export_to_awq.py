@@ -20,19 +20,19 @@ from os.path import isdir, isfile, join
 from typing import Dict, List, Optional, Union
 
 # MIT License
-#
-# Copyright (c) 2023 潘其威(William)
-#
+
+# Copyright (c) 2023 MIT HAN Lab
+
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
 # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
-#
+
 # The above copyright notice and this permission notice shall be included in all
 # copies or substantial portions of the Software.
-#
+
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -48,10 +48,8 @@ from auto_round.utils import (
     check_to_quantized,
     get_block_names,
     get_module,
-    get_module_name,
-    get_named_linears,
     logger,
-    set_op_by_name,
+    convert_dtype_torch2str_hf
 )
 
 
@@ -134,14 +132,20 @@ def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
             set_op_by_name(module, name, q_linear)
             clear_memory()
 
-    quant_config = {
-        "quant_method": "awq",
-        "zero_point": not sym,
-        "group_size": group_size,
-        "bits": bits,
-        "version": "gemm",
-        "modules_to_not_convert": None,
-    }
+    quant_config = {}
+    quant_config["quant_method"] = "awq"
+    quant_config["modules_to_not_convert"] = None
+    quant_config["version"] = "gemm"
+    quant_config["iters"] = iters
+    quant_config["lr"] = lr
+    quant_config["minmax_lr"] = minmax_lr
+    quant_config["enable_minmax_tuning"] = enable_minmax_tuning
+    quant_config["enable_quanted_input"] = enable_quanted_input
+    quant_config["scale_dtype"] = convert_dtype_torch2str_hf(scale_dtype)
+    quant_config["sym"] = sym
+    quant_config["bits"] = bits
+    quant_config["group_size"] = group_size
+    quant_config["zero_point"] = not sym
 
     save_quantized(compressed_model, save_dir=output_dir, quant_config=quant_config)
 
@@ -168,7 +172,16 @@ def save_quantized(
             return x
 
     # Save model and config files with empty state dict
-    model.config.quantization_config = quant_config
+    awq_quant_config =  {
+        "quant_method": "awq",
+        "zero_point": quant_config["zero_point"],
+        "group_size": quant_config["group_size"],
+        "bits": quant_config["bits"],
+        "version": "gemm",
+        "modules_to_not_convert": None,
+    }
+
+    model.config.quantization_config = awq_quant_config
     model.generation_config.do_sample = True
     model.save_pretrained(save_dir, state_dict=EmptyModule().state_dict())
 
@@ -200,6 +213,50 @@ def save_quantized(
         with open(f"{save_dir}/{model_name}.index.json", "w+") as file:
             file.write(json.dumps(index, indent=4))
 
+    q
     # save quantize_config
     with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
         json.dump(quant_config, f, indent=2)
+
+
+
+def get_named_linears(module):
+    """Get the name, linear_op pairs of a given module.
+
+    Args:
+    module: A module to be searched.
+    """
+    return {name: m for name, m in module.named_modules() if isinstance(m, torch.nn.Linear)}
+
+
+def set_op_by_name(layer, name, new_module):
+    levels = name.split(".")
+    if len(levels) > 1:
+        mod_ = layer
+        for l_idx in range(len(levels) - 1):
+            if levels[l_idx].isdigit():
+                mod_ = mod_[int(levels[l_idx])]
+            else:
+                mod_ = getattr(mod_, levels[l_idx])
+        setattr(mod_, levels[-1], new_module)
+    else:
+        setattr(layer, name, new_module)
+
+
+def get_module_name(model, module_to_find):
+    """Get the name of a given module in a model.
+
+    Args:
+    model: The model.
+    module_to_find: A module to be found.
+
+    Returns:
+    name: The corresponding name of the given module.
+    """
+    for name, module in model.named_modules():
+        if module is module_to_find:
+            return name
+    return None
+
+
+

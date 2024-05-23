@@ -1,6 +1,5 @@
 accelerate
 auto-gptq
-autoawq
 datasets
 py-cpuinfo
 sentencepiece
