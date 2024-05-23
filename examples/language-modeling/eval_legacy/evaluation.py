@@ -202,17 +202,28 @@ def simple_evaluate(
 
 
 def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
-               eval_bs=32, use_accelerate=True, dtype="float16", limit=None,
+               eval_bs=32, use_accelerate=True, dtype=None, limit=None, trust_remote_code=True,
                device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
     print("evaluation with official lm-eval", flush=True)
     try:
         import lm_eval
         from lm_eval import evaluator
         from lm_eval.tasks import ALL_TASKS, get_task_dict
+        import pandas as pd
     except:
         raise ImportError("""follow requirements to install dependencies.""")
-    print(f"Using {dtype} as evaluation data type.")
+    
     org_s = time.time()
+    if dtype == None:
+        from eval.utils import convert_dtype_torch2str_hf
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+        if hasattr(config, "torch_dtype"):
+            dtype = convert_dtype_torch2str_hf(config.torch_dtype)
+        else:
+            dtype = "float16"
+    print(f"Using {dtype} as evaluation data type.")
+    
 
     external_tasks = []
     if isinstance(tasks, str):
@@ -233,10 +244,10 @@ def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrand
             task_s = time.time()
             for shot in num_fewshot:
                 if bool(re.search("chatglm", model_path.lower())):
-                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code=True'
+                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code={trust_remote_code}'
                     model_type = "hf-causal"
                 else:
-                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},use_accelerate={use_accelerate},trust_remote_code=True'
+                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},use_accelerate={use_accelerate},trust_remote_code={trust_remote_code}'
                     model_type = "hf-causal-experimental"
 
                 if "wikitext" in task_names:
@@ -323,7 +334,6 @@ def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrand
                 #     continue
                 new_dict[new_key] = data[sub_key][sub_sub_key]
 
-    import pandas as pd
     df = pd.DataFrame(data=new_dict, index=[0])
     df.to_excel(excel_file)
 
@@ -355,6 +365,7 @@ if __name__ == "__main__":
                eval_bs=args.eval_bs, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
+
 
 
 
