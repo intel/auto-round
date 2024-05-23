@@ -93,9 +93,9 @@ def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
 
-    from awq import AutoAWQForCausalLM
-    from awq.modules.linear import WQLinear_GEMM
-    from awq.utils.utils import clear_memory
+    from awq import AutoAWQForCausalLM # pylint: disable=E0401
+    from awq.modules.linear import WQLinear_GEMM # pylint: disable=E0401
+    from awq.utils.utils import clear_memory # pylint: disable=E0401
 
     q_linear_module = WQLinear_GEMM
     awq_model = AutoAWQForCausalLM.from_pretrained(model_path)
@@ -207,7 +207,6 @@ def save_quantized(
         with open(f"{save_dir}/{model_name}.index.json", "w+") as file:
             file.write(json.dumps(index, indent=4))
 
-    q
     # save quantize_config
     with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
         json.dump(quant_config, f, indent=2)
