@@ -1,4 +1,4 @@
-# Copyright (c) 2023 Intel Corporation
+# Copyright (c) 2024 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,36 +16,13 @@
 import copy
 import json
 import os
-from os.path import isdir, isfile, join
-from typing import Dict, List, Optional, Union
-
-# MIT License
-#
-# Copyright (c) 2023 潘其威(William)
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
 import torch
 import torch.nn as nn
 import transformers
 
 from auto_round.export.register import register_format
-from auto_round.utils import get_block_names, get_module, set_module,logger
+from auto_round.utils import get_block_names, get_module, set_module, logger
+
 
 def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transformers.modeling_utils.Conv1D]):
     """Retrieves the names of layers within each block of the model.
@@ -84,20 +61,8 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     return res
 
 
-# def get_device(obj: Union[torch.Tensor, nn.Module]):
-#     if isinstance(obj, torch.Tensor):
-#         return obj.device
-#     return next(obj.parameters()).device
 
-
-@register_format("autoround")
-def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav2", **kwargs):
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
-
-    model = kwargs["model"]
-    if not inplace:
-        model = copy.deepcopy(model.to("cpu"))
-    layer_names_in_block = get_layer_names_in_block(model)
+def get_autogptq_backend_config(backend, bits=4):
     use_triton = False
     disable_exllamav2 = False
     disable_exllamav1 = False
@@ -121,6 +86,22 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
         disable_marlin = True
         disable_exllamav2 = True
         disable_exllamav1 = True
+    if bits not in [2, 4, 8]:
+        use_qigen = False
+    if bits not in [2, 4]:
+        use_triton = False
+    return use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin
+
+
+@register_format("autoround")
+def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav2", **kwargs):
+    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
+
+    model = kwargs["model"]
+    if not inplace:
+        model = copy.deepcopy(model.to("cpu"))
+    layer_names_in_block = get_layer_names_in_block(model)
+
     weight_config = kwargs["weight_config"]
     for name in weight_config.keys():
 
@@ -128,25 +109,23 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
         if config["data_type"] != "int" and config["bits"] >= 16:
             continue
         logger.info(f"packing {name}")
-        tmp_use_triton = use_triton
-        tmp_use_qigen = use_qigen
+
         bits = config["bits"]
         group_size = config["group_size"]
-        if bits not in [2, 4, 8]:
-            tmp_use_triton = False
-        if bits not in [2, 4]:
-            tmp_use_qigen = False
+        use_triton, disable_exllamav1, disable_exllamav2, disable_marlin, use_qigen = get_autogptq_backend_config(
+            backend, bits)
+
         layer = get_module(model, name)
         device = "cpu"
         QuantLinear = dynamically_import_QuantLinear(
-            use_triton=tmp_use_triton,
+            use_triton=use_triton,
             desc_act=False,
             group_size=group_size,
             bits=bits,
             disable_exllama=disable_exllamav1,
             disable_exllamav2=disable_exllamav2,
-            disable_marlin=disable_marlin,
-            use_qigen=tmp_use_qigen,
+            use_qigen=use_qigen,
+            disable_marlin=disable_marlin
         )
 
         if isinstance(layer, nn.Linear):
@@ -210,7 +189,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
     save(model, output_dir)
 
 
-def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
+def save(model: nn.Module, save_dir: str, max_shard_size: str = "10GB", safe_serialization: bool = True):
     """Save model state dict and configs.
 
     Args:

@@ -1,3 +1,31 @@
+# Copyright (c) 2024 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# coding=utf-8
+# Copyright 2023 HuggingFace Inc. team and GPTQ and AutoGPTQ authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import importlib.util
 import warnings
 from dataclasses import dataclass
@@ -12,6 +40,8 @@ from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
+from auto_round.utils import get_module, set_module
+
 logger = getLogger(__name__)
 import sys
 
@@ -21,12 +51,6 @@ else:
     import importlib.metadata as importlib_metadata
 
 AUTOGPTQ_MINIMUM_VERSION = version.parse("0.4.99")  # Allows 0.5.0.dev0
-from enum import Enum
-
-
-class ExllamaVersion(int, Enum):
-    ONE = 1
-    TWO = 2
 
 
 def _is_package_available(pkg_name: str, return_version: bool = False) -> Union[Tuple[bool, str], bool]:
@@ -65,65 +89,12 @@ if is_auto_gptq_available():
     from auto_gptq.quantization import GPTQ
     from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
 
-SEQLEN_KEYS_TRANFORMERS = ["max_position_embeddings", "seq_length", "n_positions"]
-BLOCK_PATTERNS = [
-    "transformer.h",
-    "model.decoder.layers",
-    "gpt_neox.layers",
-    "model.layers",
-]
 
-
+#
 def get_device(obj: Union[torch.Tensor, nn.Module]):
     if isinstance(obj, torch.Tensor):
         return obj.device
     return next(obj.parameters()).device
-
-
-def get_layers(module: nn.Module, layers=[Conv1D, nn.Linear], prefix: Optional[str] = None, name: str = ""):
-    """
-    Get all the layers with a specific prefix in the module
-    Args:
-        module (`nn.Module`):
-            The module that contains our layers
-        layers (`list`, defaults to `[Conv1D, nn.Linear]`):
-            Type of the layers that we want to get
-        prefix (`Optional[str]`, defaults to `None`):
-            Prefix of layers
-        name (`str`, defaults to `""`):
-            Used for recursion. Don't modify
-
-    Returns:
-        `Dict[str,Union[Conv1D, nn.Linear]]`: Mapping of the name of the layer and the actual layer
-    """
-    for layer in layers:
-        if isinstance(module, layer):
-            if prefix is not None:
-                if name.startswith(prefix):
-                    return {name: module}
-            else:
-                return {name: module}
-    res = {}
-    for name1, child in module.named_children():
-        res.update(get_layers(child, layers=layers, prefix=prefix, name=name + "." + name1 if name != "" else name1))
-    return res
-
-
-def get_block_name_with_pattern(model: nn.Module):
-    """Get the name of the module that contains the transformers blocks by checking if any modules has a specific pattern.
-
-    Args:
-        model (`nn.Module`):
-        The input model
-    Returns:
-        `str`: The name of the module that contains the Transformer blocks.
-    """
-    modules_names = [n for n, _ in model.named_modules()]
-    for pattern_candidate in BLOCK_PATTERNS:
-        pattern_candidate = pattern_candidate
-        if any(pattern_candidate in name for name in modules_names):
-            return pattern_candidate
-    raise ValueError("Block pattern could not be match. Pass `block_name_to_quantize` argument in `quantize_model`")
 
 
 class AutoHfQuantizer:
@@ -134,11 +105,10 @@ class AutoHfQuantizer:
     def from_config(cls, quantization_config: Union[QuantizationConfigMixin, Dict], **kwargs):
         # Convert it to a QuantizationConfig if the q_config is a dict
         if isinstance(quantization_config, dict):
-            if "autoround" in quantization_config["quant_method"]:
+            if "auto-round" in quantization_config["quant_method"]:
                 quantization_config = AutoRoundConfig.from_dict(quantization_config)
             else:
                 quantization_config = AutoQuantizationConfig.from_dict(quantization_config)
-        print("AUTOROUND INTERFACE", flush=True)
         quant_method = quantization_config.quant_method
 
         # Again, we need a special care for bnb as we have a single quantization config
@@ -149,19 +119,20 @@ class AutoHfQuantizer:
             else:
                 quant_method += "_4bit"
 
-        # if quant_method not in AUTO_QUANTIZER_MAPPING.keys():
-        #     raise ValueError(
-        #         f"Unknown quantization type, got {quant_method} - supported types are:"
-        #         f" {list(AUTO_QUANTIZER_MAPPING.keys())}"
-        #     )
+        if quant_method not in AUTO_QUANTIZER_MAPPING.keys() and "auto-round" not in quant_method:
+            raise ValueError(
+                f"Unknown quantization type, got {quant_method} - supported types are:"
+                f" {list(AUTO_QUANTIZER_MAPPING.keys())}"
+            )
+        if "auto-round" in quant_method:
+            target_cls = AutoRoundQuantizer
+        else:
+            target_cls = AUTO_QUANTIZER_MAPPING[quant_method]
 
-        ##target_cls = AUTO_QUANTIZER_MAPPING[quant_method]
-        target_cls = AutoRoundQuantizer  ##TODO change back changed by wenhauch
         return target_cls(quantization_config, **kwargs)
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
-        print("AutoRound interface", flush=True)
         quantization_config = AutoQuantizationConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
         return cls.from_config(quantization_config)
 
@@ -278,14 +249,11 @@ class AutoRoundQuantizer(HfQuantizer):
     """
 
     requires_calibration = False
-    required_packages = ["auto_gptq"]  ##TODO change
+    required_packages = ["auto_gptq"]
     optimum_quantizer = None
 
     def __init__(self, quantization_config: QuantizationConfigMixin, **kwargs):
         super().__init__(quantization_config, **kwargs)
-        # from optimum.gptq import GPTQQuantizer
-        #
-        # self.optimum_quantizer = GPTQQuantizer.from_dict(self.quantization_config.to_dict_optimum())
 
     def validate_environment(self, *args, **kwargs):
         gptq_supports_cpu = version.parse(importlib.metadata.version("auto-gptq")) > version.parse("0.4.2")
@@ -310,24 +278,37 @@ class AutoRoundQuantizer(HfQuantizer):
             model (`nn.Module`):
                 Model to be converted
         """
+        from .export_to_autoround import get_layer_names_in_block
+        layer_names = get_layer_names_in_block(model)
+        quantization_config = model.config.quantization_config
+        bits = quantization_config.bits
+        group_size = quantization_config.group_size
+        data_type = quantization_config.data_type
+        sym = quantization_config.sym
+        extra_config = {}
+        if hasattr(quantization_config, "extra_config"):
+            extra_config = quantization_config.extra_config
+        layer_names += extra_config.keys()
+        layer_names = list(set(layer_names))
+        layer_configs = {}
+        for layer_name in layer_names:
+            layer_configs[layer_name] = {}
+            if layer_name not in extra_config:
+                layer_configs[layer_name]["bits"] = bits
+                layer_configs[layer_name]["group_size"] = group_size
+                layer_configs[layer_name]["data_type"] = data_type
+                layer_configs[layer_name]["sym"] = sym
+            else:
+                layer_configs[layer_name]["bits"] = extra_config.get("bits", bits)
+                layer_configs[layer_name]["group_size"] = extra_config.get("group_size", group_size)
+                layer_configs[layer_name]["data_type"] = extra_config.get("data_type", data_type)
+                layer_configs[layer_name]["sym"] = extra_config.get("sym", sym)
+        backend = quantization_config.backend
 
-        self.block_name_to_quantize = get_block_name_with_pattern(model)
-        block_name = self.block_name_to_quantize
-        layers_to_be_replaced = get_layers(model, prefix=block_name)
-        layers_to_be_replaced["lm_head"] = model.lm_head  ##TODO hard coded
-        self.modules_in_block_to_quantize = None
-        if self.modules_in_block_to_quantize is not None:
-            layers_to_keep = sum(self.modules_in_block_to_quantize, [])
-            for name in list(layers_to_be_replaced.keys()):
-                if not any(name.endswith(layer) for layer in layers_to_keep):
-                    logger.info(
-                        f"Quantization disabled for {name} (only modules_in_block_to_quantize={self.modules_in_block_to_quantize} are quantized)"
-                    )
-                    del layers_to_be_replaced[name]
-        self._replace_by_quant_layers(model, layers_to_be_replaced)
+        self._replace_by_quant_layers(model, layer_configs, backend)
         return model
 
-    def _replace_by_quant_layers(self, module: nn.Module, names: List[str], name: str = ""):
+    def _replace_by_quant_layers(self, module: nn.Module, layer_configs, backend):
         """Replaces linear layers in `module` by `QuantLinear`
 
         Args:
@@ -338,52 +319,52 @@ class AutoRoundQuantizer(HfQuantizer):
             name (`str`, defaults to `""`):
                 To keep track of the name of the current module
         """
-        self.bits = 4  ##TODO CHANGE
-        self.group_size = 128  ##TODO change
-        self.use_cuda_fp16 = True
-        self.disable_exllama = True
-        QuantLinear = dynamically_import_QuantLinear(
-            use_triton=False,
-            desc_act=False,
-            group_size=self.group_size,
-            bits=self.bits,
-            disable_exllama=True,
-            disable_exllamav2=False,
-        )
-        if isinstance(module, QuantLinear):
-            return
-        for attr in dir(module):
-            layer = getattr(module, attr)
-            name1 = name + "." + attr if name != "" else attr
-            if name1 in names:
-                device = get_device(layer)
-                delattr(module, attr)
-                if isinstance(layer, nn.Linear):
-                    in_features = layer.in_features
-                    out_features = layer.out_features
-                elif isinstance(layer, nn.Conv2d):
-                    in_features = layer.in_channels
-                    out_features = layer.out_channels
-                elif isinstance(layer, Conv1D):
-                    in_features = layer.weight.shape[0]
-                    out_features = layer.weight.shape[1]
-                # bias = layer.bias is not None and torch.any(layer.bias)
-                bias = True  ## autogptq always set bias to True
+        for layer_name in layer_configs.keys():
+            config = layer_configs[layer_name]
+            bits = config["bits"]
+            group_size = config["group_size"]
+            data_type = config["data_type"]
+            if not (bits <= 8 and data_type == "int"):
+                continue
+            from .export_to_autoround import get_autogptq_backend_config
+            use_triton, disable_exllama, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
+                backend,
+                bits)
+            QuantLinear = dynamically_import_QuantLinear(
+                use_triton=False,
+                desc_act=False,
+                group_size=group_size,
+                bits=bits,
+                disable_exllama=True,
+                disable_exllamav2=False,
+                use_qigen=use_qigen,
+                disable_marlin=disable_marlin
 
-                new_layer = QuantLinear(
-                    self.bits,
-                    self.group_size,
-                    in_features,
-                    out_features,
-                    bias,
-                    use_cuda_fp16=self.use_cuda_fp16,
-                    weight_dtype=layer.weight.dtype,
-                )
+            )
+            layer = get_module(module, layer_name)
+            device = get_device(layer)
+            if isinstance(layer, nn.Linear):
+                in_features = layer.in_features
+                out_features = layer.out_features
+            elif isinstance(layer, nn.Conv2d):  ##not supported now
+                in_features = layer.in_channels
+                out_features = layer.out_channels
+            elif isinstance(layer, Conv1D):  ##TODO need to have a check
+                in_features = layer.weight.shape[0]
+                out_features = layer.weight.shape[1]
+            bias = layer.bias is not None
+            new_layer = QuantLinear(
+                bits,
+                group_size,
+                in_features,
+                out_features,
+                bias,
+                use_cuda_fp16=True,
+                weight_dtype=layer.weight.dtype,
+            )
 
-                new_layer.device = device
-                setattr(module, attr, new_layer.to(device))
-        for name1, child in module.named_children():
-            self._replace_by_quant_layers(child, names, name + "." + name1 if name != "" else name1)
+            new_layer.device = device
+            set_module(module, layer_name, new_layer)
 
     def post_init_model(self, model):
         """Post-initialization that require device information, for example buffers initialization on device.
@@ -392,14 +373,14 @@ class AutoRoundQuantizer(HfQuantizer):
             model (`nn.Module`):
                 The input model
         """
-        if self.bits == 4 and not self.disable_exllama:
-            if get_device(model) == torch.device("cpu") or (
-                    hasattr(model, "hf_device_map") and any(d in model.hf_device_map for d in ["cpu", "disk"])
-            ):
-                raise ValueError(
-                    "Found modules on cpu/disk. Using Exllama or Exllamav2 backend requires all the modules to be on GPU."
-                    "You can deactivate exllama backend by setting `disable_exllama=True` in the quantization config object"
-                )
+        # if self.bits == 4 and not self.disable_exllama:
+        #     if get_device(model) == torch.device("cpu") or (
+        #             hasattr(model, "hf_device_map") and any(d in model.hf_device_map for d in ["cpu", "disk"])
+        #     ):
+        #         raise ValueError(
+        #             "Found modules on cpu/disk. Using Exllama or Exllamav2 backend requires all the modules to be on GPU."
+        #             "You can deactivate exllama backend by setting `disable_exllama=True` in the quantization config object"
+        #         )
 
         class StoreAttr(object):
             pass
@@ -407,12 +388,6 @@ class AutoRoundQuantizer(HfQuantizer):
         model.quantize_config = StoreAttr()
         model.quantize_config.desc_act = False
         model = autogptq_post_init(model, use_act_order=False)
-        # if (
-        #         False
-        #         and (not self.disable_exllama and self.exllama_version == ExllamaVersion.ONE)
-        #         and self.max_input_length is not None
-        # ):
-        #     model = exllama_set_max_input_length(model, self.max_input_length)
         return model
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
@@ -426,11 +401,12 @@ class AutoRoundQuantizer(HfQuantizer):
         if self.pre_quantized:
             model = self.post_init_model(model)
         else:
-            if self.quantization_config.tokenizer is None:
-                self.quantization_config.tokenizer = model.name_or_path
-
-            self.optimum_quantizer.quantize_model(model, self.quantization_config.tokenizer)
-            model.config.quantization_config = GPTQConfig.from_dict(self.optimum_quantizer.to_dict())
+            raise NotImplementedError
+            # if self.quantization_config.tokenizer is None:
+            #     self.quantization_config.tokenizer = model.name_or_path
+            #
+            # self.optimum_quantizer.quantize_model(model, self.quantization_config.tokenizer)
+            # model.config.quantization_config = GPTQConfig.from_dict(self.optimum_quantizer.to_dict())
 
     @property
     def is_trainable(self, model: Optional["PreTrainedModel"] = None):

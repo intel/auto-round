@@ -1,5 +1,5 @@
 import transformers
-from .autogptq_backend import AutoHfQuantizer
+from .autoround_quantizer import AutoHfQuantizer
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.quantizers.auto.AutoQuantizationConfig = AutoHfQuantizer
