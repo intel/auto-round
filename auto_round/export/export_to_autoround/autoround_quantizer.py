@@ -140,9 +140,9 @@ class AutoHfQuantizer:
 
     @classmethod
     def merge_quantization_configs(
-            cls,
-            quantization_config: Union[dict, QuantizationConfigMixin],
-            quantization_config_from_args: Optional[QuantizationConfigMixin],
+        cls,
+        quantization_config: Union[dict, QuantizationConfigMixin],
+        quantization_config_from_args: Optional[QuantizationConfigMixin],
     ):
         """Handles situations where both quantization_config from args and quantization_config from model config are present."""
         if quantization_config_from_args is not None:
@@ -161,8 +161,10 @@ class AutoHfQuantizer:
             loading_attr_dict = quantization_config_from_args.get_loading_attributes()
             for attr, val in loading_attr_dict.items():
                 setattr(quantization_config, attr, val)
-            warning_msg += (f"However, loading attributes (e.g. {list(loading_attr_dict.keys())}) "
-                            f"will be overwritten with the one you passed to `from_pretrained`. The rest will be ignored.")
+            warning_msg += (
+                f"However, loading attributes (e.g. {list(loading_attr_dict.keys())}) "
+                f"will be overwritten with the one you passed to `from_pretrained`. The rest will be ignored."
+            )
 
         if warning_msg != "":
             warnings.warn(warning_msg)
@@ -187,22 +189,22 @@ class AutoRoundConfig(QuantizationConfigMixin):
     """
 
     def __init__(
-            self,
-            bits: int,
-            tokenizer: Any = None,
-            dataset: str = None,
-            group_size: int = 128,
-            sym: bool = False,
-            backend="gptq:exllamav2",
-            iters: int = 200,
-            weight_config: dict = None,
-            enable_quanted_input=True,
-            enable_minmax_tuning=True,
-            lr=None,
-            minmax_lr=None,
-            n_samples=512,
-            seqlen=2048,
-            **kwargs,
+        self,
+        bits: int,
+        tokenizer: Any = None,
+        dataset: str = None,
+        group_size: int = 128,
+        sym: bool = False,
+        backend="gptq:exllamav2",
+        iters: int = 200,
+        weight_config: dict = None,
+        enable_quanted_input=True,
+        enable_minmax_tuning=True,
+        lr=None,
+        minmax_lr=None,
+        n_samples=512,
+        seqlen=2048,
+        **kwargs,
     ):
         self.bits = bits
         self.tokenizer = tokenizer

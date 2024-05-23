@@ -141,12 +141,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
         bias = layer.bias is not None and torch.any(layer.bias)
 
         new_layer = QuantLinear(
-            bits,
-            group_size,
-            in_features,
-            out_features,
-            bias,
-            weight_dtype=layer.weight.dtype##pylint: disable=E1123
+            bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype  ##pylint: disable=E1123
         )
 
         new_layer.device = device
