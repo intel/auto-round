@@ -155,7 +155,7 @@ def save_quantized(
     save_dir,
     quant_config,
     safetensors=True,
-    shard_size="5GB",
+    shard_size="10GB",
 ):
     save_dir = save_dir[:-1] if save_dir[-1] == "/" else save_dir
 
