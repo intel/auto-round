@@ -1051,8 +1051,8 @@ class AutoRound(object):
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
         gradient_accumulate_steps = self.gradient_accumulate_steps
-        gradient_accumulate_steps = self.train_bs ##Force to low gpu
-        train_bs = 1 ##Force to low gpu
+        gradient_accumulate_steps = self.train_bs  ##Force to low gpu
+        train_bs = 1  ##Force to low gpu
         pick_samples = train_bs
         if self.sampler != "rand":
             indices = torch.randperm(n_samples)[:pick_samples]
