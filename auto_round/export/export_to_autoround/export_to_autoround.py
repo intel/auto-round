@@ -22,8 +22,6 @@ import transformers
 
 from auto_round.export.register import register_format
 from auto_round.utils import get_block_names, get_module, set_module, logger
-
-
 def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transformers.modeling_utils.Conv1D]):
     """Retrieves the names of layers within each block of the model.
 
@@ -105,7 +103,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
     weight_config = kwargs["weight_config"]
     for name in weight_config.keys():
 
-        config = kwargs['weight_config'][name]
+        config = kwargs["weight_config"][name]
         if config["data_type"] != "int" and config["bits"] >= 16:
             continue
         logger.info(f"packing {name}")
@@ -172,9 +170,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
             extra_config[layer_name]["group_size"] = weight_config[layer_name]["group_size"]
             extra_config[layer_name]["sym"] = weight_config[layer_name]["sym"]
         else:
-            neq_keys = check_neq_config(weight_config[layer_name], data_type=quantization_config['data_type'],
-                                        bits=quantization_config['bits'], group_size=quantization_config['group_size'],
-                                        sym=quantization_config['sym'])
+            neq_keys = check_neq_config(
+                weight_config[layer_name],
+                data_type=quantization_config["data_type"],
+                bits=quantization_config["bits"],
+                group_size=quantization_config["group_size"],
+                sym=quantization_config["sym"],
+            )
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
             for key in neq_keys:

@@ -373,6 +373,7 @@ class AutoRoundQuantizer(HfQuantizer):
             model (`nn.Module`):
                 The input model
         """
+
         # if self.bits == 4 and not self.disable_exllama:
         #     if get_device(model) == torch.device("cpu") or (
         #             hasattr(model, "hf_device_map") and any(d in model.hf_device_map for d in ["cpu", "disk"])
