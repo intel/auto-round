@@ -138,9 +138,9 @@ class AutoHfQuantizer:
 
     @classmethod
     def merge_quantization_configs(
-            cls,
-            quantization_config: Union[dict, QuantizationConfigMixin],
-            quantization_config_from_args: Optional[QuantizationConfigMixin],
+        cls,
+        quantization_config: Union[dict, QuantizationConfigMixin],
+        quantization_config_from_args: Optional[QuantizationConfigMixin],
     ):
         """Handles situations where both quantization_config from args and quantization_config from model config are present."""
         if quantization_config_from_args is not None:
@@ -184,22 +184,22 @@ class AutoRoundConfig(QuantizationConfigMixin):
     """
 
     def __init__(
-            self,
-            bits: int,
-            tokenizer: Any = None,
-            dataset: str = None,
-            group_size: int = 128,
-            sym: bool = False,
-            backend="gptq:exllamav2",
-            iters: int = 200,
-            weight_config: dict = None,
-            enable_quanted_input=True,
-            enable_minmax_tuning=True,
-            lr=None,
-            minmax_lr=None,
-            n_samples=512,
-            seqlen=2048,
-            **kwargs,
+        self,
+        bits: int,
+        tokenizer: Any = None,
+        dataset: str = None,
+        group_size: int = 128,
+        sym: bool = False,
+        backend="gptq:exllamav2",
+        iters: int = 200,
+        weight_config: dict = None,
+        enable_quanted_input=True,
+        enable_minmax_tuning=True,
+        lr=None,
+        minmax_lr=None,
+        n_samples=512,
+        seqlen=2048,
+        **kwargs,
     ):
         self.bits = bits
         self.tokenizer = tokenizer
@@ -279,6 +279,7 @@ class AutoRoundQuantizer(HfQuantizer):
                 Model to be converted
         """
         from .export_to_autoround import get_layer_names_in_block
+
         layer_names = get_layer_names_in_block(model)
         quantization_config = model.config.quantization_config
         bits = quantization_config.bits
@@ -327,9 +328,10 @@ class AutoRoundQuantizer(HfQuantizer):
             if not (bits <= 8 and data_type == "int"):
                 continue
             from .export_to_autoround import get_autogptq_backend_config
+
             use_triton, disable_exllama, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
-                backend,
-                bits)
+                backend, bits
+            )
             QuantLinear = dynamically_import_QuantLinear(
                 use_triton=False,
                 desc_act=False,
@@ -338,8 +340,7 @@ class AutoRoundQuantizer(HfQuantizer):
                 disable_exllama=True,
                 disable_exllamav2=False,
                 use_qigen=use_qigen,
-                disable_marlin=disable_marlin
-
+                disable_marlin=disable_marlin,
             )
             layer = get_module(module, layer_name)
             device = get_device(layer)

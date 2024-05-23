@@ -16,12 +16,15 @@
 import copy
 import json
 import os
+
 import torch
 import torch.nn as nn
 import transformers
 
 from auto_round.export.register import register_format
-from auto_round.utils import get_block_names, get_module, set_module, logger
+from auto_round.utils import get_block_names, get_module, logger, set_module
+
+
 def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transformers.modeling_utils.Conv1D]):
     """Retrieves the names of layers within each block of the model.
 
@@ -57,7 +60,6 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     if sym != config["sym"]:
         res.append("sym")
     return res
-
 
 
 def get_autogptq_backend_config(backend, bits=4):
@@ -111,7 +113,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
         bits = config["bits"]
         group_size = config["group_size"]
         use_triton, disable_exllamav1, disable_exllamav2, disable_marlin, use_qigen = get_autogptq_backend_config(
-            backend, bits)
+            backend, bits
+        )
 
         layer = get_module(model, name)
         device = "cpu"
@@ -123,7 +126,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
             disable_exllama=disable_exllamav1,
             disable_exllamav2=disable_exllamav2,
             use_qigen=use_qigen,
-            disable_marlin=disable_marlin
+            disable_marlin=disable_marlin,
         )
 
         if isinstance(layer, nn.Linear):
