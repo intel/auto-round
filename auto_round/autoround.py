@@ -485,11 +485,39 @@ class AutoRound(object):
         self.share_attention_mask_flag = None
         self.hidden_dim_flag = None
         torch.set_printoptions(precision=3, sci_mode=True)
+
+        self.check_configs()
+        serialization_keys = [
+            "bits",
+            "group_size",
+            "sym",
+            "data_type",
+            "enable_quanted_input",
+            "enable_minmax_tuning",
+            "data_type",
+            "seqlen",
+            "train_bs",
+            "scale_dtype",
+            "lr",
+            "minmax_lr",
+            "gradient_accumulate_steps",
+            "iters",
+            "amp",
+        ]
+        if isinstance(dataset, str):
+            serialization_keys.append("dataset")
+        self.serialization_dict = {}
+        for key in serialization_keys:
+            self.serialization_dict[key] = getattr(self, key)
+        from .version import __version__
+
+        self.serialization_dict["autoround_version"] = __version__
+        if "scale_dtype" in self.serialization_dict.keys():
+            self.serialization_dict["scale_dtype"] = str(self.serialization_dict["scale_dtype"])
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
-        self.check_configs()
 
     def check_configs(self):
         """Checks if the configurations are valid.
@@ -815,6 +843,7 @@ class AutoRound(object):
                 block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name
             )
             self.model = self.model.to("cpu")
+            torch.cuda.empty_cache()
         except:
             logger.info("switch to cpu to cache inputs")
             self.model = self.model.to("cpu")
@@ -1014,10 +1043,7 @@ class AutoRound(object):
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
         train_bs = self.train_bs
-        pick_samples = train_bs
         n_samples = len(inputs)
-        if self.sampler != "rand":
-            indices = torch.randperm(n_samples)[:pick_samples]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         mse_loss = torch.nn.MSELoss().to(device)
@@ -1025,6 +1051,11 @@ class AutoRound(object):
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
         gradient_accumulate_steps = self.gradient_accumulate_steps
+        gradient_accumulate_steps = self.train_bs  ##Force to low gpu
+        train_bs = 1  ##Force to low gpu
+        pick_samples = train_bs
+        if self.sampler != "rand":
+            indices = torch.randperm(n_samples)[:pick_samples]
         for i in range(self.iters):
             total_loss = 0
             for _ in range(gradient_accumulate_steps):
@@ -1320,7 +1351,7 @@ class AutoRound(object):
             logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
             exit()
         save_quantized_as_format = EXPORT_FORMAT.get(format)
-        compressed_model = save_quantized_as_format(
+        compressed_model = save_quantized_as_format(  ##TODO refine the code
             output_dir,
             model=self.model,
             weight_config=self.weight_config,
@@ -1336,6 +1367,8 @@ class AutoRound(object):
             scale_dtype=self.scale_dtype,
             tokenizer=self.tokenizer,
             supported_types=self.supported_types,
+            data_type=self.data_type,
+            serialization_dict=self.serialization_dict,
             **kwargs,
         )
         return compressed_model
