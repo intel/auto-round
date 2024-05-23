@@ -93,9 +93,9 @@ def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
 
-    from awq import AutoAWQForCausalLM # pylint: disable=E0401
-    from awq.modules.linear import WQLinear_GEMM # pylint: disable=E0401
-    from awq.utils.utils import clear_memory # pylint: disable=E0401
+    from awq import AutoAWQForCausalLM  # pylint: disable=E0401
+    from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
+    from awq.utils.utils import clear_memory  # pylint: disable=E0401
 
     q_linear_module = WQLinear_GEMM
     awq_model = AutoAWQForCausalLM.from_pretrained(model_path)
