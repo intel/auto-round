@@ -18,7 +18,6 @@ import json
 import os
 from os.path import isdir, isfile, join
 from typing import Dict, List, Optional, Union
-import torch.nn as nn
 
 # MIT License
 #
@@ -42,18 +41,18 @@ import torch.nn as nn
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
+import torch.nn as nn
 
 from auto_round.export.register import register_format
 from auto_round.utils import (
-    check_to_quantized, 
-    get_block_names, 
-    get_module, 
+    check_to_quantized,
+    get_block_names,
+    get_module,
     get_module_name,
     get_named_linears,
+    logger,
     set_op_by_name,
-    logger
 )
-
 
 
 @register_format("auto_awq")
@@ -102,14 +101,14 @@ def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
 
+    from awq import AutoAWQForCausalLM
     from awq.modules.linear import WQLinear_GEMM
     from awq.utils.utils import clear_memory
-    from awq import AutoAWQForCausalLM
 
     q_linear_module = WQLinear_GEMM
     awq_model = AutoAWQForCausalLM.from_pretrained(model_path)
     self_modules = awq_model.get_model_layers(compressed_model)
-    del awq_model # release memory
+    del awq_model  # release memory
     for i in range(len(self_modules)):
         module = self_modules[i]
         named_linears = get_named_linears(module)
@@ -119,7 +118,7 @@ def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
             if not check_to_quantized(info):
                 continue
             info["zp"] = info["zp"].to(torch.float32)
-            scale, zp = info['scale'], info['zp']
+            scale, zp = info["scale"], info["zp"]
             scale = scale.t().contiguous()
             zp = zp.t().contiguous()
             q_linear = q_linear_module.from_linear(
@@ -134,21 +133,23 @@ def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
             q_linear.to(next(module.parameters()).device)
             set_op_by_name(module, name, q_linear)
             clear_memory()
-            
+
     quant_config = {
-            "quant_method": 'awq',
-            "zero_point": not sym,
-            "group_size": group_size,
-            "bits": bits,
-            "version": 'gemm',
-            "modules_to_not_convert": None,
-        }
+        "quant_method": "awq",
+        "zero_point": not sym,
+        "group_size": group_size,
+        "bits": bits,
+        "version": "gemm",
+        "modules_to_not_convert": None,
+    }
 
     save_quantized(compressed_model, save_dir=output_dir, quant_config=quant_config)
 
 
-from transformers.modeling_utils import shard_checkpoint
 from safetensors.torch import save_file
+from transformers.modeling_utils import shard_checkpoint
+
+
 def save_quantized(
     model,
     save_dir,
@@ -184,17 +185,13 @@ def save_quantized(
     model_name = "model.safetensors" if safetensors else "pytorch_model.bin"
 
     # shard checkpoint into chunks (10GB default)
-    shards, index = shard_checkpoint(
-        model.state_dict(), max_shard_size=shard_size, weights_name=model_name
-    )
+    shards, index = shard_checkpoint(model.state_dict(), max_shard_size=shard_size, weights_name=model_name)
 
     for shard_file, shard in shards.items():
         if safetensors:
             # safetensors must be in the same memory, so we duplicate and use contiguous memory
             shard = {k: v.clone().contiguous() for k, v in shard.items()}
-            save_file(
-                shard, os.path.join(save_dir, shard_file), metadata={"format": "pt"}
-            )
+            save_file(shard, os.path.join(save_dir, shard_file), metadata={"format": "pt"})
         else:
             torch.save(shard, os.path.join(save_dir, shard_file))
 
@@ -206,23 +203,14 @@ def save_quantized(
     # save quantize_config
     with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
         json.dump(quant_config, f, indent=2)
-    
 
 
-
-
-
-
-
-
-
-def sizeof_fmt(num, suffix='B'):
-    for unit in ['', 'Ki', 'Mi', 'Gi', 'Ti', 'Pi', 'Ei', 'Zi']:
+def sizeof_fmt(num, suffix="B"):
+    for unit in ["", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"]:
         if abs(num) < 1024.0:
             return f"{num:3.1f}{unit}{suffix}"
         num /= 1024.0
     return f"{num:.1f}Yi{suffix}"
-
 
 
 def get_size(model):
