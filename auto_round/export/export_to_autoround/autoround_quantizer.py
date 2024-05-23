@@ -268,7 +268,7 @@ class AutoRoundQuantizer(HfQuantizer):
         if torch_dtype is None:
             torch_dtype = torch.float16
         elif torch_dtype != torch.float16:
-            logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with GPTQ.")
+            logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
         return torch_dtype
 
     def convert_model(self, model: nn.Module):
