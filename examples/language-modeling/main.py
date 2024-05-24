@@ -310,6 +310,8 @@ if __name__ == '__main__':
             autoround.save_quantized(f'{export_dir}-gpu', format="autoround", use_triton=True, inplace=inplace)
         else:
             autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=inplace)
+        if args.bits == 4:
+            autoround.save_quantized(f'{export_dir}-awq', format="auto_awq", inplace=inplace, model_path=args.model_name)
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
@@ -320,8 +322,6 @@ if __name__ == '__main__':
         model = model.to("cpu")
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
-    if args.bits == 4:
-        autoround.save_quantized(f'{export_dir}-awq', format="auto_awq", inplace=inplace, model_path=args.model_name)
 
     if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
         excel_name = f"{output_dir}_result.xlsx"

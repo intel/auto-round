@@ -70,7 +70,6 @@ class LazyImport(object):
 
 auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
-awq = LazyImport("autoawq")
 
 
 def is_optimum_habana_available():
