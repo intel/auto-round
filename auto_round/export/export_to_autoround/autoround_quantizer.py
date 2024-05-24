@@ -177,7 +177,7 @@ class AutoHfQuantizer:
 @dataclass
 class AutoRoundConfig(QuantizationConfigMixin):
     """This is a wrapper class about all possible attributes and features that you can play with a model that has been
-    loaded using `optimum` api for gptq quantization relying on auto_gptq backend.
+    loaded AutoRound quantization.
 
     Args:
         bits (`int`):
@@ -250,10 +250,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
 
 
 class AutoRoundQuantizer(HfQuantizer):
-    """
-    Quantizer of the GPTQ method - for GPTQ the quantizer support calibration of the model through
-    `auto_gptq` package. Quantization is done under the hood for users if they load a non-prequantized model.
-    """
+    """Quantizer of the Autoround method, currently only gptq backend has been supported."""
 
     requires_calibration = False
     required_packages = ["auto_gptq"]

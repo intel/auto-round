@@ -503,6 +503,7 @@ class AutoRound(object):
             "gradient_accumulate_steps",
             "iters",
             "amp",
+            "low_gpu_mem_usage",
         ]
         if isinstance(dataset, str):
             serialization_keys.append("dataset")
@@ -665,7 +666,8 @@ class AutoRound(object):
             self.quant_layer(layer_name, layer_inputs[layer_name], q_layer_input, device=self.device)
             for i in range(len(layer_inputs)):
                 layer_input[i] = None
-                q_layer_input[i] = None
+                if q_layer_input is not None:
+                    q_layer_input[i] = None
             torch.cuda.empty_cache()
 
     def set_layerwise_config(self, weight_config):
@@ -1035,14 +1037,13 @@ class AutoRound(object):
             )
         else:
             optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
                 optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
-
-        train_bs = self.train_bs
         n_samples = len(inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
@@ -1050,25 +1051,26 @@ class AutoRound(object):
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
-        gradient_accumulate_steps = self.gradient_accumulate_steps
         gradient_accumulate_steps = self.train_bs  ##Force to low gpu
         train_bs = 1  ##Force to low gpu
-        pick_samples = train_bs
+        pick_samples = train_bs * gradient_accumulate_steps
+
         if self.sampler != "rand":
-            indices = torch.randperm(n_samples)[:pick_samples]
+            whole_indices = torch.randperm(n_samples)[:pick_samples]
         for i in range(self.iters):
             total_loss = 0
-            for _ in range(gradient_accumulate_steps):
+            if self.sampler == "rand":
+                whole_indices = torch.randperm(n_samples)[:pick_samples]
+            for tmp_step in range(gradient_accumulate_steps):
                 org_input = None
-                if self.sampler == "rand":
-                    indices = torch.randperm(n_samples)[:pick_samples]
+                indices = whole_indices[tmp_step * train_bs : (tmp_step + 1) * train_bs]
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
                     org_input = [inputs[i] for i in indices]
                     org_input = torch.cat(org_input, dim=0).to(device)
                 else:
-                    current_input = [q_inputs[i] for i in indices]
+                    current_input = [inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
                     org_input = current_input
                 with torch.no_grad():
@@ -1084,10 +1086,10 @@ class AutoRound(object):
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
                 total_loss += loss.item() / gradient_accumulate_steps
-                if i == 0:
-                    init_loss = total_loss
 
                 self.scale_loss_and_backward(scaler, loss)
+            if i == 0:
+                init_loss = total_loss
 
             if total_loss < best_loss:
                 best_loss = total_loss
@@ -1136,9 +1138,8 @@ class AutoRound(object):
         if q_input is not None:
             for i in range(len(input_ids)):
                 input_ids[i] = None
-            torch.cuda.empty_cache()
             input_ids = q_input
-
+        torch.cuda.empty_cache()
         quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
 
         round_params = []
@@ -1163,10 +1164,10 @@ class AutoRound(object):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        pick_samples = self.train_bs
+        pick_samples = self.train_bs * self.gradient_accumulate_steps
         n_samples = len(input_ids)
         if self.sampler != "rand":
-            indices = torch.randperm(n_samples)[:pick_samples]
+            whole_indices = torch.randperm(n_samples)[:pick_samples]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         mse_loss = torch.nn.MSELoss().to(device)
@@ -1175,9 +1176,10 @@ class AutoRound(object):
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
         for i in range(self.iters):
             total_loss = 0
-            for _ in range(self.gradient_accumulate_steps):
-                if self.sampler == "rand":
-                    indices = torch.randperm(n_samples)[:pick_samples]
+            if self.sampler == "rand":
+                whole_indices = torch.randperm(n_samples)[:pick_samples]
+            for tmp_step in range(self.gradient_accumulate_steps):
+                indices = whole_indices[tmp_step * self.train_bs : (tmp_step + 1) * self.train_bs]
                 current_input_ids, current_input_others = sampling_inputs(
                     input_ids,
                     input_others,
@@ -1204,10 +1206,9 @@ class AutoRound(object):
                     )
 
                 total_loss += loss.item() / self.gradient_accumulate_steps
-                if i == 0:
-                    init_loss = total_loss
-
                 self.scale_loss_and_backward(scaler, loss)
+            if i == 0:
+                init_loss = total_loss
 
             if total_loss < best_loss:
                 best_loss = total_loss
@@ -1448,9 +1449,9 @@ class AutoRound(object):
         Returns:
         The specified optimizer.
         """
-        from auto_round.sign_sgd import SGD
+        from auto_round.sign_sgd import SignSGD
 
-        return SGD
+        return SignSGD
 
     def get_scaler(self):
         """Returns scaler, in SignRound, no need to use scaler."""
