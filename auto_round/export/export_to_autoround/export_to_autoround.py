@@ -142,7 +142,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
 
         new_layer = QuantLinear(  # pylint: disable=E1123
             bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
-        ) 
+        )
 
         new_layer.device = device
         set_module(model, name, new_layer)

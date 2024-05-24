@@ -361,14 +361,14 @@ class AutoRoundQuantizer(HfQuantizer):
                 in_features = layer.weight.shape[0]
                 out_features = layer.weight.shape[1]
             bias = layer.bias is not None
-            new_layer = QuantLinear( # pylint: disable=E1123
+            new_layer = QuantLinear(  # pylint: disable=E1123
                 bits,
                 group_size,
                 in_features,
                 out_features,
                 bias,
-                weight_dtype=layer.weight.dtype,  
-            ) 
+                weight_dtype=layer.weight.dtype,
+            )
 
             new_layer.device = device
             set_module(module, layer_name, new_layer)
