@@ -1150,7 +1150,6 @@ class AutoRound(object):
                 minmax_params.append(m.min_scale)
                 minmax_params.append(m.max_scale)
 
-
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
