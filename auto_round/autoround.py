@@ -1352,7 +1352,7 @@ class AutoRound(object):
             exit()
         if format == "auto_awq":
             try:
-                import awq # pylint: disable=E0401
+                import awq  # pylint: disable=E0401
             except:
                 logger.error("autoawq is required. Please install it to support auto_awq format.")
                 return
