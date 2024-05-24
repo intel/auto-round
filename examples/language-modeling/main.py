@@ -320,7 +320,8 @@ if __name__ == '__main__':
         model = model.to("cpu")
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
-    autoround.save_quantized(f'{export_dir}-awq', format="auto_awq", inplace=inplace, model_path=args.model_name)
+    if args.bits == 4:
+        autoround.save_quantized(f'{export_dir}-awq', format="auto_awq", inplace=inplace, model_path=args.model_name)
 
     if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
         excel_name = f"{output_dir}_result.xlsx"
