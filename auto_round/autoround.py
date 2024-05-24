@@ -1355,7 +1355,7 @@ class AutoRound(object):
                 import awq
             except:
                 logger.error("autoawq is required. Please install it to support auto_awq format.")
-                return 
+                return
         save_quantized_as_format = EXPORT_FORMAT.get(format)
         compressed_model = save_quantized_as_format(  ##TODO refine the code
             output_dir,
