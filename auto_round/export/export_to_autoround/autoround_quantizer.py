@@ -250,9 +250,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
 
 
 class AutoRoundQuantizer(HfQuantizer):
-    """
-    Quantizer of the Autoround method, currently only gptq backend has been supported
-    """
+    """Quantizer of the Autoround method, currently only gptq backend has been supported."""
 
     requires_calibration = False
     required_packages = ["auto_gptq"]
