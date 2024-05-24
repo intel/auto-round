@@ -206,6 +206,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
         minmax_lr=None,
         n_samples=512,
         seqlen=2048,
+
         **kwargs,
     ):
         self.bits = bits
