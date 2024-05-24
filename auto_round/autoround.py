@@ -69,22 +69,25 @@ class WrapperLinear(torch.nn.Module):
         self.group_size = self.orig_layer.group_size
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
+        weight_dtype = self.orig_layer.weight.dtype
+        weight_dtype = torch.float32  ##TODO revert the change to check the accuracy
         self.value = torch.nn.Parameter(
-            torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device), requires_grad=True
+            torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
+            requires_grad=True,
         )
         self.enable_minmax_tuning = enable_minmax_tuning
         shape = get_scale_shape(self.orig_layer.weight, self.group_size)
-
+        weight_dtype = self.orig_layer.weight.dtype
         if self.enable_minmax_tuning:
             self.min_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=self.orig_layer.weight.device), requires_grad=True
+                torch.zeros(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
             )
             self.max_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=self.orig_layer.weight.device), requires_grad=True
+                torch.zeros(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
             )
         else:
-            self.min_scale = torch.tensor(0, device=self.orig_layer.weight.device)
-            self.max_scale = torch.tensor(0, device=self.orig_layer.weight.device)
+            self.min_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
+            self.max_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
 
     def unwrapper(self, v, min_scale, max_scale):
         """Unwrapper the layer to the original layer.
@@ -174,17 +177,26 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.group_size = self.orig_layer.group_size
         self.sym = self.orig_layer.sym
         self.scale_dtype = self.orig_layer.scale_dtype
+        weight_dtype = self.orig_layer.weight.dtype
+        weight_dtype = torch.float32  ##TODO revert the change to check the accuracy
+
         device = self.orig_layer.weight.device
         self.weight_t = self.orig_layer.weight.t()
-        self.value = torch.nn.Parameter(torch.zeros(self.weight_t.shape, device=device), requires_grad=True)
+        self.value = torch.nn.Parameter(
+            torch.zeros(self.weight_t.shape, device=device, dtype=weight_dtype), requires_grad=True
+        )
         shape = get_scale_shape(self.weight_t, self.group_size)
 
         if enable_minmax_tuning:
-            self.min_scale = torch.nn.Parameter(torch.zeros(shape, device=device), requires_grad=True)
-            self.max_scale = torch.nn.Parameter(torch.zeros(shape, device=device), requires_grad=True)
+            self.min_scale = torch.nn.Parameter(
+                torch.zeros(shape, device=device, dtype=weight_dtype), requires_grad=True
+            )
+            self.max_scale = torch.nn.Parameter(
+                torch.zeros(shape, device=device, dtype=weight_dtype), requires_grad=True
+            )
         else:
-            self.min_scale = torch.tensor(0, device=device)
-            self.max_scale = torch.tensor(0, device=device)
+            self.min_scale = torch.tensor(0, device=device, dtype=weight_dtype)
+            self.max_scale = torch.tensor(0, device=device, dtype=weight_dtype)
 
     def unwrapper(self, v=0, min_scale=0, max_scale=0):
         """Unwrapper the layer to the original conv1d layer.
@@ -473,11 +485,39 @@ class AutoRound(object):
         self.share_attention_mask_flag = None
         self.hidden_dim_flag = None
         torch.set_printoptions(precision=3, sci_mode=True)
+
+        self.check_configs()
+        serialization_keys = [
+            "bits",
+            "group_size",
+            "sym",
+            "data_type",
+            "enable_quanted_input",
+            "enable_minmax_tuning",
+            "data_type",
+            "seqlen",
+            "train_bs",
+            "scale_dtype",
+            "lr",
+            "minmax_lr",
+            "gradient_accumulate_steps",
+            "iters",
+            "amp",
+        ]
+        if isinstance(dataset, str):
+            serialization_keys.append("dataset")
+        self.serialization_dict = {}
+        for key in serialization_keys:
+            self.serialization_dict[key] = getattr(self, key)
+        from .version import __version__
+
+        self.serialization_dict["autoround_version"] = __version__
+        if "scale_dtype" in self.serialization_dict.keys():
+            self.serialization_dict["scale_dtype"] = str(self.serialization_dict["scale_dtype"])
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
-        self.check_configs()
 
     def check_configs(self):
         """Checks if the configurations are valid.
@@ -563,7 +603,7 @@ class AutoRound(object):
         logger.info(summary_info)
 
         self.quantized = True
-        self.model = self.model.to(self.model_orig_dtype)
+        ##self.model = self.model.to(self.model_orig_dtype)##keep it as amp dtype
         return self.model, self.weight_config
 
     def dump_data_to_weight_config(self):
@@ -803,6 +843,7 @@ class AutoRound(object):
                 block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name
             )
             self.model = self.model.to("cpu")
+            torch.cuda.empty_cache()
         except:
             logger.info("switch to cpu to cache inputs")
             self.model = self.model.to("cpu")
@@ -842,9 +883,6 @@ class AutoRound(object):
         if last_cache_name is None and len(block_names) + len(layer_names) == 1:
             self.last_cache_name = block_names[0] if len(block_names) == 1 else layer_names[0]
         calib_bs = self.train_bs
-        if not self.low_gpu_mem_usage and len(layer_names) > 1:  ## persume has lm-head
-            calib_bs = 1
-
         self.hook_handles = []
         self._replace_forward()
         self.calib(n_samples, calib_bs)
@@ -1005,17 +1043,19 @@ class AutoRound(object):
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
         train_bs = self.train_bs
-        pick_samples = train_bs
         n_samples = len(inputs)
-        if self.sampler != "rand":
-            indices = torch.randperm(n_samples)[:pick_samples]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         mse_loss = torch.nn.MSELoss().to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
-        gradient_accumulate_steps = self.train_bs // train_bs
+        gradient_accumulate_steps = self.gradient_accumulate_steps
+        gradient_accumulate_steps = self.train_bs  ##Force to low gpu
+        train_bs = 1  ##Force to low gpu
+        pick_samples = train_bs
+        if self.sampler != "rand":
+            indices = torch.randperm(n_samples)[:pick_samples]
         for i in range(self.iters):
             total_loss = 0
             for _ in range(gradient_accumulate_steps):
@@ -1311,7 +1351,7 @@ class AutoRound(object):
             logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
             exit()
         save_quantized_as_format = EXPORT_FORMAT.get(format)
-        compressed_model = save_quantized_as_format(
+        compressed_model = save_quantized_as_format(  ##TODO refine the code
             output_dir,
             model=self.model,
             weight_config=self.weight_config,
@@ -1327,6 +1367,8 @@ class AutoRound(object):
             scale_dtype=self.scale_dtype,
             tokenizer=self.tokenizer,
             supported_types=self.supported_types,
+            data_type=self.data_type,
+            serialization_dict=self.serialization_dict,
             **kwargs,
         )
         return compressed_model
