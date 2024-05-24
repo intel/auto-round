@@ -291,7 +291,7 @@ def wrapper_block(block, enable_minmax_tuning):
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
-        if isinstance(m, transformers.modeling_utils.Conv1D):
+        if isinstance(m, transformers.pytorch_utils.Conv1D):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
@@ -450,7 +450,7 @@ class AutoRound(object):
         self.sym = sym
         self.low_gpu_mem_usage = low_gpu_mem_usage
         self.data_type = data_type
-        self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
+        self.supported_types = [torch.nn.Linear, transformers.pytorch_utils.Conv1D]
         self.weight_config = weight_config
         self.seed = seed
         self.tokenizer = tokenizer
