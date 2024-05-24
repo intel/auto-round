@@ -1063,7 +1063,7 @@ class AutoRound(object):
                 whole_indices = torch.randperm(n_samples)[:pick_samples]
             for tmp_step in range(gradient_accumulate_steps):
                 org_input = None
-                indices = whole_indices[tmp_step * train_bs:(tmp_step + 1) * train_bs]
+                indices = whole_indices[tmp_step * train_bs : (tmp_step + 1) * train_bs]
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
