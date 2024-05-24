@@ -25,6 +25,8 @@ image presents an overview of AutoRound.
 <div align="left">
 
 ## What's New
+* [2024/05] Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
+* [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
 * [2024/05] AutoRound performs well in [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)
 
 ## Prerequisites
@@ -203,7 +205,7 @@ If you find SignRound useful for your research, please cite our paper:
 ```bash
 @article{cheng2023optimize,
   title={Optimize Weight Rounding via Signed Gradient Descent for the Quantization of LLMs},
-  author={Cheng, Wenhua and Zhang, Weiwei and Shen, Haihao and Cai, Yiyang and He, Xin and Lv, Kaokao},
+  author={Cheng, Wenhua and Zhang, Weiwei and Shen, Haihao and Cai, Yiyang and He, Xin and Lv, Kaokao and Liu, Yi},
   journal={arXiv preprint arXiv:2309.05516},
   year={2023}
 }
