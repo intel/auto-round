@@ -1048,17 +1048,13 @@ class AutoRound(object):
         gradient_accumulate_steps = self.train_bs  ##Force to low gpu
         train_bs = 1  ##Force to low gpu
         pick_samples = train_bs
-        post_sign_gradient = False
-        optimizer_type = self.optimizer
-        if gradient_accumulate_steps != 1 and optimizer_type.__name__ == "SignSGD":
-            post_sign_gradient = True
-            optimizer_type = torch.optim.SGD
+
         if self.enable_minmax_tuning:
-            optimizer = optimizer_type(
+            optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
             )
         else:
-            optimizer = optimizer_type(round_params, lr=self.lr, weight_decay=0)
+            optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
 
         if self.sampler != "rand":
             indices = torch.randperm(n_samples)[:pick_samples]
@@ -1111,8 +1107,6 @@ class AutoRound(object):
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
                     break
-            if post_sign_gradient:
-                self.sign_grad(optimizer)
             self.step(scaler, optimizer, lr_schedule)
 
         last_loss = total_loss
@@ -1124,18 +1118,6 @@ class AutoRound(object):
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
-
-    def sign_grad(self, optimzier):
-        """Applies the sign function to the gradients of the parameters in the optimizer.
-
-        Args:
-            optimizer (torch.optim.Optimizer): The optimizer containing the parameters whose
-                gradients will be modified.
-        """
-        for group in optimzier.param_groups:
-            for p in group["params"]:
-                if p.grad is not None:
-                    p.grad = torch.sign(p.grad)
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
@@ -1168,18 +1150,13 @@ class AutoRound(object):
                 minmax_params.append(m.min_scale)
                 minmax_params.append(m.max_scale)
 
-        post_sign_gradient = False
-        optimizer_type = self.optimizer
-        if self.gradient_accumulate_steps != 1 and optimizer_type.__name__ == "SignSGD":
-            post_sign_gradient = True
-            optimizer_type = torch.optim.SGD
 
         if self.enable_minmax_tuning:
-            optimizer = optimizer_type(
+            optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
             )
         else:
-            optimizer = optimizer_type(round_params, lr=self.lr, weight_decay=0)
+            optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
@@ -1247,8 +1224,6 @@ class AutoRound(object):
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
                     break
-            if post_sign_gradient:
-                self.sign_grad(optimizer)
             self.step(scaler, optimizer, lr_schedule)
 
         last_loss = total_loss
