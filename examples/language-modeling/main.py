@@ -265,6 +265,8 @@ if __name__ == '__main__':
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
     lm_head_layer_name = "lm_head"
+    for n, _ in model.named_modules():
+        lm_head_layer_name = n
     if args.quant_lm_head:
         from transformers import AutoConfig
 
@@ -303,8 +305,11 @@ if __name__ == '__main__':
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
     deployment_device = args.deployment_device.split(',')
     inplace = True if len(deployment_device) < 2 else False
-    if 'gpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=inplace)
+    if 'gpu' in deployment_device :
+        if lm_head_layer_name in weight_config.keys():
+            autoround.save_quantized(f'{export_dir}-gpu', format="autoround", use_triton=True, inplace=inplace)
+        else:
+            autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=inplace)
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
