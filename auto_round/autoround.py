@@ -665,7 +665,8 @@ class AutoRound(object):
             self.quant_layer(layer_name, layer_inputs[layer_name], q_layer_input, device=self.device)
             for i in range(len(layer_inputs)):
                 layer_input[i] = None
-                q_layer_input[i] = None
+                if q_layer_input is not None:
+                    q_layer_input[i] = None
             torch.cuda.empty_cache()
 
     def set_layerwise_config(self, weight_config):
@@ -1041,8 +1042,6 @@ class AutoRound(object):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
-
-        train_bs = self.train_bs
         n_samples = len(inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
@@ -1050,7 +1049,6 @@ class AutoRound(object):
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
-        gradient_accumulate_steps = self.gradient_accumulate_steps
         gradient_accumulate_steps = self.train_bs  ##Force to low gpu
         train_bs = 1  ##Force to low gpu
         pick_samples = train_bs
@@ -1068,7 +1066,7 @@ class AutoRound(object):
                     org_input = [inputs[i] for i in indices]
                     org_input = torch.cat(org_input, dim=0).to(device)
                 else:
-                    current_input = [q_inputs[i] for i in indices]
+                    current_input = [inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
                     org_input = current_input
                 with torch.no_grad():
@@ -1136,9 +1134,8 @@ class AutoRound(object):
         if q_input is not None:
             for i in range(len(input_ids)):
                 input_ids[i] = None
-            torch.cuda.empty_cache()
             input_ids = q_input
-
+        torch.cuda.empty_cache()
         quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
 
         round_params = []
