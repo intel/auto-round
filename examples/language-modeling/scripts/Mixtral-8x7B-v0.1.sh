@@ -6,4 +6,4 @@ python3 main.py \
 --iters 1000 \
 --deployment_device 'gpu' \
 --output_dir "./tmp_autoround" \
---disable_quanted_input \
+--disable_quanted_input
