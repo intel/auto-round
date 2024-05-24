@@ -5,4 +5,4 @@ python3 main.py \
 --bits 4 \
 --iters 1000 \
 --deployment_device 'gpu' \
---minmax_lr 2e-3 \
+--minmax_lr 2e-3

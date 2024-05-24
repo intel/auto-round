@@ -6,8 +6,8 @@ Please note that there is a discrepancy between the baseline result and the offi
 lm_eval --model hf --model_args pretrained="Intel/gemma-7b-it-int4-inc",autogptq=True,gptq_use_triton=True --device cuda:0 --tasks lambada_openai,hellaswag,piqa,winogrande,truthfulqa_mc1,openbookqa,boolq,rte,arc_easy,arc_challenge,mmlu --batch_size 32
 ```
 
-| Metric         | FP16   | int4   |
-| -------------- | ------ | ------ |
+| Metric         | BF16   | int4   |
+| -------------- |--------| ------ |
 | Avg.           | 0.6022 | 0.6017 |
 | mmlu           | 0.5029 | 0.4993 |
 | lambada_openai | 0.6035 | 0.6286 |

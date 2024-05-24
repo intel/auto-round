@@ -11,8 +11,8 @@ Please note that there is a discrepancy between the baseline result and the offi
 lm_eval --model hf --model_args pretrained="Intel/gemma-2b-int4-inc",autogptq=True,gptq_use_triton=True --device cuda:0 --tasks lambada_openai,hellaswag,piqa,winogrande,truthfulqa_mc1,openbookqa,boolq,rte,arc_easy,arc_challenge,mmlu --batch_size 16
 ```
 
-| Metric         | FP16   | INT4   |
-| -------------- | ------ |--------|
+| Metric         | BF16   | INT4   |
+| -------------- |--------|--------|
 | Avg.           | 0.5383 | 0.5338 |
 | mmlu           | 0.3337 | 0.3276 |
 | lambada_openai | 0.6398 | 0.6319 |
