@@ -27,4 +27,3 @@ lm_eval --model hf --model_args pretrained="Intel/gemma-2b-int4-inc",autogptq=Tr
 | boolq           | 0.6927 | 0.6936 | 0.6939         | 0.6966         |
 | arc_easy        | 0.7420 | 0.7403 | 0.7353         | 0.7357         |
 | arc_challenge   | 0.4019 | 0.4061 | 0.3933         | 0.3857         |
-
