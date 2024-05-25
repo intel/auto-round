@@ -286,6 +286,12 @@ if __name__ == '__main__':
     if args.quant_lm_head and not args.disable_low_gpu_mem_usage:
         print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
               f"gpu")
+    deployment_device = args.deployment_device.split(',')
+    gpu_format = "auto_gptq"
+    if 'gpu' in deployment_device:
+        if lm_head_layer_name in weight_config.keys():
+            gpu_format = "autoround"
+
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
@@ -303,13 +309,10 @@ if __name__ == '__main__':
 
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
-    deployment_device = args.deployment_device.split(',')
+
     inplace = True if len(deployment_device) < 2 else False
-    if 'gpu' in deployment_device :
-        if lm_head_layer_name in weight_config.keys():
-            autoround.save_quantized(f'{export_dir}-gpu', format="autoround", use_triton=True, inplace=inplace)
-        else:
-            autoround.save_quantized(f'{export_dir}-gpu', format="auto_gptq", use_triton=True, inplace=inplace)
+    if 'gpu' in deployment_device:
+            autoround.save_quantized(f'{export_dir}-gpu', format=gpu_format, use_triton=True, inplace=inplace)
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
