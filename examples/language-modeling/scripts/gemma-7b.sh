@@ -7,4 +7,5 @@ python3 main.py \
 --minmax_lr 2e-3 \
 --deployment_device 'gpu' \
 --model_dtype "float16" \
+--disable_low_gpu_mem_usage \
 --output_dir "./tmp_autoround"
