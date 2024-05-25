@@ -503,6 +503,7 @@ class AutoRound(object):
             "gradient_accumulate_steps",
             "iters",
             "amp",
+            "n_samples",
             "low_gpu_mem_usage",
         ]
         if isinstance(dataset, str):
