@@ -122,7 +122,7 @@ if __name__ == '__main__':
                         help="quant_lm_head")
 
     parser.add_argument("--model_dtype", default=None, type=str,
-                        help="force to convert the dtype, some backends suppports fp16 dtype better")
+                        help="force to convert the dtype, some backends supports fp16 dtype better")
 
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
