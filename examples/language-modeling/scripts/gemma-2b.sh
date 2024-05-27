@@ -7,5 +7,7 @@ python3 main.py \
 --group_size 128 \
 --bits 4 \
 --iters 400 \
+--model_dtype "float16" \
+--disable_low_gpu_mem_usage \
 --deployment_device 'gpu' \
 --output_dir "./tmp_autoround"

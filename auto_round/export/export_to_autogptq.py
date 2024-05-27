@@ -126,8 +126,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
-            info["zp"] = info["zp"].to(torch.float32)
-            quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
+            quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
         pack_model(
             compressed_model,
             quantizers,
