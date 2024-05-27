@@ -156,7 +156,10 @@ class AutoHfQuantizer:
             warning_msg = ""
 
         if isinstance(quantization_config, dict):
-            quantization_config = AutoRoundConfig.from_dict(quantization_config)
+            if "auto-round" in quantization_config["quant_method"]:
+                quantization_config = AutoRoundConfig.from_dict(quantization_config)
+            else:
+                quantization_config = AutoQuantizationConfig.from_dict(quantization_config)
 
         if isinstance(quantization_config, (GPTQConfig, AwqConfig)) and quantization_config_from_args is not None:
             # special case for GPTQ / AWQ config collision
