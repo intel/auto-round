@@ -665,7 +665,7 @@ class AutoRound(object):
             q_layer_input = q_layer_inputs[layer_name] if self.enable_quanted_input else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
             self.quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
-            for i in range(len(layer_inputs)):
+            for i in range(len(layer_input)):
                 layer_input[i] = None
                 if q_layer_input is not None:
                     q_layer_input[i] = None

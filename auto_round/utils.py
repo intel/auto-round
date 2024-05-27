@@ -475,6 +475,7 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
         # input_ids, input_others = move_to_device(input_ids, input_others, device)
         input_ids = to_device(input_ids, device)
         input_others = to_device(input_others, device)
+    input_tuple = input_others.pop("positional_inputs", None)
     if "alibi" in input_others.keys():
         alibi = input_others.pop("alibi")
         if alibi is not None:
@@ -482,12 +483,11 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
         if amp:
             with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
                 output = block(
-                    input_ids, alibi=alibi, **input_others
+                    input_ids, alibi=alibi, *input_tuple, **input_others
                 )  ##TODO is this correct for all models with alibi?
         else:
             output = block(input_ids, alibi=alibi, **input_others)
     else:
-        input_tuple = input_others.pop("positional_inputs", None)
         if amp:
             with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
                 output = block(input_ids, *input_tuple, **input_others)
