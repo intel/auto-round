@@ -51,7 +51,7 @@ pip install auto-round
 ## Model quantization
 
 ### Gaudi2/ CPU/ GPU
-We found a significant accuracy discrepancy with the qdq model using the AutoGPTQ GPU backend with asymmetric quantization in some scenarios. Please switch to symmetric quantization to alleviate thi issue.
+We found a significant accuracy discrepancy with the qdq model using the AutoGPTQ GPU backend with asymmetric quantization in some scenarios. Please switch to symmetric quantization to alleviate this issue.
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
