@@ -2,8 +2,8 @@
 
 Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source, lm-eval 0.4.2 is used
 
-pip install auto-gptq[triton] 
-pip install triton==2.2.0
+pip install auto-gptq
+
 
 Please note that there is a discrepancy between the baseline result and the official data, which is a known issue within the official model card community.
 Given that the Gemma model family exhibits inconsistent results between FP16 and BF16 on lm-eval, we recommend converting to FP16 for both tuning and evaluation.
