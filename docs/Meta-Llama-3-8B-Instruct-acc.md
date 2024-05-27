@@ -9,7 +9,7 @@ for evaluation with quantized lm-head
 ```bash
 git clone https://github.com/intel/auto-round
 cd auto-round/examples/language-modeling
-python3 eval_042/evluation.py --model_name "./" --eval_bs 16
+python3 eval_042/evaluation.py --model_name "./" --eval_bs 16
 ```
 
 | Metric           | **BF16** | w4g128 w/o lm-head | w4g128 with lm-head |
