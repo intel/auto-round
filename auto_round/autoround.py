@@ -664,8 +664,8 @@ class AutoRound(object):
             layer_input = to_device(layer_input, self.cache_device)
             q_layer_input = q_layer_inputs[layer_name] if self.enable_quanted_input else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
-            self.quant_layer(layer_name, layer_inputs[layer_name], q_layer_input, device=self.device)
-            for i in range(len(layer_inputs)):
+            self.quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
+            for i in range(len(layer_input)):
                 layer_input[i] = None
                 if q_layer_input is not None:
                     q_layer_input[i] = None
@@ -934,14 +934,14 @@ class AutoRound(object):
                 self.inputs[name]["positional_inputs"] = to_device(positional_args)
 
             for key in kwargs.keys():
-                if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) or (key == "alibi"):
+                if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) \
+                        or (key == "alibi") or (key == "attention_mask"):
                     if "attention_mask" in key:
                         if key not in self.inputs[name].keys():
                             self.inputs[name][key] = None
                         if kwargs[key] is not None:
                             if (not self.share_attention_mask_flag) and self.inputs[name][key] is not None:
                                 self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
-
                             else:
                                 self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0))
                     elif "alibi" in key:
@@ -954,9 +954,7 @@ class AutoRound(object):
                             if (not self.share_attention_mask_flag) and self.inputs[name][key] is not None:
                                 self.inputs[name][key].extend(list(torch.split(alibi.to("cpu"), 1, dim=0)))
                             else:
-
                                 self.inputs[name][key] = list(torch.split(alibi.to("cpu"), 1, dim=0))
-
                     elif key not in self.inputs[name].keys():
                         self.inputs[name][key] = to_device(kwargs[key], device=torch.device("cpu"))
             if name == self.last_cache_name:
