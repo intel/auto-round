@@ -140,9 +140,9 @@ class AutoHfQuantizer:
 
     @classmethod
     def merge_quantization_configs(
-        cls,
-        quantization_config: Union[dict, QuantizationConfigMixin],
-        quantization_config_from_args: Optional[QuantizationConfigMixin],
+            cls,
+            quantization_config: Union[dict, QuantizationConfigMixin],
+            quantization_config_from_args: Optional[QuantizationConfigMixin],
     ):
         """Handles situations where both quantization_config
         from args and quantization_config from model config are present."""
@@ -156,7 +156,10 @@ class AutoHfQuantizer:
             warning_msg = ""
 
         if isinstance(quantization_config, dict):
-            quantization_config = AutoRoundConfig.from_dict(quantization_config)
+            if "auto-round" in quantization_config["quant_method"]:
+                quantization_config = AutoRoundConfig.from_dict(quantization_config)
+            else:
+                quantization_config = AutoQuantizationConfig.from_dict(quantization_config) # pylint: disable=E1101
 
         if isinstance(quantization_config, (GPTQConfig, AwqConfig)) and quantization_config_from_args is not None:
             # special case for GPTQ / AWQ config collision
@@ -191,22 +194,22 @@ class AutoRoundConfig(QuantizationConfigMixin):
     """
 
     def __init__(
-        self,
-        bits: int,
-        tokenizer: Any = None,
-        dataset: str = None,
-        group_size: int = 128,
-        sym: bool = False,
-        backend="gptq:exllamav2",
-        iters: int = 200,
-        weight_config: dict = None,
-        enable_quanted_input=True,
-        enable_minmax_tuning=True,
-        lr=None,
-        minmax_lr=None,
-        n_samples=512,
-        seqlen=2048,
-        **kwargs,
+            self,
+            bits: int,
+            tokenizer: Any = None,
+            dataset: str = None,
+            group_size: int = 128,
+            sym: bool = False,
+            backend="gptq:exllamav2",
+            iters: int = 200,
+            weight_config: dict = None,
+            enable_quanted_input=True,
+            enable_minmax_tuning=True,
+            lr=None,
+            minmax_lr=None,
+            n_samples=512,
+            seqlen=2048,
+            **kwargs,
     ):
         self.bits = bits
         self.tokenizer = tokenizer
@@ -358,13 +361,13 @@ class AutoRoundQuantizer(HfQuantizer):
                 in_features = layer.weight.shape[0]
                 out_features = layer.weight.shape[1]
             bias = layer.bias is not None
-            new_layer = QuantLinear(
+            new_layer = QuantLinear(  # pylint: disable=E1123
                 bits,
                 group_size,
                 in_features,
                 out_features,
                 bias,
-                weight_dtype=layer.weight.dtype,  # pylint: disable=E1123
+                weight_dtype=layer.weight.dtype,
             )
 
             new_layer.device = device

@@ -121,6 +121,9 @@ if __name__ == '__main__':
     parser.add_argument("--quant_lm_head", action='store_true',
                         help="quant_lm_head")
 
+    parser.add_argument("--model_dtype", default=None, type=str,
+                        help="force to convert the dtype, some backends supports fp16 dtype better")
+
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
         print(
@@ -211,6 +214,12 @@ if __name__ == '__main__':
         seqlen = 2048
         model.seqlen = seqlen
     seqlen = args.seqlen
+
+    if args.model_dtype != None:
+        if args.model_dtype == "float16" or args.model_dtype == "fp16":
+            model = model.to(torch.float16)
+        if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
+            model = model.to(torch.bfloat16)
 
     # if "llama" in model_name:
     #     from transformers import LlamaTokenizer
@@ -312,7 +321,7 @@ if __name__ == '__main__':
 
     inplace = True if len(deployment_device) < 2 else False
     if 'gpu' in deployment_device:
-            autoround.save_quantized(f'{export_dir}-gpu', format=gpu_format, use_triton=True, inplace=inplace)
+        autoround.save_quantized(f'{export_dir}-gpu', format=gpu_format, use_triton=True, inplace=inplace)
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,

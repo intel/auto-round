@@ -51,7 +51,7 @@ pip install auto-round
 ## Model quantization
 
 ### Gaudi2/ CPU/ GPU
-
+We found a significant accuracy discrepancy with the qdq model using the AutoGPTQ GPU backend with asymmetric quantization in some scenarios. Please switch to symmetric quantization to alleviate this issue.
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -142,7 +142,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
+##from auto_round.export import AutoHfQuantizer ## uncomment it for models with quantized lm-head
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
@@ -163,7 +163,6 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | google/gemma-2b                      | [HF-int4-model](https://huggingface.co/Intel/gemma-2b-int4-inc), [accuracy](./docs/gemma-2b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-2b.sh),  [example](./examples/language-modeling/)                                                                                                   
 | mistralai/Mistral-7B-Instruct-v0.2   | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-Instruct-v0.2-int4-inc) (under review), [accuracy](./docs/Mistral-7B-Instruct-v0.2-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-Instruct-v0.2.sh),  [example](./examples/language-modeling/)                                    |
 | google/gemma-7b                      | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-int4-inc) (under review), [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                                                                    |
-| google/gemma-7b-it                   | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-it-int4-inc) (under review), [accuracy](./docs/gemma-7b-it-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b-it.sh), [example](./examples/language-modeling/)                                                                            |                                           
 | mistralai/Mixtral-8x7B-Instruct-v0.1 | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh),  [example](./examples/language-modeling/)                              |
 | mistralai/Mixtral-8x7B-v0.1          | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh), [example](./examples/language-modeling/)                                                          |
 | meta-llama/Meta-Llama-3-8B-Instruct       | [accuracy](./docs/Meta-Llama-3-8B-Instruct-acc.md), [recipe](./examples/language-modeling/scripts/Meta-Llama-3-8B-Instruct.sh), [example](./examples/language-modeling/)                                                                                                                                     |
