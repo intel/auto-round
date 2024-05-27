@@ -4,7 +4,7 @@ python3 main.py \
 --group_size 128 \
 --bits 4 \
 --iters 1000 \
---minmax_lr 0.0002 \
+--minmax_lr 2e-3 \
 --deployment_device 'gpu' \
 --output_dir "./tmp_autoround" \
 --disable_quanted_input
