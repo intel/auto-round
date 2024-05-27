@@ -59,7 +59,6 @@ def save_quantized_as_autoawq(output_dir, model_path, **kwargs):
         logger.error("autoawq is required. Please install it to support auto_awq format.")
         return
 
-
     model = kwargs["model"]
     weight_config = kwargs["weight_config"]
     sym = kwargs["sym"]
