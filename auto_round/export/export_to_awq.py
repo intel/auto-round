@@ -111,7 +111,6 @@ def save_quantized_as_autoawq(output_dir, model_path, **kwargs):
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
-            info["zp"] = info["zp"].to(torch.float32)
             scale, zp = info["scale"], info["zp"]
             scale = scale.t().contiguous()
             zp = zp.t().contiguous()
@@ -131,6 +130,8 @@ def save_quantized_as_autoawq(output_dir, model_path, **kwargs):
     quant_config = {}
     quant_config["quant_method"] = "awq"
     quant_config["modules_to_not_convert"] = None
+    if compressed_model.config.model_type == 'mixtral':
+       quant_config["modules_to_not_convert"] = ["gate"] 
     quant_config["version"] = "gemm"
     quant_config["iters"] = iters
     quant_config["lr"] = lr
@@ -174,9 +175,8 @@ def save_quantized(
         "group_size": quant_config["group_size"],
         "bits": quant_config["bits"],
         "version": "gemm",
-        "modules_to_not_convert": None,
+        "modules_to_not_convert": quant_config["modules_to_not_convert"],
     }
-
     model.config.quantization_config = awq_quant_config
     model.generation_config.do_sample = True
     model.save_pretrained(save_dir, state_dict=EmptyModule().state_dict())
