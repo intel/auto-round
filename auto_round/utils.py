@@ -486,7 +486,7 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
                     input_ids, alibi=alibi, *input_tuple, **input_others
                 )  ##TODO is this correct for all models with alibi?
         else:
-            output = block(input_ids, alibi=alibi, **input_others)
+            output = block(input_ids, alibi=alibi, *input_tuple, **input_others)
     else:
         if amp:
             with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
