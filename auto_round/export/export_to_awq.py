@@ -48,8 +48,18 @@ from auto_round.utils import check_to_quantized, convert_dtype_torch2str_hf, get
 
 
 @register_format("auto_awq")
-def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
+def save_quantized_as_autoawq(output_dir, model_path, **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
+
+    try:
+        from awq import AutoAWQForCausalLM  # pylint: disable=E0401
+        from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
+        from awq.utils.utils import clear_memory  # pylint: disable=E0401
+    except:
+        logger.error("autoawq is required. Please install it to support auto_awq format.")
+        return
+
+
     model = kwargs["model"]
     weight_config = kwargs["weight_config"]
     sym = kwargs["sym"]
@@ -88,14 +98,7 @@ def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
-    if inplace:
-        compressed_model = model.to("cpu")
-    else:
-        compressed_model = copy.deepcopy(model.to("cpu"))
-
-    from awq import AutoAWQForCausalLM  # pylint: disable=E0401
-    from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
-    from awq.utils.utils import clear_memory  # pylint: disable=E0401
+    compressed_model = copy.deepcopy(model.to("cpu"))
 
     q_linear_module = WQLinear_GEMM
     awq_model = AutoAWQForCausalLM.from_pretrained(model_path)

@@ -1350,12 +1350,6 @@ class AutoRound(object):
         if format not in EXPORT_FORMAT:
             logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
             exit()
-        if format == "auto_awq":
-            try:
-                import awq  # pylint: disable=E0401
-            except:
-                logger.error("autoawq is required. Please install it to support auto_awq format.")
-                return
         save_quantized_as_format = EXPORT_FORMAT.get(format)
         compressed_model = save_quantized_as_format(  ##TODO refine the code
             output_dir,
