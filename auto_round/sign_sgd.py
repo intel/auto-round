@@ -99,7 +99,7 @@ import torch
 from torch import Tensor
 from torch.optim.optimizer import Optimizer
 
-__all__ = ["SGD", "sgd"]
+__all__ = ["SignSGD", "sgd"]
 
 
 class _RequiredParameter(object):
@@ -125,7 +125,7 @@ def _use_grad_for_differentiable(func):
     return _use_grad
 
 
-class SGD(Optimizer):
+class SignSGD(Optimizer):
     r"""Implements stochastic gradient descent (optionally with momentum).
 
     .. math::
@@ -242,7 +242,7 @@ class SGD(Optimizer):
         )
         if nesterov and (momentum <= 0 or dampening != 0):
             raise ValueError("Nesterov momentum requires a momentum and zero dampening")
-        super(SGD, self).__init__(params, defaults)
+        super(SignSGD, self).__init__(params, defaults)
 
     def __setstate__(self, state):
         super().__setstate__(state)

@@ -7,4 +7,4 @@ python3 main.py \
 --minmax_lr 0.0002 \
 --deployment_device 'gpu' \
 --output_dir "./tmp_autoround" \
---disable_quanted_input \
+--disable_quanted_input
