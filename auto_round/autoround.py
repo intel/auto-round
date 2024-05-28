@@ -42,6 +42,8 @@ from .utils import (
     sampling_inputs,
     set_module,
     to_device,
+    check_block_memory_availability,
+    check_layer_memory_availability
 )
 
 
@@ -557,10 +559,7 @@ class AutoRound(object):
         layer_names = self.get_quantized_layer_names_outside_blocks()
         self.start_time = time.time()
         all_inputs = self.try_cache_inter_data_gpucpu([block_names[0]], self.n_samples, layer_names=layer_names)
-        del self.inputs
-        inputs = all_inputs[block_names[0]]
-
-        all_inputs.pop(block_names[0])
+        inputs = all_inputs.pop(block_names[0])
         self.inputs = None
         del self.inputs
         if "input_ids" in inputs.keys():
@@ -661,9 +660,19 @@ class AutoRound(object):
         torch.cuda.empty_cache()
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
-            layer_input = to_device(layer_input, self.cache_device)
             q_layer_input = q_layer_inputs[layer_name] if self.enable_quanted_input else None
-            q_layer_input = to_device(q_layer_input, self.cache_device)
+            if "cpu" not in self.cache_device:
+                try:
+                    layer_input = to_device(layer_input, self.cache_device)
+                    q_layer_input = to_device(q_layer_input, self.cache_device)
+                except:
+                    self.cache_device = "cpu"
+                    self.low_gpu_mem_usage = True
+                    layer_input, q_layer_input = None, None
+                    logger.warning("The current configuration may cause GPU memory overflow, 'low_gpu_mem_usage' has been enabled.")
+                    torch.cuda.empty_cache()
+                    layer_input = layer_inputs[layer_name]
+                    q_layer_input = q_layer_inputs[layer_name] if self.enable_quanted_input else None
             self.quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
             for i in range(len(layer_input)):
                 layer_input[i] = None
@@ -826,7 +835,7 @@ class AutoRound(object):
 
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, n_samples, layer_names=[], last_cache_name=None):
-        """Attempts to cache intermediate data on GPU，if failed, then using CPU.
+        """Attempts to cache intermediate data on GPU, if failed, then using CPU.
 
         Args:
             block_names (list): List of block names to cache data for.
@@ -1050,8 +1059,8 @@ class AutoRound(object):
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
-        gradient_accumulate_steps = self.train_bs  ##Force to low gpu
-        train_bs = 1  ##Force to low gpu
+        train_bs = check_layer_memory_availability(device, inputs, layer, self.train_bs)
+        gradient_accumulate_steps = int(self.train_bs / train_bs)
         pick_samples = train_bs * gradient_accumulate_steps
 
         if self.sampler != "rand":
@@ -1283,6 +1292,27 @@ class AutoRound(object):
         input_ids = inputs["input_ids"]
         inputs.pop("input_ids", None)
         input_others = inputs
+        
+        if not self.low_gpu_mem_usage and "cpu" not in self.device:
+            m = None
+            try:
+                m = get_module(model, block_names[0])
+                m = m.to(device)
+                flag = check_block_memory_availability(device, m, input_ids, input_others, 
+                                                       self.amp, self.amp_dtype, self.train_bs, 
+                                                       self.seqlen, self.share_attention_mask_flag, self.input_dim)
+                if not flag:
+                    self.low_gpu_mem_usage = True
+                    self.cache_device = torch.device("cpu")
+                    logger.warning("The current configuration may cause GPU memory overflow, 'low_gpu_mem_usage' has been enabled.")
+                else:
+                    m = m.to("cpu")
+            except Exception as error:
+                logger.warning(f"GPU memory estimation failed due to {error}.")
+                m = m.to("cpu") if m is not None else None
+                tmp_input_ids = None
+                tmp_input_others = None
+                del tmp_input_ids, tmp_input_others
         torch.cuda.empty_cache()
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
