@@ -436,4 +436,5 @@ if transformers_version[0] == 4 and transformers_version[1] < 38:
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
+tmp = 1  ##keep it
 from transformers import AutoModelForCausalLM as AutoModelForCausalLM
