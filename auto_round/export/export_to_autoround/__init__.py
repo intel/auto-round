@@ -12,16 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ...utils import logger
-import transformers
-version = [int(item) for item in transformers.__version__.split('.')[:2]]
-if version[0] == 4 and version[1] < 38:
-    logger.warning("If you need to use the 'gpu' format to export layers like 'lm_head'," \
-            "please update transformers to version 4.38.0 or above.")
-else:
-    from .autoround_quantizer import AutoHfQuantizer
-    transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
-    transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
-from transformers import AutoModelForCausalLM as AutoRoundModelForCausalLM
 from .export_to_autoround import save_quantized_as_autoround
 

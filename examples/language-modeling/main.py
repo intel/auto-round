@@ -290,8 +290,8 @@ if __name__ == '__main__':
                     break
     if args.quant_lm_head:
         weight_config[lm_head_layer_name] = {"data_type": "int"}
-        version = [int(item) for item in transformers.__version__.split('.')[:2]]
-        if version[0] == 4 and version[1] < 38:
+        transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
+        if transformers_version[0] == 4 and transformers_version[1] < 38:
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 

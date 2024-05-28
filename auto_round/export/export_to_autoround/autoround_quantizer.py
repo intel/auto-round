@@ -37,10 +37,9 @@ import torch.nn as nn
 from packaging import version
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import Conv1D
-from ...utils import LazyImport
-AUTO_QUANTIZER_MAPPING = LazyImport("transformers.quantizers.auto.AUTO_QUANTIZER_MAPPING")
-HfQuantizer = LazyImport("transformers.quantizers.HfQuantizer")
-AutoQuantizationConfig = LazyImport("transformers.quantizers.AutoQuantizationConfig")
+import transformers
+from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
+from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
 from auto_round.utils import get_module, set_module
@@ -161,7 +160,7 @@ class AutoHfQuantizer:
             if "auto-round" in quantization_config["quant_method"]:
                 quantization_config = AutoRoundConfig.from_dict(quantization_config)
             else:
-                quantization_config = AutoQuantizationConfig.from_dict(quantization_config) # pylint: disable=E1101
+                quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
 
         if isinstance(quantization_config, (GPTQConfig, AwqConfig)) and quantization_config_from_args is not None:
             # special case for GPTQ / AWQ config collision
@@ -428,3 +427,13 @@ class AutoRoundQuantizer(HfQuantizer):
     def is_serializable(self):
         return True
 
+
+import transformers
+
+transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
+if transformers_version[0] == 4 and transformers_version[1] < 38:
+    logger.error("Please upgrade transformers>=4.38.0 to support lm-head quantization")
+
+transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
+transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
+from transformers import AutoModelForCausalLM as AutoModelForCausalLM

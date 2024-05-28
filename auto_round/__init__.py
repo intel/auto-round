@@ -13,3 +13,5 @@
 # limitations under the License.
 from .autoround import AutoRound, AutoAdamRound, AutoOPTRound
 from .version import __version__
+from auto_round.utils import LazyImport
+autoround_quantizer = LazyImport('auto_round.export.export_to_autoround.autoround_quantizer')
