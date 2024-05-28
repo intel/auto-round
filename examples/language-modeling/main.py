@@ -292,8 +292,7 @@ if __name__ == '__main__':
         weight_config[lm_head_layer_name] = {"data_type": "int"}
         version = [int(item) for item in transformers.__version__.split('.')[:2]]
         if version[0] == 4 and version[1] < 38:
-            error_message = "For exporting layers in the 'gpu' format, such as 'lm_head', " \
-                    "please ensure that you have updated transformers to version 4.38.0 or higher."
+            error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 
     if args.quant_lm_head and not args.disable_low_gpu_mem_usage:

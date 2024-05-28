@@ -37,7 +37,7 @@ import torch.nn as nn
 from packaging import version
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import Conv1D
-from ..autoround.utils import LazyImport
+from ...utils import LazyImport
 AUTO_QUANTIZER_MAPPING = LazyImport("transformers.quantizers.auto.AUTO_QUANTIZER_MAPPING")
 HfQuantizer = LazyImport("transformers.quantizers.HfQuantizer")
 AutoQuantizationConfig = LazyImport("transformers.quantizers.AutoQuantizationConfig")
