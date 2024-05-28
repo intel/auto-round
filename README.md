@@ -150,8 +150,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-##from auto_round import autoround_quantizer ## uncomment it for models with quantized lm-head
-##AutoModelForCausalLM = autoround_quantizer.AutoModelForCausalLM ## uncomment it for models with quantized lm-head
+##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with quantized lm-head
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
