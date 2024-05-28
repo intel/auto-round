@@ -34,7 +34,7 @@ fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
 
 import importlib
-
+import transformers
 
 class LazyImport(object):
     """Lazy import python module till use."""
@@ -739,3 +739,26 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         bs = 1
 
     return False, seqlen, bs
+
+
+def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transformers.modeling_utils.Conv1D]):
+    """Retrieves the names of layers within each block of the model.
+
+    Returns:
+        list: A list of strings, where each string is the name of a layer
+              within a block of the model.
+    """
+    for n, m in model.named_modules():
+        if isinstance(m, tuple(supported_types)):
+            m.tmp_name = n
+    layers_in_block = []
+    block_names = get_block_names(model)
+    for block_name in block_names:
+        block = get_module(model, block_name)
+        for n, m in block.named_modules():
+            if hasattr(m, "tmp_name"):
+                layers_in_block.append(m.tmp_name)
+    for n, m in model.named_modules():
+        if hasattr(m, "tmp_name"):
+            delattr(m, "tmp_name")
+    return layers_in_block
