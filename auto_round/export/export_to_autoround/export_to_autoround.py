@@ -151,7 +151,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
         zero = weight_config[name]["zp"]
         # so far can only pack layer on CPU
         qlayer.to("cpu")
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu")
+        ##force to float32 to be compatible with torch 2.0
+        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
         qlayer.pack(layer, scale, zero, None)
         qlayer.to(device)
     quantization_config = kwargs["serialization_dict"]
