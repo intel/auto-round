@@ -587,7 +587,7 @@ if __name__ == "__main__":
         if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
             from auto_round import autoround_quantizer
 
-            autoround_quantizer.tmp = 1
+            autoround_quantizer.AutoModelForCausalLM
 
     test_tasks = args.tasks
     if isinstance(test_tasks, str):
