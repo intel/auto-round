@@ -698,21 +698,19 @@ def convert_dtype_torch2str_hf(dtype):
     return str_dtype
 
 
-def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
+def check_layer_memory_availability(device, inputs, layer, org_bs):
     """Checks the availability of memory on the specified device for processing inputs using a given weight tensor.
 
     Args:
         device (str): The device type ('cuda' for GPU or 'hpu' for HPU).
         inputs (torch.Tensor): Input tensor.
-        weight (torch.Tensor): Weight tensor.
-        org_seqlen (int): Original sequence length.
+        layer (torch.nn.modules): layer module.
         org_bs (int): Original batch size.
 
     Returns:
-        tuple: A tuple containing availability status (bool), modified sequence length (int),
-               and modified batch size (int).
+        int: A refined batch size (int).
     """
-    weight_memory = weight.numel() * weight.element_size()
+    layer_memory = compute_parameters_memory(layer)
     if "cuda" in device:
         current_gpu_index = torch.cuda.current_device()
         total_memory = torch.cuda.get_device_properties(current_gpu_index).total_memory
@@ -722,20 +720,94 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         current_hpu_index = torch.hpu.current_device()
         free_space = torch.hpu.memory_reserved(current_hpu_index)
     else:
-        return True, org_seqlen, org_bs
-
-    free_space = free_space - weight_memory * 10  # for min_max_scale & grad usage
-    seqlen = org_seqlen
+        return org_bs
+    
+    free_space = free_space - layer_memory * 5  # for min_max_scale & grad usage
+    in_feature = layer.in_features
+    out_feature = layer.out_features
+    element_size = inputs[0].element_size()
+    single_input_size = inputs[0].nelement() * inputs[0].element_size()
+    single_output_size = single_input_size * out_feature / in_feature
     bs = org_bs
-    in_feature = weight.shape[1]
-    out_feature = weight.shape[0]
-    while seqlen >= 128:
-        input_size = bs * seqlen * in_feature
-        output_size = bs * seqlen * out_feature
-        input_output_memory = 2 * (input_size * inputs.element_size() + output_size * inputs.element_size())
+    while(bs != 1):
+        input_output_memory = 10 * bs * element_size * (2 * single_input_size + single_output_size)
         if input_output_memory < free_space:
-            return True, seqlen, bs
-        seqlen = seqlen // 2
-        bs = 1
+            return bs
+        bs = int(bs / 2) if bs % 2 == 0 else 1
+    return 1
 
-    return False, seqlen, bs
+
+def compute_parameters_memory(module):
+    """Compute the memory usage of a module's parameters."""
+    total_memory = 0
+    for param in module.parameters():
+        total_memory += param.nelement() * param.element_size()
+    return total_memory
+
+
+def compute_forward_memory(block, input_ids, input_others, amp, amp_dtype, device):
+    """Compute the memory usage during the forward pass."""
+    def hook(module, input, output):
+        module.input_memory = sum(i.nelement() * i.element_size() for i in input if isinstance(i, torch.Tensor) and i is not None)
+        module.output_memory = sum(o.nelement() * o.element_size() for o in output if isinstance(o, torch.Tensor) and o is not None)
+    
+    handles = []
+    for submodule in block.modules():
+        handles.append(submodule.register_forward_hook(hook))
+    
+    with torch.no_grad():
+        _ = block_forward(block, input_ids, input_others, amp, amp_dtype, device)
+        
+    for handle in handles:
+        handle.remove()
+        
+    input_mem = block.input_memory
+    output_mem = block.output_memory
+    block_output = block.output_memory
+    del block.input_memory, block.output_memory
+    for submodule in block.modules():
+        if hasattr(submodule, 'input_memory') and hasattr(submodule, 'output_memory'):
+            input_mem = input_mem + submodule.input_memory
+            output_mem = output_mem + submodule.output_memory
+            del submodule.input_memory, submodule.output_memory
+    return input_mem, output_mem, block_output
+
+
+def check_block_memory_availability(device, block, input_ids, input_others, amp, amp_dtype, train_bs, 
+                                                       seqlen, share_attention_mask_flag, input_dim):
+    """
+    Checks the availability of memory on the specified device for processing inputs using a given block.
+
+    Args:
+        device (str): The device type ('cuda' for GPU or 'hpu' for HPU).
+        inputs (torch.Tensor): Input tensor.
+        block (nn.Module): The network block to be checked.
+
+    Returns:
+        bool: True if there is enough memory, False otherwise.
+    """
+    paras_memory = compute_parameters_memory(block)
+    if "cuda" in device:
+        current_gpu_index = torch.cuda.current_device()
+        total_memory = torch.cuda.get_device_properties(current_gpu_index).total_memory
+        used_memory = torch.cuda.memory_allocated(current_gpu_index)
+        free_space = total_memory - used_memory
+    elif "hpu" in device:
+        current_hpu_index = torch.hpu.current_device()
+        free_space = torch.hpu.memory_reserved(current_hpu_index)
+    else:
+        return True
+    indices = torch.arange(0, train_bs).to(torch.long)
+    tmp_input_ids, tmp_input_others = sampling_inputs(
+                    input_ids, input_others, indices, seqlen, share_attention_mask_flag, input_dim
+                )
+    input_mem, output_mem, tmp_block_output = compute_forward_memory(block, tmp_input_ids, tmp_input_others, amp, amp_dtype, device)
+    free_space = free_space - paras_memory * 5 - (input_mem + output_mem) * 2  # for min_max_scale & grad usage
+    input_cache_mem = sum(i.nelement() * i.element_size() for i in input_ids if isinstance(i, torch.Tensor) and i is not None)
+    block_input_cache_mem = input_cache_mem + sum(i.nelement() * i.element_size() 
+                                                  for i in input_others if isinstance(i, torch.Tensor) and i is not None)
+    block_output_cache_mem = tmp_block_output * (len(input_ids) / len(tmp_input_ids))
+    if (block_input_cache_mem + block_output_cache_mem) * 2 < free_space:
+        return True
+    return False
+
