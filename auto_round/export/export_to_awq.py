@@ -48,7 +48,7 @@ from auto_round.utils import check_to_quantized, convert_dtype_torch2str_hf, get
 
 
 @register_format("auto_awq")
-def save_quantized_as_autoawq(output_dir, model_path, **kwargs):
+def save_quantized_as_autoawq(output_dir, model_path, kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
     try:
@@ -76,26 +76,6 @@ def save_quantized_as_autoawq(output_dir, model_path, **kwargs):
     logger.info("Saving quantized model to autoawq format")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
-    ##check module quantized in block, this may have bug for mixed precision quantization
-    block_name = get_block_names(model)[0]
-    first_block = get_module(model, block_name)
-    all_to_quantized = True
-    modules_in_block_to_quantize = []
-    for n, m in first_block.named_modules():
-        is_supported_type = False
-        for supported_type in supported_types:
-            if isinstance(m, supported_type):
-                is_supported_type = True
-                break
-        if not is_supported_type:
-            continue
-        if not check_to_quantized(m):
-            all_to_quantized = False
-        else:
-            modules_in_block_to_quantize.append(n)
-    modules_in_block_to_quantize = [modules_in_block_to_quantize]
-    if all_to_quantized:
-        modules_in_block_to_quantize = None
 
     compressed_model = copy.deepcopy(model.to("cpu"))
 
@@ -103,6 +83,7 @@ def save_quantized_as_autoawq(output_dir, model_path, **kwargs):
     awq_model = AutoAWQForCausalLM.from_pretrained(model_path)
     self_modules = awq_model.get_model_layers(compressed_model)
     del awq_model  # release memory
+    modules_to_not_convert = []
     for i in range(len(self_modules)):
         module = self_modules[i]
         named_linears = get_named_linears(module)
@@ -110,7 +91,9 @@ def save_quantized_as_autoawq(output_dir, model_path, **kwargs):
             key = get_module_name(compressed_model, linear_layer)
             info = weight_config[key]
             if not check_to_quantized(info):
+                modules_to_not_convert.append(key)
                 continue
+            info["zp"] = info["zp"].to(torch.float32)
             scale, zp = info["scale"], info["zp"]
             scale = scale.t().contiguous()
             zp = zp.t().contiguous()
@@ -127,22 +110,12 @@ def save_quantized_as_autoawq(output_dir, model_path, **kwargs):
             set_op_by_name(module, name, q_linear)
             clear_memory()
 
-    quant_config = {}
-    quant_config["quant_method"] = "awq"
-    quant_config["modules_to_not_convert"] = None
-    if compressed_model.config.model_type == 'mixtral':
-       quant_config["modules_to_not_convert"] = ["gate"] 
-    quant_config["version"] = "gemm"
-    quant_config["iters"] = iters
-    quant_config["lr"] = lr
-    quant_config["minmax_lr"] = minmax_lr
-    quant_config["enable_minmax_tuning"] = enable_minmax_tuning
-    quant_config["enable_quanted_input"] = enable_quanted_input
-    quant_config["scale_dtype"] = convert_dtype_torch2str_hf(scale_dtype)
-    quant_config["sym"] = sym
-    quant_config["bits"] = bits
-    quant_config["group_size"] = group_size
+    quant_config = kwargs["serialization_dict"]
     quant_config["zero_point"] = not sym
+    quant_config["modules_to_not_convert"] = None if not modules_to_not_convert else modules_to_not_convert
+    quant_config["version"] = "gemm"
+    quant_config["quant_method"] = "intel/auto-round"
+    quant_config["backend"] = "awq"
 
     save_quantized(compressed_model, save_dir=output_dir, quant_config=quant_config)
 

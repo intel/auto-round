@@ -94,99 +94,107 @@ def get_autogptq_backend_config(backend, bits=4):
 
 
 @register_format("autoround")
-def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav2", **kwargs):
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
+def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav2", model_path="", **kwargs):
+    if "awq" not in backend:
+        from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
 
-    model = kwargs["model"]
-    if not inplace:
-        model = copy.deepcopy(model.to("cpu"))
-    layer_names_in_block = get_layer_names_in_block(model)
+        model = kwargs["model"]
+        if not inplace:
+            model = copy.deepcopy(model.to("cpu"))
+        layer_names_in_block = get_layer_names_in_block(model)
 
-    weight_config = kwargs["weight_config"]
-    for name in weight_config.keys():
+        weight_config = kwargs["weight_config"]
+        for name in weight_config.keys():
 
-        config = kwargs["weight_config"][name]
-        if config["data_type"] != "int" and config["bits"] >= 16:
-            continue
-        logger.info(f"packing {name}")
+            config = kwargs["weight_config"][name]
+            if config["data_type"] != "int" and config["bits"] >= 16:
+                continue
+            logger.info(f"packing {name}")
 
-        bits = config["bits"]
-        group_size = config["group_size"]
-        use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
-            backend, bits
-        )
-
-        layer = get_module(model, name)
-        device = "cpu"
-        QuantLinear = dynamically_import_QuantLinear(
-            use_triton=use_triton,
-            desc_act=False,
-            group_size=group_size,
-            bits=bits,
-            disable_exllama=disable_exllamav1,
-            disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen,
-            disable_marlin=disable_marlin,
-        )
-
-        if isinstance(layer, nn.Linear):
-            in_features = layer.in_features
-            out_features = layer.out_features
-        elif isinstance(layer, nn.Conv2d):
-            in_features = layer.in_channels
-            out_features = layer.out_channels
-        elif isinstance(layer, transformers.pytorch_utils.Conv1D):
-            in_features = layer.weight.shape[0]
-            out_features = layer.weight.shape[1]
-        bias = layer.bias is not None and torch.any(layer.bias)
-
-        new_layer = QuantLinear(  ##pylint: disable=E1123
-            bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
-        )
-
-        new_layer.device = device
-        set_module(model, name, new_layer)
-        qlayer = new_layer
-        scale = weight_config[name]["scale"]
-        zero = weight_config[name]["zp"]
-        # so far can only pack layer on CPU
-        qlayer.to("cpu")
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu")
-        qlayer.pack(layer, scale, zero, None)
-        qlayer.to(device)
-    quantization_config = kwargs["serialization_dict"]
-    quantization_config["quant_method"] = "intel/auto-round"
-    quantization_config["backend"] = backend
-    extra_config = {}
-    for layer_name in weight_config:
-        if weight_config[layer_name]["data_type"] != "int" and weight_config[layer_name]["bits"] >= 16:
-            continue
-        if layer_name not in layer_names_in_block:
-            extra_config[layer_name] = {}
-            extra_config[layer_name]["bits"] = weight_config[layer_name]["bits"]
-            extra_config[layer_name]["data_type"] = weight_config[layer_name]["data_type"]
-            extra_config[layer_name]["group_size"] = weight_config[layer_name]["group_size"]
-            extra_config[layer_name]["sym"] = weight_config[layer_name]["sym"]
-        else:
-            neq_keys = check_neq_config(
-                weight_config[layer_name],
-                data_type=quantization_config["data_type"],
-                bits=quantization_config["bits"],
-                group_size=quantization_config["group_size"],
-                sym=quantization_config["sym"],
+            bits = config["bits"]
+            group_size = config["group_size"]
+            use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
+                backend, bits
             )
-            if len(neq_keys) > 0:
+
+            layer = get_module(model, name)
+            device = "cpu"
+            QuantLinear = dynamically_import_QuantLinear(
+                use_triton=use_triton,
+                desc_act=False,
+                group_size=group_size,
+                bits=bits,
+                disable_exllama=disable_exllamav1,
+                disable_exllamav2=disable_exllamav2,
+                use_qigen=use_qigen,
+                disable_marlin=disable_marlin,
+            )
+
+            if isinstance(layer, nn.Linear):
+                in_features = layer.in_features
+                out_features = layer.out_features
+            elif isinstance(layer, nn.Conv2d):
+                in_features = layer.in_channels
+                out_features = layer.out_channels
+            elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+                in_features = layer.weight.shape[0]
+                out_features = layer.weight.shape[1]
+            bias = layer.bias is not None and torch.any(layer.bias)
+
+            new_layer = QuantLinear(  # pylint: disable=E1123
+                bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
+            )
+
+            new_layer.device = device
+            set_module(model, name, new_layer)
+            qlayer = new_layer
+            scale = weight_config[name]["scale"]
+            zero = weight_config[name]["zp"]
+            # so far can only pack layer on CPU
+            qlayer.to("cpu")
+            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu")
+            qlayer.pack(layer, scale, zero, None)
+            qlayer.to(device)
+        quantization_config = kwargs["serialization_dict"]
+        quantization_config["quant_method"] = "intel/auto-round"
+        quantization_config["backend"] = backend
+        extra_config = {}
+        for layer_name in weight_config:
+            if weight_config[layer_name]["data_type"] != "int" and weight_config[layer_name]["bits"] >= 16:
+                continue
+            if layer_name not in layer_names_in_block:
                 extra_config[layer_name] = {}
-            for key in neq_keys:
-                extra_config[layer_name][key] = weight_config[layer_name][key]
-    if len(extra_config) > 0:
-        quantization_config["extra_config"] = extra_config
-    if hasattr(model, "config"):
-        model.config.quantization_config = quantization_config
-    tokenizer = kwargs["tokenizer"]
-    if tokenizer is not None:
-        tokenizer.save_pretrained(output_dir)
-    save(model, output_dir)
+                extra_config[layer_name]["bits"] = weight_config[layer_name]["bits"]
+                extra_config[layer_name]["data_type"] = weight_config[layer_name]["data_type"]
+                extra_config[layer_name]["group_size"] = weight_config[layer_name]["group_size"]
+                extra_config[layer_name]["sym"] = weight_config[layer_name]["sym"]
+            else:
+                neq_keys = check_neq_config(
+                    weight_config[layer_name],
+                    data_type=quantization_config["data_type"],
+                    bits=quantization_config["bits"],
+                    group_size=quantization_config["group_size"],
+                    sym=quantization_config["sym"],
+                )
+                if len(neq_keys) > 0:
+                    extra_config[layer_name] = {}
+                for key in neq_keys:
+                    extra_config[layer_name][key] = weight_config[layer_name][key]
+        if len(extra_config) > 0:
+            quantization_config["extra_config"] = extra_config
+        if hasattr(model, "config"):
+            model.config.quantization_config = quantization_config
+        tokenizer = kwargs["tokenizer"]
+        if tokenizer is not None:
+            tokenizer.save_pretrained(output_dir)
+        save(model, output_dir)
+    else:
+        if not model_path:
+            logger.error("Please provide model path for awq format.")
+            return
+        from ..export_to_awq import save_quantized_as_autoawq
+        save_quantized_as_autoawq(output_dir=output_dir, model_path=model_path, kwargs=kwargs)
+
 
 
 def save(model: nn.Module, save_dir: str, max_shard_size: str = "10GB", safe_serialization: bool = True):

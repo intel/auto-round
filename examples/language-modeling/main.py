@@ -320,8 +320,6 @@ if __name__ == '__main__':
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
     inplace = True if len(deployment_device) < 2 else False
-    if deployment_device == ['gpu'] and args.bits == 4:
-        autoround.save_quantized(f'{export_dir}-awq', format="auto_awq", model_path=args.model_name)
     if 'gpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-gpu', format=gpu_format, use_triton=True, inplace=inplace)
     if 'xpu' in deployment_device:
