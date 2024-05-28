@@ -37,8 +37,10 @@ import torch.nn as nn
 from packaging import version
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import Conv1D
-from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
-from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
+from ..autoround.utils import LazyImport
+AUTO_QUANTIZER_MAPPING = LazyImport("transformers.quantizers.auto.AUTO_QUANTIZER_MAPPING")
+HfQuantizer = LazyImport("transformers.quantizers.HfQuantizer")
+AutoQuantizationConfig = LazyImport("transformers.quantizers.AutoQuantizationConfig")
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
 from auto_round.utils import get_module, set_module
@@ -425,3 +427,4 @@ class AutoRoundQuantizer(HfQuantizer):
     @property
     def is_serializable(self):
         return True
+
