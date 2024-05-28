@@ -107,7 +107,8 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
-            quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
+            ##force to float32 to be compatible with torch 2.0
+            quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
         pack_model(
             compressed_model,
             quantizers,
@@ -126,7 +127,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
-            quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
+            quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"].to(torch.float32), info["g_idx"])
         pack_model(
             compressed_model,
             quantizers,
@@ -158,20 +159,20 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
 
 
 def _save_quantized_to_autogptq(
-    model,
-    save_dir: str,
-    bits=4,
-    group_size=128,
-    sym=False,
-    iters=200,
-    lr=5e-3,
-    minmax_lr=5e-3,
-    enable_minmax_tuning=True,
-    enable_quanted_input=True,
-    use_safetensors: bool = True,
-    scale_dtype=torch.float32,
-    safetensors_metadata: Optional[Dict[str, str]] = None,
-    modules_in_block_to_quantize=None,
+        model,
+        save_dir: str,
+        bits=4,
+        group_size=128,
+        sym=False,
+        iters=200,
+        lr=5e-3,
+        minmax_lr=5e-3,
+        enable_minmax_tuning=True,
+        enable_quanted_input=True,
+        use_safetensors: bool = True,
+        scale_dtype=torch.float32,
+        safetensors_metadata: Optional[Dict[str, str]] = None,
+        modules_in_block_to_quantize=None,
 ):
     """Save quantized model and configs to local disk for cuda."""
     os.makedirs(save_dir, exist_ok=True)
