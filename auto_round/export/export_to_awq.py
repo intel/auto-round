@@ -47,7 +47,6 @@ from auto_round.utils import check_to_quantized, convert_dtype_torch2str_hf, get
 # copies or substantial portions of the Software.
 
 
-@register_format("auto_awq")
 def save_quantized_as_autoawq(output_dir, model_path, kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
