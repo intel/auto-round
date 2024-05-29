@@ -3,7 +3,7 @@ import shutil
 import sys
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, "..")
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -42,7 +42,8 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
-            dataloader=self.llm_dataloader,
+            seqlen=10,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 

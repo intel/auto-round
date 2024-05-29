@@ -4,6 +4,7 @@ python3 main.py \
 --group_size 128 \
 --bits 4 \
 --iters 1000 \
+--sym \
 --deployment_device 'gpu' \
---disable_trust_remote_code \
---output_dir "./tmp_autoround"
+--output_dir "./tmp_autoround" \
+--disable_low_gpu_mem_usage

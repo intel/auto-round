@@ -10,9 +10,6 @@ import shutil
 import transformers
 from typing import TYPE_CHECKING, Optional, Union
 import time
-
-
-
     
 if __name__ == "__main__":
     import sys
@@ -329,7 +326,7 @@ def simple_evaluate(
 
 
 def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
-               eval_bs=32, use_accelerate=True, dtype="float16", limit=None,
+               eval_bs=32, use_accelerate=True, dtype=None, limit=None, trust_remote_code=True,
                device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
     print("evaluation with official lm-eval", flush=True)
     try:
@@ -342,10 +339,21 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
     
     except:
         raise ImportError("""follow requirements to install dependencies.""")
-    import collections
+    
     org_s = time.time()
-
+    if dtype == None:
+        from eval.utils import convert_dtype_torch2str_hf
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+        if hasattr(config, "torch_dtype"):
+            dtype = convert_dtype_torch2str_hf(config.torch_dtype)
+        else:
+            dtype = "float16"
+    print(f"Using {dtype} as evaluation data type.")
+    
     external_tasks = []
+    if isinstance(tasks, str):
+        tasks = tasks.split(',')
     for each in EXT_TASKS:
         if each in tasks:
             external_tasks.append(each)
@@ -362,7 +370,9 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
             task_s = time.time()
             for shot in num_fewshot:
                 model_type = "hf"
-                model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code=True'
+                model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code={trust_remote_code}'
+                if 'gpu' in model_path:
+                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},autogptq=True,gptq_use_triton=True,trust_remote_code={trust_remote_code}'
                 if use_accelerate: # bool(re.search("chatglm", model_path.lower()))
                     model_args += f',parallelize=True'
 
@@ -373,7 +383,10 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
                 tmp_results, lm = simple_evaluate(model=model_type, model_args=model_args, tasks=tmp_tasks,
                                                   num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
                                                   max_batch_size=tmp_eval_bs, lm=lm, device=str(device))
-                sub_name = f'{tmp_tasks} {shot}-shot'
+                if 'mmlu' in tmp_tasks and 'cmmlu' not in tmp_tasks:
+                    sub_name = f'hendrycksTest-* {shot}-shot'
+                else:
+                    sub_name = f'{tmp_tasks} {shot}-shot'
                 print(f'{sub_name}: ')
                 pprint.pprint(tmp_results["results"])
                 print(f"\n{sub_name} cost time: {time.time() - task_s}\n")
@@ -436,6 +449,22 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
     new_dict["wikitext 0-shot_word_perplexity"] = 0
     new_dict["wikitext 0-shot_byte_perplexity"] = 0
     new_dict["wikitext 0-shot_bits_per_byte"] = 0
+    
+    # Special handling of mmlu for compatibility with the old excel results sequence
+    search_str = 'hendrycksTest'
+    mmlu_matching_keys = [key for key in results.keys() if search_str.lower() in key.lower()]
+    for key in mmlu_matching_keys:
+        data = results.pop(key)
+        for sub_key in data.keys():
+            for sub_sub_key in data[sub_key].keys():
+                new_key = key + "-" + sub_key + "-" + sub_sub_key
+                if "std" in new_key or "alias" in new_key:
+                    continue
+                new_key = new_key.split(",")[0]
+                new_dict[new_key] = data[sub_key][sub_sub_key]
+                new_key = new_key + "_norm"
+                new_dict[new_key] = data[sub_key][sub_sub_key]
+
     for key in results.keys():
         if key == "model" or key == "paper-avg" or key == "leaderboard-avg":
             continue
@@ -445,14 +474,12 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
             continue
         for sub_key in data.keys():
             for sub_sub_key in data[sub_key].keys():
-                if "mmlu" in key:
-                    new_key = key + "-" + sub_key + "-" + sub_sub_key
-                else:
-                    new_key = key + "_" + sub_sub_key
+                new_key = key + "_" + sub_sub_key
                 if "std" in new_key or "alias" in new_key:
                     continue
-                new_key = new_key.rstrip(",none")
+                new_key = new_key.split(",")[0]
                 new_dict[new_key] = data[sub_key][sub_sub_key]
+                    
 
     import pandas as pd
     df = pd.DataFrame(data=new_dict, index=[0])
@@ -495,7 +522,4 @@ if __name__ == "__main__":
                eval_bs=args.eval_bs, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
-
-
-
 

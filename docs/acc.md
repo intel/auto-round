@@ -1,7 +1,15 @@
 ## Comparison with other methods
-To ensure a fair comparison as much as possible and alleviate overfitting in perplexity evaluation on Wikitext or C4, we utilized 512 samples from NeelNanda/pile-10k for all methods during calibration. Due to memory constraints, we maintained the original sequence length of 512 for AWQ, while for GPTQ and our approach, a sequence length of 2048 is used. We have enabled act-order and true-seqential in GPTQ, and also activated static group in scenarios where group_size!=-1.  The notation GPTQ* indicates that we adjusted the random seed or data preprocessing to address issues related to the non-positive definite Hessian matrix or other issues.With these configurations, the tuning costs for GPTQ, AWQ, and ours are comparable, while HQQ is much faster.
+To ensure a fair comparison as much as possible and alleviate overfitting in perplexity evaluation on Wikitext or C4, we utilized 512 samples from NeelNanda/pile-10k for all methods during calibration unless explicitly stated. For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequence length to 2048. For lm-eval wikitext ppl, we adopt lm-eval. The lm-eval-harness git id we used in the following is 008fc2a23245c40384f2312718433eeb1e0f87a9 and we evaluated on qdq fake models.
 
-For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequence length to 2048. For lm-eval wikitext ppl, we adopt lm-eval. The lm-eval-harness git id we used in the following is 008fc2a23245c40384f2312718433eeb1e0f87a9 and we evaluated on qdq fake model.
+Due to memory constraints, we maintained the original sequence length of 512 for AWQ, while for GPTQ，Omniquant and our approach, a sequence length of 2048 is used. And HQQ is a data free method, no need to calibrate.
+
+For GPTQ, we have enabled act-order and true-seqential, and also activated static group in scenarios where group_size!=-1. The notation GPTQ* indicates that we adjusted the random seed or data preprocessing to address issues related to the non-positive definite Hessian matrix or other issues.
+
+For Omniquant, we adhere to the official settings, which include running for 20 epochs and disabling 'let'. We conducted calibration tests using sample sizes of 512 and 128, as well as a sample size of 512 with a batch size of 4. Our findings show that using a sample size of 512 typically results in comparable or slight higher performance for models <=13B. Therefore, we present the results based on the sample size of 512. For 70B models, due the the NAN loss issue and to reduce the tuning cost, we adopted 128 samples for calibration.
+
+For AutoRound, we used the default setting, iters 200, enable_quanted_input and enable_minmax_tuning, both the lr and minmax_lr are set to 1/iters,i.e. 5e-3.
+
+With these configurations, the tuning costs for GPTQ, AWQ, and ours are similar, while HQQ is much faster and Omniquant is noticebal slower.
 
 </br>
 
@@ -24,7 +32,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Avg.</td>
     </tr>
     <tr>
-        <td rowspan="6">Mistral-7B</td>
+        <td rowspan="7">Mistral-7B</td>
         <td>FP16</td>
         <td>61.35</td>
         <td>75.68</td>
@@ -100,6 +108,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>58.40 </td>
     </tr>
     <tr>
+        <td>Omniquant</td>
+        <td>57.52 </td>
+        <td>70.00 </td>
+        <td>60.27 </td>
+        <td>72.93 </td>
+        <td>79.87 </td>
+        <td>23.99 </td>
+        <td>30.80 </td>
+        <td>81.53 </td>
+        <td>63.90 </td>
+        <td>78.54 </td>
+        <td>46.42 </td>
+        <td>60.52 </td>
+    </tr>
+    <tr>
         <td>Ours</td>
         <td>59.52</td>
         <td>73.76</td>
@@ -115,7 +138,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>62.33</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-7B</td>
+        <td rowspan="7">V2-7B</td>
         <td>FP16</td>
         <td>42.69</td>
         <td>73.90</td>
@@ -191,6 +214,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>46.05 </td>
     </tr>
     <tr>
+        <td>Omniquant</td>
+        <td>39.82 </td>
+        <td>71.45 </td>
+        <td>55.76 </td>
+        <td>67.56 </td>
+        <td>76.88 </td>
+        <td>25.09 </td>
+        <td>30.80 </td>
+        <td>76.15 </td>
+        <td>64.98 </td>
+        <td>74.12 </td>
+        <td>40.19 </td>
+        <td>56.62 </td>
+    </tr>
+    <tr>
         <td>Ours</td>
         <td>39.97</td>
         <td>71.63</td>
@@ -206,7 +244,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>57.48</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-13B</td>
+        <td rowspan="7">V2-13B</td>
         <td>FP16</td>
         <td>52.86</td>
         <td>76.77</td>
@@ -282,6 +320,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>46.82 </td>
     </tr>
     <tr>
+        <td>Omniquant</td>
+        <td>51.01 </td>
+        <td>75.45 </td>
+        <td>59.48 </td>
+        <td>71.74 </td>
+        <td>78.94 </td>
+        <td>24.60 </td>
+        <td>33.20 </td>
+        <td>77.37 </td>
+        <td>66.07 </td>
+        <td>78.75 </td>
+        <td>46.76 </td>
+        <td>60.31 </td>
+    </tr>
+    <tr>
         <td>Ours</td>
         <td>52.30</td>
         <td>75.96</td>
@@ -297,7 +350,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>61.20</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-70B</td>
+        <td rowspan="7">V2-70B</td>
         <td>FP16</td>
         <td>66.23</td>
         <td>79.64</td>
@@ -371,6 +424,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>72.90 </td>
         <td>43.94 </td>
         <td>57.47 </td>
+    </tr>
+    <tr>
+        <td>Omniquant</td>
+        <td>64.40 </td>
+        <td>79.20 </td>
+        <td>63.91 </td>
+        <td>76.95 </td>
+        <td>81.94 </td>
+        <td>31.70 </td>
+        <td>37.60 </td>
+        <td>82.35 </td>
+        <td>69.31 </td>
+        <td>82.24 </td>
+        <td>54.18 </td>
+        <td>65.80 </td>
     </tr>
     <tr>
         <td>Ours</td>
@@ -715,7 +783,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Avg.</td>
     </tr>
     <tr>
-        <td  rowspan="6">Mistral-7B</td>
+        <td  rowspan="7">Mistral-7B</td>
         <td>FP16</td>
         <td>61.35</td>
         <td>75.68</td>
@@ -791,6 +859,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>62.75 </td>
     </tr>
     <tr>
+        <td>Omniquant</td>
+        <td>59.71 </td>
+        <td>73.94 </td>
+        <td>60.62 </td>
+        <td>73.56 </td>
+        <td>80.36 </td>
+        <td>26.68 </td>
+        <td>30.80 </td>
+        <td>83.58 </td>
+        <td>65.70 </td>
+        <td>80.01 </td>
+        <td>49.06 </td>
+        <td>62.18 </td>
+    </tr>
+    <tr>
         <td>Ours</td>
         <td>60.47</td>
         <td>75.59</td>
@@ -806,7 +889,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>62.62</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-7B</td>
+        <td rowspan="7">V2-7B</td>
         <td>FP16</td>
         <td>42.69</td>
         <td>73.90</td>
@@ -881,6 +964,22 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>42.15 </td>
         <td>57.41 </td>
     </tr>
+    </tr>
+        <tr>
+        <td>Omniquant</td>
+        <td>41.72 </td>
+        <td>73.04 </td>
+        <td>56.59 </td>
+        <td>68.98 </td>
+        <td>77.91 </td>
+        <td>24.97 </td>
+        <td>30.80 </td>
+        <td>75.81 </td>
+        <td>61.37 </td>
+        <td>75.76 </td>
+        <td>43.34 </td>
+        <td>57.30 </td>
+    </tr>
     <tr>
         <td>Ours</td>
         <td>41.82</td>
@@ -897,7 +996,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>57.57</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-13B</td>
+        <td rowspan="7">V2-13B</td>
         <td>FP16</td>
         <td>52.86</td>
         <td>76.77</td>
@@ -973,6 +1072,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>60.65 </td>
     </tr>
     <tr>
+        <td>Omniquant</td>
+        <td>52.01 </td>
+        <td>76.17 </td>
+        <td>59.53 </td>
+        <td>72.06 </td>
+        <td>78.35 </td>
+        <td>23.87 </td>
+        <td>33.40 </td>
+        <td>80.80 </td>
+        <td>66.07 </td>
+        <td>78.37 </td>
+        <td>47.18 </td>
+        <td>60.51 </td>
+    </tr>
+    <tr>
         <td>Ours</td>
         <td>51.92</td>
         <td>76.46</td>
@@ -988,7 +1102,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>60.85</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-70B</td>
+        <td rowspan="7">V2-70B</td>
         <td>FP16</td>
         <td>66.23</td>
         <td>79.64</td>
@@ -1062,6 +1176,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>82.83 </td>
         <td>55.20 </td>
         <td>66.06 </td>
+    </tr>
+    <tr>
+        <td>Omniquant</td>
+        <td>65.30 </td>
+        <td>79.39 </td>
+        <td>64.52 </td>
+        <td>77.51 </td>
+        <td>81.88 </td>
+        <td>30.60 </td>
+        <td>37.40 </td>
+        <td>83.39 </td>
+        <td>68.23 </td>
+        <td>82.91 </td>
+        <td>55.12 </td>
+        <td>66.02 </td>
     </tr>
     <tr>
         <td>Ours</td>
@@ -1406,7 +1535,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Avg.</td>
     </tr>
     <tr>
-        <td rowspan="6">Mistral-7B</td>
+        <td rowspan="7">Mistral-7B</td>
         <td>FP16</td>
         <td>61.35</td>
         <td>75.68</td>
@@ -1482,6 +1611,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>59.33 </td>
     </tr>
     <tr>
+        <td>Omniquant</td>
+        <td>54.79 </td>
+        <td>69.34 </td>
+        <td>58.42 </td>
+        <td>68.51 </td>
+        <td>79.38 </td>
+        <td>24.85 </td>
+        <td>28.80 </td>
+        <td>80.15 </td>
+        <td>56.68 </td>
+        <td>77.74 </td>
+        <td>45.14 </td>
+        <td>58.53 </td>
+    </tr>
+    <tr>
         <td>Ours</td>
         <td>57.54</td>
         <td>73.01</td>
@@ -1497,7 +1641,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>60.43</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-7B</td>
+        <td rowspan="7">V2-7B</td>
         <td>FP16</td>
         <td>42.69</td>
         <td>73.90</td>
@@ -1573,6 +1717,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>54.31 </td>
     </tr>
     <tr>
+        <td>Omniquant</td>
+        <td>34.51 </td>
+        <td>69.75 </td>
+        <td>54.42 </td>
+        <td>66.69 </td>
+        <td>76.77 </td>
+        <td>24.24 </td>
+        <td>31.40 </td>
+        <td>73.21 </td>
+        <td>56.68 </td>
+        <td>74.37 </td>
+        <td>39.85 </td>
+        <td>54.72 </td>
+    </tr>
+    <tr>
         <td>Ours</td>
         <td>40.13</td>
         <td>71.01</td>
@@ -1588,7 +1747,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>56.68</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-13B</td>
+        <td rowspan="7">V2-13B</td>
         <td>FP16</td>
         <td>52.86</td>
         <td>76.77</td>
@@ -1664,6 +1823,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>58.10 </td>
     </tr>
     <tr>
+        <td>Omniquant</td>
+        <td>47.25 </td>
+        <td>73.67 </td>
+        <td>58.46 </td>
+        <td>70.01 </td>
+        <td>78.40 </td>
+        <td>24.36 </td>
+        <td>33.60 </td>
+        <td>79.79 </td>
+        <td>64.62 </td>
+        <td>77.86 </td>
+        <td>46.16 </td>
+        <td>59.18 </td>
+    </tr>
+    <tr>
         <td>Ours</td>
         <td>49.64</td>
         <td>75.20</td>
@@ -1679,7 +1853,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>59.44</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-70B</td>
+        <td rowspan="7">V2-70B</td>
         <td>FP16</td>
         <td>66.23</td>
         <td>79.64</td>
@@ -1753,6 +1927,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>81.78 </td>
         <td>53.67 </td>
         <td>64.80 </td>
+    </tr>
+    <tr>
+        <td>Omniquant</td>
+        <td>63.18 </td>
+        <td>78.63 </td>
+        <td>63.54 </td>
+        <td>76.48 </td>
+        <td>81.50 </td>
+        <td>30.35 </td>
+        <td>35.80 </td>
+        <td>82.57 </td>
+        <td>70.40 </td>
+        <td>81.02 </td>
+        <td>52.82 </td>
+        <td>65.12 </td>
     </tr>
     <tr>
         <td>Ours</td>
@@ -2097,7 +2286,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>Avg.</td>
     </tr>
     <tr>
-        <td rowspan="6">Mistral-7B</td>
+        <td rowspan="7">Mistral-7B</td>
         <td>FP16</td>
         <td>61.35</td>
         <td>75.68</td>
@@ -2173,6 +2362,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>31.41 </td>
     </tr>
     <tr>
+        <td>Omniquant</td>
+        <td>23.24 </td>
+        <td>5.38 </td>
+        <td>29.38 </td>
+        <td>49.72 </td>
+        <td>56.09 </td>
+        <td>26.32 </td>
+        <td>16.60 </td>
+        <td>41.99 </td>
+        <td>52.71 </td>
+        <td>32.11 </td>
+        <td>20.39 </td>
+        <td>32.17 </td>
+    </tr>
+    <tr>
         <td>Ours</td>
         <td>40.46</td>
         <td>58.61</td>
@@ -2188,7 +2392,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>52.71 </td>
     </tr>
     <tr>
-        <td rowspan="6">V2-7B</td>
+        <td rowspan="7">V2-7B</td>
         <td>FP16</td>
         <td>42.69</td>
         <td>73.90</td>
@@ -2263,6 +2467,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>21.33 </td>
         <td>29.87 </td>
     </tr>
+     <tr>
+        <td>Omniquant</td>
+        <td>22.97 </td>
+        <td>35.53 </td>
+        <td>40.28 </td>
+        <td>55.88 </td>
+        <td>65.13 </td>
+        <td>22.89 </td>
+        <td>15.60 </td>
+        <td>63.24 </td>
+        <td>53.07 </td>
+        <td>50.13 </td>
+        <td>23.46 </td>
+        <td>40.74 </td>
+    </tr>
     <tr>
         <td>Ours</td>
         <td>27.20</td>
@@ -2279,7 +2498,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>48.64</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-13B</td>
+        <td rowspan="7">V2-13B</td>
         <td>FP16</td>
         <td>52.86</td>
         <td>76.77</td>
@@ -2355,6 +2574,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>35.28 </td>
     </tr>
     <tr>
+        <td>Omniquant</td>
+        <td>25.53 </td>
+        <td>49.84 </td>
+        <td>46.23 </td>
+        <td>57.93 </td>
+        <td>70.13 </td>
+        <td>24.60 </td>
+        <td>21.80 </td>
+        <td>66.85 </td>
+        <td>55.60 </td>
+        <td>63.22 </td>
+        <td>30.29 </td>
+        <td>46.55 </td>
+    </tr>
+    <tr>
         <td>Ours</td>
         <td>34.33</td>
         <td>63.92</td>
@@ -2370,7 +2604,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td><b>53.46</td>
     </tr>
     <tr>
-        <td rowspan="6">V2-70B</td>
+        <td rowspan="7">V2-70B</td>
         <td>FP16</td>
         <td>66.23</td>
         <td>79.64</td>
@@ -2444,6 +2678,21 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
         <td>52.06 </td>
         <td>23.12 </td>
         <td>37.42 </td>
+    </tr>
+    <tr>
+        <td>Omniquant</td>
+        <td>33.84 </td>
+        <td>61.83 </td>
+        <td>52.44 </td>
+        <td>64.33 </td>
+        <td>74.10 </td>
+        <td>24.48 </td>
+        <td>28.20 </td>
+        <td>71.68 </td>
+        <td>53.07 </td>
+        <td>67.21 </td>
+        <td>33.28 </td>
+        <td>51.31 </td>
     </tr>
     <tr>
         <td>Ours</td>
@@ -2767,9 +3016,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
 </table>
 
 
-
-
-## Other data
+## Other data W4G128
 <table border="1">
   <tr>
     <th>Model</th>
@@ -2835,7 +3082,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
   </tr>
 
   </tr>
-    <th>Ours iters=1K,use_quant_input=False, minmax_lr=0.002</th>
+    <th>Ours iters=1K,disable_quanted_input, minmax_lr=0.002</th>
     <td>67.70</td> <! acc avg -->
     <td>60.57</td> <! MMLU -->
     <td>73.74</td> <! Lambada_openai -->
@@ -2853,7 +3100,6 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>9.83</td>    <! c4_new ppl  -->
     <td>-</td> <! lm-eval wikitext ppl  -->
   </tr>
-
 
   <tr>
     <td rowspan="3">mistralai/Mixtral-8x7B-v0.1 </td>
@@ -2896,7 +3142,7 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>-</td>
   </tr>
   <tr>
-    <th>Ours iters=1K,use_quant_input=False 
+    <th>Ours iters=1K,disable_quanted_input 
     <td>66.78</td>
     <td>68.68</td>
     <td>78.61</td>
@@ -2956,9 +3202,8 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>11.37</td>
 
   </tr>
-
   </tr>
-    <th>Ours iters=1K,use_quant_input=False </th>
+    <th>Ours iters=1K,disable_quanted_input </th>
     <td>61.47</td> <! acc avg -->
     <td>55.41</td> <! MMLU -->
     <td>61.77</td> <! Lambada_openai -->
@@ -2976,4 +3221,210 @@ For wikitext2/ptb-new/c4-new ppl, we follow the code of gptq and set the sequenc
     <td>14.37</td>    <! c4_new ppl  -->
     <td>11.35</td> <! lm-eval wikitext ppl  -->
   </tr>
+</br>
+
+</table>  
+
+### Other data W2G32
+<table border="1">
+  <tr>
+    <th>Model</th>
+    <th>Method </th>
+    <th>Acc AVG.</th>
+    <th>MMLU</th>
+    <th>Lamb.</th>
+    <th>Hella.</th>
+    <th>Wino.</th>
+    <th>Piqa</th>
+    <th>Truth.</th>
+    <th>Open.</th>
+    <th>Boolq</th>
+    <th>RTE</th>
+    <th>ARC-e</th>
+    <th>ARC-c.</th>
+    <th>wikitext2 ppl
+    <th>ptb_new ppl</th>
+    <th>c4_new ppl</th>
+    <th>lm_eval wikitext ppl</th>
+   
+  </tr>
+  <tr>
+    <td rowspan="3">mistralai/Mistral-7B </td>
+    <th>FP16</th>
+    <td>63.30 </td>
+    <td>61.35 </td>
+    <td>75.68 </td>
+    <td>61.27 </td>
+    <td>74.03 </td>
+    <td>80.79 </td>
+    <td>28.03 </td>
+    <td>32.80 </td>
+    <td>83.67 </td>
+    <td>67.51 </td>
+    <td>80.81 </td>
+    <td>50.34 </td>
+    <td>5.25 </td>
+    <td>35.00 </td>
+    <td>8.38 </td>
+    <td>-</td>
+  </tr>
+  </tr>
+    <th>Ours iters=1K </th>
+    <td>56.44 </td>
+    <td>47.38 </td>
+    <td>67.26 </td>
+    <td>55.06 </td>
+    <td>67.88 </td>
+    <td>77.75 </td>
+    <td>26.19 </td>
+    <td>26.40 </td>
+    <td>78.07 </td>
+    <td>58.12 </td>
+    <td>74.20 </td>
+    <td>42.49 </td>
+    <td>7.14 </td>
+    <td>56.78 </td>
+    <td>10.71 </td>
+    <td>-</td> <! lm-eval wikitext ppl  -->
+  </tr>
+  </tr>
+    <th>Ours iters=4K,minmax_lr=0.0005  </th>
+    <td>57.16 </td>
+    <td>50.28 </td>
+    <td>67.03 </td>
+    <td>55.37 </td>
+    <td>68.11 </td>
+    <td>77.53 </td>
+    <td>26.44 </td>
+    <td>26.00 </td>
+    <td>80.58 </td>
+    <td>58.12 </td>
+    <td>75.63 </td>
+    <td>43.69 </td>
+    <td>7.07 </td>
+    <td>51.88 </td>
+    <td>10.67 </td>
+    <td>-</td> <! lm-eval wikitext ppl  -->
+  </tr>
+
+  <tr>
+    <td rowspan="3">Meta/LLaMA-2-13B </td>
+    <th>FP16</th>
+    <td>61.42 </td>
+    <td>52.86 </td>
+    <td>76.77 </td>
+    <td>60.04 </td>
+    <td>72.14 </td>
+    <td>79.05 </td>
+    <td>25.95 </td>
+    <td>35.20 </td>
+    <td>80.55 </td>
+    <td>65.34 </td>
+    <td>79.38 </td>
+    <td>48.38 </td>
+    <td>4.88 </td>
+    <td>50.93 </td>
+    <td>6.73 </td>
+    <td>7.90 </td>
+ 
+  </tr>
+<tr>
+    <th>Ours iters=1K,minmax_lr=0.002</th>
+    <td>56.95 </td>
+    <td>42.39 </td>
+    <td>70.87 </td>
+    <td>55.15 </td>
+    <td>68.03 </td>
+    <td>77.37 </td>
+    <td>24.11 </td>
+    <td>30.80 </td>
+    <td>77.58 </td>
+    <td>64.62 </td>
+    <td>75.63 </td>
+    <td>39.93 </td>
+    <td>6.26 </td>
+    <td>78.83 </td>
+    <td>8.70 </td>
+    <td>11.25 </td>
+  </tr>
+  <tr>
+    <th>Ours iters=2K,minmax_lr=0.001</th>
+    <td>57.53 </td>
+    <td>44.42 </td>
+    <td>71.63 </td>
+    <td>55.23 </td>
+    <td>68.03 </td>
+    <td>76.66 </td>
+    <td>24.48 </td>
+    <td>32.00 </td>
+    <td>76.91 </td>
+    <td>65.70 </td>
+    <td>76.09 </td>
+    <td>41.64 </td>
+    <td>6.27 </td>
+    <td>75.40 </td>
+    <td>8.70 </td>
+    <td>11.22 </td>
+  </tr>
+
+ <tr>
+    <td rowspan="3">Meta/LLaMA-2-7B </td>
+    <th>FP16</th>
+    <td>57.98 </td>
+    <td>42.69 </td>
+    <td>73.90 </td>
+    <td>57.15 </td>
+    <td>68.90 </td>
+    <td>78.07 </td>
+    <td>25.21 </td>
+    <td>31.40 </td>
+    <td>77.74 </td>
+    <td>62.82 </td>
+    <td>76.35 </td>
+    <td>43.52 </td>
+    <td>5.47 </td>
+    <td>37.92 </td>
+    <td>7.26 </td>
+    <td>8.79 </td>
+  </tr>
+  </tr>
+    <th>Ours iters=1K,minmax_lr=0.002 </th>
+    <td>52.29 </td>
+    <td>27.14 </td>
+    <td>65.48 </td>
+    <td>50.25 </td>
+    <td>66.61 </td>
+    <td>74.54 </td>
+    <td>24.11 </td>
+    <td>29.80 </td>
+    <td>73.30 </td>
+    <td>56.68 </td>
+    <td>70.20 </td>
+    <td>37.12 </td>
+    <td>8.72 </td>
+    <td>1692.95 </td>
+    <td>10.06 </td>
+    <td>12.80 </td>
+  </tr>
+  </tr>
+    <th>Ours iters=2K,minmax_lr=0.0005  </th>
+    <td>52.32 </td>
+    <td>28.26 </td>
+    <td>64.16 </td>
+    <td>50.66 </td>
+    <td>64.80 </td>
+    <td>75.14 </td>
+    <td>23.87 </td>
+    <td>30.20 </td>
+    <td>71.74 </td>
+    <td>57.76 </td>
+    <td>71.13 </td>
+    <td>37.80 </td>
+    <td>8.54 </td>
+    <td>0.00 </td>
+    <td>10.14 </td>
+    <td>0.00 </td>
+  </tr>
+
+</table>
 </table>

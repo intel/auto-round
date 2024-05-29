@@ -4,7 +4,8 @@ python3 main.py \
 --group_size 128 \
 --bits 4 \
 --iters 1000 \
---use_quant_input \
 --minmax_lr 2e-3 \
 --deployment_device 'gpu' \
+--model_dtype "float16" \
+--disable_low_gpu_mem_usage \
 --output_dir "./tmp_autoround"

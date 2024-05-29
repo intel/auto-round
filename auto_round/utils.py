@@ -14,43 +14,68 @@
 
 import copy
 import logging
+import os
 import subprocess
 from collections import UserDict
 
 # for cpu usage
 import cpuinfo
+import numpy as np
 import psutil
 import torch
 from torch.amp import autocast
 
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
+logger.propagate = False
 fh = logging.StreamHandler()
 fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
 fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
 
+import importlib
+import transformers
+
+class LazyImport(object):
+    """Lazy import python module till use."""
+
+    def __init__(self, module_name):
+        """Init LazyImport object.
+
+        Args:
+           module_name (string): The name of module imported later
+        """
+        self.module_name = module_name
+        self.module = None
+
+    def __getattr__(self, name):
+        """Get the attributes of the module by name."""
+        try:
+            self.module = importlib.import_module(self.module_name)
+            mod = getattr(self.module, name)
+        except:
+            spec = importlib.util.find_spec(str(self.module_name + "." + name))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        return mod
+
+    def __call__(self, *args, **kwargs):
+        """Call the function in that module."""
+        function_name = self.module_name.split(".")[-1]
+        module_name = self.module_name.split(f".{function_name}")[0]
+        self.module = importlib.import_module(module_name)
+        function = getattr(self.module, function_name)
+        return function(*args, **kwargs)
+
+
+auto_gptq = LazyImport("auto_gptq")
+htcore = LazyImport("habana_frameworks.torch.core")
+
 
 def is_optimum_habana_available():
-    import importlib
-
     from transformers.utils.import_utils import is_optimum_available
 
     return is_optimum_available() and importlib.util.find_spec("optimum.habana") is not None
-
-
-try:
-    import habana_frameworks.torch.core as htcore
-    import habana_frameworks.torch.hpu as hthpu
-
-    if is_optimum_habana_available():
-        is_hpu_available = True
-    else:
-        print("Should install optimum-habana when the environment has habana frameworks")
-        is_hpu_available = False
-except ImportError:
-    is_hpu_available = False
-    htcore = None
 
 
 def round_ste(x: torch.Tensor):
@@ -80,18 +105,16 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_d
         Quantized and dequantized weight, scale, zero-point
     """
     maxq = torch.tensor(2**num_bits - 1)
-    zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=scale_dtype)
-    # zeros = torch.zeros(weight.shape[0], device=weight.device)
     if isinstance(min_scale, torch.Tensor):
-        wmin_tmp = torch.minimum(weight.min(1)[0], zeros)
-        wmax_tmp = torch.maximum(weight.max(1)[0], zeros)
+        wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
         wmin_tmp *= min_scale + 1.0
         wmax_tmp *= max_scale + 1.0
         wmax = torch.maximum(wmax_tmp, wmin_tmp)
         wmin = torch.minimum(wmax_tmp, wmin_tmp)
     else:
-        wmin = torch.minimum(weight.min(1)[0], zeros)
-        wmax = torch.maximum(weight.max(1)[0], zeros)
+        wmin = torch.clamp(weight.min(1)[0], max=0)
+        wmax = torch.clamp(weight.max(1)[0], min=0)
 
     tmp = (wmin == 0) & (wmax == 0)
     wmin[tmp] = -1
@@ -119,17 +142,16 @@ def quant_weight_sym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dt
         Quantized and dequantized weight, scale, zero-point
     """
     maxq = torch.tensor(2**num_bits - 1)
-    zeros = torch.zeros(weight.shape[0], device=weight.device, dtype=scale_dtype)
     if isinstance(min_scale, torch.Tensor):
-        wmin_tmp = torch.minimum(weight.min(1)[0], zeros)
-        wmax_tmp = torch.maximum(weight.max(1)[0], zeros)
+        wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
         wmin_tmp *= min_scale + 1.0
         wmax_tmp *= max_scale + 1.0
         wmax = torch.maximum(wmax_tmp, wmin_tmp)
         wmin = torch.minimum(wmax_tmp, wmin_tmp)
     else:
-        wmin = torch.minimum(weight.min(1)[0], zeros)
-        wmax = torch.maximum(weight.max(1)[0], zeros)
+        wmin = torch.clamp(weight.min(1)[0], max=0)
+        wmax = torch.clamp(weight.max(1)[0], min=0)
     wmax_new = torch.max(wmin.abs(), wmax)
     tmp = wmin < 0
     wmin_new = wmin.clone()  ##must clone, otherwise inplace backward will occur
@@ -267,9 +289,7 @@ def get_module(module, key):
     """
     name_list = key.split(".")
     for name in name_list:
-        if hasattr(module, name):
-            module = getattr(module, name)
-            module = module
+        module = getattr(module, name, None)
     return module
 
 
@@ -286,8 +306,6 @@ def set_module(model, key, new_module):
     for name in name_list[:-1]:
         if hasattr(module, name):
             module = getattr(module, name)
-        else:
-            module = module
     setattr(module, name_list[-1], new_module)
 
 
@@ -309,7 +327,7 @@ def get_scale_shape(weight, group_size):
     return shape
 
 
-def move_input_to_device(input, device=torch.device("cpu")):
+def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
 
     Args:
@@ -319,16 +337,24 @@ def move_input_to_device(input, device=torch.device("cpu")):
     Returns:
     The input data on the specified device.
     """
+    if input is None:
+        return None
     if isinstance(input, torch.Tensor):
         return input.to(device)
     if isinstance(input, dict) or isinstance(input, UserDict):
         for inp in input.keys():
-            input[inp] = move_input_to_device(input[inp], device)
+            input[inp] = to_device(input[inp], device)
+
     elif isinstance(input, list) or isinstance(input, tuple):
+        if len(input) == 0:
+            return input
         input_res = []
         for inp in input:
-            input_res.append(move_input_to_device(inp, device))
+            input_res.append(to_device(inp, device))
+        if isinstance(input, tuple):
+            input_res = tuple(input_res)
         input = input_res
+
     return input
 
 
@@ -401,24 +427,11 @@ def collect_minmax_scale(block):
 
 
 @torch.no_grad()
-def get_batch_dim(input_others):
-    """Gets the batch dimension based on the input positional inputs.
-
-    Args:
-    input_others: A dictionary containing input data.
-
-    Returns:
-    dim: The batch dimension.
-    """
-    dim = int(len(input_others["positional_inputs"]) > 0)
-    return dim
-
-
-def sampling_inputs(input_ids, input_others, indices, seqlen):
+def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_mask_flag=False, input_dim=0):
     """Samples inputs based on the given indices and sequence length.
 
     Args:
-    input_ids: The input tensor containing IDs.
+    input_ids: The list of input tensor containing  input_ids.
     input_others: A dictionary containing other input data.
     indices: The indices to sample from the input.
     seqlen: The sequence length.
@@ -427,23 +440,17 @@ def sampling_inputs(input_ids, input_others, indices, seqlen):
     current_input_ids: The sampled input IDs.
     current_input_others: The sampled other input data.
     """
-    if len(input_ids.shape) == 3:
-        if int(len(input_others["positional_inputs"]) > 0):
-            current_input_ids = input_ids[:, indices, :]
-        else:
-            current_input_ids = input_ids[indices, :, :]
-    else:
-        n_samples = input_ids.shape[0] // seqlen
-        current_input_ids = input_ids.view(n_samples, seqlen, -1)
-        current_input_ids = current_input_ids[indices, :, :]
-        current_input_ids = current_input_ids.reshape(-1, input.shape[-1])
+    current_input_ids = [input_ids[i] for i in indices]
+    current_input_ids = torch.cat(current_input_ids, dim=input_dim)
 
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
-        if "attention_mask" in key or "alibi" in key:
+        if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key):
             current_input_others[key] = None
             if input_others[key] is not None:
-                current_input_others[key] = input_others[key][indices, ...]
+                current_input_others[key] = [input_others[key][i] for i in indices]
+                current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+
         else:
             current_input_others[key] = input_others[key]
 
@@ -466,33 +473,26 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
     """
     if input_ids.device != device:
         # input_ids, input_others = move_to_device(input_ids, input_others, device)
-        input_ids = move_input_to_device(input_ids, device)
-        input_others = move_input_to_device(input_others, device)
+        input_ids = to_device(input_ids, device)
+        input_others = to_device(input_others, device)
+    input_tuple = input_others.pop("positional_inputs", None)
     if "alibi" in input_others.keys():
-        attention_mask = input_others["attention_mask"]
-        alibi = input_others["alibi"]
+        alibi = input_others.pop("alibi")
         if alibi is not None:
             alibi = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
-        if amp and not check_is_cpu(device):
-            with autocast(device_type="cuda", dtype=amp_dtype):  # pragma: no cover
+        if amp:
+            with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
                 output = block(
-                    input_ids, attention_mask=attention_mask, alibi=alibi
+                    input_ids, alibi=alibi, *input_tuple, **input_others
                 )  ##TODO is this correct for all models with alibi?
-        elif amp and check_is_cpu(device):
-            with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
-                output = block(input_ids, attention_mask=attention_mask, alibi=alibi)
         else:
-            output = block(input_ids, attention_mask=attention_mask, alibi=alibi)
+            output = block(input_ids, alibi=alibi, *input_tuple, **input_others)
     else:
-        input_tuple = input_others.pop("positional_inputs", None)
-        if amp and not check_is_cpu(device):
-            with autocast(device_type="cuda", dtype=amp_dtype):  # pragma: no cover
-                output = block.forward(input_ids, *input_tuple, **input_others)
-        elif amp and check_is_cpu(device):
-            with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
-                output = block.forward(input_ids, *input_tuple, **input_others)
+        if amp:
+            with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
+                output = block(input_ids, *input_tuple, **input_others)
         else:
-            output = block.forward(input_ids, *input_tuple, **input_others)
+            output = block(input_ids, *input_tuple, **input_others)
     if isinstance(output, list) or isinstance(output, tuple):
         output = output[0]
     return output
@@ -525,7 +525,7 @@ def detect_device(device=None):
         if torch.cuda.is_available():
             device = torch.device("cuda")
             logger.info("Using GPU device")
-        elif is_hpu_available:
+        elif is_optimum_habana_available():
             device = torch.device("hpu")
             logger.info("Using HPU device")
         # Use CPU as a fallback
@@ -604,3 +604,161 @@ class CpuInfo(object):
                 for line in proc.stdout:
                     return int(line.decode("utf-8", errors="ignore").strip())
         return 0
+
+
+def is_local_path(path):
+    """Checks if a given path exists locally.
+
+    Args:
+        path (str): The path to check.
+
+    Returns:
+        bool: True if the path exists locally, False otherwise.
+    """
+    return os.path.exists(path)
+
+
+def convert_dtype_str2torch(str_dtype):
+    """Converts a string dtype to its corresponding PyTorch dtype.
+
+    Args:
+        str_dtype (str): The string representation of the dtype.
+
+    Returns:
+        torch.dtype: The PyTorch dtype.
+
+    Raises:
+        AssertionError: If the input str_dtype is unsupported.
+    """
+    if isinstance(str_dtype, torch.dtype) or str_dtype is None:
+        return str_dtype
+    if str_dtype == "int8":
+        return torch.int8
+    elif str_dtype == "fp32" or str_dtype == "float32" or str_dtype == "auto":
+        return torch.float
+    elif str_dtype == "fp16" or str_dtype == "float16":
+        return torch.float16
+    elif str_dtype == "bf16" or str_dtype == "bfloat16":
+        return torch.bfloat16
+    else:
+        assert False, "Unsupported str dtype {} to torch dtype".format(str_dtype)
+
+
+def convert_dtype_torch2str(dtype):
+    """Converts a PyTorch dtype to its corresponding string representation.
+
+    Args:
+        dtype: PyTorch dtype or str. The dtype to convert.
+
+    Returns:
+        str: The string representation of the dtype.
+
+    Raises:
+        AssertionError: If the input dtype is unsupported.
+    """
+    if isinstance(dtype, str) or dtype is None:
+        return dtype
+    if dtype == torch.int8:
+        return "int8"
+    elif dtype == torch.float:
+        return "fp32"
+    elif dtype == torch.float16:
+        return "fp16"
+    elif dtype == torch.bfloat16:
+        return "bf16"
+    elif isinstance(dtype, str) and dtype in ["int8", "fp32", "fp16", "bf16"]:
+        return dtype
+    else:
+        assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
+
+
+def convert_dtype_torch2str_hf(dtype):
+    """Converts a PyTorch dtype to its corresponding huggingface string dtype, e.g. torch.float32 -> 'float32'.
+
+    Args:
+        dtype: PyTorch dtype or str. The dtype to convert.
+
+    Returns:
+         str: The string representation of the dtype.
+
+    Raises:
+        AssertionError: If the input str_dtype is unsupported.
+    """
+    if dtype is None:
+        return dtype
+    if isinstance(dtype, str):
+        if "float" not in dtype and "int" not in dtype:
+            dtype = convert_dtype_str2torch(dtype)
+        else:
+            return dtype
+    str_dtype = str(dtype)
+    if "." not in str_dtype:
+        assert False, "Unsupported pytorch dtype {} to huggingface str dtype".format(dtype)
+    str_dtype = str_dtype.split(".")[1]
+    return str_dtype
+
+
+def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
+    """Checks the availability of memory on the specified device for processing inputs using a given weight tensor.
+
+    Args:
+        device (str): The device type ('cuda' for GPU or 'hpu' for HPU).
+        inputs (torch.Tensor): Input tensor.
+        weight (torch.Tensor): Weight tensor.
+        org_seqlen (int): Original sequence length.
+        org_bs (int): Original batch size.
+
+    Returns:
+        tuple: A tuple containing availability status (bool), modified sequence length (int),
+               and modified batch size (int).
+    """
+    weight_memory = weight.numel() * weight.element_size()
+    if "cuda" in device:
+        current_gpu_index = torch.cuda.current_device()
+        total_memory = torch.cuda.get_device_properties(current_gpu_index).total_memory
+        used_memory = torch.cuda.memory_allocated(current_gpu_index)
+        free_space = total_memory - used_memory
+    elif "hpu" in device:
+        current_hpu_index = torch.hpu.current_device()
+        free_space = torch.hpu.memory_reserved(current_hpu_index)
+    else:
+        return True, org_seqlen, org_bs
+
+    free_space = free_space - weight_memory * 10  # for min_max_scale & grad usage
+    seqlen = org_seqlen
+    bs = org_bs
+    in_feature = weight.shape[1]
+    out_feature = weight.shape[0]
+    while seqlen >= 128:
+        input_size = bs * seqlen * in_feature
+        output_size = bs * seqlen * out_feature
+        input_output_memory = 2 * (input_size * inputs.element_size() + output_size * inputs.element_size())
+        if input_output_memory < free_space:
+            return True, seqlen, bs
+        seqlen = seqlen // 2
+        bs = 1
+
+    return False, seqlen, bs
+
+
+def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transformers.modeling_utils.Conv1D]):
+    """Retrieves the names of layers within each block of the model.
+
+    Returns:
+        list: A list of strings, where each string is the name of a layer
+              within a block of the model.
+    """
+    for n, m in model.named_modules():
+        if isinstance(m, tuple(supported_types)):
+            m.tmp_name = n
+    layers_in_block = []
+    block_names = get_block_names(model)
+    for block_name in block_names:
+        block = get_module(model, block_name)
+        for n, m in block.named_modules():
+            if hasattr(m, "tmp_name"):
+                layers_in_block.append(m.tmp_name)
+    for n, m in model.named_modules():
+        if hasattr(m, "tmp_name"):
+            delattr(m, "tmp_name")
+    return layers_in_block
