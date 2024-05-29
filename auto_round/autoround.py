@@ -641,7 +641,8 @@ class AutoRound(object):
         if self.enable_quanted_input:
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.n_samples, layer_names=layer_names)
 
-        self.model = self.model.to("cpu")
+        if not self.layer_wise:
+            self.model = self.model.to("cpu")
         torch.cuda.empty_cache()
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
@@ -1311,7 +1312,8 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
             )
-            m = m.to("cpu")
+            if not self.layer_wise:
+                m = m.to("cpu")
             torch.cuda.empty_cache()
 
         del q_input
