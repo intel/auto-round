@@ -44,9 +44,10 @@ from .utils import (
     to_device,
 )
 
+from .layer_wise.utils import _get_path, register_weight_hooks, LWQ_WORKSPACE
 
 class WrapperLinear(torch.nn.Module):
-    def __init__(self, orig_layer, enable_minmax_tuning=True):
+    def __init__(self, orig_layer, enable_minmax_tuning=True, device='cpu'):
         """A wrapper module for linear layers that enables quantization and min-max tuning of weights.
 
         Args:
@@ -69,25 +70,25 @@ class WrapperLinear(torch.nn.Module):
         self.group_size = self.orig_layer.group_size
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
-        weight_dtype = self.orig_layer.weight.dtype
+        orig_weight = self.orig_layer.weight if str(self.orig_layer.weight.device) != 'meta' else self.orig_layer.get_weight()
+        weight_dtype = orig_weight.dtype
         weight_dtype = torch.float32  ##TODO revert the change to check the accuracy
         self.value = torch.nn.Parameter(
-            torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
+            torch.zeros(orig_weight.shape, device=device, dtype=weight_dtype),
             requires_grad=True,
         )
         self.enable_minmax_tuning = enable_minmax_tuning
-        shape = get_scale_shape(self.orig_layer.weight, self.group_size)
-        weight_dtype = self.orig_layer.weight.dtype
+        shape = get_scale_shape(orig_weight, self.group_size)
         if self.enable_minmax_tuning:
             self.min_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
+                torch.zeros(shape, device=device, dtype=weight_dtype), requires_grad=True
             )
             self.max_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
+                torch.zeros(shape, device=device, dtype=weight_dtype), requires_grad=True
             )
         else:
-            self.min_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
-            self.max_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
+            self.min_scale = torch.tensor(0, device=device, dtype=weight_dtype)
+            self.max_scale = torch.tensor(0, device=device, dtype=weight_dtype)
 
     def unwrapper(self, v, min_scale, max_scale):
         """Unwrapper the layer to the original layer.
@@ -103,8 +104,9 @@ class WrapperLinear(torch.nn.Module):
         min_scale.clamp_(-1, 0)
         max_scale.clamp_(-1, 0)
 
+        orig_weight = self.orig_layer.weight if str(self.orig_layer.weight.device) != 'meta' else self.orig_layer.get_weight()
         q_dq_weight, scale, zp = quant_weight(
-            self.orig_layer.weight,
+            orig_weight,
             self.num_bits,
             self.group_size,
             self.sym,
@@ -113,7 +115,10 @@ class WrapperLinear(torch.nn.Module):
             max_scale,
             self.scale_dtype,
         )
-        self.orig_layer.weight.data.copy_(q_dq_weight)
+        if self.orig_layer.weight.device == 'meta':
+            self.orig_layer._parameters['weight'] = q_dq_weight
+        else:
+            self.orig_layer.weight.data.copy_(q_dq_weight)
         self.orig_layer.weight.grad = None  ##clear grad
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
@@ -130,7 +135,7 @@ class WrapperLinear(torch.nn.Module):
         """
         from torch.functional import F
 
-        weight = self.orig_layer.weight
+        weight = self.orig_layer.weight if str(self.orig_layer.weight.device) != 'meta' else self.orig_layer.get_weight()
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
         weight_q, _, _ = quant_weight(
@@ -145,7 +150,8 @@ class WrapperLinear(torch.nn.Module):
         )
         weight_q = weight_q.to(weight.dtype)
         # pylint: disable=not-callable
-        return F.linear(x, weight_q, self.orig_layer.bias)
+        bias = self.orig_layer.bias if str(self.orig_layer.bias.device) != 'meta' else self.orig_layer.get_bias()
+        return F.linear(x, weight_q, bias)
 
 
 class WrapperTransformerConv1d(torch.nn.Module):
@@ -270,7 +276,7 @@ class WrapperMultiblock(torch.nn.Module):
         return hidden_states
 
 
-def wrapper_block(block, enable_minmax_tuning):
+def wrapper_block(block, enable_minmax_tuning, device="cpu"):
     """Wraps the layers in the given block with a custom Wrapper module.
 
     Args:
@@ -287,7 +293,7 @@ def wrapper_block(block, enable_minmax_tuning):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning)
+            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning, device=device)
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
@@ -435,11 +441,13 @@ class AutoRound(object):
         dynamic_max_gap: int = -1,
         data_type: str = "int",  ##only support int for now
         scale_dtype: str = "fp16",
+        layer_wise: bool = False,
         **kwargs,
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
-        self.model = model.eval().to("cpu")
+        self.layer_wise = layer_wise
+        self.model = model.eval().to("cpu") if not self.layer_wise else model.eval()
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -489,6 +497,11 @@ class AutoRound(object):
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+        
+        # if self.layer_wise:
+        #     assert model.path is not None, "Should using load_model to load the model when using layer_wise mode"
+        #     self.weight_hanles = register_weight_hooks(model, model.path, device=self.device, clean_weight=True, saved_path=LWQ_WORKSPACE)
+
         self.check_configs()
 
     def check_configs(self):
@@ -540,7 +553,8 @@ class AutoRound(object):
                 self.train_bs = total_samples
                 logger.warning(f"force the train batch size to {total_samples} ")
 
-        self.model = self.model.to("cpu")
+        if not self.layer_wise:
+            self.model = self.model.to("cpu")
         torch.cuda.empty_cache()
         self.quant_blocks(
             self.model,
@@ -734,6 +748,7 @@ class AutoRound(object):
 
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
+            # slow here
             self.dataloader = get_dataloader(
                 self.tokenizer,
                 self.seqlen,
@@ -764,7 +779,10 @@ class AutoRound(object):
             else:
                 data_new = {}
                 for key in data.keys():
-                    data_new[key] = data[key].to(self.model.device)
+                    if self.layer_wise:
+                        data_new[key] = data[key].to(self.device)
+                    else:
+                        data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
@@ -810,14 +828,17 @@ class AutoRound(object):
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
         try:
-            self.model = self.model.to(self.device)
+            if not self.layer_wise:
+                self.model = self.model.to(self.device)
             all_inputs = self.cache_inter_data(
                 block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name
             )
-            self.model = self.model.to("cpu")
+            if not self.layer_wise:
+                self.model = self.model.to("cpu")
         except:
             logger.info("switch to cpu to cache inputs")
-            self.model = self.model.to("cpu")
+            if not self.layer_wise:
+                self.model = self.model.to("cpu")
             torch.cuda.empty_cache()
             all_inputs = self.cache_inter_data(
                 block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name
@@ -994,7 +1015,7 @@ class AutoRound(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        wrapper_linear = WrapperLinear(layer, self.enable_minmax_tuning).to(device)
+        wrapper_linear = WrapperLinear(layer, self.enable_minmax_tuning, device).to(device)
         round_params = []
         minmax_params = []
         round_params.append(wrapper_linear.value)
@@ -1108,7 +1129,7 @@ class AutoRound(object):
             torch.cuda.empty_cache()
             input_ids = q_input
 
-        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
+        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning, device)
 
         round_params = []
         minmax_params = []
@@ -1280,7 +1301,8 @@ class AutoRound(object):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
-            m = m.to(device)
+            if not self.layer_wise:
+                m = m.to(device)
 
             q_input, input_ids = self.quant_block(
                 m,

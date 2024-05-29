@@ -121,6 +121,9 @@ if __name__ == '__main__':
     parser.add_argument("--quant_lm_head", action='store_true',
                         help="quant_lm_head")
 
+    parser.add_argument("--layer_wise", action='store_true',
+                        help="whether use layer wise mode")
+
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
         print(
@@ -191,7 +194,31 @@ if __name__ == '__main__':
     torch_device = torch.device(device_str)
 
     is_glm = bool(re.search("chatglm", model_name.lower()))
-    if is_glm:
+    if args.layer_wise:
+        from auto_round.layer_wise.utils import load_model_with_hooks
+        if is_glm:
+            model = load_model_with_hooks(
+                model_name,
+                AutoModel,
+                device=device_str,
+                clean_weight=True,
+                saved_path="./layer_wise_tmp",
+                torch_dtype=torch_dtype,
+                trust_remote_code=not args.disable_trust_remote_code
+                )
+        else:
+            model = load_model_with_hooks(
+                model_name,
+                AutoModelForCausalLM,
+                device=device_str,
+                clean_weight=True,
+                saved_path="./layer_wise_tmp",
+                torch_dtype=torch_dtype,
+                trust_remote_code=not args.disable_trust_remote_code
+                )
+            model.model.decoder.layers[0].self_attn.k_proj._parameters['weight'] = torch.randn(768,768)
+            # convert_model(model, './layer_wise_tmp')
+    elif is_glm:
         model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     else:
         model = AutoModelForCausalLM.from_pretrained(
@@ -291,7 +318,8 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning)
+                      enable_minmax_tuning=not args.disable_minmax_tuning,
+                      layer_wise=args.layer_wise)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
