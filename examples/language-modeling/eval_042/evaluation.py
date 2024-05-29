@@ -585,7 +585,7 @@ if __name__ == "__main__":
     if hasattr(config, "quantization_config"):
         quantization_config = config.quantization_config
         if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
-            from auto_round.export.export_to_autoround import AutoHfQuantizer
+            from auto_round.auto_quantizer import AutoHfQuantizer
 
     test_tasks = args.tasks
     if isinstance(test_tasks, str):
