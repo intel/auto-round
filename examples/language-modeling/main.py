@@ -216,7 +216,6 @@ if __name__ == '__main__':
                 torch_dtype=torch_dtype,
                 trust_remote_code=not args.disable_trust_remote_code
                 )
-            model.model.decoder.layers[0].self_attn.k_proj._parameters['weight'] = torch.randn(768,768)
             # convert_model(model, './layer_wise_tmp')
     elif is_glm:
         model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)

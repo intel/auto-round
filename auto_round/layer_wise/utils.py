@@ -255,7 +255,6 @@ def register_weight_hooks(model, path, device="cpu", clean_weight=True, saved_pa
                 else:
                     value = load_value(model, param_name, path)
                 set_module_tensor_to_device(model, param_name, device, value)
-                print(param_name, "load value success, ", value.shape, device)
             
         return hook
 
