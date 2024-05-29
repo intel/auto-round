@@ -1,22 +1,22 @@
-Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source,  and the git id 96d185fa6232a5ab685ba7c43e45d1dbb3bb906d, 
+We generate the model with group_size 64 as there is an issue when evaluating with group_size 128.
+Evaluate the model
+pip3 install lm-eval==0.4.2
 
-pip install auto-gptq[triton]  
+```bash
+lm_eval --model hf --model_args pretrained="Intel/falcon-7b-int4-inc",autogptq=True,gptq_use_triton=True --device cuda:0 --tasks lambada_openai,hellaswag,piqa,winogrande,truthfulqa_mc1,openbookqa,boolq,arc_easy,arc_challenge,mmlu --batch_size 16
+```
 
-pip install triton==2.2.0
+| Metric         | BF16   | int4   |
+| -------------- | ------ | ------ |
+| Avg.           | 0.5462 | 0.5454 |
+| mmlu           | 0.2546 | 0.2562 |
+| lambada_openai | 0.7450 | 0.7485 |
+| hellaswag      | 0.5773 | 0.5719 |
+| winogrande     | 0.6740 | 0.6835 |
+| piqa           | 0.7943 | 0.7905 |
+| truthfulqa_mc1 | 0.2228 | 0.2166 |
+| openbookqa     | 0.3080 | 0.3100 |
+| boolq          | 0.7361 | 0.7431 |
+| arc_easy       | 0.7475 | 0.7424 |
+| arc_challenge  | 0.4027 | 0.3908 |
 
-Since we encountered an issue evaluating this model with lm-eval, we opted to evaluate the qdq model instead. In our assessment, we found that its accuracy closely matches that of the real quantized model in most cases except for some small models like opt-125m. The batch size 32 is used.
-
-| Metric         | FP16   | int4 qdq |
-| -------------- | ------ | -------- |
-| Avg.           | 0.5521 | 0.5507   |
-| mmlu           | 0.2495 | 0.2427   |
-| lambada_openai | 0.7452 | 0.7487   |
-| hellaswag      | 0.5771 | 0.5731   |
-| winogrande     | 0.6725 | 0.6756   |
-| piqa           | 0.7949 | 0.7943   |
-| truthfulqa_mc1 | 0.2252 | 0.2142   |
-| openbookqa     | 0.3060 | 0.3060   |
-| boolq          | 0.7364 | 0.7382   |
-| rte            | 0.6173 | 0.6245   |
-| arc_easy       | 0.7479 | 0.7433   |
-| arc_challenge  | 0.4019 | 0.3968   |

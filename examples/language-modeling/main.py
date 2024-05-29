@@ -86,7 +86,7 @@ if __name__ == '__main__':
                         help="enable_minmax_tuning is deprecated")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
-                        help="targeted inference acceleration platform,The options are 'fake', 'cpu' and 'gpu'."
+                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
     parser.add_argument("--scale_dtype", default='fp16',
@@ -150,7 +150,6 @@ if __name__ == '__main__':
             return version
         except subprocess.CalledProcessError:
             return "Library not found"
-
 
     res = get_library_version("lm-eval")
     if res == "0.3.0":
@@ -291,6 +290,10 @@ if __name__ == '__main__':
                     break
     if args.quant_lm_head:
         weight_config[lm_head_layer_name] = {"data_type": "int"}
+        transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
+        if transformers_version[0] == 4 and transformers_version[1] < 38:
+            error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
+            raise EnvironmentError(error_message)
 
     if args.quant_lm_head and not args.disable_low_gpu_mem_usage:
         print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
@@ -340,3 +343,4 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
+

@@ -34,7 +34,7 @@ fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
 
 import importlib
-
+import transformers
 
 class LazyImport(object):
     """Lazy import python module till use."""
@@ -475,25 +475,24 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
         # input_ids, input_others = move_to_device(input_ids, input_others, device)
         input_ids = to_device(input_ids, device)
         input_others = to_device(input_others, device)
+    input_tuple = input_others.pop("positional_inputs", None)
     if "alibi" in input_others.keys():
-        attention_mask = input_others["attention_mask"]
-        alibi = input_others["alibi"]
+        alibi = input_others.pop("alibi")
         if alibi is not None:
             alibi = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
         if amp:
             with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
                 output = block(
-                    input_ids, attention_mask=attention_mask, alibi=alibi
+                    input_ids, alibi=alibi, *input_tuple, **input_others
                 )  ##TODO is this correct for all models with alibi?
         else:
-            output = block(input_ids, attention_mask=attention_mask, alibi=alibi)
+            output = block(input_ids, alibi=alibi, *input_tuple, **input_others)
     else:
-        input_tuple = input_others.pop("positional_inputs", None)
         if amp:
             with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
-                output = block.forward(input_ids, *input_tuple, **input_others)
+                output = block(input_ids, *input_tuple, **input_others)
         else:
-            output = block.forward(input_ids, *input_tuple, **input_others)
+            output = block(input_ids, *input_tuple, **input_others)
     if isinstance(output, list) or isinstance(output, tuple):
         output = output[0]
     return output
@@ -740,3 +739,26 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         bs = 1
 
     return False, seqlen, bs
+
+
+def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transformers.modeling_utils.Conv1D]):
+    """Retrieves the names of layers within each block of the model.
+
+    Returns:
+        list: A list of strings, where each string is the name of a layer
+              within a block of the model.
+    """
+    for n, m in model.named_modules():
+        if isinstance(m, tuple(supported_types)):
+            m.tmp_name = n
+    layers_in_block = []
+    block_names = get_block_names(model)
+    for block_name in block_names:
+        block = get_module(model, block_name)
+        for n, m in block.named_modules():
+            if hasattr(m, "tmp_name"):
+                layers_in_block.append(m.tmp_name)
+    for n, m in model.named_modules():
+        if hasattr(m, "tmp_name"):
+            delattr(m, "tmp_name")
+    return layers_in_block
