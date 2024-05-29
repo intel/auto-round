@@ -72,7 +72,7 @@ def get_autogptq_backend_config(backend, bits=4):
 
 
 @register_format("autoround")
-def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav2", **kwargs):
+def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:triton", **kwargs):
     from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
 
     model = kwargs["model"]
@@ -96,16 +96,17 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
 
         layer = get_module(model, name)
         device = "cpu"
-        QuantLinear = dynamically_import_QuantLinear(
-            use_triton=use_triton,
-            desc_act=False,
-            group_size=group_size,
-            bits=bits,
-            disable_exllama=disable_exllamav1,
-            disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen,
-            disable_marlin=disable_marlin,
-        )
+        # QuantLinear = dynamically_import_QuantLinear(
+        #     use_triton=use_triton,
+        #     desc_act=False,
+        #     group_size=group_size,
+        #     bits=bits,
+        #     disable_exllama=disable_exllamav1,
+        #     disable_exllamav2=disable_exllamav2,
+        #     use_qigen=use_qigen,
+        #     disable_marlin=disable_marlin,
+        # )
+        from .qliner_triton import  QuantLinear
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features

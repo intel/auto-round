@@ -201,7 +201,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
             dataset: str = None,
             group_size: int = 128,
             sym: bool = False,
-            backend="gptq:exllamav2",
+            backend="gptq:triton",
             iters: int = 200,
             weight_config: dict = None,
             enable_quanted_input=True,
@@ -340,16 +340,17 @@ class AutoRoundQuantizer(HfQuantizer):
             use_triton, disable_exllama, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
                 backend, bits
             )
-            QuantLinear = dynamically_import_QuantLinear(
-                use_triton=False,
-                desc_act=False,
-                group_size=group_size,
-                bits=bits,
-                disable_exllama=True,
-                disable_exllamav2=False,
-                use_qigen=use_qigen,
-                disable_marlin=disable_marlin,
-            )
+            # QuantLinear = dynamically_import_QuantLinear(
+            #     use_triton=True,
+            #     desc_act=False,
+            #     group_size=group_size,
+            #     bits=bits,
+            #     disable_exllama=disable_exllama,
+            #     disable_exllamav2=disable_exllamav2,
+            #     use_qigen=use_qigen,
+            #     disable_marlin=disable_marlin,
+            # )
+            from auto_round.export.export_to_autoround.qliner_triton import QuantLinear
             layer = get_module(module, layer_name)
             device = get_device(layer)
             if isinstance(layer, nn.Linear):
