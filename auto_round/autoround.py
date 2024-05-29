@@ -1373,7 +1373,7 @@ class AutoRound(object):
         )
         return compressed_model
 
-    def get_layer_names_in_block(self):
+    def get_layer_names_in_block(self): ##TODO consolidate with utils
         """Retrieves the names of layers within each block of the model.
 
         Returns:

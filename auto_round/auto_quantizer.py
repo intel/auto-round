@@ -37,6 +37,7 @@ import torch.nn as nn
 from packaging import version
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import Conv1D
+import transformers
 from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
@@ -159,7 +160,7 @@ class AutoHfQuantizer:
             if "auto-round" in quantization_config["quant_method"]:
                 quantization_config = AutoRoundConfig.from_dict(quantization_config)
             else:
-                quantization_config = AutoQuantizationConfig.from_dict(quantization_config) # pylint: disable=E1101
+                quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
 
         if isinstance(quantization_config, (GPTQConfig, AwqConfig)) and quantization_config_from_args is not None:
             # special case for GPTQ / AWQ config collision
@@ -285,7 +286,7 @@ class AutoRoundQuantizer(HfQuantizer):
             model (`nn.Module`):
                 Model to be converted
         """
-        from .export_to_autoround import get_layer_names_in_block
+        from auto_round.utils import get_layer_names_in_block
 
         layer_names = get_layer_names_in_block(model)
         quantization_config = model.config.quantization_config
@@ -334,7 +335,7 @@ class AutoRoundQuantizer(HfQuantizer):
             data_type = config["data_type"]
             if not (bits <= 8 and data_type == "int"):
                 continue
-            from .export_to_autoround import get_autogptq_backend_config
+            from auto_round.export.export_to_autoround.export_to_autoround import get_autogptq_backend_config
 
             use_triton, disable_exllama, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
                 backend, bits
@@ -425,3 +426,14 @@ class AutoRoundQuantizer(HfQuantizer):
     @property
     def is_serializable(self):
         return True
+
+
+import transformers
+
+transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
+if transformers_version[0] == 4 and transformers_version[1] < 38:
+    logger.error("Please upgrade transformers>=4.38.0 to support lm-head quantization")
+
+transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
+transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
+from transformers import AutoModelForCausalLM as AutoModelForCausalLM
