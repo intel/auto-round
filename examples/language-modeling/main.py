@@ -2,6 +2,7 @@ import argparse
 import sys
 
 sys.path.insert(0, '../..')
+sys.path.insert(0, '/home/lyt/ChineseLLM_quant/AR_omni/auto-round')
 parser = argparse.ArgumentParser()
 import torch
 import os
@@ -123,6 +124,15 @@ if __name__ == '__main__':
 
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
+
+    parser.add_argument("--a_bits", type=int, default=16, 
+                        help="number of bits for activation quantization")
+
+    parser.add_argument("--activation_sym", default=False, action="store_true", 
+                        help="activation symmetric quantization")
+    
+
+
 
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
@@ -267,10 +277,13 @@ if __name__ == '__main__':
         round = AutoAdamRound
 
     weight_config = {}
+    activation_config = {}
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                 weight_config[n] = {"data_type": "fp"}
+                if args.a_bits < 16:
+                    activation_config[n] = {"data_type": "fp"}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
     lm_head_layer_name = "lm_head"
@@ -291,6 +304,8 @@ if __name__ == '__main__':
                     break
     if args.quant_lm_head:
         weight_config[lm_head_layer_name] = {"data_type": "int"}
+        if args.a_bits < 16:
+            activation_config[lm_head_layer_name] = {"data_type": "int", "bits": args.a_bits}
 
     if args.quant_lm_head and not args.disable_low_gpu_mem_usage:
         print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
@@ -301,13 +316,14 @@ if __name__ == '__main__':
         if lm_head_layer_name in weight_config.keys():
             gpu_format = "autoround"
 
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
+    autoround = round(model, tokenizer, bits=args.bits, group_size=args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
                       amp=not args.disable_amp, n_samples=args.n_samples,
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
+                      activation_config=activation_config, a_bits=args.a_bits, activation_sym=args.activation_sym,
                       enable_minmax_tuning=not args.disable_minmax_tuning)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")

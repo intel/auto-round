@@ -192,6 +192,35 @@ def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dty
         return quant_weight_asym(weight, num_bits, v, min_scale, max_scale, scale_dtype)
 
 
+def quant_activation(x, a_bits=4, scale_dtype=torch.float16, min_x=None, max_x=None):
+    """Asymmetrically quantizes and dequantizes activation in per-token .
+
+    Args:
+        x: Tensor of activation to be quantized
+        a_bits: Number of bits for activation quantization (e.g., 2, 3, 4, 8)
+        sym: sym or asym
+
+    Returns:
+        Quantized and dequantized activation, scale, zero-point
+    """
+    q_min, q_max = 0, 2.0**a_bits - 1.0
+    if max_x is None or min_x is None:
+        reduce_shape = [-1]
+        min_x = x.amin(reduce_shape, keepdim=True)
+        max_x =  x.amax(reduce_shape, keepdim=True)
+    else:
+        max_x = torch.max(max_x)
+        min_x = torch.min(min_x)
+    scale = (max_x - min_x) / (q_max - q_min)
+    scale = scale.to(scale_dtype)
+
+    zp = torch.round(q_min - min_x / scale)
+    q_x = torch.round(x / scale + zp)
+    q_x.clamp_(q_min, q_max)
+    return scale * (q_x - zp), scale, zp
+
+
+
 def quant_weight(
     weight, num_bits=4, group_size=-1, sym=False, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16
 ):

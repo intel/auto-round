@@ -39,6 +39,7 @@ from .utils import (
     is_optimum_habana_available,
     logger,
     quant_weight,
+    quant_activation,
     sampling_inputs,
     set_module,
     to_device,
@@ -145,6 +146,10 @@ class WrapperLinear(torch.nn.Module):
         )
         weight_q = weight_q.to(weight.dtype)
         # pylint: disable=not-callable
+        if hasattr(self.orig_layer, "a_bits") and self.orig_layer.a_bits < 16:
+            a_bits, a_scale_dtype = self.orig_layer.a_bits, self.orig_layer.activation_scale_dtype
+            x, x_scale, x_zp = quant_activation(x, a_bits=a_bits, scale_dtype=a_scale_dtype)
+
         return F.linear(x, weight_q, self.orig_layer.bias)
 
 
@@ -435,6 +440,9 @@ class AutoRound(object):
         dynamic_max_gap: int = -1,
         data_type: str = "int",  ##only support int for now
         scale_dtype: str = "fp16",
+        a_bits: int = 16, 
+        activation_sym: bool = False,
+        activation_config: dict = {},
         **kwargs,
     ):
         self.quantized = False
@@ -457,6 +465,9 @@ class AutoRound(object):
         self.seqlen = seqlen
         self.train_bs = batch_size
         self.n_blocks = n_blocks
+        self.activation_config = activation_config
+        self.a_bits = a_bits
+        self.activation_sym = activation_sym
         self.device = detect_device(device)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
@@ -480,7 +491,7 @@ class AutoRound(object):
         self.dynamic_max_gap = dynamic_max_gap
         self.enable_full_range = enable_full_range
         self.lr_scheduler = lr_scheduler
-        self.set_layerwise_config(self.weight_config)
+        self.set_layerwise_config(self.weight_config, self.activation_config)
         self.optimizer = self.get_optimizer(None)
         self.share_attention_mask_flag = None
         self.hidden_dim_flag = None
@@ -671,7 +682,7 @@ class AutoRound(object):
                     q_layer_input[i] = None
             torch.cuda.empty_cache()
 
-    def set_layerwise_config(self, weight_config):
+    def set_layerwise_config(self, weight_config, activation_config={}):
         """Sets the layer-wise configuration based on the provided weight_config.
            By default, only quantize layers in blocks.
 
@@ -710,12 +721,37 @@ class AutoRound(object):
                 weight_config[n]["group_size"] = self.group_size
                 weight_config[n]["sym"] = self.sym
                 weight_config[n]["scale_dtype"] = self.scale_dtype
+            if self.a_bits < 16:
+                if n not in activation_config.keys() and n in layers_in_blocks:
+                    activation_config[n] = {}
+                    activation_config[n]["data_type"] = self.data_type
+                    activation_config[n]["a_bits"] = self.a_bits
+                    activation_config[n]["a_sym"] = self.activation_sym
+                    activation_config[n]["scale_dtype"] = self.scale_dtype
+                elif n in activation_config.keys():
+                    activation_config[n].setdefault("data_type", self.data_type)
+                    activation_config[n].setdefault("a_bits", self.a_bits)
+                    activation_config[n].setdefault("a_sym", self.activation_sym)
+                    activation_config[n].setdefault("scale_dtype", self.scale_dtype)
+                else:
+                    activation_config[n] = {
+                        "data_type": "float",
+                        "a_bits": 16,
+                        "a_sym": self.activation_sym,
+                        "scale_dtype": self.scale_dtype,
+                    }
+
 
             m.data_type = weight_config[n]["data_type"]
             m.bits = weight_config[n]["bits"]
             m.group_size = weight_config[n]["group_size"]
             m.sym = weight_config[n]["sym"]
             m.scale_dtype = weight_config[n]["scale_dtype"]
+            if self.a_bits < 16:
+                m.activation_data_type = activation_config[n]["data_type"]
+                m.a_bits = activation_config[n]["a_bits"]
+                m.a_sym = activation_config[n]["a_sym"]
+                m.activation_scale_dtype = activation_config[n]["scale_dtype"]
 
     @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
