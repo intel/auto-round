@@ -31,7 +31,7 @@ __forceinline__ __device__ float clamp(float x, float a, float b)
     return fmaxf(a, fminf(b, x));
 }
 
-#define cuda_check(ans) { gpu_assert((ans), __FILE__, __LINE__); }
+#define cuda_check(and) { gpu_assert((and), __FILE__, __LINE__); }
 inline void gpu_assert(cudaError_t code, const char *file, int line, bool abort=true)
 {
    if (code != cudaSuccess)
