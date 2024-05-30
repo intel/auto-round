@@ -335,11 +335,11 @@ class AutoRoundQuantizer(HfQuantizer):
             data_type = config["data_type"]
             if not (bits <= 8 and data_type == "int"):
                 continue
-            from auto_round.export.export_to_autoround.export_to_autoround import get_autogptq_backend_config
+            ##from auto_round.export.export_to_autoround.export_to_autoround import get_autogptq_backend_config
 
-            use_triton, disable_exllama, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
-                backend, bits
-            )
+            # use_triton, disable_exllama, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
+            #     backend, bits
+            # )
             # QuantLinear = dynamically_import_QuantLinear(
             #     use_triton=True,
             #     desc_act=False,
@@ -350,7 +350,10 @@ class AutoRoundQuantizer(HfQuantizer):
             #     use_qigen=use_qigen,
             #     disable_marlin=disable_marlin,
             # )
-            from auto_round.export.export_to_autoround.qliner_triton import QuantLinear
+            if "exllamav2" in backend:
+                from auto_round.export.export_to_autoround.qliner_exllamav2 import QuantLinear
+            elif "triton" in backend:
+                from auto_round.export.export_to_autoround.qliner_triton import QuantLinear
             layer = get_module(module, layer_name)
             device = get_device(layer)
             if isinstance(layer, nn.Linear):

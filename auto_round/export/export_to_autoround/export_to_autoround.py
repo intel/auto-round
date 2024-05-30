@@ -87,13 +87,12 @@ def dynamic_QuantLienarfor_packing(backend, bits, group_size):
             disable_marlin=disable_marlin,
         )
         return QuantLinear
-    elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:
-        if "triton" in backend:
-            from qliner_triton import QuantLinear
-            return QuantLinear
-        elif "exllama" in backend: ##support exllama
-            pass
+    elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:  ##export all use trition,inferce use exllamav2
+        from qliner_triton import QuantLinear
+        return QuantLinear
 
+    else:
+        assert False, f"only support gptq and autoround backend"
 
 
 @register_format("autoround")
@@ -202,7 +201,7 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "10GB", safe_ser
     """
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    config_file = "quantize_config.json"
-    if hasattr(model, "config") and hasattr(model.config, "quantize_config"):
+    config_file = "quantization_config.json"
+    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
