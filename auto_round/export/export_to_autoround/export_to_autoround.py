@@ -25,7 +25,6 @@ from auto_round.export.register import register_format
 from auto_round.utils import get_layer_names_in_block, get_block_names, get_module, logger, set_module
 
 
-
 def check_neq_config(config, data_type, bits, group_size, sym):
     res = []
     if data_type != config["data_type"]:
@@ -53,7 +52,7 @@ def get_autogptq_backend_config(backend, bits=4):
     if backend == "gptq:marlin":
         use_triton = False
         disable_marlin = True
-    if backend == "gptq:exllamav2":
+    if backend == "gptq:exllamav2":  ##need v1 code to export
         use_triton = False
         disable_marlin = True
     if backend == "gptq:exllamav1":
@@ -71,10 +70,34 @@ def get_autogptq_backend_config(backend, bits=4):
     return use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin
 
 
-@register_format("autoround")
-def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:triton", **kwargs):
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
+def dynamic_QuantLienarfor_packing(backend, bits, group_size):
+    if "gptq" in backend:
+        use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
+            backend, bits
+        )
+        from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
+        QuantLinear = dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            disable_marlin=disable_marlin,
+        )
+        return QuantLinear
+    elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:
+        if "triton" in backend:
+            from qliner_triton import QuantLinear
+            return QuantLinear
+        elif "exllama" in backend: ##support exllama
+            pass
 
+
+
+@register_format("autoround")
+def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:triton", **kwargs):
     model = kwargs["model"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
@@ -90,23 +113,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:triton",
 
         bits = config["bits"]
         group_size = config["group_size"]
-        use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
-            backend, bits
-        )
 
         layer = get_module(model, name)
         device = "cpu"
-        # QuantLinear = dynamically_import_QuantLinear(
-        #     use_triton=use_triton,
-        #     desc_act=False,
-        #     group_size=group_size,
-        #     bits=bits,
-        #     disable_exllama=disable_exllamav1,
-        #     disable_exllamav2=disable_exllamav2,
-        #     use_qigen=use_qigen,
-        #     disable_marlin=disable_marlin,
-        # )
-        from .qliner_triton import  QuantLinear
+
+        from .qliner_triton import QuantLinear
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features
@@ -139,7 +150,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:triton",
     quantization_config["backend"] = backend
     extra_config = {}
     for layer_name in weight_config:
-        if weight_config[layer_name]["data_type"] != "int" and weight_config[layer_name]["bits"] >= 16:
+        if weight_config[layer_name]["bits"] >= 16:
             continue
         if layer_name not in layer_names_in_block:
             extra_config[layer_name] = {}
