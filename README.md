@@ -57,7 +57,7 @@ pip install auto-round
 ### Gaudi2/ CPU/ GPU
 
 We found a significant accuracy discrepancy with the qdq model using the AutoGPTQ GPU backend with asymmetric
-quantization in some scenarios, especailly at lower bits,like 2. Please save quantized model to auoround format to fix this issue.
+quantization in some scenarios, especially at lower bits,like 2. Please save quantized model to auoround format to fix this issue.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
