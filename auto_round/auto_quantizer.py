@@ -57,7 +57,7 @@ AUTOROUND_MINIMUM_VERSION = version.parse("0.2")
 
 def _is_package_available(pkg_name: str, return_version: bool = False) -> Union[Tuple[bool, str], bool]:
     # Check we're not importing a "pkg_name" directory somewhere but the actual library by trying to grab the version
-    try:##TODO remove it later
+    try:  ##TODO remove it later
         import auto_round
         return True, auto_round.__version__
     except:
@@ -270,7 +270,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def __init__(self, quantization_config: QuantizationConfigMixin, **kwargs):
         super().__init__(quantization_config, **kwargs)
-        self.exllama2_available = not is_autoround_exllamav2_available
+        self.exllama2_available = is_autoround_exllamav2_available
 
     def validate_environment(self, *args, **kwargs):
         if not is_auto_round_available():
@@ -325,8 +325,8 @@ class AutoRoundQuantizer(HfQuantizer):
         self._replace_by_quant_layers(model, layer_configs, backend)
         return model
 
-    def _dynamic_import_inference_linear(self, bits):
-        if bits == 4 and self.exllama2_available:
+    def _dynamic_import_inference_linear(self, bits, backend):
+        if bits == 4 and self.exllama2_available and "exllama2" in backend:
             from auto_round.export.export_to_autoround.qliner_exllamav2 import QuantLinear
         else:
             from auto_round.export.export_to_autoround.qliner_triton import QuantLinear
@@ -350,7 +350,7 @@ class AutoRoundQuantizer(HfQuantizer):
             data_type = config["data_type"]
             if not (bits <= 8 and data_type == "int"):
                 continue
-            QuantLinear = self._dynamic_import_inference_linear(bits)
+            QuantLinear = self._dynamic_import_inference_linear(bits, backend)
             layer = get_module(module, layer_name)
             device = get_device(layer)
             if isinstance(layer, nn.Linear):
@@ -382,6 +382,7 @@ class AutoRoundQuantizer(HfQuantizer):
             model (`nn.Module`):
                 The input model
         """
+
         #
         # if self.bits == 4: if get_device(model) == torch.device("cpu") or ( hasattr(model, "hf_device_map") and
         # any(d in model.hf_device_map for d in ["cpu", "disk"]) ): raise ValueError( "Found modules on cpu/disk.

@@ -4,3 +4,4 @@ py-cpuinfo
 sentencepiece
 torch
 transformers
+triton
