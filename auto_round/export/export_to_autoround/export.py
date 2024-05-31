@@ -96,7 +96,7 @@ def dynamic_QuantLienar_for_packing(backend, bits, group_size):
         assert False, f"only support gptq and autoround backend"
 
 
-@register_format("autoround")
+@register_format("auto_round")
 def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exllamav2", **kwargs):
     model = kwargs["model"]
     if not inplace:
