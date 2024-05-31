@@ -305,6 +305,9 @@ if __name__ == '__main__':
         if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
             gpu_format = "auto_round"
 
+    if "autoround" in deployment_device or "auto-round" in deployment_device or "auto_round" in deployment_device:
+        gpu_format = "auto_round"
+
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
