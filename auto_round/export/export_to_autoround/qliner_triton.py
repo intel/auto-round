@@ -59,13 +59,15 @@ except ImportError as e:
 
     def error_raiser_triton(*args, **kwargs):
         raise ValueError(
-            f"Trying to use the triton backend, but could not import triton dependencies with the following error: {triton_import_exception}"
+            f'Trying to use the triton backend, but could not import triton '
+            f'dependencies with the following error: {triton_import_exception}'
         )
 
     class FakeTriton:
         def __getattr__(self, name):
             raise ImportError(
-                f"Trying to use the triton backend, but could not import triton dependencies with the following error: {triton_import_exception}"
+                f"Trying to use the triton backend, but could not import triton "
+                f"dependencies with the following error: {triton_import_exception}"
             )
 
     quant_matmul_248 = error_raiser_triton

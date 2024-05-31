@@ -75,7 +75,7 @@ def dynamic_QuantLienar_for_packing(backend, bits, group_size):
         use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
             backend, bits
         )
-        from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
+        from auto_gptq.utils.import_utils import dynamically_import_QuantLinear # pylint: disable=E0401
         QuantLinear = dynamically_import_QuantLinear(
             use_triton=use_triton,
             desc_act=False,

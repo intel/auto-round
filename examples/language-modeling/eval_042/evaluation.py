@@ -574,7 +574,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--tasks",
                         default="lambada_openai,hellaswag,winogrande,piqa,mmlu,truthfulqa_mc1," \
-                                "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
+                                "openbookqa,boolq,rte,arc_easy,arc_challenge",
                         help="lm-eval tasks for lm_eval version 0.4.2")
 
     args = parser.parse_args()

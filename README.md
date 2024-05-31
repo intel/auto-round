@@ -25,7 +25,7 @@ image presents an overview of AutoRound.
 <div align="left">
 
 ## What's New
-
+* [2024/06] AutoRound format supports mixed bits/group_size inference and fixed the asym kernel large drop issue.
 * [2024/05] Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
 * [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
 * [2024/05] AutoRound performs well
@@ -57,7 +57,7 @@ pip install auto-round
 ### Gaudi2/ CPU/ GPU
 
 We found a significant accuracy discrepancy with the qdq model using the AutoGPTQ GPU backend with asymmetric
-quantization in some scenarios. Please switch to symmetric quantization to alleviate this issue.
+quantization in some scenarios, especailly at lower bits,like 2. Please save quantized model to auoround format to fix this issue.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -73,7 +73,7 @@ bits, group_size, sym = 4, 128, False
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=None)
 autoround.quantize()
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir)
+autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_round")
 ```
 
 <details>
@@ -151,7 +151,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with quantized lm-head
+##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with auto_round format
 
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
