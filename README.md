@@ -42,6 +42,7 @@ image presents an overview of AutoRound.
 ```bash
 pip install -r requirements.txt
 python setup.py install
+or
 pip install -vvv --no-build-isolation -e .
 ```
 

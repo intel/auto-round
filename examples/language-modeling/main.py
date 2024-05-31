@@ -151,7 +151,6 @@ if __name__ == '__main__':
         except subprocess.CalledProcessError:
             return "Library not found"
 
-
     res = get_library_version("lm-eval")
     if res == "0.3.0":
         use_eval_legacy = True
@@ -302,7 +301,7 @@ if __name__ == '__main__':
     deployment_device = args.deployment_device.split(',')
     gpu_format = "auto_gptq"
     if 'gpu' in deployment_device:
-        if lm_head_layer_name in weight_config.keys():
+        if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
             gpu_format = "autoround"
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
@@ -322,7 +321,7 @@ if __name__ == '__main__':
 
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
-    gpu_format = "autoround"
+
     inplace = True if len(deployment_device) < 2 else False
     if 'gpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-gpu', format=gpu_format, use_triton=True, inplace=inplace)
@@ -335,24 +334,12 @@ if __name__ == '__main__':
     if "fake" in deployment_device:
         model = model.to("cpu")
         model.save_pretrained(output_dir)
-        model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
-    if "gpu" in deployment_device and not args.disable_eval:
-        from .eval_042 import simple_evaluate
-        from lm_eval.utils import make_table
-        from auto_round.auto_quantizer import AutoHfQuantizer
 
-        result = simple_evaluate(model="hf",
-                                 model_args=f"pretrained={export_dir}-gpu,dtype=float16",
-                                 tasks=tasks,
-                                 batch_size=args.eval_bs)
-        print(make_table(result))
-
-    #
-    # if not args.disable_eval:
-    #     excel_name = f"{output_dir}_result.xlsx"
-    #     output_dir += "/"
-    #     print(excel_name, flush=True)
-    #     eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-    #                eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
-    #                device=torch_device, excel_file=excel_name)
+    if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
+        excel_name = f"{output_dir}_result.xlsx"
+        output_dir += "/"
+        print(excel_name, flush=True)
+        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+                   device=torch_device, excel_file=excel_name)
