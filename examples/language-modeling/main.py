@@ -301,7 +301,7 @@ if __name__ == '__main__':
     deployment_device = args.deployment_device.split(',')
     gpu_format = "auto_gptq"
     if 'gpu' in deployment_device:
-        if lm_head_layer_name in weight_config.keys():
+        if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
             gpu_format = "autoround"
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
@@ -343,4 +343,5 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
+
 
