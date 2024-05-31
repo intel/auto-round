@@ -50,7 +50,8 @@ except ImportError as e:
 
     def error_raiser_exllama(*args, **kwargs):
         raise ValueError(
-            f"Trying to use the exllama v2 backend, but could not import the C++/CUDA dependencies with the following error: {exllama_v2_import_exception}"
+            f"Trying to use the exllama v2 backend, but could not import the C++/CUDA dependencies with the following "
+            f"error: {exllama_v2_import_exception}"
         )
 
     make_q_matrix = error_raiser_exllama
@@ -110,7 +111,8 @@ def ext_make_q_matrix(w: dict, temp_dq, key: str = None):
                 device=w["qweight"].device,
             )
             w["q_invperm"] = torch.empty_like(w["q_perm"])
-            # make_q4 segfaults if g_idx is not on cpu in the act-order case. In the non act-order case, None needs to be passed for g_idx.
+            # make_q4 segfaults if g_idx is not on cpu in the act-order case. In the non act-order case, None needs
+            # to be passed for g_idx.
             return make_q_matrix(
                 w["qweight"],
                 w["q_perm"],
@@ -148,7 +150,8 @@ class QuantLinear(nn.Module):
         super().__init__()
         if bits != 4:
             raise ValueError(
-                f"Exllamav2 kernel supports only bits=4, requested bits={bits}. Something is wrong in the model initialization."
+                f"Exllamav2 kernel supports only bits=4, requested bits={bits}. Something is wrong in the model "
+                f"initialization."
             )
         if trainable:
             raise NotImplementedError("Exllamav2 kernel does not support training.")
@@ -217,7 +220,10 @@ class QuantLinear(nn.Module):
     def forward(self, x, force_cuda=False):
         if x.dtype != torch.float16:
             logger.warning_once(
-                f"The exllama v2 kernel for GPTQ requires a float16 input activation, while {x.dtype} was passed. Casting to float16.\nMake sure you loaded your model with torch_dtype=torch.float16, that the model definition does not inadvertently cast to float32, or disable AMP Autocast that may produce float32 intermediate activations in the model."
+                f"The exllama v2 kernel for GPTQ requires a float16 input activation, while {x.dtype} was passed. "
+                f"Casting to float16.\nMake sure you loaded your model with torch_dtype=torch.float16, that the model "
+                f"definition does not inadvertently cast to float32, or disable AMP Autocast that may produce float32 "
+                f"intermediate activations in the model."
             )
 
             x = x.half()

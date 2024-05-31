@@ -22,7 +22,7 @@ import torch.nn as nn
 import transformers
 
 from auto_round.export.register import register_format
-from auto_round.utils import get_layer_names_in_block, get_block_names, get_module, logger, set_module
+from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -87,7 +87,8 @@ def dynamic_QuantLienar_for_packing(backend, bits, group_size):
             disable_marlin=disable_marlin,
         )
         return QuantLinear
-    elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:  ##export all use trition,inferce use exllamav2
+    ##export all use trition, inference use exllamav2
+    elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:
         from .qliner_triton import QuantLinear
         return QuantLinear
 
@@ -95,7 +96,7 @@ def dynamic_QuantLienar_for_packing(backend, bits, group_size):
         assert False, f"only support gptq and autoround backend"
 
 
-@register_format("autoround")
+@register_format("auto_round")
 def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exllamav2", **kwargs):
     model = kwargs["model"]
     if not inplace:

@@ -274,9 +274,11 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def validate_environment(self, *args, **kwargs):
         if not is_auto_round_available():
-            raise ImportError("Loading a AutoRound quantized model requires auto-round library (`pip install auto-round`)")
+            raise ImportError("Loading a AutoRound quantized model requires auto-round library (`pip install "
+                              "auto-round`)")
         elif version.parse(importlib.metadata.version("auto_round")) < version.parse("0.2.0"):
-            raise ImportError("You need a version of auto_round > 0.2.0 to use AutoRound: `pip install --upgrade auto-round`")
+            raise ImportError("You need a version of auto_round > 0.2.0 to use AutoRound: `pip install --upgrade "
+                              "auto-round`")
 
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:
@@ -381,14 +383,10 @@ class AutoRoundQuantizer(HfQuantizer):
                 The input model
         """
         #
-        # if self.bits == 4:
-        #     if get_device(model) == torch.device("cpu") or (
-        #             hasattr(model, "hf_device_map") and any(d in model.hf_device_map for d in ["cpu", "disk"])
-        #     ):
-        #         raise ValueError(
-        #             "Found modules on cpu/disk. Using Exllamav2 backend requires all the modules to be on GPU."
-        #             "You can deactivate exllama backend by setting `disable_exllama=True` in the quantization config object"
-        #         )
+        # if self.bits == 4: if get_device(model) == torch.device("cpu") or ( hasattr(model, "hf_device_map") and
+        # any(d in model.hf_device_map for d in ["cpu", "disk"]) ): raise ValueError( "Found modules on cpu/disk.
+        # Using Exllamav2 backend requires all the modules to be on GPU." "You can deactivate exllama backend by
+        # setting `disable_exllama=True` in the quantization config object" )
 
         class StoreAttr(object):
             pass
