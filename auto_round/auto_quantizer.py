@@ -386,7 +386,7 @@ class AutoRoundQuantizer(HfQuantizer):
         #             hasattr(model, "hf_device_map") and any(d in model.hf_device_map for d in ["cpu", "disk"])
         #     ):
         #         raise ValueError(
-        #             "Found modules on cpu/disk. Usin Exllamav2 backend requires all the modules to be on GPU."
+        #             "Found modules on cpu/disk. Using Exllamav2 backend requires all the modules to be on GPU."
         #             "You can deactivate exllama backend by setting `disable_exllama=True` in the quantization config object"
         #         )
 
