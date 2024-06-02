@@ -217,6 +217,7 @@ def quant_activation(x, a_bits=4, scale_dtype=torch.float16, min_x=None, max_x=N
     zp = torch.round(q_min - min_x / scale)
     q_x = torch.round(x / scale + zp)
     q_x.clamp_(q_min, q_max)
+    logger.info(f"lyt_debug quant_activation x {x.shape}, q_x {(scale * (q_x - zp)).shape}, scale {scale.shape}, zp {zp.shape}")
     return scale * (q_x - zp), scale, zp
 
 

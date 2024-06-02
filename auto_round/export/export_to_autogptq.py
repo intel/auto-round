@@ -65,6 +65,8 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
+    logger.info(f"lyt_debug kwargs: {type(kwargs)}, {kwargs.keys()}")
+    # a_bits = kwargs["a_bits"]
 
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     if tokenizer is not None:
@@ -72,10 +74,14 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     ##check module quantized in block, this may have bug for mixed precision quantization
     block_name = get_block_names(model)[0]
     first_block = get_module(model, block_name)
+    logger.info(f"lyt_debug save_autogptq first_block {block_name}: {type(first_block)}, {block_name}")
     all_to_quantized = True
     modules_in_block_to_quantize = []
     for n, m in first_block.named_modules():
         is_supported_type = False
+        # if hasattr(m, "orig_layer") and a_bits < 16:
+        #     m = m.orig_layer
+        #     logger.info(f"lyt_debug auto_gptq orig_layer converted: {n}")
         for supported_type in supported_types:
             if isinstance(m, supported_type):
                 is_supported_type = True
@@ -90,10 +96,14 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
+    logger.info(f"lyt_debug autogptq all_to_quantized {all_to_quantized}, modules_inblock_to_quantize {modules_in_block_to_quantize}")
     if inplace:
         compressed_model = model.to("cpu")
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
+    logger.info(f"lyt_debug export inplace: {inplace}")
+    logger.info(f"lyt_debug autogptq model details: {type(compressed_model.model.decoder.layers[0].self_attn.k_proj)}, {list(vars(compressed_model.model.decoder.layers[0].self_attn.k_proj))},  ")
+    logger.info(f"lyt_debug module detail1 {compressed_model.model.decoder.layers[0].self_attn.k_proj.weight.dtype}, {compressed_model.model.decoder.layers[0].self_attn.k_proj.weight}")
 
     from auto_gptq.modeling._utils import pack_model
 
@@ -179,6 +189,9 @@ def _save_quantized_to_autogptq(
     model.to("cpu")
 
     model_base_name = "model"
+    logger.info(f"lyt_debug export use_safetensors {use_safetensors}, safe_tensors_metadata: {safetensors_metadata}, None: {safetensors_metadata is None}")
+    logger.info(f"lyt_debug _save_q_to_autogptq: {type(model)}, {model}")
+    # logger.info(f"lyt_debug autogptq packed model details: {type(model.model.decoder.layers[0].self_attn.k_proj)}, {list(vars(model.model.decoder.layers[0].self_attn.k_proj))},  {model.model.decoder.layers[0].self_attn.k_proj}")
     if use_safetensors:
         model_save_name = model_base_name + ".safetensors"
         state_dict = model.state_dict()

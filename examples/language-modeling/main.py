@@ -319,6 +319,7 @@ if __name__ == '__main__':
     if 'gpu' in deployment_device:
         if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
             gpu_format = "autoround"
+    print(f"lyt_debug gpu_format {gpu_format},")
 
     autoround = round(model, tokenizer, bits=args.bits, group_size=args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
@@ -340,7 +341,7 @@ if __name__ == '__main__':
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
     inplace = True if len(deployment_device) < 2 else False
-    if 'gpu' in deployment_device:
+    if 'gpu' in deployment_device and args.a_bits == 16:
         autoround.save_quantized(f'{export_dir}-gpu', format=gpu_format, use_triton=True, inplace=inplace)
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,

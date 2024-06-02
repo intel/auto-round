@@ -71,6 +71,7 @@ class WrapperLinear(torch.nn.Module):
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
         weight_dtype = self.orig_layer.weight.dtype
+        self.quant_weight_state = True
         weight_dtype = torch.float32  ##TODO revert the change to check the accuracy
         self.value = torch.nn.Parameter(
             torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
@@ -90,7 +91,7 @@ class WrapperLinear(torch.nn.Module):
             self.min_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
             self.max_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
 
-    def unwrapper(self, v, min_scale, max_scale):
+    def unwrapper(self, v, min_scale, max_scale, unwrapper_orig_layer=True):
         """Unwrapper the layer to the original layer.
 
         Args:
@@ -114,11 +115,18 @@ class WrapperLinear(torch.nn.Module):
             max_scale,
             self.scale_dtype,
         )
+        logger.info(f"lyt_debug unwrapper WrapperLinear q_dq_weight {type(q_dq_weight)}, {q_dq_weight.shape}, {q_dq_weight.dtype}, orig_weight: {self.orig_layer.weight.shape}, {self.orig_layer.weight.dtype}")
         self.orig_layer.weight.data.copy_(q_dq_weight)
         self.orig_layer.weight.grad = None  ##clear grad
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
-        return self.orig_layer
+        logger.info(f"lyt_debug wrapper self: {type(self)}, {self}")
+        if unwrapper_orig_layer:
+            logger.info("lyt_debug unwrapper returned orig_layer")
+            return self.orig_layer
+        else:
+            logger.info("lyt_debug unwrapper returned self")
+            return self
 
     def forward(self, x):
         """Performs forward pass through the wrapped linear layer with quantized weights.
@@ -130,21 +138,27 @@ class WrapperLinear(torch.nn.Module):
         - torch.Tensor: The output tensor after applying the linear transformation with quantized weights.
         """
         from torch.functional import F
-
-        weight = self.orig_layer.weight
-        self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
-        self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
-        weight_q, _, _ = quant_weight(
-            weight,
-            self.num_bits,
-            self.group_size,
-            self.sym,
-            self.value,
-            self.min_scale,
-            self.max_scale,
-            self.scale_dtype,
-        )
-        weight_q = weight_q.to(weight.dtype)
+        if self.quant_weight_state:
+            logger.info(f"lyt_debug forward with quant_w: {self.quant_weight_state}")
+            weight = self.orig_layer.weight
+            self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
+            self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
+            weight_q, _, _ = quant_weight(
+                weight,
+                self.num_bits,
+                self.group_size,
+                self.sym,
+                self.value,
+                self.min_scale,
+                self.max_scale,
+                self.scale_dtype,
+            )
+            weight_q = weight_q.to(weight.dtype)
+        else:
+            logger.info(f"lyt_debug forward without quant_w: {self.quant_weight_state}")
+            weight_q = self.orig_layer.weight
+            del self.min_scale
+            del self.max_scale
         # pylint: disable=not-callable
         if hasattr(self.orig_layer, "a_bits") and self.orig_layer.a_bits < 16:
             a_bits, a_scale_dtype = self.orig_layer.a_bits, self.orig_layer.activation_scale_dtype
@@ -355,7 +369,17 @@ def unwrapper_block(block, vs, min_scales, max_scales):
             if isinstance(max_scales, dict):
                 max_scale = max_scales[n]
                 max_scale = torch.clamp(max_scale, -1, 0)
+            logger.info(f"lyt_debug name: {n}, m: {type(m)}, orig_layer: {type(m.orig_layer)}")
+            logger.info(f"lyt_debug unwrapper m details: activation_data_type {m.orig_layer.activation_data_type if hasattr(m.orig_layer, 'activation_data_type') else 'no activation data_type'}, \
+                a_bits {m.orig_layer.a_bits if hasattr(m.orig_layer, 'a_bits') else 'no a_bits'}, a_sym {m.orig_layer.a_sym if hasattr(m.orig_layer, 'a_sym') else 'no a_sym'}, \
+                activation_scale_dtype {m.orig_layer.activation_scale_dtype if hasattr(m.orig_layer, 'activation_scale_dtype') else 'no activation scale_dtype'}")
+
+            # if hasattr(m.orig_layer, 'a_bits') and m.orig_layer.a_bits < 16:  #ToChange
+            #     orig_layer = m.unwrapper(v, min_scale, max_scale, unwrapper_orig_layer=False)
+            # else:
+            #     m.quant_weight_state = False
             orig_layer = m.unwrapper(v, min_scale, max_scale)
+            logger.info(f"lyt_debug unwrapper_block {n}: {type(m)}, {m}")
             set_module(block, n, orig_layer)
 
 
@@ -527,6 +551,7 @@ class AutoRound(object):
         self.serialization_dict["autoround_version"] = __version__
         if "scale_dtype" in self.serialization_dict.keys():
             self.serialization_dict["scale_dtype"] = str(self.serialization_dict["scale_dtype"])
+        
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
@@ -583,6 +608,7 @@ class AutoRound(object):
 
         self.model = self.model.to("cpu")
         torch.cuda.empty_cache()
+        logger.info(f"lyt_debug type(inputs): {type(inputs)}")
         self.quant_blocks(
             self.model,
             inputs,
@@ -590,7 +616,7 @@ class AutoRound(object):
             n_blocks=self.n_blocks,
             device=self.device,
         )
-
+        logger.info(f"lyt_debug layer_names quant_layers {layer_names}, self_orig_dtype: {self.model_orig_dtype}")
         self.quant_layers(layer_names, all_inputs)
 
         self.dump_data_to_weight_config()
@@ -602,12 +628,21 @@ class AutoRound(object):
         ## dump a summary
         quantized_layers = []
         unquantized_layers = []
+        logger.info(f"lyt_debug dump_summary weight_config.keys {self.weight_config.keys()}")
         for n, m in self.model.named_modules():
+            logger.info(f"lyt_debug dump_summary name: {n}")
+            n = n.rstrip(".orig_layer")
+            if hasattr(m, 'orig_layer') and self.a_bits < 16:
+                m = m.orig_layer    
+                logger.info(f"lyt_debug dump_summary orig_layer converted: {n}")
             if isinstance(m, tuple(self.supported_types)):
                 if self.weight_config[n]["bits"] == 16:
                     unquantized_layers.append(n)
+                    logger.info(f"lyt_debug dump_summary unquantized append {n}")
                 else:
                     quantized_layers.append(n)
+                    logger.info(f"lyt_debug dump_summary quantized append {n}")
+        quantized_layers, unquantized_layers = list(set(quantized_layers)), list(set(unquantized_layers))
         summary_info = (
             f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
         )
@@ -617,6 +652,8 @@ class AutoRound(object):
 
         self.quantized = True
         ##self.model = self.model.to(self.model_orig_dtype)##keep it as amp dtype
+        logger.info(f"lyt_debug post_quantize model details: {type(self.model.model.decoder.layers[0].self_attn.k_proj)}, {list(vars(self.model.model.decoder.layers[0].self_attn.k_proj))},  ")
+        logger.info(f"lyt_debug post_quantize model details2: {self.model.model.decoder.layers[0].self_attn.k_proj} ")
         return self.model, self.weight_config
 
     def dump_data_to_weight_config(self):
@@ -629,10 +666,15 @@ class AutoRound(object):
         """
         for n, m in self.model.named_modules():
             if n not in self.weight_config.keys():
+                # logger.info(f"lyt_debug dump_data_to_weightConf undumped: {n}, {m.weight.dtype}")
                 continue
+            if hasattr(m, "orig_layer") and self.a_bits < 16:
+                m = m.orig_layer
+                n = n.rstrip(".orig_layer")
             if hasattr(m, "scale"):
                 self.weight_config[n]["scale"] = m.scale
                 self.weight_config[n]["zp"] = m.zp
+                logger.info(f"lyt_debug dump_data_to_weightConf: {n}, {m.weight.dtype}, scale: {m.scale.dtype}, zp: {m.zp.dtype}")
                 if self.group_size <= 0:
                     self.weight_config[n]["g_idx"] = torch.tensor(
                         [0 for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu"
@@ -1276,7 +1318,7 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.enable_quanted_input:
-
+            logger.info(f"lyt_debug get_block_outputs: input_ids: {len(input_ids)}, {[input_ids[i].shape for i in range(len(input_ids))]}")
             q_outputs = self.get_block_outputs(
                 block, input_ids, input_others, self.train_bs, device, cache_device=self.cache_device
             )
@@ -1405,6 +1447,7 @@ class AutoRound(object):
             supported_types=self.supported_types,
             data_type=self.data_type,
             serialization_dict=self.serialization_dict,
+            a_bits=self.a_bits,
             **kwargs,
         )
         return compressed_model
