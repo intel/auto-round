@@ -1409,7 +1409,7 @@ class AutoRound(object):
         )
         return compressed_model
 
-    def get_layer_names_in_block(self):
+    def get_layer_names_in_block(self): ##TODO consolidate with utils
         """Retrieves the names of layers within each block of the model.
 
         Returns:
@@ -1707,7 +1707,7 @@ class AutoAdamRound(AutoOPTRound):
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
         optimizer: string or object
-        scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
+        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
 
     Returns:
@@ -1779,3 +1779,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
