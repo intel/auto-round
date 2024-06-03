@@ -41,13 +41,13 @@ import torch
 import torch.nn as nn
 import transformers
 
-from .triton_utils.mixin import TritonModuleMixin
+from auto_round_extension.cuda.triton_utils.mixin import TritonModuleMixin
 
 
 logger = getLogger(__name__)
 
 try:
-    from .triton_utils.kernels import (
+    from auto_round_extension.cuda.triton_utils import (
         QuantLinearFunction,
         QuantLinearInferenceOnlyFunction,
         quant_matmul_248,

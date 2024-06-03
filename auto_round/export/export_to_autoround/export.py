@@ -89,7 +89,7 @@ def dynamic_QuantLienar_for_packing(backend, bits, group_size):
         return QuantLinear
     ##export all use trition, inference use exllamav2
     elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:
-        from .qliner_triton import QuantLinear
+        from auto_round_extension.cuda.qliner_triton import QuantLinear
         return QuantLinear
 
     else:

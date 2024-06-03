@@ -37,7 +37,6 @@ import torch.nn as nn
 from packaging import version
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import Conv1D
-import transformers
 from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
@@ -102,7 +101,7 @@ def is_autoround_exllamav2_available():
 
 
 if is_auto_round_available():
-    from auto_round.export.export_to_autoround.post_init import autoround_post_init
+    from auto_round_extension.cuda.post_init import autoround_post_init
 
 
 #
@@ -214,14 +213,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
             group_size: int = 128,
             sym: bool = False,
             backend="autoround:exllamav2",
-            iters: int = 200,
             weight_config: dict = None,
-            enable_quanted_input=True,
-            enable_minmax_tuning=True,
-            lr=None,
-            minmax_lr=None,
-            n_samples=512,
-            seqlen=2048,
             **kwargs,
     ):
         self.bits = bits
@@ -230,14 +222,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.group_size = group_size
         self.sym = sym
         self.backend = backend
-        self.inters = iters
         self.weight_config = weight_config
-        self.enable_quanted_input = enable_quanted_input
-        self.enable_minmax_tuning = enable_minmax_tuning
-        self.lr = lr
-        self.minmax_lr = minmax_lr
-        self.n_samples = n_samples
-        self.seqlen = seqlen
         if kwargs is not None:
             for key in kwargs.keys():
                 setattr(self, key, kwargs[key])
@@ -327,9 +312,9 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def _dynamic_import_inference_linear(self, bits, backend):
         if bits == 4 and self.exllama2_available and "exllama2" in backend:
-            from auto_round.export.export_to_autoround.qliner_exllamav2 import QuantLinear
+            from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
         else:
-            from auto_round.export.export_to_autoround.qliner_triton import QuantLinear
+            from auto_round_extension.cuda.qliner_triton import QuantLinear
         return QuantLinear
 
     def _replace_by_quant_layers(self, module: nn.Module, layer_configs, backend):
@@ -431,4 +416,3 @@ if transformers_version[0] == 4 and transformers_version[1] < 38:
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
-from transformers import AutoModelForCausalLM as AutoModelForCausalLM

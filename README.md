@@ -25,7 +25,7 @@ image presents an overview of AutoRound.
 <div align="left">
 
 ## What's New
-* [2024/06] AutoRound format supports mixed bits/group_size inference and fixed the asym kernel large drop issue.
+* [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant performance drop issue with the asymmetric kernel
 * [2024/05] Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
 * [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
 * [2024/05] AutoRound performs well
@@ -57,7 +57,7 @@ pip install auto-round
 ### Gaudi2/ CPU/ GPU
 
 We found a significant accuracy discrepancy with the qdq model using the AutoGPTQ GPU backend with asymmetric
-quantization in some scenarios, especially at lower bits,like 2. Please save quantized model to auoround format to fix this issue.
+quantization in some scenarios, especially at lower bits,like 2. Please save quantized model to AuoRound format to fix this issue.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer

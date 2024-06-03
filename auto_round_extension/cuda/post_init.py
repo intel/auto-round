@@ -136,7 +136,7 @@ def autoround_post_init(model):
             fixed_bytes[device] = max(scratch_fixed, fixed_bytes.get(device, 0))
 
     if model_uses_exllamav2:
-        from .qliner_exllamav2 import ExLlamaV2DeviceTensors
+        from auto_round_extension.cuda.qliner_exllamav2 import ExLlamaV2DeviceTensors
 
         device_tensors = {}
         for device, scratch_bytes in fixed_bytes.items():
