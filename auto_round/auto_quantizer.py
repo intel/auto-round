@@ -255,7 +255,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def __init__(self, quantization_config: QuantizationConfigMixin, **kwargs):
         super().__init__(quantization_config, **kwargs)
-        self.exllama2_available = is_autoround_exllamav2_available
+        self.exllama2_available = is_autoround_exllamav2_available()
 
     def validate_environment(self, *args, **kwargs):
         if not is_auto_round_available():
