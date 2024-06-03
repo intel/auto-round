@@ -70,7 +70,6 @@ class WrapperLinear(torch.nn.Module):
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
         weight_dtype = self.orig_layer.weight.dtype
-        weight_dtype = torch.float32  ##TODO revert the change to check the accuracy
         self.value = torch.nn.Parameter(
             torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
             requires_grad=True,
@@ -178,7 +177,6 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.sym = self.orig_layer.sym
         self.scale_dtype = self.orig_layer.scale_dtype
         weight_dtype = self.orig_layer.weight.dtype
-        weight_dtype = torch.float32  ##TODO revert the change to check the accuracy
 
         device = self.orig_layer.weight.device
         self.weight_t = self.orig_layer.weight.t()
