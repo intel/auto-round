@@ -319,7 +319,6 @@ if __name__ == '__main__':
     if 'gpu' in deployment_device:
         if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
             gpu_format = "autoround"
-    print(f"lyt_debug gpu_format {gpu_format},")
 
     autoround = round(model, tokenizer, bits=args.bits, group_size=args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,

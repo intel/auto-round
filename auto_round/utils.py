@@ -217,10 +217,16 @@ def quant_activation(x, a_bits=4, scale_dtype=torch.float16, min_x=None, max_x=N
     zp = torch.round(q_min - min_x / scale)
     q_x = torch.round(x / scale + zp)
     q_x.clamp_(q_min, q_max)
-    logger.info(f"lyt_debug quant_activation x {x.shape}, q_x {(scale * (q_x - zp)).shape}, scale {scale.shape}, zp {zp.shape}")
     return scale * (q_x - zp), scale, zp
 
-
+def unset_quant_weight_state(block):
+    from .autoround import WrapperLinear
+    for n, m in block.named_modules():
+        if isinstance(m, WrapperLinear):
+            m.quant_weight_state = False
+            del m.min_scale
+            del m.max_scale
+            del m.value
 
 def quant_weight(
     weight, num_bits=4, group_size=-1, sym=False, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16
