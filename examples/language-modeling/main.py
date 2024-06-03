@@ -340,10 +340,14 @@ if __name__ == '__main__':
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
 
-    if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
-        excel_name = f"{output_dir}_result.xlsx"
-        output_dir += "/"
-        print(excel_name, flush=True)
-        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
+    # if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
+    #     excel_name = f"{output_dir}_result.xlsx"
+    #     output_dir += "/"
+    #     print(excel_name, flush=True)
+    #     eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+    #                eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+    #                device=torch_device, excel_file=excel_name)
+
+    from eval_042.evaluation import simple_evaluate
+
+    simple_evaluate(f"{export_dir}-gpu", tasks="lambada_openai")

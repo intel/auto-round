@@ -105,6 +105,7 @@ def simple_evaluate(
     :return
         Dictionary of results
     """
+    from auto_round.auto_quantizer import AutoHfQuantizer
     eval_logger.setLevel(getattr(logging, f"{verbosity}"))
     start_date = time.time()
 
@@ -561,7 +562,7 @@ if __name__ == "__main__":
 
     import sys
 
-    sys.path.insert(0, '../../')
+    # sys.path.insert(0, '../../')
     import time
     import argparse
 

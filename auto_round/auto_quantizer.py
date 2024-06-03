@@ -80,6 +80,11 @@ _auto_round_available = _is_package_available("auto_round")
 
 
 def is_auto_round_available():
+    try:
+        import auto_round
+        return True
+    except:
+        pass
     if _auto_round_available:
         version_autoround = version.parse(importlib_metadata.version("auto_round"))
         if AUTOROUND_MINIMUM_VERSION < version_autoround:
@@ -255,7 +260,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def __init__(self, quantization_config: QuantizationConfigMixin, **kwargs):
         super().__init__(quantization_config, **kwargs)
-        self.exllama2_available = is_autoround_exllamav2_available
+        self.exllama2_available = is_autoround_exllamav2_available()
 
     def validate_environment(self, *args, **kwargs):
         if not is_auto_round_available():
@@ -311,7 +316,7 @@ class AutoRoundQuantizer(HfQuantizer):
         return model
 
     def _dynamic_import_inference_linear(self, bits, backend):
-        if bits == 4 and self.exllama2_available and "exllama2" in backend:
+        if bits == 4 and self.exllama2_available and "exllamav2" in backend:
             from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
         else:
             from auto_round_extension.cuda.qliner_triton import QuantLinear
