@@ -38,11 +38,12 @@ from .utils import (
     htcore,
     is_optimum_habana_available,
     logger,
-    quant_weight,
     sampling_inputs,
     set_module,
-    to_device,
+    to_device, get_layer_names_in_block,
 )
+
+from auto_round.quantizer import quant_weight
 
 
 class WrapperLinear(torch.nn.Module):
@@ -79,14 +80,14 @@ class WrapperLinear(torch.nn.Module):
         weight_dtype = self.orig_layer.weight.dtype
         if self.enable_minmax_tuning:
             self.min_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
+                torch.ones(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
             )
             self.max_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
+                torch.ones(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
             )
         else:
-            self.min_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
-            self.max_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
+            self.min_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
+            self.max_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
 
     def unwrapper(self, v, min_scale, max_scale):
         """Unwrapper the layer to the original layer.
@@ -99,8 +100,8 @@ class WrapperLinear(torch.nn.Module):
         Returns:
         - torch.nn.Module: The original linear layer with updated weights after quantization and dequantization.
         """
-        min_scale.clamp_(-1, 0)
-        max_scale.clamp_(-1, 0)
+        min_scale.clamp_(0, 1.0)
+        max_scale.clamp_(0, 1.0)
 
         q_dq_weight, scale, zp = quant_weight(
             self.orig_layer.weight,
@@ -130,8 +131,8 @@ class WrapperLinear(torch.nn.Module):
         from torch.functional import F
 
         weight = self.orig_layer.weight
-        self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
-        self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
+        self.min_scale.data.copy_(torch.clamp(self.min_scale.data, 0, 1.0))
+        self.max_scale.data.copy_(torch.clamp(self.max_scale.data, 0, 1.0))
         weight_q, _, _ = quant_weight(
             weight,
             self.num_bits,
@@ -187,16 +188,16 @@ class WrapperTransformerConv1d(torch.nn.Module):
 
         if enable_minmax_tuning:
             self.min_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=device, dtype=weight_dtype), requires_grad=True
+                torch.ones(shape, device=device, dtype=weight_dtype), requires_grad=True
             )
             self.max_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=device, dtype=weight_dtype), requires_grad=True
+                torch.ones(shape, device=device, dtype=weight_dtype), requires_grad=True
             )
         else:
-            self.min_scale = torch.tensor(0, device=device, dtype=weight_dtype)
-            self.max_scale = torch.tensor(0, device=device, dtype=weight_dtype)
+            self.min_scale = torch.tensor(1.0, device=device, dtype=weight_dtype)
+            self.max_scale = torch.tensor(1.0, device=device, dtype=weight_dtype)
 
-    def unwrapper(self, v=0, min_scale=0, max_scale=0):
+    def unwrapper(self, v=0, min_scale=1.0, max_scale=1.0):
         """Unwrapper the layer to the original conv1d layer.
 
         Args:
@@ -207,8 +208,8 @@ class WrapperTransformerConv1d(torch.nn.Module):
         Returns:
         - torch.nn.Module: The original 1D convolutional layer with updated weights after inverse quantization.
         """
-        min_scale.clamp_(-1, 0)
-        max_scale.clamp_(-1, 0)
+        min_scale.clamp_(0, 1.0)
+        max_scale.clamp_(0, 1.0)
         weight_q, scale, zp = quant_weight(
             self.weight_t, self.num_bits, self.group_size, self.sym, v, min_scale, max_scale, self.scale_dtype
         )
@@ -228,8 +229,8 @@ class WrapperTransformerConv1d(torch.nn.Module):
         torch.Tensor: The output tensor after applying the convolutional transformation with quantized weights.
         """
         with torch.no_grad():
-            self.min_scale.clamp_(-1, 0)
-            self.max_scale.clamp_(-1, 0)
+            self.min_scale.clamp_(0, 1.0)
+            self.max_scale.clamp_(0, 1.0)
         weight_q, _, _ = quant_weight(
             self.weight_t,
             self.num_bits,
@@ -404,36 +405,36 @@ class AutoRound(object):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,  ##for symmetric, TODO support later
-        batch_size: int = 8,
-        amp: bool = True,
-        device=None,
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",  ##only support int for now
-        scale_dtype: str = "fp16",
-        **kwargs,
+            self,
+            model,
+            tokenizer,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,  ##for symmetric, TODO support later
+            batch_size: int = 8,
+            amp: bool = True,
+            device=None,
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",  ##only support int for now
+            scale_dtype: str = "fp16",
+            **kwargs,
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
@@ -679,7 +680,7 @@ class AutoRound(object):
         Returns:
         None
         """
-        layers_in_blocks = self.get_layer_names_in_block()
+        layers_in_blocks = get_layer_names_in_block(self.model,self.supported_types)
         for n, m in self.model.named_modules():
             if not isinstance(m, tuple(self.supported_types)):
                 continue
@@ -1060,7 +1061,7 @@ class AutoRound(object):
                 whole_indices = torch.randperm(n_samples)[:pick_samples]
             for tmp_step in range(gradient_accumulate_steps):
                 org_input = None
-                indices = whole_indices[tmp_step * train_bs : (tmp_step + 1) * train_bs]
+                indices = whole_indices[tmp_step * train_bs: (tmp_step + 1) * train_bs]
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
@@ -1176,7 +1177,7 @@ class AutoRound(object):
             if self.sampler == "rand":
                 whole_indices = torch.randperm(n_samples)[:pick_samples]
             for tmp_step in range(self.gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * self.train_bs : (tmp_step + 1) * self.train_bs]
+                indices = whole_indices[tmp_step * self.train_bs: (tmp_step + 1) * self.train_bs]
                 current_input_ids, current_input_others = sampling_inputs(
                     input_ids,
                     input_others,
@@ -1255,12 +1256,12 @@ class AutoRound(object):
             return None, output
 
     def quant_blocks(
-        self,
-        model: torch.nn.Module,
-        inputs,
-        block_names,
-        n_blocks=1,
-        device=torch.device("cpu"),
+            self,
+            model: torch.nn.Module,
+            inputs,
+            block_names,
+            n_blocks=1,
+            device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -1291,7 +1292,7 @@ class AutoRound(object):
 
         for key in input_others.keys():
             if isinstance(input_others[key], torch.Tensor) and (
-                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+                    input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
             ):
                 input_others[key] = input_others[key].to(tmp_dtype)
             elif isinstance(input_others[key], list):
@@ -1304,7 +1305,7 @@ class AutoRound(object):
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i : i + n_blocks]
+                names = block_names[i: i + n_blocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -1371,27 +1372,6 @@ class AutoRound(object):
         )
         return compressed_model
 
-    def get_layer_names_in_block(self): ##TODO consolidate with utils
-        """Retrieves the names of layers within each block of the model.
-
-        Returns:
-            list: A list of strings, where each string is the name of a layer
-                  within a block of the model.
-        """
-        for n, m in self.model.named_modules():
-            if isinstance(m, tuple(self.supported_types)):
-                m.tmp_name = n
-        layers_in_block = []
-        block_names = get_block_names(self.model)
-        for block_name in block_names:
-            block = get_module(self.model, block_name)
-            for n, m in block.named_modules():
-                if hasattr(m, "tmp_name"):
-                    layers_in_block.append(m.tmp_name)
-        for n, m in self.model.named_modules():
-            if hasattr(m, "tmp_name"):
-                delattr(m, "tmp_name")
-        return layers_in_block
 
     def get_quantized_layer_names_outside_blocks(self):
         """Gets the names of quantized layers outside blocks in the model.
@@ -1403,7 +1383,7 @@ class AutoRound(object):
             return []
 
         layer_names = []
-        all_layers_in_block = self.get_layer_names_in_block()
+        all_layers_in_block = get_layer_names_in_block(self.models, self.supported_types)
 
         for key in self.weight_config.keys():
             if key in all_layers_in_block:
@@ -1529,37 +1509,37 @@ class AutoOPTRound(AutoRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp16",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp16",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
             model,
@@ -1677,37 +1657,37 @@ class AutoAdamRound(AutoOPTRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp16",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp16",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
             model,
@@ -1741,4 +1721,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
