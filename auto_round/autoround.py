@@ -315,12 +315,12 @@ def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
     if hasattr(layer, "orig_layer"):
 
         if isinstance(min_scale, torch.Tensor):
-            min_scale = torch.clamp(min_scale, -1, 0)
-            max_scale = torch.clamp(max_scale, -1, 0)
+            min_scale = torch.clamp(min_scale, 0, 1.0)
+            max_scale = torch.clamp(max_scale, 0, 1.0)
 
         else:
-            min_scale = torch.tensor(0)
-            max_scale = torch.tensor(0)
+            min_scale = torch.tensor(1.0)
+            max_scale = torch.tensor(1.0)
         orig_layer = layer.unwrapper(v, min_scale, max_scale)
         orig_layer = orig_layer.to("cpu")
         set_module(model, layer_name, orig_layer)
@@ -339,16 +339,16 @@ def unwrapper_block(block, vs, min_scales, max_scales):
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
             v = 0
-            min_scale = torch.tensor(0)
-            max_scale = torch.tensor(0)
+            min_scale = torch.tensor(1.0)
+            max_scale = torch.tensor(1.0)
             if isinstance(vs, dict):
                 v = vs[n]
             if isinstance(min_scales, dict):
                 min_scale = min_scales[n]
-                min_scale = torch.clamp(min_scale, -1, 0)
+                min_scale = torch.clamp(min_scale, 0, 1.0)
             if isinstance(max_scales, dict):
                 max_scale = max_scales[n]
-                max_scale = torch.clamp(max_scale, -1, 0)
+                max_scale = torch.clamp(max_scale, 0, 1.0)
             orig_layer = m.unwrapper(v, min_scale, max_scale)
             set_module(block, n, orig_layer)
 
@@ -1093,14 +1093,14 @@ class AutoRound(object):
                 best_loss = total_loss
                 if not self.not_use_best_mse:
                     best_v = copy.deepcopy(wrapper_linear.value.data)
-                    best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
-                    best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
+                    best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, 0, 1.0))
+                    best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, 0, 1.0))
 
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
                 best_v = copy.deepcopy(wrapper_linear.value.data)
-                best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
-                best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
+                best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, 0, 1.0))
+                best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, 0, 1.0))
 
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
@@ -1383,7 +1383,7 @@ class AutoRound(object):
             return []
 
         layer_names = []
-        all_layers_in_block = get_layer_names_in_block(self.models, self.supported_types)
+        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types)
 
         for key in self.weight_config.keys():
             if key in all_layers_in_block:
