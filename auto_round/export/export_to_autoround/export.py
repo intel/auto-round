@@ -22,8 +22,7 @@ import torch.nn as nn
 import transformers
 
 from auto_round.export.register import register_format
-from auto_round.utils import get_layer_names_in_block, get_block_names, get_module, logger, set_module
-
+from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -53,7 +52,7 @@ def get_autogptq_backend_config(backend, bits=4):
     if backend == "gptq:marlin":
         use_triton = False
         disable_marlin = True
-    if backend == "gptq:exllamav2":
+    if backend == "gptq:exllamav2":  ##need v1 code to export
         use_triton = False
         disable_marlin = True
     if backend == "gptq:exllamav1":
@@ -71,10 +70,34 @@ def get_autogptq_backend_config(backend, bits=4):
     return use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin
 
 
-@register_format("autoround")
-def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav2", **kwargs):
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
+def dynamic_QuantLienar_for_packing(backend, bits, group_size):
+    if "gptq" in backend:
+        use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
+            backend, bits
+        )
+        from auto_gptq.utils.import_utils import dynamically_import_QuantLinear # pylint: disable=E0401
+        QuantLinear = dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            disable_marlin=disable_marlin,
+        )
+        return QuantLinear
+    ##export all use trition, inference use exllamav2
+    elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:
+        from auto_round_extension.cuda.qliner_triton import QuantLinear
+        return QuantLinear
 
+    else:
+        assert False, f"only support gptq and autoround backend"
+
+
+@register_format("auto_round")
+def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exllamav2", **kwargs):
     model = kwargs["model"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
@@ -90,22 +113,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
 
         bits = config["bits"]
         group_size = config["group_size"]
-        use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
-            backend, bits
-        )
 
         layer = get_module(model, name)
-        device = "cpu"
-        QuantLinear = dynamically_import_QuantLinear(
-            use_triton=use_triton,
-            desc_act=False,
-            group_size=group_size,
-            bits=bits,
-            disable_exllama=disable_exllamav1,
-            disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen,
-            disable_marlin=disable_marlin,
-        )
+        device = layer.weight.device
+
+        QuantLinear = dynamic_QuantLienar_for_packing(backend, bits, group_size)
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features
@@ -138,7 +150,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
     quantization_config["backend"] = backend
     extra_config = {}
     for layer_name in weight_config:
-        if weight_config[layer_name]["data_type"] != "int" and weight_config[layer_name]["bits"] >= 16:
+        if weight_config[layer_name]["bits"] >= 16:
             continue
         if layer_name not in layer_names_in_block:
             extra_config[layer_name] = {}
@@ -190,7 +202,7 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "10GB", safe_ser
     """
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    config_file = "quantize_config.json"
-    if hasattr(model, "config") and hasattr(model.config, "quantize_config"):
+    config_file = "quantization_config.json"
+    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)

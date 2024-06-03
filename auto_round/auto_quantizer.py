@@ -37,7 +37,6 @@ import torch.nn as nn
 from packaging import version
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import Conv1D
-import transformers
 from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
@@ -52,11 +51,17 @@ if sys.version_info < (3, 8):
 else:
     import importlib.metadata as importlib_metadata
 
-AUTOGPTQ_MINIMUM_VERSION = version.parse("0.4.99")  # Allows 0.5.0.dev0
+AUTOROUND_MINIMUM_VERSION = version.parse("0.2")
 
 
 def _is_package_available(pkg_name: str, return_version: bool = False) -> Union[Tuple[bool, str], bool]:
     # Check we're not importing a "pkg_name" directory somewhere but the actual library by trying to grab the version
+    try:  ##TODO remove it later
+        import auto_round
+        return True, auto_round.__version__
+    except:
+        pass
+
     package_exists = importlib.util.find_spec(pkg_name) is not None
     package_version = "N/A"
     if package_exists:
@@ -71,26 +76,32 @@ def _is_package_available(pkg_name: str, return_version: bool = False) -> Union[
         return package_exists
 
 
-_auto_gptq_available = _is_package_available("auto_gptq")
+_auto_round_available = _is_package_available("auto_round")
 
 
-def is_auto_gptq_available():
-    if _auto_gptq_available:
-        version_autogptq = version.parse(importlib_metadata.version("auto_gptq"))
-        if AUTOGPTQ_MINIMUM_VERSION < version_autogptq:
+def is_auto_round_available():
+    if _auto_round_available:
+        version_autoround = version.parse(importlib_metadata.version("auto_round"))
+        if AUTOROUND_MINIMUM_VERSION < version_autoround:
             return True
         else:
             raise ImportError(
-                f"Found an incompatible version of auto-gptq. Found version {version_autogptq},"
-                f" but only version above {AUTOGPTQ_MINIMUM_VERSION} are supported"
+                f"Found an incompatible version of auto-round. Found version {version_autoround},"
+                f" but only version above {AUTOROUND_MINIMUM_VERSION} are supported"
             )
 
 
-if is_auto_gptq_available():
-    from auto_gptq import exllama_set_max_input_length
-    from auto_gptq.modeling._utils import autogptq_post_init
-    from auto_gptq.quantization import GPTQ
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
+def is_autoround_exllamav2_available():
+    res = True
+    try:
+        from autoround_exllamav2_kernels import gemm_half_q_half, make_q_matrix
+    except ImportError as e:
+        res = False
+    return res
+
+
+if is_auto_round_available():
+    from auto_round_extension.cuda.post_init import autoround_post_init
 
 
 #
@@ -201,15 +212,8 @@ class AutoRoundConfig(QuantizationConfigMixin):
             dataset: str = None,
             group_size: int = 128,
             sym: bool = False,
-            backend="gptq:exllamav2",
-            iters: int = 200,
+            backend="autoround:exllamav2",
             weight_config: dict = None,
-            enable_quanted_input=True,
-            enable_minmax_tuning=True,
-            lr=None,
-            minmax_lr=None,
-            n_samples=512,
-            seqlen=2048,
             **kwargs,
     ):
         self.bits = bits
@@ -218,14 +222,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.group_size = group_size
         self.sym = sym
         self.backend = backend
-        self.inters = iters
         self.weight_config = weight_config
-        self.enable_quanted_input = enable_quanted_input
-        self.enable_minmax_tuning = enable_minmax_tuning
-        self.lr = lr
-        self.minmax_lr = minmax_lr
-        self.n_samples = n_samples
-        self.seqlen = seqlen
         if kwargs is not None:
             for key in kwargs.keys():
                 setattr(self, key, kwargs[key])
@@ -233,16 +230,12 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.post_init()
 
     def get_loading_attributes(self):
-        pass
-        # attibutes_dict = copy.deepcopy(self.__dict__)
-        # loading_attibutes = ["disable_exllama", "use_exllama", "exllama_config", "use_cuda_fp16", "max_input_length"]
-        # loading_attibutes_dict = {i: j for i, j in attibutes_dict.items() if i in loading_attibutes}
-        # return loading_attibutes_dict
+        return {}
 
     def post_init(self):
         r"""Safety checker that arguments are correct."""
-        if self.bits not in [2, 3, 4, 8]:
-            raise ValueError(f"Only support quantization to [2,3,4,8] bits but found {self.bits}")
+        if self.bits not in [2, 4, 8]:
+            raise ValueError(f"Only support quantization to [2,4,8] bits but found {self.bits}")
         if self.group_size != -1 and self.group_size <= 0:
             raise ValueError("group_size must be greater than 0 or equal to -1")
         ##TODO add more check
@@ -254,23 +247,23 @@ class AutoRoundConfig(QuantizationConfigMixin):
 
 
 class AutoRoundQuantizer(HfQuantizer):
-    """Quantizer of the Autoround method, currently only gptq backend has been supported."""
+    """Quantizer of the AutoRound method, currently only triton and exllamav2 backend has been supported."""
 
     requires_calibration = False
-    required_packages = ["auto_gptq"]
+    required_packages = ["auto_round"]
     optimum_quantizer = None
 
     def __init__(self, quantization_config: QuantizationConfigMixin, **kwargs):
         super().__init__(quantization_config, **kwargs)
+        self.exllama2_available = is_autoround_exllamav2_available
 
     def validate_environment(self, *args, **kwargs):
-        gptq_supports_cpu = version.parse(importlib.metadata.version("auto-gptq")) > version.parse("0.4.2")
-        if not gptq_supports_cpu and not torch.cuda.is_available():
-            raise RuntimeError("GPU is required to quantize or run quantize model.")
-        elif not is_auto_gptq_available():
-            raise ImportError("Loading a GPTQ quantized model requires auto-gptq library (`pip install auto-gptq`)")
-        elif version.parse(importlib.metadata.version("auto_gptq")) < version.parse("0.4.2"):
-            raise ImportError("You need a version of auto_gptq >= 0.4.2 to use GPTQ: `pip install --upgrade auto-gptq`")
+        if not is_auto_round_available():
+            raise ImportError("Loading a AutoRound quantized model requires auto-round library (`pip install "
+                              "auto-round`)")
+        elif version.parse(importlib.metadata.version("auto_round")) < version.parse("0.2.0"):
+            raise ImportError("You need a version of auto_round > 0.2.0 to use AutoRound: `pip install --upgrade "
+                              "auto-round`")
 
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:
@@ -280,7 +273,7 @@ class AutoRoundQuantizer(HfQuantizer):
         return torch_dtype
 
     def convert_model(self, model: nn.Module):
-        """Convert the model to a GPTQ model by getting and replacing the layers.
+        """Convert the model to an AutoRound model by getting and replacing the layers.
 
         Args:
             model (`nn.Module`):
@@ -308,14 +301,21 @@ class AutoRoundQuantizer(HfQuantizer):
                 layer_configs[layer_name]["data_type"] = data_type
                 layer_configs[layer_name]["sym"] = sym
             else:
-                layer_configs[layer_name]["bits"] = extra_config.get("bits", bits)
-                layer_configs[layer_name]["group_size"] = extra_config.get("group_size", group_size)
-                layer_configs[layer_name]["data_type"] = extra_config.get("data_type", data_type)
-                layer_configs[layer_name]["sym"] = extra_config.get("sym", sym)
+                layer_configs[layer_name]["bits"] = extra_config[layer_name].get("bits", bits)
+                layer_configs[layer_name]["group_size"] = extra_config[layer_name].get("group_size", group_size)
+                layer_configs[layer_name]["data_type"] = extra_config[layer_name].get("data_type", data_type)
+                layer_configs[layer_name]["sym"] = extra_config[layer_name].get("sym", sym)
         backend = quantization_config.backend
 
         self._replace_by_quant_layers(model, layer_configs, backend)
         return model
+
+    def _dynamic_import_inference_linear(self, bits, backend):
+        if bits == 4 and self.exllama2_available and "exllama2" in backend:
+            from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
+        else:
+            from auto_round_extension.cuda.qliner_triton import QuantLinear
+        return QuantLinear
 
     def _replace_by_quant_layers(self, module: nn.Module, layer_configs, backend):
         """Replaces linear layers in `module` by `QuantLinear`
@@ -335,21 +335,7 @@ class AutoRoundQuantizer(HfQuantizer):
             data_type = config["data_type"]
             if not (bits <= 8 and data_type == "int"):
                 continue
-            from auto_round.export.export_to_autoround.export_to_autoround import get_autogptq_backend_config
-
-            use_triton, disable_exllama, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
-                backend, bits
-            )
-            QuantLinear = dynamically_import_QuantLinear(
-                use_triton=False,
-                desc_act=False,
-                group_size=group_size,
-                bits=bits,
-                disable_exllama=True,
-                disable_exllamav2=False,
-                use_qigen=use_qigen,
-                disable_marlin=disable_marlin,
-            )
+            QuantLinear = self._dynamic_import_inference_linear(bits, backend)
             layer = get_module(module, layer_name)
             device = get_device(layer)
             if isinstance(layer, nn.Linear):
@@ -382,23 +368,17 @@ class AutoRoundQuantizer(HfQuantizer):
                 The input model
         """
 
-        # if self.bits == 4 and not self.disable_exllama:
-        #     if get_device(model) == torch.device("cpu") or (
-        #             hasattr(model, "hf_device_map") and any(d in model.hf_device_map for d in ["cpu", "disk"])
-        #     ):
-        #         raise ValueError(
-        #             "Found modules on cpu/disk. Using Exllama
-        #             or Exllamav2 backend requires all the modules to be on GPU."
-        #             "You can deactivate exllama backend by
-        #             setting `disable_exllama=True` in the quantization config object"
-        #         )
+        #
+        # if self.bits == 4: if get_device(model) == torch.device("cpu") or ( hasattr(model, "hf_device_map") and
+        # any(d in model.hf_device_map for d in ["cpu", "disk"]) ): raise ValueError( "Found modules on cpu/disk.
+        # Using Exllamav2 backend requires all the modules to be on GPU." "You can deactivate exllama backend by
+        # setting `disable_exllama=True` in the quantization config object" )
 
         class StoreAttr(object):
             pass
 
         model.quantize_config = StoreAttr()
-        model.quantize_config.desc_act = False
-        model = autogptq_post_init(model, use_act_order=False)
+        model = autoround_post_init(model)
         return model
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
@@ -436,4 +416,3 @@ if transformers_version[0] == 4 and transformers_version[1] < 38:
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
-from transformers import AutoModelForCausalLM as AutoModelForCausalLM

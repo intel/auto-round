@@ -574,7 +574,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--tasks",
                         default="lambada_openai,hellaswag,winogrande,piqa,mmlu,truthfulqa_mc1," \
-                                "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
+                                "openbookqa,boolq,rte,arc_easy,arc_challenge",
                         help="lm-eval tasks for lm_eval version 0.4.2")
 
     args = parser.parse_args()
@@ -582,6 +582,7 @@ if __name__ == "__main__":
     from transformers import AutoConfig
 
     config = AutoConfig.from_pretrained(args.model_name)
+
     if hasattr(config, "quantization_config"):
         quantization_config = config.quantization_config
         if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
@@ -593,8 +594,12 @@ if __name__ == "__main__":
     model_name = args.model_name.rstrip('/')
     from lm_eval.utils import make_table
 
+    model_args = f"pretrained={args.model_name}"
+    if config.torch_dtype == torch.float32:
+        model_args += ",dtype=float16"
+    model_args += ",dtype=float16"
     result = simple_evaluate(model="hf",
-                             model_args=f"pretrained={args.model_name}",
+                             model_args=model_args,
                              tasks=test_tasks,
                              batch_size=args.eval_bs)
     print(make_table(result))

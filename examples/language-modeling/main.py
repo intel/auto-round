@@ -151,6 +151,7 @@ if __name__ == '__main__':
         except subprocess.CalledProcessError:
             return "Library not found"
 
+
     res = get_library_version("lm-eval")
     if res == "0.3.0":
         use_eval_legacy = True
@@ -289,7 +290,7 @@ if __name__ == '__main__':
                         f"supported currently")
                     break
     if args.quant_lm_head:
-        weight_config[lm_head_layer_name] = {"data_type": "int"}
+        weight_config[lm_head_layer_name] = {"data_type": "int", "bits": 4, "group_size": 32}
         transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
         if transformers_version[0] == 4 and transformers_version[1] < 38:
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
@@ -302,7 +303,10 @@ if __name__ == '__main__':
     gpu_format = "auto_gptq"
     if 'gpu' in deployment_device:
         if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
-            gpu_format = "autoround"
+            gpu_format = "auto_round"
+
+    if "autoround" in deployment_device or "auto-round" in deployment_device or "auto_round" in deployment_device:
+        gpu_format = "auto_round"
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
@@ -323,7 +327,7 @@ if __name__ == '__main__':
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
     inplace = True if len(deployment_device) < 2 else False
-    if 'gpu' in deployment_device:
+    if 'gpu' in deployment_device or "auto_round" in gpu_format or "auto-round" in gpu_format:
         autoround.save_quantized(f'{export_dir}-gpu', format=gpu_format, use_triton=True, inplace=inplace)
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
@@ -343,5 +347,3 @@ if __name__ == '__main__':
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
-
-

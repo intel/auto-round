@@ -52,6 +52,10 @@ from ..utils import convert_dtype_torch2str_hf
 @register_format("auto_gptq")
 def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
+    try:
+        import auto_gptq
+    except ImportError:
+        raise ImportError("export to autogptq requires autogptq library. Please run 'pip install auto-gptq'")
     model = kwargs["model"]
     weight_config = kwargs["weight_config"]
     sym = kwargs["sym"]
@@ -95,7 +99,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
 
-    from auto_gptq.modeling._utils import pack_model
+    from auto_gptq.modeling._utils import pack_model  # pylint: disable=E0401
 
     if bits == 3 or use_triton is False:
         if bits == 3 and use_triton is True:
@@ -127,7 +131,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
-            quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"].to(torch.float32), info["g_idx"])
+            quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
         pack_model(
             compressed_model,
             quantizers,
@@ -236,7 +240,7 @@ def _save_quantized_to_autogptq(
         model_save_name = model_base_name + ".bin"
         torch.save(model.state_dict(), join(save_dir, model_save_name))
 
-    from auto_gptq.modeling._base import BaseQuantizeConfig
+    from auto_gptq.modeling._base import BaseQuantizeConfig  # pylint: disable=E0401
 
     quantization_config = BaseQuantizeConfig(
         bits=bits,

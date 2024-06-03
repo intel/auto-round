@@ -472,7 +472,6 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
     output: The output of the forward pass.
     """
     if input_ids.device != device:
-        # input_ids, input_others = move_to_device(input_ids, input_others, device)
         input_ids = to_device(input_ids, device)
         input_others = to_device(input_others, device)
     input_tuple = input_others.pop("positional_inputs", None)
