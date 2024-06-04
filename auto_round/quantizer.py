@@ -85,8 +85,8 @@ def quant_weight_sym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scal
     """
     maxq = torch.tensor(2 ** num_bits - 1)
     if isinstance(min_scale, torch.Tensor):
-        wmin_tmp = torch.clamp(weight.min(1, keepdim=True)[0], max=0)
-        wmax_tmp = torch.clamp(weight.max(1, keepdim=True)[0], min=0)
+        wmin_tmp = torch.clamp(weight.min(1,)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
         wmin_tmp *= min_scale
         wmax_tmp *= max_scale
         wmax = torch.maximum(wmax_tmp, wmin_tmp)
