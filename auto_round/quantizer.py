@@ -135,8 +135,7 @@ def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dty
 
 
 def quant_weight(
-        weight, num_bits=4, group_size=-1, sym=False, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-        **kwargs
+        weight, num_bits=4, group_size=-1, sym=False, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16
 ):
     """Quantizes and dequantizes weight, handing the group size issue .
 

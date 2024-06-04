@@ -22,7 +22,7 @@ import transformers
 from torch import autocast
 
 from .calib_dataset import get_dataloader
-from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block
+from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from .special_model_handler import check_hidden_state_dim, check_share_attention_mask
 from .utils import (
     CpuInfo,
