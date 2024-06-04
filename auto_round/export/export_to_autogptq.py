@@ -50,7 +50,7 @@ from ..utils import convert_dtype_torch2str_hf
 
 
 @register_format("auto_gptq")
-def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwargs):
+def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwargs):##TODO align with autoround format
     """Export the model to autogptq format to easily leverage cuda kernel."""
     try:
         import auto_gptq
