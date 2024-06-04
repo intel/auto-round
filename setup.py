@@ -72,7 +72,13 @@ if BUILD_CUDA_EXT:
         print(
             f"Building PyTorch CUDA extension requires PyTorch being installed, please install PyTorch first: {e}.\n NOTE: This issue may be raised due to pip build isolation system (ignoring local packages). Please use `--no-build-isolation` when installing with pip, and refer to https://github.com/AutoGPTQ/AutoGPTQ/pull/620 for more details.")
         sys.exit(1)
+    if not torch.cuda.is_available():
+        print(
+            f"set BUILD_CUDA_EXT to False as no cuda device is available")
+        BUILD_CUDA_EXT = False
 
+
+if BUILD_CUDA_EXT:
     CUDA_VERSION = None
     ROCM_VERSION = os.environ.get('ROCM_VERSION', None)
     if ROCM_VERSION and not torch.version.hip:

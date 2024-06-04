@@ -349,15 +349,18 @@ if __name__ == '__main__':
                    device=torch_device, excel_file=excel_name)
 
     if not args.disable_eval and lm_eval_version == "0.4.2":
+        if "round" in deployment_device:
+            from auto_round.auto_quantizer import AutoHfQuantizer
         from eval_042.evaluation import simple_evaluate
 
         if 'gpu' in deployment_device or "auto_round" in gpu_format or "auto-round" in gpu_format:
             model_args = f"pretrained={export_dir}-gpu"
         else:
             model_args = f"pretrained={output_dir}"
+
         res = simple_evaluate(model="hf", model_args=model_args,
-                        tasks=tasks,
-                        batch_size=args.eval_bs)
+                              tasks=tasks,
+                              batch_size=args.eval_bs)
         from lm_eval.utils import make_table
 
-        print(make_table(result))
+        print(make_table(res))
