@@ -355,6 +355,9 @@ if __name__ == '__main__':
             model_args = f"pretrained={export_dir}-gpu"
         else:
             model_args = f"pretrained={output_dir}"
-        simple_evaluate(model="hf", model_args=model_args,
+        res = simple_evaluate(model="hf", model_args=model_args,
                         tasks=tasks,
                         batch_size=args.eval_bs)
+        from lm_eval.utils import make_table
+
+        print(make_table(result))
