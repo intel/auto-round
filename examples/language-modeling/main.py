@@ -340,7 +340,7 @@ if __name__ == '__main__':
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
 
-    if not args.disable_eval and "fake" in deployment_device and lm_eval_version == "0.4.2":  ##support autogptq real eval later
+    if not args.disable_eval and "fake" in deployment_device and lm_eval_version != "0.4.2":
         excel_name = f"{output_dir}_result.xlsx"
         output_dir += "/"
         print(excel_name, flush=True)
