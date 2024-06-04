@@ -1,9 +1,4 @@
-﻿### ignore binary files in llm-runtime ###
-/neural_speed/*
-!/neural_speed/*.*
-!/neural_speed/*/
-
-*.exe
+﻿*.exe
 *.dll
 *.dylib
 *.pyd
