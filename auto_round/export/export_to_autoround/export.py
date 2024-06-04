@@ -23,7 +23,7 @@ import transformers
 
 from auto_round.export.register import register_format
 from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
-import auto_round.qlinear_qbits as qlinear_qbits 
+import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits 
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):

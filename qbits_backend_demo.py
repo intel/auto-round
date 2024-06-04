@@ -18,7 +18,7 @@ autoround.save_quantized(output_dir, format="auto_round")
 
 
 from auto_round.auto_quantizer import *
-from auto_round.qlinear_qbits import *
+from auto_round_extension.qbits.qlinear_qbits import *
 
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(

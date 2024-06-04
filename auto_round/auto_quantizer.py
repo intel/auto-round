@@ -42,7 +42,7 @@ from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
 from auto_round.utils import get_module, set_module
-import auto_round.qlinear_qbits as qlinear_qbits
+import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
 
 logger = getLogger(__name__)
 import sys
