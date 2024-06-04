@@ -42,6 +42,7 @@ from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
 from auto_round.utils import get_module, set_module
+import auto_round.qlinear_qbits as qlinear_qbits
 
 logger = getLogger(__name__)
 import sys
@@ -311,7 +312,9 @@ class AutoRoundQuantizer(HfQuantizer):
         return model
 
     def _dynamic_import_inference_linear(self, bits, backend):
-        if bits == 4 and self.exllama2_available and "exllamav2" in backend:
+        if "qbits" in backend:
+            return qlinear_qbits.QuantLinear
+        elif bits == 4 and self.exllama2_available and "exllamav2" in backend:
             from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
         else:
             from auto_round_extension.cuda.qliner_triton import QuantLinear

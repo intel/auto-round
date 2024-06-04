@@ -23,6 +23,7 @@ import transformers
 
 from auto_round.export.register import register_format
 from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
+import auto_round.qlinear_qbits as qlinear_qbits 
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -89,15 +90,18 @@ def dynamic_QuantLienar_for_packing(backend, bits, group_size):
         return QuantLinear
     ##export all use trition, inference use exllamav2
     elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:
-        from auto_round_extension.cuda.qliner_triton import QuantLinear
-        return QuantLinear
+        if "qbits" in backend:
+            return qlinear_qbits.QuantLinear
+        else:
+            from auto_round_extension.cuda.qliner_triton import QuantLinear
+            return QuantLinear
 
     else:
         assert False, f"only support gptq and autoround backend"
 
 
 @register_format("auto_round")
-def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exllamav2", **kwargs):
+def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:qbits", **kwargs):
     model = kwargs["model"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))

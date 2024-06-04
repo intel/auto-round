@@ -1,0 +1,24 @@
+﻿### ignore binary files in llm-runtime ###
+/neural_speed/*
+!/neural_speed/*.*
+!/neural_speed/*/
+
+*.exe
+*.dll
+*.dylib
+*.pyd
+*.so
+*.so.*
+
+
+.vs
+.vscode
+__pycache__
+auto_round.egg-info/
+build/*
+.eggs/
+dist/
+.cache/
+.clangd
+CMakeUserPresets.json
+tmp_autoround/
