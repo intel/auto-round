@@ -71,7 +71,7 @@ def get_autogptq_backend_config(backend, bits=4):
     return use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin
 
 
-def dynamic_QuantLienar_for_packing(backend, bits, group_size):
+def dynamic_QuantLienar_for_packing(backend, bits, group_size, device):
     if "gptq" in backend:
         use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
             backend, bits
@@ -90,7 +90,7 @@ def dynamic_QuantLienar_for_packing(backend, bits, group_size):
         return QuantLinear
     ##export all use trition, inference use exllamav2
     elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:
-        if "qbits" in backend:
+        if device.type == "cpu":
             return qlinear_qbits.QuantLinear
         else:
             from auto_round_extension.cuda.qliner_triton import QuantLinear
@@ -101,7 +101,7 @@ def dynamic_QuantLienar_for_packing(backend, bits, group_size):
 
 
 @register_format("auto_round")
-def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:qbits", **kwargs):
+def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exllamav2", **kwargs):
     model = kwargs["model"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
@@ -121,7 +121,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:qbi
         layer = get_module(model, name)
         device = layer.weight.device
 
-        QuantLinear = dynamic_QuantLienar_for_packing(backend, bits, group_size)
+        QuantLinear = dynamic_QuantLienar_for_packing(backend, bits, group_size, device)
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features

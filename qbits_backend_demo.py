@@ -11,7 +11,7 @@ tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
 bits, group_size, sym = 4, 128, False
 # device:Optional["auto", None, "hpu", "cpu", "cuda"]
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size,
-                      sym=sym, nsamples=32, seqlen=32, device="cpu", iters=1, scale_dtype="fp32")
+                      sym=sym, nsamples=32, seqlen=32, device="cpu", iters=1)
 autoround.quantize()
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir, format="auto_round")

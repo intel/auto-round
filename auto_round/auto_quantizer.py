@@ -312,10 +312,11 @@ class AutoRoundQuantizer(HfQuantizer):
         return model
 
     def _dynamic_import_inference_linear(self, bits, backend):
-        if "qbits" in backend:
-            return qlinear_qbits.QuantLinear
-        elif bits == 4 and self.exllama2_available and "exllamav2" in backend:
-            from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
+        if bits == 4 and "exllamav2" in backend:
+            if self.exllama2_available:
+                from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
+            else:
+                return qlinear_qbits.QuantLinear
         else:
             from auto_round_extension.cuda.qliner_triton import QuantLinear
         return QuantLinear
