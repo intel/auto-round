@@ -26,7 +26,6 @@ def fetch_requirements(path):
         requirements = [r.strip() for r in fd.readlines()]
     if not BUILD_CUDA_EXT:
         requirements.append("intel-extension-for-transformers") # for leverage QBits woq_linear capability.
-    print(requirements)
     return requirements
 
 def detect_local_sm_architectures():
