@@ -152,8 +152,8 @@ if __name__ == '__main__':
             return "Library not found"
 
 
-    res = get_library_version("lm-eval")
-    if res == "0.3.0":
+    lm_eval_version = get_library_version("lm-eval")
+    if lm_eval_version == "0.3.0":
         use_eval_legacy = True
 
     if isinstance(tasks, str):
@@ -340,17 +340,21 @@ if __name__ == '__main__':
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
 
-    # if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
-    #     excel_name = f"{output_dir}_result.xlsx"
-    #     output_dir += "/"
-    #     print(excel_name, flush=True)
-    #     eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-    #                eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
-    #                device=torch_device, excel_file=excel_name)
-    from auto_round.auto_quantizer import AutoHfQuantizer
-    from eval_042.evaluation import simple_evaluate
+    if not args.disable_eval and "fake" in deployment_device and lm_eval_version == "0.4.2":  ##support autogptq real eval later
+        excel_name = f"{output_dir}_result.xlsx"
+        output_dir += "/"
+        print(excel_name, flush=True)
+        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+                   device=torch_device, excel_file=excel_name)
 
-    model_args = f"pretrained={export_dir}-gpu"
-    simple_evaluate(model="hf", model_args=model_args,
-                    tasks="lambada_openai",
-                    batch_size=args.eval_bs)
+    if not args.disable_eval and lm_eval_version == "0.4.2":
+        from eval_042.evaluation import simple_evaluate
+
+        if 'gpu' in deployment_device or "auto_round" in gpu_format or "auto-round" in gpu_format:
+            model_args = f"pretrained={export_dir}-gpu"
+        else:
+            model_args = f"pretrained={output_dir}"
+        simple_evaluate(model="hf", model_args=model_args,
+                        tasks=tasks,
+                        batch_size=args.eval_bs)
