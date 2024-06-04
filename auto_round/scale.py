@@ -92,32 +92,6 @@ def get_weight_scale(weight_data):
     return norm_weight_amax_clip.to(weight_data.device)
     
 
-class ScaleCalculator(torch.nn.Module):
-    def __init__(self, data: int, device, init_method = None):
-        super().__init__()
-        assert len(data.shape) == 2, f"weight_data shape len should be 2, got {data.shape}"
-        shape = data.shape[1]
-        self.shape = shape
-        self.device = device
-        tensor1 = torch.ones(shape, device=device) * 0.5
-        if init_method is None:
-            tensor2 = torch.ones(shape, device=device) * 0.5
-        else:
-            logger.info(f"init scale 2 according to the weight")
-            tensor2 = get_weight_scale(data) * 0.5
-        
-        self.scale1 = torch.nn.Parameter(tensor1, requires_grad=True)
-        self.scale2 = torch.nn.Parameter(tensor2, requires_grad=True)
-
-    def forward(self, x):
-        update_scale = torch.clip(self.scale1, min=0.0, max=1.0) / torch.clip(self.scale2, min=1e-5, max=1.0)
-        # TODO: add more complex logic here
-        return update_scale
-
-    def get_final_scale(self):
-        update_scale = torch.clip(self.scale1, min=0.0, max=1.0) / torch.clip(self.scale2, min=1e-5, max=1.0)
-        # TODO: add more complex logic here
-        return update_scale
 
 # ScaleCalculatorVanilla
 class ScaleCalculatorV(torch.nn.Module):
@@ -134,9 +108,9 @@ class ScaleCalculatorV(torch.nn.Module):
 
     def forward(self, x):
         update_scale = self.scale1
-        # TODO: add more complicated logic here
         return update_scale
 
     def get_final_scale(self):
-        # TODO: add more complicated logic here
         return self.scale1
+
+ScaleCalculator = ScaleCalculatorV
