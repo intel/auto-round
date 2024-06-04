@@ -40,10 +40,12 @@ image presents an overview of AutoRound.
 ### Build from Source
 
 ```bash
+pip install -vvv --no-build-isolation -e .
+or
 pip install -r requirements.txt
 python setup.py install
-or
-pip install -vvv --no-build-isolation -e .
+
+
 ```
 
 ### Install from pypi
