@@ -61,7 +61,7 @@ def get_tokenizer_function(tokenizer, seqlen):
 
 
 @register_dataset("NeelNanda/pile-10k")
-def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42):
+def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42, padding=False):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -70,6 +70,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     data_name: The name of the dataset.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
+    padding: Whether to do padding.
 
     Returns:
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
@@ -77,7 +78,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     from datasets import load_dataset
 
     split = "train"
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, padding=padding)
 
     calib_dataset = load_dataset(dataset_name, split=split)
     calib_dataset = calib_dataset.shuffle(seed=seed)
@@ -87,7 +88,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
 
 
 @register_dataset("madao33/new-title-chinese")
-def get_new_chinese_title_dataset(tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42):
+def get_new_chinese_title_dataset(tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42, padding=False):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -96,6 +97,7 @@ def get_new_chinese_title_dataset(tokenizer, seqlen, dataset_name="madao33/new-t
     data_name: The name of the dataset.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
+    padding: Whether to do padding
 
     Returns:
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
@@ -121,7 +123,7 @@ def get_new_chinese_title_dataset(tokenizer, seqlen, dataset_name="madao33/new-t
     split = "train"
     from datasets import load_dataset
 
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, padding=padding)
 
     calib_dataset = load_dataset(dataset_name, split=split)
     calib_dataset = calib_dataset.shuffle(seed=seed)
@@ -131,7 +133,7 @@ def get_new_chinese_title_dataset(tokenizer, seqlen, dataset_name="madao33/new-t
 
 
 @register_dataset("mbpp")
-def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42):
+def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42, padding=False):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -140,13 +142,14 @@ def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42
     data_name: The name of the dataset.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
+    padding: Whether to do padding
 
     Returns:
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
     """
     from datasets import load_dataset
 
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, padding=padding)
 
     samples = []
     splits = split
@@ -169,7 +172,7 @@ def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42
 
 
 @register_dataset("local")
-def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42):
+def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, padding=False):
     """Returns a dataloader for a custom dataset and split.
     We allow the input of a json or text file containing a processed text sample each line.
 
@@ -183,7 +186,7 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
     Returns:
     A dataloader for a custom dataset and split, using the provided tokenizer and sequence length.
     """
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, padding=padding)
 
     def load_local_data(data_path):
         if data_path.endswith(".json"):
@@ -251,11 +254,38 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
             return False
         return True
 
+    def concat_dataset_element(dataset):
+        input_ids, concat_input_ids = [eg['input_ids'] for eg in dataset], []
+        attention_mask_list, attention_mask = [], torch.ones([1, seqlen]).to(torch.int64)
+        buffer_input_id = torch.Tensor()
+        for input_id in input_ids:
+            if buffer_input_id.shape[-1] + input_id.shape[-1] > seqlen:
+                idx_keep = seqlen - buffer_input_id.shape[-1]
+                concat_input_ids.append(torch.cat([buffer_input_id, input_id[:idx_keep]]).to(torch.int64))
+                attention_mask_list.append(attention_mask)
+                buffer_input_id = input_id[idx_keep:]
+            else:
+                buffer_input_id = torch.cat([buffer_input_id, input_id])
+            if buffer_input_id.shape[-1] == seqlen:
+                concat_input_ids.append(buffer_input_id.to(torch.int64))
+                attention_mask_list.append(attention_mask)
+                buffer_input_id = torch.Tensor()
+        data = [{'input_ids': a, 'attention_mask': b} for a, b in zip(concat_input_ids, attention_mask_list)]
+        import datasets
+        dataset_new = datasets.Dataset.from_list(data)
+        return dataset_new
+
     datasets = []
     for name in dataset_names:
         split = None
+        do_concat, do_padding = False, False
         if ":" in name:
-            name, split = name.split(":")
+            # name, split = name.split(":")
+            split_list = name.split(":")
+            name, split_list = name.split(":")[0], name.split(":")[1:]
+            do_concat, do_padding = 'cat' in split_list, 'pad' in split_list
+            split_list = [item for item in split_list if item not in {'cat', 'pad'}]
+            split = split_list[0] if split_list else split
         if is_local_path(name):
             get_dataset = CALIB_DATASETS.get("local")
         else:
@@ -266,8 +296,11 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
             seed=seed,
             split=split,
             dataset_name=name,
+            padding=do_padding,
         )
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+        if do_concat:
+            dataset = concat_dataset_element(dataset)
         dataset = dataset.filter(filter_func)
 
         datasets.append(dataset)
