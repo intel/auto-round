@@ -598,7 +598,7 @@ if __name__ == "__main__":
     model_args = f"pretrained={args.model_name}"
     if config.torch_dtype == torch.float32:
         model_args += ",dtype=float16"
-    model_args += ",dtype=float16"
+    # model_args += ",dtype=float16"
     result = simple_evaluate(model="hf",
                              model_args=model_args,
                              tasks=test_tasks,

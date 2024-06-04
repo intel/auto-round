@@ -347,7 +347,10 @@ if __name__ == '__main__':
     #     eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
     #                eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
     #                device=torch_device, excel_file=excel_name)
-
+    from auto_round.auto_quantizer import AutoHfQuantizer
     from eval_042.evaluation import simple_evaluate
 
-    simple_evaluate(f"{export_dir}-gpu", tasks="lambada_openai")
+    model_args = f"pretrained={export_dir}-gpu"
+    simple_evaluate(model="hf", model_args=model_args,
+                    tasks="lambada_openai",
+                    batch_size=args.eval_bs)
