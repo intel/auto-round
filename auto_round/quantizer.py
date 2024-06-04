@@ -33,7 +33,7 @@ def round_ste(x: torch.Tensor):
     return (x.round() - x).detach() + x
 
 
-def quant_weight_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, **kwargs):
+def quant_weight_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16):
     """Quantizes and dequantizes weight asymmetrically.
 
     Args:
@@ -70,7 +70,7 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, sca
     return scale * (q - zp), scale, zp
 
 
-def quant_weight_sym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, **kwargs):
+def quant_weight_sym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16):
     """Quantizes and dequantizes weight symmetrically.
 
     Args:
@@ -113,7 +113,7 @@ def quant_weight_sym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scal
     return scale * (q - zp), scale, zp
 
 
-def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dtype=torch.float16, **kwargs):
+def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dtype=torch.float16):
     """Quantizes and dequantizes weight symmetrically or asymmetrically .
 
     Args:
@@ -129,9 +129,9 @@ def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dty
     """
     assert num_bits > 0, "num_bits should be larger than 0"
     if sym:
-        return quant_weight_sym(weight, num_bits, v, min_scale, max_scale, scale_dtype, **kwargs)
+        return quant_weight_sym(weight, num_bits, v, min_scale, max_scale, scale_dtype)
     else:
-        return quant_weight_asym(weight, num_bits, v, min_scale, max_scale, scale_dtype, **kwargs)
+        return quant_weight_asym(weight, num_bits, v, min_scale, max_scale, scale_dtype)
 
 
 def quant_weight(
@@ -154,7 +154,7 @@ def quant_weight(
     """
     if group_size == -1 or weight.shape[1] < group_size:
         return quant_weight_actor(
-            weight, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype, **kwargs
+            weight, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
         )
     orig_shape = weight.shape
     if weight.shape[1] % group_size == 0:
@@ -163,7 +163,7 @@ def quant_weight(
             v = v.reshape(-1, group_size)
 
         weight, scale, zp = quant_weight_actor(
-            weight, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype, **kwargs
+            weight, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
         )
         weight = weight.reshape(orig_shape)
         scale = scale.reshape(weight.shape[0], -1)  ##only for linear, conv1d
@@ -216,13 +216,13 @@ class WrapperLinear(torch.nn.Module):
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
         weight_dtype = self.orig_layer.weight.dtype
+        weight_dtype = torch.float32
         self.value = torch.nn.Parameter(
             torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
             requires_grad=True,
         )
         self.enable_minmax_tuning = enable_minmax_tuning
         shape = get_scale_shape(self.orig_layer.weight, self.group_size)
-        weight_dtype = self.orig_layer.weight.dtype
         if self.enable_minmax_tuning:
             self.min_scale = torch.nn.Parameter(
                 torch.ones(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
@@ -323,7 +323,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.sym = self.orig_layer.sym
         self.scale_dtype = self.orig_layer.scale_dtype
         weight_dtype = self.orig_layer.weight.dtype
-
+        weight_dtype = torch.float32
         device = self.orig_layer.weight.device
         self.weight_t = self.orig_layer.weight.t()
         self.value = torch.nn.Parameter(
