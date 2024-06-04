@@ -1,12 +1,4 @@
-﻿*.exe
-*.dll
-*.dylib
-*.pyd
-*.so
-*.so.*
-
-
-.vs
+﻿.vs
 .vscode
 __pycache__
 auto_round.egg-info/

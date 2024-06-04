@@ -20,30 +20,14 @@ import torch
 import torch.nn as nn
 import transformers
 from intel_extension_for_transformers import qbits  # with QBits kernels ()
-from logging import getLogger
+from auto_round.utils import convert_dtype_torch2str, logging
 
-
-logger = getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 BITS_DTYPE_MAPPING = {
     4: "int4_clip",
     8: "int8",
 }
-
-
-def convert_dtype_torch2str(dtype):
-    if dtype == torch.int8:
-        return "int8"
-    elif dtype == torch.float:
-        return "fp32"
-    elif dtype == torch.float16:
-        return "fp16"
-    elif dtype == torch.bfloat16:
-        return "bf16"
-    elif isinstance(dtype, str) and dtype in ["int8", "fp32", "fp16", "bf16"]:
-        return dtype
-    else:
-        assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
 
 
 class QuantLinear(nn.Module):
@@ -97,11 +81,6 @@ class QuantLinear(nn.Module):
                 dtype=weight_dtype,
             ),
         )
-        self.register_buffer(
-            "g_idx",
-            torch.tensor(
-                [i // self.group_size for i in range(infeatures)], dtype=torch.int32),
-        )
         if bias:
             self.register_buffer("bias", torch.zeros(
                 (outfeatures), dtype=torch.float))
@@ -117,12 +96,9 @@ class QuantLinear(nn.Module):
         if self.bias is not None:
             self.bias = self.bias.to(dtype=torch.float32)
 
-        default_idx = torch.tensor(
-            [i // self.group_size for i in range(self.infeatures)], dtype=torch.int32)
-        is_desc_act = not torch.all(torch.eq(default_idx, self.g_idx))
         # intweight: k x n, zeros: k / group_size x n
-        intweight, zeros = unpack_to_8bit_signed(self.qweight, self.qzeros, self.bits,
-                                                 self.g_idx if is_desc_act else None)
+        intweight, zeros = unpack_to_8bit_signed(
+            self.qweight, self.qzeros, self.bits)
         if zeros is None:
             zeros = torch.empty(0, dtype=torch.int8)
             self.asym = False
@@ -145,12 +121,7 @@ class QuantLinear(nn.Module):
 
         scales = self.scales
 
-        if not is_desc_act:
-            g_idx = torch.empty(0, dtype=torch.int32)
-        else:
-            g_idx = self.g_idx
-
-        self.qweight = qbits.repack_quantized_weight(intweight.contiguous(), scales.float(), zeros, g_idx,
+        self.qweight = qbits.repack_quantized_weight(intweight.contiguous(), scales.float(), zeros, torch.empty(0),
                                                      # weight_dtype
                                                      BITS_DTYPE_MAPPING[self.bits],
                                                      # scale_dtype
@@ -162,7 +133,6 @@ class QuantLinear(nn.Module):
         # free mem
         self.qzeros = torch.empty(0)
         self.scales = torch.empty(0)
-        self.g_idx = torch.empty(0)
 
     def pack(self, linear, scales, zeros, g_idx=None):
         W = linear.weight.data.clone()
@@ -170,8 +140,6 @@ class QuantLinear(nn.Module):
             W = W.flatten(1)
         if isinstance(linear, transformers.pytorch_utils.Conv1D):
             W = W.t()
-
-        self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx
 
         scales = scales.t().contiguous()
         zeros = zeros.t().contiguous()
@@ -184,7 +152,7 @@ class QuantLinear(nn.Module):
         for idx in range(self.infeatures):
             intweight.append(
                 torch.round(
-                    (W[:, idx] + scale_zeros[self.g_idx[idx]]) / self.scales[self.g_idx[idx]]).to(torch.int)[:, None])
+                    (W[:, idx] + scale_zeros[idx//self.group_size]) / self.scales[idx//self.group_size]).to(torch.int)[:, None])
         intweight = torch.cat(intweight, dim=1)
         intweight = intweight.t().contiguous()
         intweight = intweight.numpy().astype(np.uint32)
@@ -285,7 +253,7 @@ class QuantLinear(nn.Module):
 
 
 @torch.no_grad()
-def unpack_to_8bit_signed(qweight, qzeros, bits, g_idx=None):
+def unpack_to_8bit_signed(qweight, qzeros, bits):
     wf = torch.tensor(list(range(0, 32, bits)), dtype=torch.int32).unsqueeze(0)
     zeros = None
     if not torch.all(torch.eq(qzeros, 2004318071 if bits == 4 else 0b01111111011111110111111101111111)):
@@ -314,21 +282,6 @@ def unpack_to_8bit_signed(qweight, qzeros, bits, g_idx=None):
     ).to(torch.int16 if bits == 8 else torch.int8)
     weight.bitwise_and_((2**bits) - 1)
     weight = weight.view(-1, weight.shape[-1])
-
-    if g_idx is not None:
-        group_size = weight.shape[0] // qzeros.shape[0]
-        weight2 = weight.clone()
-        group_dict = {}
-        for i in range(len(g_idx)):
-            group_idx = g_idx[i].item()
-            if group_idx not in group_dict:
-                target_idx = group_idx * group_size
-                group_dict[group_idx] = 0
-            else:
-                group_dict[group_idx] = group_dict[group_idx] + 1
-                target_idx = group_idx * group_size + group_dict[group_idx]
-            weight2[target_idx] = weight[i]
-        weight = weight2
 
     return weight, zeros
 
