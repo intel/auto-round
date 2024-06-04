@@ -1,12 +1,12 @@
-Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source,  and the  git id f3b7917091afba325af3980a35d8a6dcba03dc3f is used
+pip install lm-eval==0.4.2
 
-Download the model from hf(coming soon) or follow examples/language-modeling/scripts/phi-2.sh to generate the model
+Due to the significant accuracy drop with the asymmetric kernel for this model, we opted to use symmetric quantization.
 
-Since we encountered an issue evaluating this model with lm-eval, we opted to evaluate the qdq model instead. In our assessment, we found that its accuracy closely matches that of the real quantized model in most cases except for some small models like opt-125m.
+```bash
+lm_eval --model hf --model_args pretrained="Intel/phi-2-int4-inc" --device cuda:0 --tasks lambada_openai,hellaswag,piqa,winogrande,truthfulqa_mc1,openbookqa,boolq,arc_easy,arc_challenge,mmlu --batch_size 16
+```
 
-
-
-| Metric         | FP16   | INT4 qdq |
+| Metric         | FP16   | INT4  |
 | -------------- | ------ | -------- |
 | Avg.           | 0.6155 | 0.6163   |
 | mmlu           | 0.5448 | 0.5417   |

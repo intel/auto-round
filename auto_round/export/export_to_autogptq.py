@@ -46,10 +46,16 @@ from safetensors.torch import save_file as safe_save
 from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
 
+from ..utils import convert_dtype_torch2str_hf
+
 
 @register_format("auto_gptq")
 def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
+    try:
+        import auto_gptq
+    except ImportError:
+        raise ImportError("export to autogptq requires autogptq library. Please run 'pip install auto-gptq'")
     model = kwargs["model"]
     weight_config = kwargs["weight_config"]
     sym = kwargs["sym"]
@@ -59,7 +65,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     lr = kwargs["lr"]
     minmax_lr = kwargs["minmax_lr"]
     enable_minmax_tuning = kwargs["enable_minmax_tuning"]
-    use_quant_input = kwargs["use_quant_input"]
+    enable_quanted_input = kwargs["enable_quanted_input"]
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
@@ -84,7 +90,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             all_to_quantized = False
         else:
             modules_in_block_to_quantize.append(n)
-    modules_in_block_to_quantize = [modules_in_block_to_quantize]  ##align with autogptq
+    modules_in_block_to_quantize = [modules_in_block_to_quantize]
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
@@ -93,17 +99,20 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
 
-    from auto_gptq.modeling._utils import pack_model
+    from auto_gptq.modeling._utils import pack_model  # pylint: disable=E0401
 
     if bits == 3 or use_triton is False:
         if bits == 3 and use_triton is True:
             logger.warning("triton does not support 3 bits, reset it to False")
         quantizers = {}
         for key in weight_config:
+            if key == "lm_head":  ##TODO remove this after pr 87 is merged
+                continue
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
-            quantizers[key] = (None, info["scale"], info["zp"], info["g_idx"])
+            ##force to float32 to be compatible with torch 2.0
+            quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
         pack_model(
             compressed_model,
             quantizers,
@@ -117,11 +126,12 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     else:
         quantizers = {}
         for key in weight_config:
+            if key == "lm_head":  ##TODO remove this after pr 87 is merged
+                continue
             info = weight_config[key]
             if not check_to_quantized(info):
                 continue
-            info["zp"] = info["zp"].to(torch.float32)
-            quantizers[key] = (None, info["scale"].to(torch.float32), info["zp"], info["g_idx"])
+            quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
         pack_model(
             compressed_model,
             quantizers,
@@ -145,7 +155,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
         lr=lr,
         minmax_lr=minmax_lr,
         enable_minmax_tuning=enable_minmax_tuning,
-        use_quant_input=use_quant_input,
+        enable_quanted_input=enable_quanted_input,
         scale_dtype=scale_dtype,
         use_safetensors=True,
         modules_in_block_to_quantize=modules_in_block_to_quantize,
@@ -153,20 +163,20 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
 
 
 def _save_quantized_to_autogptq(
-    model,
-    save_dir: str,
-    bits=4,
-    group_size=128,
-    sym=False,
-    iters=200,
-    lr=5e-3,
-    minmax_lr=5e-3,
-    enable_minmax_tuning=True,
-    use_quant_input=True,
-    use_safetensors: bool = True,
-    scale_dtype=torch.float32,
-    safetensors_metadata: Optional[Dict[str, str]] = None,
-    modules_in_block_to_quantize=None,
+        model,
+        save_dir: str,
+        bits=4,
+        group_size=128,
+        sym=False,
+        iters=200,
+        lr=5e-3,
+        minmax_lr=5e-3,
+        enable_minmax_tuning=True,
+        enable_quanted_input=True,
+        use_safetensors: bool = True,
+        scale_dtype=torch.float32,
+        safetensors_metadata: Optional[Dict[str, str]] = None,
+        modules_in_block_to_quantize=None,
 ):
     """Save quantized model and configs to local disk for cuda."""
     os.makedirs(save_dir, exist_ok=True)
@@ -223,14 +233,14 @@ def _save_quantized_to_autogptq(
         safetensors_metadata["lr"] = str(lr)
         safetensors_metadata["minmax_lr"] = str(minmax_lr)
         safetensors_metadata["enable_minmax_tuning"] = str(enable_minmax_tuning)
-        safetensors_metadata["use_quant_input"] = str(use_quant_input)
-        safetensors_metadata["scale_dtype"] = str(scale_dtype)
+        safetensors_metadata["enable_quanted_input"] = str(enable_quanted_input)
+        safetensors_metadata["scale_dtype"] = convert_dtype_torch2str_hf(scale_dtype)
         safe_save(state_dict, join(save_dir, model_save_name), safetensors_metadata)
     else:
         model_save_name = model_base_name + ".bin"
         torch.save(model.state_dict(), join(save_dir, model_save_name))
 
-    from auto_gptq.modeling._base import BaseQuantizeConfig
+    from auto_gptq.modeling._base import BaseQuantizeConfig  # pylint: disable=E0401
 
     quantization_config = BaseQuantizeConfig(
         bits=bits,
@@ -250,8 +260,8 @@ def _save_quantized_to_autogptq(
     config_dict["lr"] = lr
     config_dict["minmax_lr"] = minmax_lr
     config_dict["enable_minmax_tuning"] = enable_minmax_tuning
-    config_dict["use_quant_input"] = use_quant_input
-    config_dict["scale_dtype"] = str(scale_dtype)
+    config_dict["enable_quanted_input"] = enable_quanted_input
+    config_dict["scale_dtype"] = convert_dtype_torch2str_hf(scale_dtype)
     if modules_in_block_to_quantize is not None:
         config_dict["modules_in_block_to_quantize"] = modules_in_block_to_quantize
 

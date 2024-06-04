@@ -11,7 +11,7 @@ import transformers
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, './')
-from .parse_results import result_parser
+from eval_legacy.parse_results import result_parser
 import time
 EXT_TASKS = ['wikitext2', 'ptb', 'c4', 'ptb-new', 'c4-new']
 fewshots_dict = {}
@@ -208,22 +208,32 @@ def simple_evaluate(
 
 
 def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
-               eval_bs=32, use_accelerate=True, dtype="float16", limit=None,
-               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx",
-               model_tokenizer_pairs = None
-               
-               ):
-    print("evaluation with official lm-eval [!!!Legacy!!!]", flush=True)
+               eval_bs=32, use_accelerate=True, dtype=None, limit=None, trust_remote_code=True,
+               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
+    print("evaluation with official lm-eval", flush=True)
     try:
         import lm_eval
         from lm_eval import evaluator
         from lm_eval.tasks import ALL_TASKS, get_task_dict
+        import pandas as pd
     except:
         raise ImportError("""follow requirements to install dependencies.""")
-
+    
     org_s = time.time()
+    if dtype == None:
+        from eval.utils import convert_dtype_torch2str_hf
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+        if hasattr(config, "torch_dtype"):
+            dtype = convert_dtype_torch2str_hf(config.torch_dtype)
+        else:
+            dtype = "float16"
+    print(f"Using {dtype} as evaluation data type.")
+    
 
     external_tasks = []
+    if isinstance(tasks, str):
+        tasks = tasks.split(',')
     for each in EXT_TASKS:
         if each in tasks:
             external_tasks.append(each)
@@ -241,12 +251,12 @@ def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrand
             task_names = lm_eval.utils.pattern_match([tmp_tasks], ALL_TASKS)
             print(f'********* {tmp_tasks} evaluate ************')
             task_s = time.time()
-            for shot in num_fewshot:                
-                if bool(re.search("chatglm", str(model_path).lower())):
-                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code=True'
+            for shot in num_fewshot:
+                if bool(re.search("chatglm", model_path.lower())):
+                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code={trust_remote_code}'
                     model_type = "hf-causal"
                 else:
-                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},use_accelerate={use_accelerate},trust_remote_code=True'
+                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},use_accelerate={use_accelerate},trust_remote_code={trust_remote_code}'
                     model_type = "hf-causal-experimental"
 
                 if "wikitext" in task_names:
@@ -344,7 +354,6 @@ def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrand
                 #     continue
                 new_dict[new_key] = data[sub_key][sub_sub_key]
 
-    import pandas as pd
     df = pd.DataFrame(data=new_dict, index=[0])
     df.to_excel(excel_file)
 
@@ -366,6 +375,9 @@ if __name__ == "__main__":
     test_tasks = ['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
                   "hendrycksTest-*", "wikitext", "truthfulqa_mc", "openbookqa", "boolq", "rte", "arc_easy",
                   "arc_challenge"]
+    seen = set()
+    tmp_tasks = test_tasks
+    test_tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
     model_name = args.model_name.rstrip('/')
     excel_name = model_name.split('/')[-1] + ".xlsx"
     eval_model(model_path=args.model_name,
@@ -373,6 +385,9 @@ if __name__ == "__main__":
                eval_bs=args.eval_bs, limit=None, excel_file=excel_name)
 
     print("cost time: ", time.time() - s)
+
+
+
 
 
 

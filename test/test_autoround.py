@@ -3,7 +3,7 @@ import shutil
 import sys
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, "..")
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -42,7 +42,8 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
-            dataloader=self.llm_dataloader,
+            seqlen=2,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
         if torch.cuda.is_available():
@@ -58,7 +59,8 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
-            dataloader=self.llm_dataloader,
+            seqlen=10,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -71,7 +73,8 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
-            dataloader=self.llm_dataloader,
+            seqlen=10,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -84,7 +87,8 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
-            dataloader=self.llm_dataloader,
+            seqlen=10,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -97,11 +101,12 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
-            dataloader=self.llm_dataloader,
+            seqlen=10,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
-    def test_disable_use_quant_input(self):
+    def test_disable_enable_quanted_input(self):
         bits, group_size, sym = 4, -1, True
         autoround = AutoRound(
             self.model,
@@ -110,8 +115,9 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
-            use_quant_input=False,
-            dataloader=self.llm_dataloader,
+            seqlen=10,
+            enable_quanted_input=False,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -124,8 +130,9 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
+            seqlen=10,
             enable_minmax_tuning=False,
-            dataloader=self.llm_dataloader,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
@@ -138,9 +145,28 @@ class TestAutoRound(unittest.TestCase):
             group_size=group_size,
             sym=sym,
             iters=2,
+            seqlen=10,
             enable_minmax_tuning=False,
-            use_quant_input=False,
-            dataloader=self.llm_dataloader,
+            enable_quanted_input=False,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+
+    def test_lm_head(self):
+        bits, group_size, sym = 4, -1, False
+        weight_config = {"lm_head": {"data_type": "int"}}
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=10,
+            enable_minmax_tuning=False,
+            enable_quanted_input=False,
+            dataset=self.llm_dataloader,
+            weight_config=weight_config,
         )
         autoround.quantize()
 
