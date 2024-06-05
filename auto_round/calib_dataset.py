@@ -278,10 +278,10 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
         dataset_new = datasets.Dataset.from_list(data)
         return dataset_new
 
-    datasets = []
+    datasets, data_lens = [], {}
     for name in dataset_names:
         split = None
-        do_concat, data_len = False, None
+        do_concat = False
         if ":" in name:
             split_list = name.split(":")
             name, split_list = name.split(":")[0], name.split(":")[1:]
@@ -290,7 +290,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
                 if key == "split":
                     split = values[0].split('+')
                 if key == "num":
-                    data_len = int(values[0])
+                    data_lens[name] = int(values[0])
                 if key == "concat":
                     do_concat = True if (len(values) > 0 and values[0].lower == 'false') else True
         if is_local_path(name):
@@ -308,22 +308,29 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
         if do_concat:
             dataset = concat_dataset_element(dataset)
         dataset = dataset.filter(filter_func)
-        if data_len:
-            dataset = dataset.select(range(data_len))
+        if name in data_lens:
+            dataset = dataset.select(range(data_lens[name]))
         datasets.append(dataset)
     indices = range(len(datasets))
     res = sorted(zip(indices, datasets), key=lambda x: len(x[1]))
     indices = [item[0] for item in res]
     datasets = [item[1] for item in res]
     dataset_names = [dataset_names[index] for index in indices]
-    cnt = 0
+    cnt = 0 if not data_lens else sum(data_lens.values())
     dataset_cnt_info = {}
+    if cnt > n_samples:
+        cnt = 0
+
     for i in range(len(datasets)):
-        target_cnt = (n_samples - cnt) // (len(datasets) - i)
-        target_cnt = min(target_cnt, len(datasets[i]))
+        name = dataset_names[i].split(':')[0]
+        if name not in data_lens:
+            target_cnt = (n_samples - cnt) // (len(datasets) - len(data_lens)) if data_lens else (n_samples - cnt) // (len(datasets) - i) 
+            target_cnt = min(target_cnt, len(datasets[i]))
+            cnt += target_cnt
+        else:
+            target_cnt = data_lens[name]
         datasets[i] = datasets[i].select(range(target_cnt))
-        dataset_cnt_info[dataset_names[i]] = target_cnt
-        cnt += target_cnt
+        dataset_cnt_info[name] = target_cnt
     if len(datasets) > 1:
         from datasets import concatenate_datasets
 
