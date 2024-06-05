@@ -36,6 +36,7 @@ def customized_data_with_tokenizer(tokenizer, seqlen=2048):
 ~~~
 
 Combination of different datasets has been supported, --dataset "./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test". Please note that samples with sequence length < args.seqlen will be dropped.
+We also support parametrization of calibration datasets by using --dataset "datasetname1:split=train+val:num=256,datasetname2:concat=True:num=128,datasetname3:concat". Please use ',' to split datasets and ':' to split parameters of a dataset. 
 
 <br />
 
