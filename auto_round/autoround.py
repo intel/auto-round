@@ -22,6 +22,7 @@ import transformers
 from torch import autocast
 
 from .calib_dataset import get_dataloader
+from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from .special_model_handler import check_hidden_state_dim, check_share_attention_mask
 from .utils import (
     CpuInfo,
@@ -34,322 +35,12 @@ from .utils import (
     detect_device,
     get_block_names,
     get_module,
-    get_scale_shape,
     htcore,
     is_optimum_habana_available,
     logger,
-    quant_weight,
     sampling_inputs,
-    set_module,
-    to_device,
+    to_device, get_layer_names_in_block,
 )
-
-
-class WrapperLinear(torch.nn.Module):
-    def __init__(self, orig_layer, enable_minmax_tuning=True):
-        """A wrapper module for linear layers that enables quantization and min-max tuning of weights.
-
-        Args:
-        - orig_layer (torch.nn.Module): The original linear layer to be wrapped.
-        - enable_minmax_tuning (bool): Whether to enable min-max scaling tuning. Default is True.
-
-        Attributes:
-        - orig_layer (torch.nn.Module): The original linear layer being wrapped.
-        - num_bits (int): The number of bits for quantization.
-        - group_size (int): The size of the groups for quantization.
-        - sym (bool): Whether the symmetric quantization is to be used.
-        - value (torch.nn.Parameter): The learnable parameter for quantization.
-        - enable_minmax_tuning (bool): Whether min-max scaling tuning is enabled.
-        - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
-        - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
-        """
-        super(WrapperLinear, self).__init__()
-        self.orig_layer = orig_layer
-        self.num_bits = self.orig_layer.bits
-        self.group_size = self.orig_layer.group_size
-        self.scale_dtype = self.orig_layer.scale_dtype
-        self.sym = self.orig_layer.sym
-        weight_dtype = self.orig_layer.weight.dtype
-        weight_dtype = torch.float32
-        self.value = torch.nn.Parameter(
-            torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
-            requires_grad=True,
-        )
-        self.enable_minmax_tuning = enable_minmax_tuning
-        shape = get_scale_shape(self.orig_layer.weight, self.group_size)
-        if self.enable_minmax_tuning:
-            self.min_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
-            )
-            self.max_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
-            )
-        else:
-            self.min_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
-            self.max_scale = torch.tensor(0, device=self.orig_layer.weight.device, dtype=weight_dtype)
-
-    def unwrapper(self, v, min_scale, max_scale):
-        """Unwrapper the layer to the original layer.
-
-        Args:
-        - v (torch.Tensor): The rounding v parameter for quantization.
-        - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
-        - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
-
-        Returns:
-        - torch.nn.Module: The original linear layer with updated weights after quantization and dequantization.
-        """
-        min_scale.clamp_(-1, 0)
-        max_scale.clamp_(-1, 0)
-
-        q_dq_weight, scale, zp = quant_weight(
-            self.orig_layer.weight,
-            self.num_bits,
-            self.group_size,
-            self.sym,
-            v,
-            min_scale,
-            max_scale,
-            self.scale_dtype,
-        )
-        self.orig_layer.weight.data.copy_(q_dq_weight)
-        self.orig_layer.weight.grad = None  ##clear grad
-        self.orig_layer.scale = scale.to("cpu")
-        self.orig_layer.zp = zp.to("cpu") if zp is not None else None
-        return self.orig_layer
-
-    def forward(self, x):
-        """Performs forward pass through the wrapped linear layer with quantized weights.
-
-        Args:
-        - x (torch.Tensor): The input tensor.
-
-        Returns:
-        - torch.Tensor: The output tensor after applying the linear transformation with quantized weights.
-        """
-        from torch.functional import F
-
-        weight = self.orig_layer.weight
-        self.min_scale.data.copy_(torch.clamp(self.min_scale.data, -1, 0))
-        self.max_scale.data.copy_(torch.clamp(self.max_scale.data, -1, 0))
-        weight_q, _, _ = quant_weight(
-            weight,
-            self.num_bits,
-            self.group_size,
-            self.sym,
-            self.value,
-            self.min_scale,
-            self.max_scale,
-            self.scale_dtype,
-        )
-        weight_q = weight_q.to(weight.dtype)
-        # pylint: disable=not-callable
-        return F.linear(x, weight_q, self.orig_layer.bias)
-
-
-class WrapperTransformerConv1d(torch.nn.Module):
-    def __init__(self, orig_layer, enable_minmax_tuning=True):
-        """A wrapper module for transformers 1D convolutional layers used in transformers,
-        enabling quantization and min-max tuning of weights.
-
-        Args:
-        - orig_layer (torch.nn.Module): The original 1D convolutional layer to be wrapped.
-        - num_bits (int): The number of bits for quantization.
-        - group_size (int): The size of the groups for quantization.
-        - sym (bool): Whether symmetric quantization is to be used.
-        - enable_minmax_tuning (bool): Whether to enable min-max scaling tuning. Default is True.
-
-        Attributes:
-        - orig_layer (torch.nn.Module): The original 1D convolutional layer being wrapped.
-        - num_bits (int): The number of bits for quantization.
-        - group_size (int): The size of the groups for quantization.
-        - sym (bool): Whether symmetric quantization is to be used.
-        - weight_t (torch.Tensor): Transposed weight tensor of the original layer.
-        - value (torch.nn.Parameter): The learnable parameter for quantization.
-        - enable_minmax_tuning (bool): Whether min-max scaling tuning is enabled.
-        - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
-        - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
-        """
-        super(WrapperTransformerConv1d, self).__init__()
-        self.orig_layer = orig_layer
-        self.num_bits = self.orig_layer.bits
-        self.group_size = self.orig_layer.group_size
-        self.sym = self.orig_layer.sym
-        self.scale_dtype = self.orig_layer.scale_dtype
-        weight_dtype = self.orig_layer.weight.dtype
-        weight_dtype = torch.float32
-        device = self.orig_layer.weight.device
-        self.weight_t = self.orig_layer.weight.t()
-        self.value = torch.nn.Parameter(
-            torch.zeros(self.weight_t.shape, device=device, dtype=weight_dtype), requires_grad=True
-        )
-        shape = get_scale_shape(self.weight_t, self.group_size)
-
-        if enable_minmax_tuning:
-            self.min_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=device, dtype=weight_dtype), requires_grad=True
-            )
-            self.max_scale = torch.nn.Parameter(
-                torch.zeros(shape, device=device, dtype=weight_dtype), requires_grad=True
-            )
-        else:
-            self.min_scale = torch.tensor(0, device=device, dtype=weight_dtype)
-            self.max_scale = torch.tensor(0, device=device, dtype=weight_dtype)
-
-    def unwrapper(self, v=0, min_scale=0, max_scale=0):
-        """Unwrapper the layer to the original conv1d layer.
-
-        Args:
-        - v (torch.Tensor): The scaling parameter for quantization.
-        - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
-        - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
-
-        Returns:
-        - torch.nn.Module: The original 1D convolutional layer with updated weights after inverse quantization.
-        """
-        min_scale.clamp_(-1, 0)
-        max_scale.clamp_(-1, 0)
-        weight_q, scale, zp = quant_weight(
-            self.weight_t, self.num_bits, self.group_size, self.sym, v, min_scale, max_scale, self.scale_dtype
-        )
-        self.orig_layer.weight.data.copy_(weight_q.t())
-        self.orig_layer.weight.grad = None
-        self.orig_layer.scale = scale.to("cpu")
-        self.orig_layer.zp = zp.to("cpu")
-        return self.orig_layer
-
-    def forward(self, x):
-        """Performs forward pass through the wrapped 1D convolutional layer with quantized weights.
-
-        Args:
-        x (torch.Tensor): The input tensor.
-
-        Returns:
-        torch.Tensor: The output tensor after applying the convolutional transformation with quantized weights.
-        """
-        with torch.no_grad():
-            self.min_scale.clamp_(-1, 0)
-            self.max_scale.clamp_(-1, 0)
-        weight_q, _, _ = quant_weight(
-            self.weight_t,
-            self.num_bits,
-            self.group_size,
-            self.sym,
-            self.value,
-            self.min_scale,
-            self.max_scale,
-            self.scale_dtype,
-        )
-        weight_q = weight_q.to(self.weight_t.dtype)
-        size_out = x.size()[:-1] + (self.orig_layer.nf,)
-        x = torch.addmm(self.orig_layer.bias, x.view(-1, x.size(-1)), weight_q.t())
-        x = x.view(*size_out)
-        return x
-
-
-class WrapperMultiblock(torch.nn.Module):
-    """A wrapper for a list of modules to be act as a single block.
-
-    Args:
-    module_list: The list of modules to wrap.
-    """
-
-    def __init__(self, module_list):
-        super(WrapperMultiblock, self).__init__()
-        self.layers = torch.nn.ModuleList(module_list)
-
-    def forward(self, x, **kwargs):
-        hidden_states = x
-        for idx, decoder_layer in enumerate(self.layers):
-            layer_outputs = decoder_layer(hidden_states, **kwargs)
-            hidden_states = layer_outputs
-            if isinstance(hidden_states, tuple) or isinstance(hidden_states, list):
-                hidden_states = layer_outputs[0]
-        return hidden_states
-
-
-def wrapper_block(block, enable_minmax_tuning):
-    """Wraps the layers in the given block with a custom Wrapper module.
-
-    Args:
-        block: The input block containing linear and conv1d layers to be wrapped.
-        enable_minmax_tuning: A boolean indicating whether min-max tuning is enabled.
-
-    Returns:
-        list: A list of names of the wrapped layers and unwrapped layers.
-    """
-    quantized_layers = []
-    unquantized_layers = []
-    for n, m in block.named_modules():
-        if isinstance(m, torch.nn.Linear):
-            if not check_to_quantized(m):
-                unquantized_layers.append(n)
-                continue
-            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning)
-            set_module(block, n, new_m)
-            quantized_layers.append(n)
-
-        if isinstance(m, transformers.modeling_utils.Conv1D):
-            if not check_to_quantized(m):
-                unquantized_layers.append(n)
-                continue
-            new_m = WrapperTransformerConv1d(m, enable_minmax_tuning=enable_minmax_tuning)
-            set_module(block, n, new_m)
-            quantized_layers.append(n)
-
-    return quantized_layers, unquantized_layers
-
-
-@torch.no_grad()
-def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
-    """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
-
-    Args:
-    block: The input block containing wrapped modules to be unwrapped.
-    vs: A dictionary of scaling parameters for the wrapped modules.
-    min_scales: A dictionary of minimum scaling values for the wrapped modules.
-    max_scales: A dictionary of maximum scaling values for the wrapped modules.
-    """
-
-    if hasattr(layer, "orig_layer"):
-
-        if isinstance(min_scale, torch.Tensor):
-            min_scale = torch.clamp(min_scale, -1, 0)
-            max_scale = torch.clamp(max_scale, -1, 0)
-
-        else:
-            min_scale = torch.tensor(0)
-            max_scale = torch.tensor(0)
-        orig_layer = layer.unwrapper(v, min_scale, max_scale)
-        orig_layer = orig_layer.to("cpu")
-        set_module(model, layer_name, orig_layer)
-
-
-@torch.no_grad()
-def unwrapper_block(block, vs, min_scales, max_scales):
-    """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
-
-    Args:
-    block: The input block containing wrapped modules to be unwrapped.
-    vs: A dictionary of scaling parameters for the wrapped modules.
-    min_scales: A dictionary of minimum scaling values for the wrapped modules.
-    max_scales: A dictionary of maximum scaling values for the wrapped modules.
-    """
-    for n, m in block.named_modules():
-        if hasattr(m, "orig_layer"):
-            v = 0
-            min_scale = torch.tensor(0)
-            max_scale = torch.tensor(0)
-            if isinstance(vs, dict):
-                v = vs[n]
-            if isinstance(min_scales, dict):
-                min_scale = min_scales[n]
-                min_scale = torch.clamp(min_scale, -1, 0)
-            if isinstance(max_scales, dict):
-                max_scale = max_scales[n]
-                max_scale = torch.clamp(max_scale, -1, 0)
-            orig_layer = m.unwrapper(v, min_scale, max_scale)
-            set_module(block, n, orig_layer)
 
 
 class AutoRound(object):
@@ -404,36 +95,36 @@ class AutoRound(object):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,  ##for symmetric, TODO support later
-        batch_size: int = 8,
-        amp: bool = True,
-        device=None,
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",  ##only support int for now
-        scale_dtype: str = "fp16",
-        **kwargs,
+            self,
+            model,
+            tokenizer,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,  ##for symmetric, TODO support later
+            batch_size: int = 8,
+            amp: bool = True,
+            device=None,
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",  ##only support int for now
+            scale_dtype: str = "fp16",
+            **kwargs,
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
@@ -679,7 +370,7 @@ class AutoRound(object):
         Returns:
         None
         """
-        layers_in_blocks = self.get_layer_names_in_block()
+        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types)
         for n, m in self.model.named_modules():
             if not isinstance(m, tuple(self.supported_types)):
                 continue
@@ -1047,7 +738,7 @@ class AutoRound(object):
         mse_loss = torch.nn.MSELoss().to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
-        best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
+        best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
         gradient_accumulate_steps = self.train_bs  ##Force to low gpu
         train_bs = 1  ##Force to low gpu
         pick_samples = train_bs * gradient_accumulate_steps
@@ -1060,7 +751,7 @@ class AutoRound(object):
                 whole_indices = torch.randperm(n_samples)[:pick_samples]
             for tmp_step in range(gradient_accumulate_steps):
                 org_input = None
-                indices = whole_indices[tmp_step * train_bs : (tmp_step + 1) * train_bs]
+                indices = whole_indices[tmp_step * train_bs: (tmp_step + 1) * train_bs]
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
@@ -1092,14 +783,14 @@ class AutoRound(object):
                 best_loss = total_loss
                 if not self.not_use_best_mse:
                     best_v = copy.deepcopy(wrapper_linear.value.data)
-                    best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
-                    best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
+                    best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, 0, 1.0))
+                    best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, 0, 1.0))
 
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
                 best_v = copy.deepcopy(wrapper_linear.value.data)
-                best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, -1, 0))
-                best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, -1, 0))
+                best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, 0, 1.0))
+                best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, 0, 1.0))
 
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
@@ -1170,13 +861,13 @@ class AutoRound(object):
         mse_loss = torch.nn.MSELoss().to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
-        best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(0), torch.tensor(0)
+        best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(n_samples)[:pick_samples]
             for tmp_step in range(self.gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * self.train_bs : (tmp_step + 1) * self.train_bs]
+                indices = whole_indices[tmp_step * self.train_bs: (tmp_step + 1) * self.train_bs]
                 current_input_ids, current_input_others = sampling_inputs(
                     input_ids,
                     input_others,
@@ -1255,12 +946,12 @@ class AutoRound(object):
             return None, output
 
     def quant_blocks(
-        self,
-        model: torch.nn.Module,
-        inputs,
-        block_names,
-        n_blocks=1,
-        device=torch.device("cpu"),
+            self,
+            model: torch.nn.Module,
+            inputs,
+            block_names,
+            n_blocks=1,
+            device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -1291,7 +982,7 @@ class AutoRound(object):
 
         for key in input_others.keys():
             if isinstance(input_others[key], torch.Tensor) and (
-                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+                    input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
             ):
                 input_others[key] = input_others[key].to(tmp_dtype)
             elif isinstance(input_others[key], list):
@@ -1304,7 +995,7 @@ class AutoRound(object):
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i : i + n_blocks]
+                names = block_names[i: i + n_blocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -1371,28 +1062,6 @@ class AutoRound(object):
         )
         return compressed_model
 
-    def get_layer_names_in_block(self): ##TODO consolidate with utils
-        """Retrieves the names of layers within each block of the model.
-
-        Returns:
-            list: A list of strings, where each string is the name of a layer
-                  within a block of the model.
-        """
-        for n, m in self.model.named_modules():
-            if isinstance(m, tuple(self.supported_types)):
-                m.tmp_name = n
-        layers_in_block = []
-        block_names = get_block_names(self.model)
-        for block_name in block_names:
-            block = get_module(self.model, block_name)
-            for n, m in block.named_modules():
-                if hasattr(m, "tmp_name"):
-                    layers_in_block.append(m.tmp_name)
-        for n, m in self.model.named_modules():
-            if hasattr(m, "tmp_name"):
-                delattr(m, "tmp_name")
-        return layers_in_block
-
     def get_quantized_layer_names_outside_blocks(self):
         """Gets the names of quantized layers outside blocks in the model.
 
@@ -1403,7 +1072,7 @@ class AutoRound(object):
             return []
 
         layer_names = []
-        all_layers_in_block = self.get_layer_names_in_block()
+        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types)
 
         for key in self.weight_config.keys():
             if key in all_layers_in_block:
@@ -1529,37 +1198,37 @@ class AutoOPTRound(AutoRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp16",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp16",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
             model,
@@ -1677,37 +1346,37 @@ class AutoAdamRound(AutoOPTRound):
     """
 
     def __init__(
-        self,
-        model,
-        tokenizer=None,
-        bits: int = 4,
-        group_size: int = 128,
-        sym: bool = False,
-        weight_config: dict = {},
-        enable_full_range: bool = False,
-        batch_size: int = 8,
-        amp: bool = True,
-        device="auto",
-        lr_scheduler=None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
-        enable_minmax_tuning: bool = True,
-        lr: float = None,
-        minmax_lr: float = None,
-        low_gpu_mem_usage: bool = True,
-        iters: int = 200,
-        seqlen: int = 2048,
-        n_samples: int = 512,
-        sampler: str = "rand",
-        seed: int = 42,
-        n_blocks: int = 1,
-        gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
-        data_type: str = "int",
-        scale_dtype: str = "fp16",
-        optimizer="AdamW",
-        **kwargs,
+            self,
+            model,
+            tokenizer=None,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            weight_config: dict = {},
+            enable_full_range: bool = False,
+            batch_size: int = 8,
+            amp: bool = True,
+            device="auto",
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = True,
+            iters: int = 200,
+            seqlen: int = 2048,
+            n_samples: int = 512,
+            sampler: str = "rand",
+            seed: int = 42,
+            n_blocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp16",
+            optimizer="AdamW",
+            **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
             model,
@@ -1741,4 +1410,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-

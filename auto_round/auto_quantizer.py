@@ -80,6 +80,11 @@ _auto_round_available = _is_package_available("auto_round")
 
 
 def is_auto_round_available():
+    try:
+        import auto_round
+        return True
+    except:
+        pass
     if _auto_round_available:
         version_autoround = version.parse(importlib_metadata.version("auto_round"))
         if AUTOROUND_MINIMUM_VERSION < version_autoround:

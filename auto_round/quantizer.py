@@ -1,0 +1,496 @@
+# Copyright (c) 2024 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import torch
+import transformers
+
+from .utils import (
+    check_to_quantized,
+    get_scale_shape,
+    set_module
+)
+def round_ste(x: torch.Tensor):
+    """Straight-Through Estimator for rounding.
+    This function is adapted from omniquant.
+
+    Args:
+        x: torch.Tensor
+
+    Returns:
+        torch.Tensor
+    """
+    return (x.round() - x).detach() + x
+
+
+def quant_weight_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16):
+    """Quantizes and dequantizes weight asymmetrically.
+
+    Args:
+        weight: Tensor containing the weight to be quantized
+        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        v: Rounding value perturbation
+        min_scale: Minimum scale coefficient for weight
+        max_scale: Maximum scale coefficient for weight
+
+    Returns:
+        Quantized and dequantized weight, scale, zero-point
+    """
+    maxq = torch.tensor(2 ** num_bits - 1)
+    if isinstance(min_scale, torch.Tensor):
+        wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
+        wmin_tmp *= min_scale
+        wmax_tmp *= max_scale
+        wmax = torch.maximum(wmax_tmp, wmin_tmp)
+        wmin = torch.minimum(wmax_tmp, wmin_tmp)
+    else:
+        wmin = torch.clamp(weight.min(1)[0], max=0)
+        wmax = torch.clamp(weight.max(1)[0], min=0)
+
+    tmp = (wmin == 0) & (wmax == 0)
+    wmin[tmp] = -1
+    wmax[tmp] = +1
+    scale = ((wmax - wmin) / maxq).to(scale_dtype)
+    zp = round_ste(-wmin / scale)
+    scale = scale.unsqueeze(dim=-1)
+    zp = zp.unsqueeze(dim=-1)
+    int_w = round_ste(weight / scale + v)
+    q = torch.clamp(int_w + zp, 0, maxq)
+    return scale * (q - zp), scale, zp
+
+
+def quant_weight_sym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16):
+    """Quantizes and dequantizes weight symmetrically.
+
+    Args:
+        weight: Tensor containing the weight to be quantized
+        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        v: Rounding value perturbation
+        min_scale: Minimum scale coefficient for weight
+        max_scale: Maximum scale coefficient for weight
+
+    Returns:
+        Quantized and dequantized weight, scale, zero-point
+    """
+    maxq = torch.tensor(2 ** num_bits - 1)
+    if isinstance(min_scale, torch.Tensor):
+        wmin_tmp = torch.clamp(weight.min(1,)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
+        wmin_tmp *= min_scale
+        wmax_tmp *= max_scale
+        wmax = torch.maximum(wmax_tmp, wmin_tmp)
+        wmin = torch.minimum(wmax_tmp, wmin_tmp)
+    else:
+        wmin = torch.clamp(weight.min(1)[0], max=0)
+        wmax = torch.clamp(weight.max(1)[0], min=0)
+    wmax_new = torch.max(wmin.abs(), wmax)
+    tmp = wmin < 0
+    wmin_new = wmin.clone()  ##must clone, otherwise inplace backward will occur
+    if torch.any(tmp):
+        wmin_new[tmp] = -wmax_new[tmp]
+
+    tmp = (wmin_new == 0) & (wmax_new == 0)
+    wmin_new[tmp] = -1
+    wmax_new[tmp] = +1
+    scale = ((wmax_new - wmin_new) / maxq).to(scale_dtype)
+
+    scale = scale.unsqueeze(dim=-1)
+    zp = torch.full_like(scale, (maxq + 1) / 2)
+
+    int_w = round_ste(weight / scale + v)
+    q = torch.clamp(int_w + zp, 0, maxq)
+    return scale * (q - zp), scale, zp
+
+
+def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dtype=torch.float16):
+    """Quantizes and dequantizes weight symmetrically or asymmetrically .
+
+    Args:
+        weight: Tensor containing the weight to be quantized
+        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        sym: Sym or asym
+        v: Rounding value perturbation
+        min_scale: Minimum scale coefficient for weight
+        max_scale: Maximum scale coefficient for weight
+
+    Returns:
+        Quantized and dequantized weight, scale, zero-point
+    """
+    assert num_bits > 0, "num_bits should be larger than 0"
+    if sym:
+        return quant_weight_sym(weight, num_bits, v, min_scale, max_scale, scale_dtype)
+    else:
+        return quant_weight_asym(weight, num_bits, v, min_scale, max_scale, scale_dtype)
+
+
+def quant_weight(
+        weight, num_bits=4, group_size=-1, sym=False, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16
+):
+    """Quantizes and dequantizes weight, handing the group size issue .
+
+    Args:
+        weight: Tensor containing the weight to be quantized
+        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        group_size: The number of elements shares scale and zero point
+        sym: Sym or asym
+        v: Rounding value perturbation
+        min_scale: Minimum scale coefficient for weight
+        max_scale: Maximum scale coefficient for weight
+
+    Returns:
+        Quantized and dequantized weight, scale, zero-point
+    """
+    if group_size == -1 or weight.shape[1] < group_size:
+        return quant_weight_actor(
+            weight, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
+        )
+    orig_shape = weight.shape
+    if weight.shape[1] % group_size == 0:
+        weight = weight.reshape(-1, group_size)
+        if isinstance(v, torch.Tensor):
+            v = v.reshape(-1, group_size)
+
+        weight, scale, zp = quant_weight_actor(
+            weight, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
+        )
+        weight = weight.reshape(orig_shape)
+        scale = scale.reshape(weight.shape[0], -1)  ##only for linear, conv1d
+        if zp is not None:
+            zp = zp.reshape(weight.shape[0], -1)
+        return weight, scale, zp
+
+    else:
+        pad_len = (weight.shape[1] + group_size - 1) // group_size * group_size - weight.shape[1]
+        weight_new = torch.nn.functional.pad(weight, (0, pad_len))
+        v = torch.nn.functional.pad(v, (0, pad_len))
+        weight_new = weight_new.reshape(-1, group_size)
+        if isinstance(v, torch.Tensor):
+            v = v.reshape(-1, group_size)
+        weight_new, scale, zp = quant_weight_actor(
+            weight_new, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
+        )
+        weight_new = weight_new.reshape(orig_shape[0], -1)
+
+        weight_new = weight_new[:, :-pad_len]
+        scale = scale.reshape(weight_new.shape[0], -1)  ##only for linear, conv1d
+        if zp is not None:
+            zp = zp.reshape(weight_new.shape[0], -1)
+        return weight_new, scale, zp
+
+
+class WrapperLinear(torch.nn.Module):
+    def __init__(self, orig_layer, enable_minmax_tuning=True):
+        """A wrapper module for linear layers that enables quantization and min-max tuning of weights.
+
+        Args:
+        - orig_layer (torch.nn.Module): The original linear layer to be wrapped.
+        - enable_minmax_tuning (bool): Whether to enable min-max scaling tuning. Default is True.
+
+        Attributes:
+        - orig_layer (torch.nn.Module): The original linear layer being wrapped.
+        - num_bits (int): The number of bits for quantization.
+        - group_size (int): The size of the groups for quantization.
+        - sym (bool): Whether the symmetric quantization is to be used.
+        - value (torch.nn.Parameter): The learnable parameter for quantization.
+        - enable_minmax_tuning (bool): Whether min-max scaling tuning is enabled.
+        - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
+        - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
+        """
+        super(WrapperLinear, self).__init__()
+        self.orig_layer = orig_layer
+        self.num_bits = self.orig_layer.bits
+        self.group_size = self.orig_layer.group_size
+        self.scale_dtype = self.orig_layer.scale_dtype
+        self.sym = self.orig_layer.sym
+        weight_dtype = self.orig_layer.weight.dtype
+        weight_dtype = torch.float32
+        self.value = torch.nn.Parameter(
+            torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
+            requires_grad=True,
+        )
+        self.enable_minmax_tuning = enable_minmax_tuning
+        shape = get_scale_shape(self.orig_layer.weight, self.group_size)
+        if self.enable_minmax_tuning:
+            self.min_scale = torch.nn.Parameter(
+                torch.ones(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
+            )
+            self.max_scale = torch.nn.Parameter(
+                torch.ones(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
+            )
+        else:
+            self.min_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
+            self.max_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
+
+    def unwrapper(self, v, min_scale, max_scale):
+        """Unwrapper the layer to the original layer.
+
+        Args:
+        - v (torch.Tensor): The rounding v parameter for quantization.
+        - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
+        - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
+
+        Returns:
+        - torch.nn.Module: The original linear layer with updated weights after quantization and dequantization.
+        """
+        min_scale.clamp_(0, 1.0)
+        max_scale.clamp_(0, 1.0)
+
+        q_dq_weight, scale, zp = quant_weight(
+            self.orig_layer.weight,
+            self.num_bits,
+            self.group_size,
+            self.sym,
+            v,
+            min_scale,
+            max_scale,
+            self.scale_dtype,
+        )
+        self.orig_layer.weight.data.copy_(q_dq_weight)
+        self.orig_layer.weight.grad = None  ##clear grad
+        self.orig_layer.scale = scale.to("cpu")
+        self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+        return self.orig_layer
+
+    def forward(self, x):
+        """Performs forward pass through the wrapped linear layer with quantized weights.
+
+        Args:
+        - x (torch.Tensor): The input tensor.
+
+        Returns:
+        - torch.Tensor: The output tensor after applying the linear transformation with quantized weights.
+        """
+        from torch.functional import F
+
+        weight = self.orig_layer.weight
+        self.min_scale.data.copy_(torch.clamp(self.min_scale.data, 0, 1.0))
+        self.max_scale.data.copy_(torch.clamp(self.max_scale.data, 0, 1.0))
+        weight_q, _, _ = quant_weight(
+            weight,
+            self.num_bits,
+            self.group_size,
+            self.sym,
+            self.value,
+            self.min_scale,
+            self.max_scale,
+            self.scale_dtype,
+        )
+        weight_q = weight_q.to(weight.dtype)
+        # pylint: disable=not-callable
+        return F.linear(x, weight_q, self.orig_layer.bias)
+
+
+class WrapperTransformerConv1d(torch.nn.Module):
+    def __init__(self, orig_layer, enable_minmax_tuning=True):
+        """A wrapper module for transformers 1D convolutional layers used in transformers,
+        enabling quantization and min-max tuning of weights.
+
+        Args:
+        - orig_layer (torch.nn.Module): The original 1D convolutional layer to be wrapped.
+        - num_bits (int): The number of bits for quantization.
+        - group_size (int): The size of the groups for quantization.
+        - sym (bool): Whether symmetric quantization is to be used.
+        - enable_minmax_tuning (bool): Whether to enable min-max scaling tuning. Default is True.
+
+        Attributes:
+        - orig_layer (torch.nn.Module): The original 1D convolutional layer being wrapped.
+        - num_bits (int): The number of bits for quantization.
+        - group_size (int): The size of the groups for quantization.
+        - sym (bool): Whether symmetric quantization is to be used.
+        - weight_t (torch.Tensor): Transposed weight tensor of the original layer.
+        - value (torch.nn.Parameter): The learnable parameter for quantization.
+        - enable_minmax_tuning (bool): Whether min-max scaling tuning is enabled.
+        - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
+        - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
+        """
+        super(WrapperTransformerConv1d, self).__init__()
+        self.orig_layer = orig_layer
+        self.num_bits = self.orig_layer.bits
+        self.group_size = self.orig_layer.group_size
+        self.sym = self.orig_layer.sym
+        self.scale_dtype = self.orig_layer.scale_dtype
+        weight_dtype = self.orig_layer.weight.dtype
+        weight_dtype = torch.float32
+        device = self.orig_layer.weight.device
+        self.weight_t = self.orig_layer.weight.t()
+        self.value = torch.nn.Parameter(
+            torch.zeros(self.weight_t.shape, device=device, dtype=weight_dtype), requires_grad=True
+        )
+        shape = get_scale_shape(self.weight_t, self.group_size)
+
+        if enable_minmax_tuning:
+            self.min_scale = torch.nn.Parameter(
+                torch.ones(shape, device=device, dtype=weight_dtype), requires_grad=True
+            )
+            self.max_scale = torch.nn.Parameter(
+                torch.ones(shape, device=device, dtype=weight_dtype), requires_grad=True
+            )
+        else:
+            self.min_scale = torch.tensor(1.0, device=device, dtype=weight_dtype)
+            self.max_scale = torch.tensor(1.0, device=device, dtype=weight_dtype)
+
+    def unwrapper(self, v=0, min_scale=1.0, max_scale=1.0):
+        """Unwrapper the layer to the original conv1d layer.
+
+        Args:
+        - v (torch.Tensor): The scaling parameter for quantization.
+        - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
+        - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
+
+        Returns:
+        - torch.nn.Module: The original 1D convolutional layer with updated weights after inverse quantization.
+        """
+        min_scale.clamp_(0, 1.0)
+        max_scale.clamp_(0, 1.0)
+        weight_q, scale, zp = quant_weight(
+            self.weight_t, self.num_bits, self.group_size, self.sym, v, min_scale, max_scale, self.scale_dtype
+        )
+        self.orig_layer.weight.data.copy_(weight_q.t())
+        self.orig_layer.weight.grad = None
+        self.orig_layer.scale = scale.to("cpu")
+        self.orig_layer.zp = zp.to("cpu")
+        return self.orig_layer
+
+    def forward(self, x):
+        """Performs forward pass through the wrapped 1D convolutional layer with quantized weights.
+
+        Args:
+        x (torch.Tensor): The input tensor.
+
+        Returns:
+        torch.Tensor: The output tensor after applying the convolutional transformation with quantized weights.
+        """
+        with torch.no_grad():
+            self.min_scale.clamp_(0, 1.0)
+            self.max_scale.clamp_(0, 1.0)
+        weight_q, _, _ = quant_weight(
+            self.weight_t,
+            self.num_bits,
+            self.group_size,
+            self.sym,
+            self.value,
+            self.min_scale,
+            self.max_scale,
+            self.scale_dtype,
+        )
+        weight_q = weight_q.to(self.weight_t.dtype)
+        size_out = x.size()[:-1] + (self.orig_layer.nf,)
+        x = torch.addmm(self.orig_layer.bias, x.view(-1, x.size(-1)), weight_q.t())
+        x = x.view(*size_out)
+        return x
+
+
+class WrapperMultiblock(torch.nn.Module):
+    """A wrapper for a list of modules to be act as a single block.
+
+    Args:
+    module_list: The list of modules to wrap.
+    """
+
+    def __init__(self, module_list):
+        super(WrapperMultiblock, self).__init__()
+        self.layers = torch.nn.ModuleList(module_list)
+
+    def forward(self, x, **kwargs):
+        hidden_states = x
+        for idx, decoder_layer in enumerate(self.layers):
+            layer_outputs = decoder_layer(hidden_states, **kwargs)
+            hidden_states = layer_outputs
+            if isinstance(hidden_states, tuple) or isinstance(hidden_states, list):
+                hidden_states = layer_outputs[0]
+        return hidden_states
+
+
+def wrapper_block(block, enable_minmax_tuning):
+    """Wraps the layers in the given block with a custom Wrapper module.
+
+    Args:
+        block: The input block containing linear and conv1d layers to be wrapped.
+        enable_minmax_tuning: A boolean indicating whether min-max tuning is enabled.
+
+    Returns:
+        list: A list of names of the wrapped layers and unwrapped layers.
+    """
+    quantized_layers = []
+    unquantized_layers = []
+    for n, m in block.named_modules():
+        if isinstance(m, torch.nn.Linear):
+            if not check_to_quantized(m):
+                unquantized_layers.append(n)
+                continue
+            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning)
+            set_module(block, n, new_m)
+            quantized_layers.append(n)
+
+        if isinstance(m, transformers.modeling_utils.Conv1D):
+            if not check_to_quantized(m):
+                unquantized_layers.append(n)
+                continue
+            new_m = WrapperTransformerConv1d(m, enable_minmax_tuning=enable_minmax_tuning)
+            set_module(block, n, new_m)
+            quantized_layers.append(n)
+
+    return quantized_layers, unquantized_layers
+
+
+@torch.no_grad()
+def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
+    """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
+
+    Args:
+    block: The input block containing wrapped modules to be unwrapped.
+    vs: A dictionary of scaling parameters for the wrapped modules.
+    min_scales: A dictionary of minimum scaling values for the wrapped modules.
+    max_scales: A dictionary of maximum scaling values for the wrapped modules.
+    """
+
+    if hasattr(layer, "orig_layer"):
+
+        if isinstance(min_scale, torch.Tensor):
+            min_scale = torch.clamp(min_scale, 0, 1.0)
+            max_scale = torch.clamp(max_scale, 0, 1.0)
+
+        else:
+            min_scale = torch.tensor(1.0)
+            max_scale = torch.tensor(1.0)
+        orig_layer = layer.unwrapper(v, min_scale, max_scale)
+        orig_layer = orig_layer.to("cpu")
+        set_module(model, layer_name, orig_layer)
+
+
+@torch.no_grad()
+def unwrapper_block(block, vs, min_scales, max_scales):
+    """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
+
+    Args:
+    block: The input block containing wrapped modules to be unwrapped.
+    vs: A dictionary of scaling parameters for the wrapped modules.
+    min_scales: A dictionary of minimum scaling values for the wrapped modules.
+    max_scales: A dictionary of maximum scaling values for the wrapped modules.
+    """
+    for n, m in block.named_modules():
+        if hasattr(m, "orig_layer"):
+            v = 0
+            min_scale = torch.tensor(1.0)
+            max_scale = torch.tensor(1.0)
+            if isinstance(vs, dict):
+                v = vs[n]
+            if isinstance(min_scales, dict):
+                min_scale = min_scales[n]
+                min_scale = torch.clamp(min_scale, 0, 1.0)
+            if isinstance(max_scales, dict):
+                max_scale = max_scales[n]
+                max_scale = torch.clamp(max_scale, 0, 1.0)
+            orig_layer = m.unwrapper(v, min_scale, max_scale)
+            set_module(block, n, orig_layer)
