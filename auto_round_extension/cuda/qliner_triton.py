@@ -47,7 +47,7 @@ from auto_round_extension.cuda.triton_utils.mixin import TritonModuleMixin
 logger = getLogger(__name__)
 
 try:
-    from auto_round_extension.cuda.triton_utils import (
+    from auto_round_extension.cuda.triton_utils.kernels import (
         QuantLinearFunction,
         QuantLinearInferenceOnlyFunction,
         quant_matmul_248,
