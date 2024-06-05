@@ -199,6 +199,11 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
 
     samples = []
     dataset = load_local_data(dataset_name)
+    if isinstance(dataset, dict):
+        new_dataset = []
+        for key in dataset.keys():
+            new_dataset.append(dataset[key])
+        dataset = new_dataset
     for data in dataset:
         text = data
         if isinstance(text, str):
