@@ -241,7 +241,6 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
     """
 
     dataset_names = dataset_name.split(",")
-
     def filter_func(example):
         if isinstance(example["input_ids"], list):
             example["input_ids"] = torch.tensor(example["input_ids"])
@@ -277,13 +276,18 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
     datasets = []
     for name in dataset_names:
         split = None
-        do_concat = False
+        do_concat, data_len = False, None
         if ":" in name:
             split_list = name.split(":")
             name, split_list = name.split(":")[0], name.split(":")[1:]
-            do_concat = 'concat' in split_list
-            split_list = [item for item in split_list if item not in {'concat'}]
-            split = split_list[0] if split_list else split
+            for ele in split_list:
+                key, values = ele.split('=')[0], ele.split('=')[1:]
+                if key == "split":
+                    split = values[0].split('+')
+                if key == "num":
+                    data_len = int(values[0])
+                if key == "concat":
+                    do_concat = True if (len(values) > 0 and values[0].lower == 'false') else True
         if is_local_path(name):
             get_dataset = CALIB_DATASETS.get("local")
         else:
@@ -299,7 +303,8 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
         if do_concat:
             dataset = concat_dataset_element(dataset)
         dataset = dataset.filter(filter_func)
-
+        if data_len:
+            dataset = dataset.select(range(data_len))
         datasets.append(dataset)
     indices = range(len(datasets))
     res = sorted(zip(indices, datasets), key=lambda x: len(x[1]))
