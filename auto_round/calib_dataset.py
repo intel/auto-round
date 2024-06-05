@@ -279,7 +279,6 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
         split = None
         do_concat = False
         if ":" in name:
-            # name, split = name.split(":")
             split_list = name.split(":")
             name, split_list = name.split(":")[0], name.split(":")[1:]
             do_concat = 'concat' in split_list
@@ -297,13 +296,8 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
             dataset_name=name,
         )
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
-        import copy
-        tensor_compare = copy.deepcopy(dataset[0]['input_ids'])
-        logger.info(f"lyt_debug dataset1:{len(dataset)} {dataset[0].keys()} {[type(dataset[0][key]) for key in dataset[0].keys()]}, {dataset[0]['input_ids'].shape}, {dataset[0]['input_ids'][0]}")
         if do_concat:
             dataset = concat_dataset_element(dataset)
-        logger.info(f"lyt_debug dataset2:{len(dataset)} {dataset[0].keys()} {[type(dataset[0][key]) for key in dataset[0].keys()]} {len(dataset[0]['input_ids'])}, {dataset[0]['input_ids'][0]}")
-        logger.info(f"lyt_debug compare: {torch.all(tensor_compare == torch.tensor(dataset[0]['input_ids']))}")
         dataset = dataset.filter(filter_func)
 
         datasets.append(dataset)
