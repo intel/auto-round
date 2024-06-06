@@ -122,7 +122,7 @@ class QuantLinear(nn.Module):
 
         logger.info(
             f"QBits repack quantized weight: K:{intweight.shape[0]}, N:{intweight.shape[1]}, weight_dtype:{BITS_DTYPE_MAPPING[self.bits]}, scale_dtype:fp32, compute_dtype:fp32, asym:{self.asym}, group_size:{self.group_size}")
-        self.qweight = qbits.repack_quantized_weight(intweight.contiguous(), scales.float(), zeros, torch.empty(0),
+        self.qweight = qbits.repack_quantized_weight(intweight.contiguous(), scales.float().contiguous(), zeros.contiguous(), torch.empty(0),
                                                      # weight_dtype
                                                      BITS_DTYPE_MAPPING[self.bits],
                                                      # scale_dtype
@@ -134,102 +134,7 @@ class QuantLinear(nn.Module):
         # free mem
         self.qzeros = torch.empty(0)
         self.scales = torch.empty(0)
-
-    def pack(self, linear, scales, zeros, g_idx=None):
-        W = linear.weight.data.clone()
-        if isinstance(linear, nn.Conv2d):
-            W = W.flatten(1)
-        if isinstance(linear, transformers.pytorch_utils.Conv1D):
-            W = W.t()
-
-        scales = scales.t().contiguous()
-        zeros = zeros.t().contiguous()
-        scale_zeros = zeros * scales
-        self.scales = scales.clone().to(dtype=linear.weight.dtype)
-        if linear.bias is not None:
-            self.bias = linear.bias.clone().to(dtype=linear.weight.dtype)
-
-        intweight = []
-        for idx in range(self.infeatures):
-            intweight.append(
-                torch.round(
-                    (W[:, idx] + scale_zeros[idx//self.group_size]) / self.scales[idx//self.group_size]).to(torch.int)[:, None])
-        intweight = torch.cat(intweight, dim=1)
-        intweight = intweight.t().contiguous()
-        intweight = intweight.numpy().astype(np.uint32)
-
-        i = 0
-        row = 0
-        qweight = np.zeros(
-            (intweight.shape[0] // 32 * self.bits, intweight.shape[1]), dtype=np.uint32)
-        while row < qweight.shape[0]:
-            if self.bits in [2, 4, 8]:
-                for j in range(i, i + (32 // self.bits)):
-                    qweight[row] |= intweight[j] << (self.bits * (j - i))
-                i += 32 // self.bits
-                row += 1
-            elif self.bits == 3:
-                for j in range(i, i + 10):
-                    qweight[row] |= intweight[j] << (3 * (j - i))
-                i += 10
-                qweight[row] |= intweight[i] << 30
-                row += 1
-                qweight[row] |= (intweight[i] >> 2) & 1
-                i += 1
-                for j in range(i, i + 10):
-                    qweight[row] |= intweight[j] << (3 * (j - i) + 1)
-                i += 10
-                qweight[row] |= intweight[i] << 31
-                row += 1
-                qweight[row] |= (intweight[i] >> 1) & 0x3
-                i += 1
-                for j in range(i, i + 10):
-                    qweight[row] |= intweight[j] << (3 * (j - i) + 2)
-                i += 10
-                row += 1
-            else:
-                raise NotImplementedError("Only 2,3,4,8 bits are supported.")
-
-        qweight = qweight.astype(np.int32)
-        self.qweight = torch.from_numpy(qweight)
-
-        zeros -= 1
-        zeros = zeros.numpy().astype(np.uint32)
-        qzeros = np.zeros(
-            (zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32)
-        i = 0
-        col = 0
-        while col < qzeros.shape[1]:
-            if self.bits in [2, 4, 8]:
-                for j in range(i, i + (32 // self.bits)):
-                    qzeros[:, col] |= zeros[:, j] << (self.bits * (j - i))
-                i += 32 // self.bits
-                col += 1
-            elif self.bits == 3:
-                for j in range(i, i + 10):
-                    qzeros[:, col] |= zeros[:, j] << (3 * (j - i))
-                i += 10
-                qzeros[:, col] |= zeros[:, i] << 30
-                col += 1
-                qzeros[:, col] |= (zeros[:, i] >> 2) & 1
-                i += 1
-                for j in range(i, i + 10):
-                    qzeros[:, col] |= zeros[:, j] << (3 * (j - i) + 1)
-                i += 10
-                qzeros[:, col] |= zeros[:, i] << 31
-                col += 1
-                qzeros[:, col] |= (zeros[:, i] >> 1) & 0x3
-                i += 1
-                for j in range(i, i + 10):
-                    qzeros[:, col] |= zeros[:, j] << (3 * (j - i) + 2)
-                i += 10
-                col += 1
-            else:
-                raise NotImplementedError("Only 2,3,4,8 bits are supported.")
-
-        qzeros = qzeros.astype(np.int32)
-        self.qzeros = torch.from_numpy(qzeros)
-
+ 
     def forward(self, x: torch.Tensor):
         raw_input_dtype = x.dtype
         if raw_input_dtype != torch.float32:
@@ -265,7 +170,6 @@ def unpack_to_8bit_signed(qweight, qzeros, bits):
         torch.bitwise_and(zeros, (2**bits) - 1, out=zeros)
         if bits == 8:
             zeros = zeros.to(torch.uint8)
-        zeros = zeros + 1
         try:
             zeros = zeros.reshape(zp_shape)
         except:
