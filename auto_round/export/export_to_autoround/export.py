@@ -23,8 +23,6 @@ import transformers
 
 from auto_round.export.register import register_format
 from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
-import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits 
-import auto_round_extension.cuda.qliner_triton as qliner_triton
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -72,7 +70,7 @@ def get_autogptq_backend_config(backend, bits=4):
     return use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin
 
 
-def dynamic_QuantLienar_for_packing(backend, bits, group_size, device):
+def dynamic_QuantLienar_for_packing(backend, bits, group_size):
     if "gptq" in backend:
         use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
             backend, bits
@@ -91,7 +89,8 @@ def dynamic_QuantLienar_for_packing(backend, bits, group_size, device):
         return QuantLinear
     ##export all use trition, inference use exllamav2
     elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:
-        return qliner_triton.QuantLinear
+        from auto_round_extension.cuda.qliner_triton import QuantLinear
+        return QuantLinear
 
     else:
         assert False, f"only support gptq and autoround backend"
@@ -118,7 +117,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
         layer = get_module(model, name)
         device = layer.weight.device
 
-        QuantLinear = dynamic_QuantLienar_for_packing(backend, bits, group_size, device)
+        QuantLinear = dynamic_QuantLienar_for_packing(backend, bits, group_size)
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features
