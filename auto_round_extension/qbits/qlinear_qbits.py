@@ -25,6 +25,7 @@ from auto_round.utils import convert_dtype_torch2str, logging
 logger = logging.getLogger(__name__)
 
 BITS_DTYPE_MAPPING = {
+    2: "int2_clip",
     4: "int4_clip",
     8: "int8",
 }
@@ -47,8 +48,8 @@ class QuantLinear(nn.Module):
     ):
         super().__init__()
 
-        if bits not in [4, 8]:
-            raise NotImplementedError("Only 4,8 bits are supported for QBits.")
+        if bits not in [2, 4, 8]:
+            raise NotImplementedError("Only 2, 4,8 bits are supported for QBits.")
 
         self.infeatures = infeatures
         self.outfeatures = outfeatures
