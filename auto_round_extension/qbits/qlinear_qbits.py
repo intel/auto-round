@@ -57,7 +57,6 @@ class QuantLinear(nn.Module):
         self.maxq = 2**self.bits - 1
         self.weight_dtype = weight_dtype
         self.asym = True
-        self.need_repack = True
 
         self.register_buffer(
             "qweight",
@@ -232,9 +231,6 @@ class QuantLinear(nn.Module):
         self.qzeros = torch.from_numpy(qzeros)
 
     def forward(self, x: torch.Tensor):
-        if self.need_repack:
-            self.post_init()
-            self.need_repack = False
         raw_input_dtype = x.dtype
         if raw_input_dtype != torch.float32:
             x = x.to(torch.float32)

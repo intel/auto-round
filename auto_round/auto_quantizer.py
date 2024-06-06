@@ -318,10 +318,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def _dynamic_import_inference_linear(self, bits, backend):
         if bits == 4 and "exllamav2" in backend:
-            if self.exllama2_available:
-                from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
-            else:
-                return qlinear_qbits.QuantLinear
+            from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
         else:
             from auto_round_extension.cuda.qliner_triton import QuantLinear
         return QuantLinear
@@ -366,8 +363,25 @@ class AutoRoundQuantizer(HfQuantizer):
                 weight_dtype=layer.weight.dtype,
             )
 
+            if new_layer.qweight.device.type == "cpu": # fallback to qbits linear when qweight on cpu device
+                QuantLinear = qlinear_qbits.QuantLinear
+                new_layer = QuantLinear(  # pylint: disable=E1123
+                bits,
+                group_size,
+                in_features,
+                out_features,
+                bias,
+                weight_dtype=layer.weight.dtype,
+            )
+
             new_layer.device = device
             set_module(module, layer_name, new_layer)
+
+    def qbits_post_init(self, model):
+        for layer in model.modules():
+            if isinstance(layer,qlinear_qbits.QuantLinear):
+                layer.post_init()
+        return model
 
     def post_init_model(self, model):
         """Post-initialization that require device information, for example buffers initialization on device.
@@ -388,6 +402,8 @@ class AutoRoundQuantizer(HfQuantizer):
 
         model.quantize_config = StoreAttr()
         model = autoround_post_init(model)
+        model = self.qbits_post_init(model) # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits. 
+        
         return model
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
