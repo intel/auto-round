@@ -100,13 +100,14 @@ class QuantLinear(nn.Module):
         if QBITS_AVAILABLE:
             itrex_version = str(intel_extension_for_transformers.__version__)
             version_match_map = {"1.4": "2.2.0+cpu",
-                                "1.4.1": "2.2.0+cpu", "1.4.2": "2.3.0+cpu"}
+                                 "1.4.1": "2.2.0+cpu", "1.4.2": "2.3.0+cpu"}
             if itrex_version in version_match_map:
                 if torch_version != version_match_map[itrex_version]:
                     logger.warning(
-                        f"Intel Extension for Transformers {itrex_version} is not compatible with torch {torch_version}. Please install torch {version_match_map[itrex_version]}")
+                        f"Please install torch {version_match_map[itrex_version]} by command 'pip install torch=={version_match_map[itrex_version]} --extra-index-url https://download.pytorch.org/whl/cpu' as Intel Extension for Transformers {itrex_version} is not compatible with current torch.")
         else:
-            logger.error("qbits linear requirements checking fail, Intel Extension for Transformers is not installed. Please install it by running 'pip install intel-extension-for-transformers'")
+            logger.error(
+                "Please install Intel Extension for Transformers by running 'pip install intel-extension-for-transformers' as qbits linear requirements checking fail. ")
             exit(1)
 
     def post_init(self):
