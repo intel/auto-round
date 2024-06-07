@@ -18,11 +18,15 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-import transformers
-from intel_extension_for_transformers import qbits  # with QBits kernels ()
 from auto_round.utils import convert_dtype_torch2str, logging
-
 logger = logging.getLogger(__name__)
+QBITS_AVAILABLE = True
+try:
+    from intel_extension_for_transformers import qbits  # noqa: F401
+except Exception as e:
+    QBITS_AVAILABLE = False
+    logger.warning(
+        "qlinear_qbits should be used with Intel Extension for Transformers.")
 
 BITS_DTYPE_MAPPING = {
     2: "int2_clip",
@@ -49,7 +53,8 @@ class QuantLinear(nn.Module):
         super().__init__()
 
         if bits not in [2, 4, 8]:
-            raise NotImplementedError("Only 2, 4,8 bits are supported for QBits.")
+            raise NotImplementedError(
+                "Only 2, 4,8 bits are supported for QBits.")
 
         self.infeatures = infeatures
         self.outfeatures = outfeatures
@@ -90,6 +95,17 @@ class QuantLinear(nn.Module):
         self.kernel_switch_threshold = kernel_switch_threshold
 
         self.trainable = trainable
+
+    def req_check(self):
+        torch_version = str(torch.__version__)
+        import intel_extension_for_transformers
+        itrex_version = str(intel_extension_for_transformers.__version__)
+        version_match_map = {"v1.4": "2.2.0+cpu",
+                             "v1.4.1": "2.2.0+cpu", "v1.4.2": "2.3.0+cpu"}
+        if itrex_version in version_match_map:
+            if torch_version != version_match_map[itrex_version]:
+                logger.warning(
+                    f"Intel Extension for Transformers {itrex_version} is not compatible with torch {torch_version}. Please install torch {version_match_map[itrex_version]}")
 
     def post_init(self):
         assert self.qweight.device.type == "cpu"
@@ -135,7 +151,7 @@ class QuantLinear(nn.Module):
         # free mem
         self.qzeros = torch.empty(0)
         self.scales = torch.empty(0)
- 
+
     def forward(self, x: torch.Tensor):
         raw_input_dtype = x.dtype
         if raw_input_dtype != torch.float32:
