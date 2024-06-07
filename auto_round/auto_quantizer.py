@@ -402,7 +402,8 @@ class AutoRoundQuantizer(HfQuantizer):
 
         model.quantize_config = StoreAttr()
         model = autoround_post_init(model)
-        model = self.qbits_post_init(model) # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits. 
+        # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits. 
+        model = self.qbits_post_init(model)
         
         return model
 
