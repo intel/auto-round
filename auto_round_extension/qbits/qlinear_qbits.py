@@ -18,8 +18,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from auto_round.utils import convert_dtype_torch2str, logging
-logger = logging.getLogger(__name__)
+from auto_round.utils import convert_dtype_torch2str, logger
 QBITS_AVAILABLE = True
 try:
     from intel_extension_for_transformers import qbits  # noqa: F401
@@ -98,14 +97,17 @@ class QuantLinear(nn.Module):
 
     def req_check(self):
         torch_version = str(torch.__version__)
-        import intel_extension_for_transformers
-        itrex_version = str(intel_extension_for_transformers.__version__)
-        version_match_map = {"v1.4": "2.2.0+cpu",
-                             "v1.4.1": "2.2.0+cpu", "v1.4.2": "2.3.0+cpu"}
-        if itrex_version in version_match_map:
-            if torch_version != version_match_map[itrex_version]:
-                logger.warning(
-                    f"Intel Extension for Transformers {itrex_version} is not compatible with torch {torch_version}. Please install torch {version_match_map[itrex_version]}")
+        if QBITS_AVAILABLE:
+            itrex_version = str(intel_extension_for_transformers.__version__)
+            version_match_map = {"1.4": "2.2.0+cpu",
+                                "1.4.1": "2.2.0+cpu", "1.4.2": "2.3.0+cpu"}
+            if itrex_version in version_match_map:
+                if torch_version != version_match_map[itrex_version]:
+                    logger.warning(
+                        f"Intel Extension for Transformers {itrex_version} is not compatible with torch {torch_version}. Please install torch {version_match_map[itrex_version]}")
+        else:
+            logger.error("qbits linear requirements checking fail, Intel Extension for Transformers is not installed. Please install it by running 'pip install intel-extension-for-transformers'")
+            exit(1)
 
     def post_init(self):
         assert self.qweight.device.type == "cpu"
