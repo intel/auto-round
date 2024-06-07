@@ -378,9 +378,13 @@ class AutoRoundQuantizer(HfQuantizer):
             set_module(module, layer_name, new_layer)
 
     def qbits_post_init(self, model):
+        dep_check = True
         for layer in model.modules():
             if isinstance(layer,qlinear_qbits.QuantLinear):
+                if dep_check:
+                    layer.req_check()
                 layer.post_init()
+                dep_check = False
         return model
 
     def post_init_model(self, model):

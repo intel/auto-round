@@ -18,11 +18,14 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-import transformers
-from intel_extension_for_transformers import qbits  # with QBits kernels ()
-from auto_round.utils import convert_dtype_torch2str, logging
-
-logger = logging.getLogger(__name__)
+from auto_round.utils import convert_dtype_torch2str, logger
+QBITS_AVAILABLE = True
+try:
+    from intel_extension_for_transformers import qbits  # noqa: F401
+except Exception as e:
+    QBITS_AVAILABLE = False
+    logger.warning(
+        "qlinear_qbits should be used with Intel Extension for Transformers.")
 
 BITS_DTYPE_MAPPING = {
     2: "int2_clip",
@@ -49,7 +52,8 @@ class QuantLinear(nn.Module):
         super().__init__()
 
         if bits not in [2, 4, 8]:
-            raise NotImplementedError("Only 2, 4,8 bits are supported for QBits.")
+            raise NotImplementedError(
+                "Only 2, 4,8 bits are supported for QBits.")
 
         self.infeatures = infeatures
         self.outfeatures = outfeatures
@@ -90,6 +94,21 @@ class QuantLinear(nn.Module):
         self.kernel_switch_threshold = kernel_switch_threshold
 
         self.trainable = trainable
+
+    def req_check(self):
+        torch_version = str(torch.__version__)
+        if QBITS_AVAILABLE:
+            itrex_version = str(intel_extension_for_transformers.__version__)
+            version_match_map = {"1.4": "2.2.0+cpu",
+                                 "1.4.1": "2.2.0+cpu", "1.4.2": "2.3.0+cpu"}
+            if itrex_version in version_match_map:
+                if torch_version != version_match_map[itrex_version]:
+                    logger.warning(
+                        f"Please install torch {version_match_map[itrex_version]} by command 'pip install torch=={version_match_map[itrex_version]} --extra-index-url https://download.pytorch.org/whl/cpu' as Intel Extension for Transformers {itrex_version} is not compatible with current torch.")
+        else:
+            logger.error(
+                "Please install Intel Extension for Transformers by running 'pip install intel-extension-for-transformers' as qbits linear requirements checking fail. ")
+            exit(1)
 
     def post_init(self):
         assert self.qweight.device.type == "cpu"
@@ -135,7 +154,7 @@ class QuantLinear(nn.Module):
         # free mem
         self.qzeros = torch.empty(0)
         self.scales = torch.empty(0)
- 
+
     def forward(self, x: torch.Tensor):
         raw_input_dtype = x.dtype
         if raw_input_dtype != torch.float32:
