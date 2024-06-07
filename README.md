@@ -57,7 +57,7 @@ pip install auto-round
 ## Model quantization
 
 ### Gaudi2/ CPU/ GPU
-By default, we export to the AutoRound format, which supports both CUDA and CPU backends and ensures asymmetry accuracy. To export in a format compatible with Transformers, save it in the auto_gptq format.
+We export to the AutoRound format by default, which supports both CUDA and CPU backends and ensures asymmetry accuracy. To export in a format compatible with Transformers, save it in the auto_gptq format.
 
 
 ```python
@@ -74,7 +74,7 @@ bits, group_size, sym = 4, 128, False
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=None)
 autoround.quantize()
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir) ## tsave_quantized(output_dir,format=="auto_gptq")
+autoround.save_quantized(output_dir) ## save_quantized(output_dir,format=="auto_gptq")
 ```
 
 <details>
@@ -136,7 +136,6 @@ Please run the quantization code first.
 ### CPU/GPU
 
 ```python
-## install auto-round first, for auto_gptq format, please install auto-gptq
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round.auto_quantizer import AutoHfQuantizer ## comment it for models with auto_gptq format
 
