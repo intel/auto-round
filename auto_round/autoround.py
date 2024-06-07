@@ -1019,7 +1019,7 @@ class AutoRound(object):
 
         torch.cuda.empty_cache()
 
-    def save_quantized(self, output_dir=None, format="auto_gptq", inplace=True, **kwargs):
+    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.
 
         Args:

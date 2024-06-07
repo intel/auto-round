@@ -86,7 +86,7 @@ if __name__ == '__main__':
                         help="enable_minmax_tuning is deprecated")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
-                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
+                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu', 'xpu' and 'auto-gptq'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
     parser.add_argument("--scale_dtype", default='fp16',
@@ -300,13 +300,6 @@ if __name__ == '__main__':
         print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
               f"gpu")
     deployment_device = args.deployment_device.split(',')
-    gpu_format = "auto_gptq"
-    if 'gpu' in deployment_device:
-        if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
-            gpu_format = "auto_round"
-
-    if "autoround" in deployment_device or "auto-round" in deployment_device or "auto_round" in deployment_device:
-        gpu_format = "auto_round"
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
@@ -327,15 +320,15 @@ if __name__ == '__main__':
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
     inplace = True if len(deployment_device) < 2 else False
-    if 'gpu' in deployment_device or "auto_round" in gpu_format or "auto-round" in gpu_format:
-        autoround.save_quantized(f'{export_dir}-gpu', format=gpu_format, use_triton=True, inplace=inplace)
+    if 'gpu' in deployment_device or 'cpu' in deployment_device:
+        autoround.save_quantized(f'{export_dir}', format="auto_round", use_triton=True, inplace=inplace)
+    if "auto_gptq" in deployment_device:
+        autoround.save_quantized(f'{export_dir}-gptq', format="auto_gptq", use_triton=True, inplace=inplace)
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
                                  device="xpu")
-    if "cpu" in deployment_device:
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
-    if "fake" in deployment_device:
+    if "fake" in deployment_device or "qdq" in deployment_device:
         model = model.to("cpu")
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
