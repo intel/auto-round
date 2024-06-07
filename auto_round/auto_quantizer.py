@@ -42,6 +42,7 @@ from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
 from auto_round.utils import get_module, set_module
+import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
 
 logger = getLogger(__name__)
 import sys
@@ -362,8 +363,25 @@ class AutoRoundQuantizer(HfQuantizer):
                 weight_dtype=layer.weight.dtype,
             )
 
+            if new_layer.qweight.device.type == "cpu": # fallback to qbits linear when qweight on cpu device
+                QuantLinear = qlinear_qbits.QuantLinear
+                new_layer = QuantLinear(  # pylint: disable=E1123
+                bits,
+                group_size,
+                in_features,
+                out_features,
+                bias,
+                weight_dtype=layer.weight.dtype,
+            )
+
             new_layer.device = device
             set_module(module, layer_name, new_layer)
+
+    def qbits_post_init(self, model):
+        for layer in model.modules():
+            if isinstance(layer,qlinear_qbits.QuantLinear):
+                layer.post_init()
+        return model
 
     def post_init_model(self, model):
         """Post-initialization that require device information, for example buffers initialization on device.
@@ -384,6 +402,9 @@ class AutoRoundQuantizer(HfQuantizer):
 
         model.quantize_config = StoreAttr()
         model = autoround_post_init(model)
+        # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits. 
+        model = self.qbits_post_init(model)
+        
         return model
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
