@@ -13,7 +13,6 @@ einops
 accelerate
 datasets
 protobuf
-auto-gptq
 openpyxl
 wandb
 py-cpuinfo

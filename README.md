@@ -57,9 +57,8 @@ pip install auto-round
 ## Model quantization
 
 ### Gaudi2/ CPU/ GPU
+By default, we export to the AutoRound format, which supports both CUDA and CPU backends and ensures asymmetry accuracy. To export in a format compatible with Transformers, save it in the auto_gptq format.
 
-We found a significant accuracy discrepancy with the qdq model using the AutoGPTQ GPU backend with asymmetric
-quantization in some scenarios, especially at lower bits,like 2. Please save quantized model to AuoRound format to fix this issue.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -75,7 +74,7 @@ bits, group_size, sym = 4, 128, False
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=None)
 autoround.quantize()
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_round")
+autoround.save_quantized(output_dir) ## tsave_quantized(output_dir,format=="auto_gptq")
 ```
 
 <details>
@@ -134,26 +133,12 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 Please run the quantization code first.
 
-### CPU
+### CPU/GPU
 
 ```python
-##Install the latest https://github.com/intel/intel-extension-for-transformers from source first.
-from intel_extension_for_transformers.transformers import AutoModelForCausalLM
-from transformers import AutoTokenizer
-
-quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
-text = "There is a girl who likes adventure,"
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-```
-
-### GPU
-
-```python
+## install auto-round first, for auto_gptq format, please install auto-gptq
 from transformers import AutoModelForCausalLM, AutoTokenizer
-##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with auto_round format
+from auto_round.auto_quantizer import AutoHfQuantizer ## comment it for models with auto_gptq format
 
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)

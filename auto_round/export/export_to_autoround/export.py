@@ -180,7 +180,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
     save(model, output_dir)
 
 
-def save(model: nn.Module, save_dir: str, max_shard_size: str = "10GB", safe_serialization: bool = True):
+def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
     """Save model state dict and configs.
 
     Args:
