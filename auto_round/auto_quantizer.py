@@ -316,7 +316,9 @@ class AutoRoundQuantizer(HfQuantizer):
         self._replace_by_quant_layers(model, layer_configs, backend)
         return model
 
-    def _dynamic_import_inference_linear(self, bits, backend):
+    def _dynamic_import_inference_linear(self, bits, backend, device):
+        if (str(device) == "cpu" and not torch.cuda.is_available()) or "qbits" in backend:
+            return qlinear_qbits.QuantLinear
         if bits == 4 and self.exllama2_available and "exllamav2" in backend:
             from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
         else:
@@ -341,9 +343,10 @@ class AutoRoundQuantizer(HfQuantizer):
             data_type = config["data_type"]
             if not (bits <= 8 and data_type == "int"):
                 continue
-            QuantLinear = self._dynamic_import_inference_linear(bits, backend)
+
             layer = get_module(module, layer_name)
             device = get_device(layer)
+            QuantLinear = self._dynamic_import_inference_linear(bits, backend, device)
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
                 out_features = layer.out_features
@@ -363,16 +366,16 @@ class AutoRoundQuantizer(HfQuantizer):
                 weight_dtype=layer.weight.dtype,
             )
 
-            if new_layer.qweight.device.type == "cpu": # fallback to qbits linear when qweight on cpu device
-                QuantLinear = qlinear_qbits.QuantLinear
-                new_layer = QuantLinear(  # pylint: disable=E1123
-                bits,
-                group_size,
-                in_features,
-                out_features,
-                bias,
-                weight_dtype=layer.weight.dtype,
-            )
+            # if new_layer.qweight.device.type == "cpu":  # fallback to qbits linear when qweight on cpu device
+            #     QuantLinear = qlinear_qbits.QuantLinear
+            #     new_layer = QuantLinear(  # pylint: disable=E1123
+            #         bits,
+            #         group_size,
+            #         in_features,
+            #         out_features,
+            #         bias,
+            #         weight_dtype=layer.weight.dtype,
+            #     )
 
             new_layer.device = device
             set_module(module, layer_name, new_layer)
@@ -380,7 +383,7 @@ class AutoRoundQuantizer(HfQuantizer):
     def qbits_post_init(self, model):
         dep_check = True
         for layer in model.modules():
-            if isinstance(layer,qlinear_qbits.QuantLinear):
+            if isinstance(layer, qlinear_qbits.QuantLinear):
                 if dep_check:
                     layer.req_check()
                 layer.post_init()
@@ -408,7 +411,7 @@ class AutoRoundQuantizer(HfQuantizer):
         model = autoround_post_init(model)
         # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits. 
         model = self.qbits_post_init(model)
-        
+
         return model
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):

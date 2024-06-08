@@ -24,8 +24,8 @@ try:
     from intel_extension_for_transformers import qbits  # noqa: F401
 except Exception as e:
     QBITS_AVAILABLE = False
-    logger.warning(
-        "qlinear_qbits should be used with Intel Extension for Transformers.")
+    # logger.warning(
+    #     "qlinear_qbits should be used with Intel Extension for Transformers.")
 
 BITS_DTYPE_MAPPING = {
     2: "int2_clip",
