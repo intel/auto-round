@@ -20,12 +20,6 @@ import torch
 import torch.nn as nn
 from auto_round.utils import convert_dtype_torch2str, logger
 QBITS_AVAILABLE = True
-try:
-    from intel_extension_for_transformers import qbits  # noqa: F401
-except Exception as e:
-    QBITS_AVAILABLE = False
-    # logger.warning(
-    #     "qlinear_qbits should be used with Intel Extension for Transformers.")
 
 BITS_DTYPE_MAPPING = {
     2: "int2_clip",
