@@ -317,12 +317,12 @@ class AutoRoundQuantizer(HfQuantizer):
         return model
 
     def _dynamic_import_inference_linear(self, bits, backend):
-        if (not torch.cuda.is_available()) or "qbits" in backend or "intel/cpu" in backend:
+        if (not torch.cuda.is_available()) or "qbits" in backend or "cpu" in backend:
             try:
                 from intel_extension_for_transformers import qbits  # pylint: disable=E0401
             except Exception as e:
                 raise ImportError("Please install Intel Extension for Transformers via 'pip install "
-                                  "intel-extension-for-transformers' to  inference on Intel CPU")
+                                  "intel-extension-for-transformers' to  inference on X86 CPU")
             return qlinear_qbits.QuantLinear
         if bits == 4 and self.exllama2_available and "exllamav2" in backend:
             from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
