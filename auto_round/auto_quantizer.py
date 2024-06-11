@@ -316,10 +316,10 @@ class AutoRoundQuantizer(HfQuantizer):
         self._replace_by_quant_layers(model, layer_configs, backend)
         return model
 
-    def _dynamic_import_inference_linear(self, bits, backend, device):
-        if (str(device) == "cpu" and not torch.cuda.is_available()) or "qbits" in backend:
+    def _dynamic_import_inference_linear(self, bits, backend):
+        if (not torch.cuda.is_available()) or "qbits" in backend:
             try:
-                from intel_extension_for_transformers import qbits  # noqa: F401
+                from intel_extension_for_transformers import qbits  # pylint: disable=E0401
             except Exception as e:
                 raise ImportError("Please install Intel Extension for Transformers via 'pip install "
                                   "intel-extension-for-transformers' to  inference on Intel CPU")
@@ -351,7 +351,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
             layer = get_module(module, layer_name)
             device = get_device(layer)
-            QuantLinear = self._dynamic_import_inference_linear(bits, backend, device)
+            QuantLinear = self._dynamic_import_inference_linear(bits, backend)
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
                 out_features = layer.out_features
