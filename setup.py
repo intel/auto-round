@@ -16,14 +16,17 @@ except Exception as error:
 version = __version__
 
 
-def fetch_requirements(path):
-    with open(path, "r") as fd:
-        return [r.strip() for r in fd.readlines()]
-
-
 BUILD_CUDA_EXT = int(os.environ.get('BUILD_CUDA_EXT', '1')) == 1
 PYPI_RELEASE = os.environ.get('PYPI_RELEASE', None)
 
+
+def fetch_requirements(path):
+    requirements = []
+    with open(path, "r") as fd:
+        requirements = [r.strip() for r in fd.readlines()]
+    if not BUILD_CUDA_EXT:
+        requirements.append("intel-extension-for-transformers") # for leverage QBits woq_linear capability.
+    return requirements
 
 def detect_local_sm_architectures():
     """
@@ -53,17 +56,6 @@ def detect_local_sm_architectures():
 
 
 UNSUPPORTED_COMPUTE_CAPABILITIES = ['3.5', '3.7', '5.0', '5.2', '5.3']
-requirements = [
-    "torch",
-    "accelerate",
-    "datasets",
-    "sentencepiece",
-    "safetensors",
-    "transformers",
-    "tqdm",
-    'py-cpuinfo'
-    'sentencepiece'
-]
 
 if BUILD_CUDA_EXT:
     try:
@@ -72,7 +64,13 @@ if BUILD_CUDA_EXT:
         print(
             f"Building PyTorch CUDA extension requires PyTorch being installed, please install PyTorch first: {e}.\n NOTE: This issue may be raised due to pip build isolation system (ignoring local packages). Please use `--no-build-isolation` when installing with pip, and refer to https://github.com/AutoGPTQ/AutoGPTQ/pull/620 for more details.")
         sys.exit(1)
+    if not torch.cuda.is_available():
+        print(
+            f"set BUILD_CUDA_EXT to False as no cuda device is available")
+        BUILD_CUDA_EXT = False
 
+
+if BUILD_CUDA_EXT:
     CUDA_VERSION = None
     ROCM_VERSION = os.environ.get('ROCM_VERSION', None)
     if ROCM_VERSION and not torch.version.hip:

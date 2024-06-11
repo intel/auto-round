@@ -154,8 +154,8 @@ if __name__ == '__main__':
             return "Library not found"
 
 
-    res = get_library_version("lm-eval")
-    if res == "0.3.0":
+    lm_eval_version = get_library_version("lm-eval")
+    if lm_eval_version == "0.3.0":
         use_eval_legacy = True
 
     if isinstance(tasks, str):
@@ -179,7 +179,7 @@ if __name__ == '__main__':
         if use_eval_legacy:
             print("Using the legacy lm_eval(0.3.0)")
         else:
-            print(f"Using the latest {res}")
+            print(f"Using the latest {lm_eval_version}")
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -291,7 +291,7 @@ if __name__ == '__main__':
                         f"supported currently")
                     break
     if args.quant_lm_head:
-        weight_config[lm_head_layer_name] = {"data_type": "int", "bits": 4, "group_size": 32}
+        weight_config[lm_head_layer_name] = {"data_type": "int"}
         transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
         if transformers_version[0] == 4 and transformers_version[1] < 38:
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
@@ -341,10 +341,27 @@ if __name__ == '__main__':
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
 
-    if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
+    if not args.disable_eval and "fake" in deployment_device and lm_eval_version != "0.4.2":
         excel_name = f"{output_dir}_result.xlsx"
         output_dir += "/"
         print(excel_name, flush=True)
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
+
+    if not args.disable_eval and lm_eval_version == "0.4.2":
+        if "round" in deployment_device:
+            from auto_round.auto_quantizer import AutoHfQuantizer
+        from eval_042.evaluation import simple_evaluate
+
+        if 'gpu' in deployment_device or "auto_round" in gpu_format or "auto-round" in gpu_format:
+            model_args = f"pretrained={export_dir}-gpu"
+        else:
+            model_args = f"pretrained={output_dir}"
+
+        res = simple_evaluate(model="hf", model_args=model_args,
+                              tasks=tasks,
+                              batch_size=args.eval_bs)
+        from lm_eval.utils import make_table
+
+        print(make_table(res))
