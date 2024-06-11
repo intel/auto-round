@@ -317,7 +317,7 @@ class AutoRoundQuantizer(HfQuantizer):
         return model
 
     def _dynamic_import_inference_linear(self, bits, backend):
-        if (not torch.cuda.is_available()) or "qbits" in backend:
+        if (not torch.cuda.is_available()) or "qbits" in backend or "intel/cpu" in backend:
             try:
                 from intel_extension_for_transformers import qbits  # pylint: disable=E0401
             except Exception as e:
