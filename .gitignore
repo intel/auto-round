@@ -1,0 +1,11 @@
+﻿.vs
+.vscode
+__pycache__
+auto_round.egg-info/
+build/*
+.eggs/
+dist/
+.cache/
+.clangd
+CMakeUserPresets.json
+tmp_autoround/

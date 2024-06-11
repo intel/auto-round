@@ -151,8 +151,9 @@ if __name__ == '__main__':
         except subprocess.CalledProcessError:
             return "Library not found"
 
-    res = get_library_version("lm-eval")
-    if res == "0.3.0":
+
+    lm_eval_version = get_library_version("lm-eval")
+    if lm_eval_version == "0.3.0":
         use_eval_legacy = True
 
     if isinstance(tasks, str):
@@ -177,7 +178,7 @@ if __name__ == '__main__':
         if use_eval_legacy:
             print("Using the legacy lm_eval(0.3.0)")
         else:
-            print(f"Using the latest {res}")
+            print(f"Using the latest {lm_eval_version}")
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -301,8 +302,11 @@ if __name__ == '__main__':
     deployment_device = args.deployment_device.split(',')
     gpu_format = "auto_gptq"
     if 'gpu' in deployment_device:
-        if lm_head_layer_name in weight_config.keys():
-            gpu_format = "autoround"
+        if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
+            gpu_format = "auto_round"
+
+    if "autoround" in deployment_device or "auto-round" in deployment_device or "auto_round" in deployment_device:
+        gpu_format = "auto_round"
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
@@ -323,7 +327,7 @@ if __name__ == '__main__':
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
     inplace = True if len(deployment_device) < 2 else False
-    if 'gpu' in deployment_device:
+    if 'gpu' in deployment_device or "auto_round" in gpu_format or "auto-round" in gpu_format:
         autoround.save_quantized(f'{export_dir}-gpu', format=gpu_format, use_triton=True, inplace=inplace)
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
@@ -336,7 +340,7 @@ if __name__ == '__main__':
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
 
-    if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
+    if not args.disable_eval and "fake" in deployment_device and lm_eval_version != "0.4.2":
         excel_name = f"{output_dir}_result.xlsx"
         output_dir += "/"
         print(excel_name, flush=True)
@@ -344,3 +348,19 @@ if __name__ == '__main__':
                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
 
+    if not args.disable_eval and lm_eval_version == "0.4.2":
+        if "round" in deployment_device:
+            from auto_round.auto_quantizer import AutoHfQuantizer
+        from eval_042.evaluation import simple_evaluate
+
+        if 'gpu' in deployment_device or "auto_round" in gpu_format or "auto-round" in gpu_format:
+            model_args = f"pretrained={export_dir}-gpu"
+        else:
+            model_args = f"pretrained={output_dir}"
+
+        res = simple_evaluate(model="hf", model_args=model_args,
+                              tasks=tasks,
+                              batch_size=args.eval_bs)
+        from lm_eval.utils import make_table
+
+        print(make_table(res))

@@ -5,38 +5,8 @@ This document presents step-by-step instructions for auto-round.
 
 # Prerequisite
 
-## 1. Environment
 
-PyTorch 1.8 or higher version is needed
-The transformers version required varies across different types of models. Here, the transformers version used for running models during experiments is provided as a reference.
-
-| Model | Transformers version |
-|  :----: | :----: |
-| EleutherAI/gpt-j-6b | 4.28/4.30/4.34/4.36 |
-| huggyllama/llama-7b | 4.28/4.30/4.34/4.36 |
-| meta-llama/Llama-2-7b-hf | 4.30/4.34/4.36 |
-| facebook/opt-6.7b | 4.28/4.30/4.34/4.36 |
-| tiiuae/falcon-7b | 4.28/4.30/4.34/4.36 |
-| mosaicml/mpt-7b | 4.28/4.30/4.34/4.36 |
-| mosaicml/mpt-7b-chat | 4.34 |
-| bigscience/bloom-7b1 | 4.28/4.30/4.34/4.36 |
-| baichuan-inc/Baichuan2-7B-Chat | 4.36 |
-| Qwen/Qwen-7B | 4.28/4.30/4.34/4.36 |
-| Qwen/Qwen1.5-7B-Chat | 4.38/4.40 |
-| THUDM/chatglm3-6b | 4.34/4.36 |
-| mistralai/Mistral-7B-v0.1 | 4.34/4.36 |
-| MBZUAI/LaMini-GPT-124M | 4.34/4.36 |
-| EleutherAI/gpt-neo-125m | 4.34 |
-| databricks/dolly-v2-3b | 4.34 |
-| stabilityai/stablelm-base-alpha-3b | 4.34 |
-| Intel/neural-chat-7b-v3 | 4.34/4.36 |
-| rinna/bilingual-gpt-neox-4b | 4.36 |
-| microsoft/phi-2 | 4.36 |
-| google/gemma-7b | 4.38/4.40 |
-| Salesforce/codegen25-7b-multi | 4.33.2|
-
-
-## 2. Prepare Calibration Dataset
+## 1. Prepare Calibration Dataset
 
 ### Default Dataset
 The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in huggingface is adopted as the default calibration data and  will be downloaded automatically from the datasets Hub. To customize a dataset, please kindly follow our dataset code.
@@ -44,7 +14,7 @@ See more about loading [huggingface dataset](https://huggingface.co/docs/dataset
 
 ### Customized Dataset
 - Option 1: Pass a local json file path to dataset argument
-- Option 2: Register your dataset following the [code](../../auto_round/calib_dataset.py) and pass the new dataset&split args to initialize AutoRound object,e.g. autoround=Autoround(dataset="NeelNanda/pile-10k:train",...)
+- Option 2: Register your dataset following the [code](../../auto_round/calib_dataset.py) and pass the new dataset and split args to initialize AutoRound object, e.g. autoround=Autoround(dataset="NeelNanda/pile-10k:train", ...)
 - Option 3: pass list of string or list of input_ids to dataset.
 ~~~python
 def customized_data():
@@ -65,11 +35,11 @@ def customized_data_with_tokenizer(tokenizer, seqlen=2048):
     return tokens
 ~~~
 
-Combination of different datasets has been supported, --dataset "./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test". Please note that samples with sequence length < args.seq will be dropped.
+Combination of different datasets has been supported, --dataset "./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test". Please note that samples with sequence length < args.seqlen will be dropped.
 
 <br />
 
-## 3. Run Examples
+## 2. Run Examples
 Enter into the examples folder and install lm-eval to run the evaluation
 ```bash
 pip install -r requirements.txt
@@ -123,7 +93,7 @@ bash run_autoround_on_gaudi.sh
 
 
 
-## 4. Evaluation
+## 3. Evaluation
 The example supports evaluation for various tasks in lm_eval. Moreover, it facilitates separate evaluation through the 'evaluation.py' script, which extends support to three additional tasks (ptb, c4, and wikitext2) beyond the capabilities of the official lm_eval. Additionally, evaluation results will be neatly organized into an Excel file for ease of demonstration.
 
 For large models, GPU memory may be insufficient. Enable multi-GPU evaluation by setting 'CUDA_VISIBLE_DEVICES'.
@@ -144,9 +114,40 @@ CUDA_VISIBLE_DEVICES=1,2 python3 eval/evaluation.py --model_name /save_model_pat
 
 You can also utilize the official lm_eval [link](https://github.com/EleutherAI/lm-evaluation-harness/tree/main?tab=readme-ov-file#basic-usage).
 
-## 5. Known Issues
+## 4. Known Issues
 * Random issues in tuning Qwen models
 * ChatGlm-V1 is not supported
+
+
+## 5. Environment
+
+PyTorch 1.8 or higher version is needed
+The transformers version required varies across different types of models. Here, the transformers version used for running models during experiments is provided as a reference.
+
+| Model | Transformers version |
+|  :----: | :----: |
+| EleutherAI/gpt-j-6b | 4.28/4.30/4.34/4.36 |
+| huggyllama/llama-7b | 4.28/4.30/4.34/4.36 |
+| meta-llama/Llama-2-7b-hf | 4.30/4.34/4.36 |
+| facebook/opt-6.7b | 4.28/4.30/4.34/4.36 |
+| tiiuae/falcon-7b | 4.28/4.30/4.34/4.36 |
+| mosaicml/mpt-7b | 4.28/4.30/4.34/4.36 |
+| mosaicml/mpt-7b-chat | 4.34 |
+| bigscience/bloom-7b1 | 4.28/4.30/4.34/4.36 |
+| baichuan-inc/Baichuan2-7B-Chat | 4.36 |
+| Qwen/Qwen-7B | 4.28/4.30/4.34/4.36 |
+| Qwen/Qwen1.5-7B-Chat | 4.38/4.40 |
+| THUDM/chatglm3-6b | 4.34/4.36 |
+| mistralai/Mistral-7B-v0.1 | 4.34/4.36 |
+| MBZUAI/LaMini-GPT-124M | 4.34/4.36 |
+| EleutherAI/gpt-neo-125m | 4.34 |
+| databricks/dolly-v2-3b | 4.34 |
+| stabilityai/stablelm-base-alpha-3b | 4.34 |
+| Intel/neural-chat-7b-v3 | 4.34/4.36 |
+| rinna/bilingual-gpt-neox-4b | 4.36 |
+| microsoft/phi-2 | 4.36 |
+| google/gemma-7b | 4.38/4.40 |
+| Salesforce/codegen25-7b-multi | 4.33.2|
 
 
 ## Reference
@@ -159,6 +160,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 

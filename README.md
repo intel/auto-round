@@ -5,7 +5,7 @@ AutoRound
 <h3> Advanced Weight-Only Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.8%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.1-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.2-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-blue)](https://github.com/intel/auto-round/blob/main/LICENSE)
 ---
 <div align="left">
@@ -25,7 +25,7 @@ image presents an overview of AutoRound.
 <div align="left">
 
 ## What's New
-
+* [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant performance drop issue with the asymmetric kernel
 * [2024/05] Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
 * [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
 * [2024/05] AutoRound performs well
@@ -40,8 +40,12 @@ image presents an overview of AutoRound.
 ### Build from Source
 
 ```bash
+pip install -vvv --no-build-isolation -e .
+or
 pip install -r requirements.txt
 python setup.py install
+
+
 ```
 
 ### Install from pypi
@@ -55,7 +59,7 @@ pip install auto-round
 ### Gaudi2/ CPU/ GPU
 
 We found a significant accuracy discrepancy with the qdq model using the AutoGPTQ GPU backend with asymmetric
-quantization in some scenarios. Please switch to symmetric quantization to alleviate this issue.
+quantization in some scenarios, especially at lower bits,like 2. Please save quantized model to AuoRound format to fix this issue.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -71,7 +75,7 @@ bits, group_size, sym = 4, 128, False
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=None)
 autoround.quantize()
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir)
+autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_round")
 ```
 
 <details>
@@ -149,7 +153,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with quantized lm-head
+##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with auto_round format
 
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
