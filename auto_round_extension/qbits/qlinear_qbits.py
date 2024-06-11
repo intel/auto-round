@@ -56,6 +56,7 @@ class QuantLinear(nn.Module):
         self.maxq = 2**self.bits - 1
         self.weight_dtype = weight_dtype
         self.asym = True
+        self.qbits = None
 
         self.register_buffer(
             "qweight",
@@ -92,6 +93,7 @@ class QuantLinear(nn.Module):
     def req_check(self):
         torch_version = str(torch.__version__)
         if QBITS_AVAILABLE:
+            import intel_extension_for_transformers
             itrex_version = str(intel_extension_for_transformers.__version__)
             version_match_map = {"1.4": "2.2.0+cpu",
                                  "1.4.1": "2.2.0+cpu", "1.4.2": "2.3.0+cpu"}
@@ -105,6 +107,8 @@ class QuantLinear(nn.Module):
             exit(1)
 
     def post_init(self):
+        import intel_extension_for_transformers
+        self.qbits = intel_extension_for_transformers.qbits
         assert self.qweight.device.type == "cpu"
         if self.bias is not None:
             self.bias = self.bias.to(dtype=torch.float32)
@@ -136,7 +140,7 @@ class QuantLinear(nn.Module):
 
         logger.info(
             f"QBits repack quantized weight: K:{intweight.shape[0]}, N:{intweight.shape[1]}, weight_dtype:{BITS_DTYPE_MAPPING[self.bits]}, scale_dtype:fp32, compute_dtype:fp32, group_size:{self.group_size}")
-        self.qweight = qbits.repack_quantized_weight(intweight.contiguous(), scales.float().contiguous(), zeros.contiguous(), torch.empty(0),
+        self.qweight = self.qbits.repack_quantized_weight(intweight.contiguous(), scales.float().contiguous(), zeros.contiguous(), torch.empty(0),
                                                      # weight_dtype
                                                      BITS_DTYPE_MAPPING[self.bits],
                                                      # scale_dtype
@@ -161,7 +165,7 @@ class QuantLinear(nn.Module):
         bias = self.bias if self.bias is not None else torch.empty(
             0, dtype=torch.float)
 
-        qbits.woq_linear(x, self.qweight, bias, outputs,
+        self.qbits.woq_linear(x, self.qweight, bias, outputs,
                          convert_dtype_torch2str(torch.float),  # compute_dtype
                          BITS_DTYPE_MAPPING[self.bits],  # weight_dtype
                          "fp32",  # scale_dtype
