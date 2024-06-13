@@ -138,7 +138,7 @@ class QuantLinear(nn.Module):
 
         scales = self.scales
 
-        logger.info(
+        logger.debug(
             f"QBits repack quantized weight: K:{intweight.shape[0]}, N:{intweight.shape[1]}, weight_dtype:{BITS_DTYPE_MAPPING[self.bits]}, scale_dtype:fp32, compute_dtype:fp32, group_size:{self.group_size}")
         self.qweight = self.qbits.repack_quantized_weight(intweight.contiguous(), scales.float().contiguous(), zeros.contiguous(), torch.empty(0),
                                                      # weight_dtype
