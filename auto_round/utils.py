@@ -35,7 +35,7 @@ logger.addHandler(fh)
 
 import importlib
 import transformers
-
+from functools import lru_cache
 
 class LazyImport(object):
     """Lazy import python module till use."""
@@ -576,6 +576,7 @@ def is_autoround_exllamav2_available():
         res = False
     return res
 
+
 def get_autogptq_backend_config(backend, bits=4):
     use_triton = False
     disable_exllamav2 = False
@@ -606,6 +607,11 @@ def get_autogptq_backend_config(backend, bits=4):
         use_triton = False
     return use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin
 
+@lru_cache(None)
+def warning_once(logger, msg: str):
+    logger.warning(msg)
+
+logger.warning_once = warning_once
 def dynamic_import_inference_linear(bits, group_size, backend):
     """Dynamically imports and returns the appropriate QuantLinear class based on the given bits and backend.
 
@@ -623,7 +629,7 @@ def dynamic_import_inference_linear(bits, group_size, backend):
 
     if (not torch.cuda.is_available()) or "qbits" in backend or "cpu" in backend:
         try:
-            from intel_extension_for_transformers import qbits
+            from intel_extension_for_transformers import qbits # pylint: disable=E0401
         except Exception as e:
             raise ImportError("Please install Intel Extension for Transformers via 'pip install "
                               "intel-extension-for-transformers' to  inference on X86 CPU")
@@ -631,9 +637,9 @@ def dynamic_import_inference_linear(bits, group_size, backend):
         return qlinear_qbits.QuantLinear
     if "gptq" in backend:
         try:
-            import auto_gptq
+            import auto_gptq # pylint: disable=E0401
         except Exception as e:
-            raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend " )
+            raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
         use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
             backend, bits
         )
@@ -652,9 +658,8 @@ def dynamic_import_inference_linear(bits, group_size, backend):
     if bits == 4 and exllama2_available and "exllamav2" in backend:
         from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
     elif bits == 4 and "exllamav2" in backend:
-        logging.warning_once("Please install auto-round from source to enable exllamav2 kernels, switch to triton "
+        logger.warning_once("Please install auto-round from source to enable exllamav2 kernels, switch to triton "
                              "kernels for now")
-
     else:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     return QuantLinear
