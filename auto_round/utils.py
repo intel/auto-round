@@ -35,7 +35,7 @@ logger.addHandler(fh)
 
 import importlib
 import transformers
-
+from functools import lru_cache
 
 class LazyImport(object):
     """Lazy import python module till use."""
@@ -560,3 +560,106 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transforme
         if hasattr(m, "tmp_name"):
             delattr(m, "tmp_name")
     return layers_in_block
+
+
+def is_autoround_exllamav2_available():
+    """Checks if the AutoRound ExLlamaV2 kernels are available.
+
+    Returns:
+        bool:
+            True if the AutoRound ExLlamaV2 kernels are available, False otherwise.
+    """
+    res = True
+    try:
+        from autoround_exllamav2_kernels import gemm_half_q_half, make_q_matrix
+    except ImportError as e:
+        res = False
+    return res
+
+
+def get_autogptq_backend_config(backend, bits=4):
+    use_triton = False
+    disable_exllamav2 = False
+    disable_exllamav1 = False
+    disable_marlin = True
+    use_qigen = False
+    if backend == "gptq:qigen":
+        use_qigen = True
+    if backend == "gptq:triton":  ##TODO refine the code
+        use_triton = True
+    if backend == "gptq:marlin":
+        use_triton = False
+        disable_marlin = True
+    if backend == "gptq:exllamav2":  ##need v1 code to export
+        use_triton = False
+        disable_marlin = True
+    if backend == "gptq:exllamav1":
+        use_triton = False
+        disable_marlin = True
+    if backend == "gptq:cuda":
+        use_triton = False
+        disable_marlin = True
+        disable_exllamav2 = True
+        disable_exllamav1 = True
+    if bits not in [2, 4, 8]:
+        use_qigen = False
+    if bits not in [2, 4]:
+        use_triton = False
+    return use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin
+
+@lru_cache(None)
+def warning_once(logger, msg: str):
+    logger.warning(msg)
+
+logger.warning_once = warning_once
+def dynamic_import_inference_linear(bits, group_size, backend):
+    """Dynamically imports and returns the appropriate QuantLinear class based on the given bits and backend.
+
+       Args:
+           bits (int):
+               The number of bits for quantization.
+           backend (str):
+               The backend to be used for quantization, such as "qbits", "cpu", or "exllamav2".
+
+       Returns:
+           class:
+               The appropriate QuantLinear class for the given configuration.
+       """
+    exllama2_available = is_autoround_exllamav2_available()
+
+    if (not torch.cuda.is_available()) or "qbits" in backend or "cpu" in backend:
+        try:
+            from intel_extension_for_transformers import qbits # pylint: disable=E0401
+        except Exception as e:
+            raise ImportError("Please install Intel Extension for Transformers via 'pip install "
+                              "intel-extension-for-transformers' to  inference on X86 CPU")
+        import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
+        return qlinear_qbits.QuantLinear
+    if "gptq" in backend:
+        try:
+            import auto_gptq # pylint: disable=E0401
+        except Exception as e:
+            raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
+        use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
+            backend, bits
+        )
+        from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
+        QuantLinear = dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            disable_marlin=disable_marlin,
+        )
+        return QuantLinear
+    if bits == 4 and exllama2_available and "exllamav2" in backend:
+        from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
+    elif bits == 4 and "exllamav2" in backend:
+        logger.warning_once("Please install auto-round from source to enable exllamav2 kernels, switch to triton "
+                             "kernels for now")
+    else:
+        from auto_round_extension.cuda.qliner_triton import QuantLinear
+    return QuantLinear

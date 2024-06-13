@@ -41,7 +41,7 @@ from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
-from auto_round.utils import get_module, set_module
+from auto_round.utils import get_module, set_module, dynamic_import_inference_linear
 import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
 
 logger = getLogger(__name__)
@@ -316,20 +316,6 @@ class AutoRoundQuantizer(HfQuantizer):
         self._replace_by_quant_layers(model, layer_configs, backend)
         return model
 
-    def _dynamic_import_inference_linear(self, bits, backend):
-        if (not torch.cuda.is_available()) or "qbits" in backend or "cpu" in backend:
-            try:
-                from intel_extension_for_transformers import qbits  # pylint: disable=E0401
-            except Exception as e:
-                raise ImportError("Please install Intel Extension for Transformers via 'pip install "
-                                  "intel-extension-for-transformers' to  inference on X86 CPU")
-            return qlinear_qbits.QuantLinear
-        if bits == 4 and self.exllama2_available and "exllamav2" in backend:
-            from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
-        else:
-            from auto_round_extension.cuda.qliner_triton import QuantLinear
-        return QuantLinear
-
     def _replace_by_quant_layers(self, module: nn.Module, layer_configs, backend):
         """Replaces linear layers in `module` by `QuantLinear`
 
@@ -351,7 +337,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
             layer = get_module(module, layer_name)
             device = get_device(layer)
-            QuantLinear = self._dynamic_import_inference_linear(bits, backend)
+            QuantLinear = dynamic_import_inference_linear(bits, group_size, backend)
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
                 out_features = layer.out_features

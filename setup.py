@@ -62,7 +62,7 @@ if BUILD_CUDA_EXT:
         import torch
     except Exception as e:
         print(
-            f"Building PyTorch CUDA extension requires PyTorch being installed, please install PyTorch first: {e}.\n NOTE: This issue may be raised due to pip build isolation system (ignoring local packages). Please use `--no-build-isolation` when installing with pip, and refer to https://github.com/AutoGPTQ/AutoGPTQ/pull/620 for more details.")
+            f"Building PyTorch CUDA extension requires PyTorch being installed, please install PyTorch first: {e}.\n NOTE: This issue may be raised due to pip build isolation system (ignoring local packages). Please use `--no-build-isolation` when installing with pip, and refer to https://github.com/AutoRound/AutoRound/pull/620 for more details.")
         sys.exit(1)
     if not torch.cuda.is_available():
         print(
@@ -75,7 +75,7 @@ if BUILD_CUDA_EXT:
     ROCM_VERSION = os.environ.get('ROCM_VERSION', None)
     if ROCM_VERSION and not torch.version.hip:
         print(
-            f"Trying to compile auto-gptq for ROCm, but PyTorch {torch.__version__} "
+            f"Trying to compile auto-round for ROCm, but PyTorch {torch.__version__} "
             "is installed without ROCm support."
         )
         sys.exit(1)
@@ -89,7 +89,7 @@ if BUILD_CUDA_EXT:
     else:
         if not CUDA_VERSION:
             print(
-                f"Trying to compile auto-gptq for CUDA, but Pytorch {torch.__version__} "
+                f"Trying to compile auto-round for CUDA, but Pytorch {torch.__version__} "
                 "is installed without CUDA support."
             )
             sys.exit(1)
@@ -102,13 +102,13 @@ if BUILD_CUDA_EXT:
             requested_but_unsupported_archs = {arch for arch in archs if arch in UNSUPPORTED_COMPUTE_CAPABILITIES}
             if len(requested_but_unsupported_archs) > 0:
                 raise ValueError(
-                    f"Trying to compile AutoGPTQ for CUDA compute capabilities {torch_cuda_arch_list}, but AutoGPTQ does not support the compute capabilities {requested_but_unsupported_archs} (AutoGPTQ requires Pascal or higher). Please fix your environment variable TORCH_CUDA_ARCH_LIST (Reference: https://github.com/pytorch/pytorch/blob/v2.2.2/setup.py#L135-L139).")
+                    f"Trying to compile AutoRound for CUDA compute capabilities {torch_cuda_arch_list}, but AutoRound does not support the compute capabilities {requested_but_unsupported_archs} (AutoRound requires Pascal or higher). Please fix your environment variable TORCH_CUDA_ARCH_LIST (Reference: https://github.com/pytorch/pytorch/blob/v2.2.2/setup.py#L135-L139).")
         else:
             local_arch_list = detect_local_sm_architectures()
             local_but_unsupported_archs = {arch for arch in local_arch_list if arch in UNSUPPORTED_COMPUTE_CAPABILITIES}
             if len(local_but_unsupported_archs) > 0:
                 raise ValueError(
-                    f"PyTorch detected the compute capabilities {local_arch_list} for the NVIDIA GPUs on the current machine, but AutoGPTQ can not be built for compute capabilities {local_but_unsupported_archs} (AutoGPTQ requires Pascal or higher). Please set the environment variable TORCH_CUDA_ARCH_LIST (Reference: https://github.com/pytorch/pytorch/blob/v2.2.2/setup.py#L135-L139) with your necessary architectures.")
+                    f"PyTorch detected the compute capabilities {local_arch_list} for the NVIDIA GPUs on the current machine, but AutoRound can not be built for compute capabilities {local_but_unsupported_archs} (AutoRound requires Pascal or higher). Please set the environment variable TORCH_CUDA_ARCH_LIST (Reference: https://github.com/pytorch/pytorch/blob/v2.2.2/setup.py#L135-L139) with your necessary architectures.")
 
         # For the PyPI release, the version is simply x.x.x to comply with PEP 440.
         if not PYPI_RELEASE:
