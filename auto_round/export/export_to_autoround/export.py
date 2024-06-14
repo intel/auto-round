@@ -88,6 +88,13 @@ def dynamic_QuantLienar_for_packing(backend, bits, group_size):
         )
         return QuantLinear
     ##export all use trition, inference use exllamav2
+    elif "awq" in backend:
+        try:
+            from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
+            return WQLinear_GEMM
+        except:
+            logger.error("autoawq is required. Please install it to support auto_awq format.")
+            return
     elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
         return QuantLinear
@@ -103,11 +110,14 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
         model = copy.deepcopy(model.to("cpu"))
     layer_names_in_block = get_layer_names_in_block(model)
 
+    modules_to_not_convert = []
     weight_config = kwargs["weight_config"]
     for name in weight_config.keys():
 
         config = kwargs["weight_config"][name]
         if config["data_type"] != "int" and config["bits"] >= 16:
+            if "awq" in backend:
+                modules_to_not_convert.append(name)
             continue
         logger.info(f"packing {name}")
 
@@ -130,23 +140,46 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
             out_features = layer.weight.shape[1]
         bias = layer.bias is not None and torch.any(layer.bias)
 
-        new_layer = QuantLinear(  ##pylint: disable=E1123
-            bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
-        )
+        if "awq" not in backend:
+            new_layer = QuantLinear(  ##pylint: disable=E1123
+                bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
+            )
 
-        new_layer.device = device
-        set_module(model, name, new_layer)
-        qlayer = new_layer
-        scale = weight_config[name]["scale"]
-        zero = weight_config[name]["zp"]
-        # so far can only pack layer on CPU
-        qlayer.to("cpu")
-        ##force to float32 to be compatible with torch 2.0
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
-        qlayer.pack(layer, scale, zero, None)
-        qlayer.to(device)
+            new_layer.device = device
+            set_module(model, name, new_layer)
+            qlayer = new_layer
+            scale = weight_config[name]["scale"]
+            zero = weight_config[name]["zp"]
+            # so far can only pack layer on CPU
+            qlayer.to("cpu")
+            ##force to float32 to be compatible with torch 2.0
+            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
+            qlayer.pack(layer, scale, zero, None)
+            qlayer.to(device)
+        else:
+            logger.info("lyt_debug starting awq format packing")
+            from awq.utils.utils import clear_memory
+            scale, zp = weight_config[name]["scale"].to(torch.float32), weight_config[name]["zp"].to(torch.float32)
+            scale = scale.t().contiguous()
+            zp = zp.t().contiguous()
+            if bits != 4:
+                logger.error("AutoAWQ format only supports 4-bits quantization.")
+            qlayer = QuantLinear.from_linear(
+                linear=layer,
+                w_bit=bits,
+                group_size=group_size,
+                init_only=False,
+                scales=scale,
+                zeros=zp,
+            )
+            qlayer.to(device)
+            set_module(model, name, qlayer)
+            clear_memory()
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "intel/auto-round"
+    # if "awq" in backend:
+    #     quantization_config["quant_method"], quantization_config["version"] = "awq", "gemm"
+    #     quantization_config["modules_to_not_convert"] = None if not modules_to_not_convert else modules_to_not_convert
     quantization_config["backend"] = backend
     extra_config = {}
     for layer_name in weight_config:
@@ -174,10 +207,22 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
         quantization_config["extra_config"] = extra_config
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
+        if "awq" in backend:
+            awq_quant_config = {
+                "quant_method": "awq",
+                "zero_point": not quantization_config["sym"],
+                "group_size": quantization_config["group_size"],
+                "bits": quantization_config["bits"],
+                "version": "gemm",
+                "modules_to_not_convert": None if not modules_to_not_convert else modules_to_not_convert,
+            }
     tokenizer = kwargs["tokenizer"]
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
-    save(model, output_dir)
+    if "awq" not in backend:
+        save(model, output_dir)
+    else:
+        save_awq(model, output_dir, awq_quant_config=awq_quant_config)
 
 
 def save(model: nn.Module, save_dir: str, max_shard_size: str = "10GB", safe_serialization: bool = True):
@@ -206,3 +251,37 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "10GB", safe_ser
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
+
+
+def save_awq(model: nn.Module, save_dir: str, max_shard_size: str = "10GB", safe_serialization: bool = True, awq_quant_config: dict = {}):
+    """Save model state dict and configs.
+
+    Args:
+        model (`nn.Module`):
+            Model to be saved. The model can be wrapped or unwrapped.
+        save_dir (`str`):
+            Directory to which to save. Will be created if it doesn't exist.
+        max_shard_size (`str`, defaults to `"10GB"`):
+            The maximum size for a checkpoint before being sharded. Checkpoints shard will then be each of size
+            lower than this size. If expressed as a string, needs to be digits followed by a unit (like `"5MB"`).
+            <Tip warning={true}>
+
+            If a single weight of the model is bigger than `max_shard_size`, it will be in its own checkpoint shard
+            which will be bigger than `max_shard_size`.
+
+            </Tip>
+        safe_serialization (`bool`, defaults to `True`):
+            Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+        quantization_config = model.config.quantization_config
+    else:
+        quantization_config = awq_quant_config
+    model.config.quantization_config = awq_quant_config
+    model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    config_file = "quantization_config.json"
+    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
+            json.dump(quantization_config, f, indent=2)
