@@ -94,7 +94,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--tasks",
                         default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                                "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge,wikitext2,ptb-new,c4-new",
+                                "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
                         help="lm-eval tasks for lm_eval version 0.4")
 
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
@@ -221,13 +221,6 @@ if __name__ == '__main__':
         if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
             model = model.to(torch.bfloat16)
 
-    # if "llama" in model_name:
-    #     from transformers import LlamaTokenizer
-    #
-    #     tokenizer = LlamaTokenizer.from_pretrained(model_name)
-    #     if tokenizer.pad_token is None:
-    #         tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-    # else:
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
 
     if hasattr(tokenizer, "model_max_length"):
