@@ -611,7 +611,6 @@ def get_autogptq_backend_config(backend, bits=4):
 def warning_once(logger, msg: str):
     logger.warning(msg)
 
-logger.warning_once = warning_once
 def dynamic_import_inference_linear(bits, group_size, backend):
     """Dynamically imports and returns the appropriate QuantLinear class based on the given bits and backend.
 
@@ -658,7 +657,7 @@ def dynamic_import_inference_linear(bits, group_size, backend):
     if bits == 4 and exllama2_available and "exllamav2" in backend:
         from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
     elif bits == 4 and "exllamav2" in backend:
-        logger.warning_once("Please install auto-round from source to enable exllamav2 kernels, switch to triton "
+        warning_once(logger, msg="Please install auto-round from source to enable exllamav2 kernels, switch to triton "
                              "kernels for now")
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     else:
