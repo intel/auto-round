@@ -199,6 +199,11 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
 
     samples = []
     dataset = load_local_data(dataset_name)
+    if isinstance(dataset, dict):
+        new_dataset = []
+        for key in dataset.keys():
+            new_dataset.append(dataset[key])
+        dataset = new_dataset
     for data in dataset:
         text = data
         if isinstance(text, str):
@@ -241,8 +246,9 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
     """
 
     dataset_names = dataset_name.split(",")
-
     def filter_func(example):
+        if isinstance(example["input_ids"], list):
+            example["input_ids"] = torch.tensor(example["input_ids"])
         if example["input_ids"].shape[-1] < seqlen:
             return False
         input_ids = example["input_ids"][:seqlen]
@@ -251,11 +257,64 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
             return False
         return True
 
-    datasets = []
+    def concat_dataset_element(dataset):
+        input_ids, concat_input_ids = [eg['input_ids'] for eg in dataset], []
+        attention_mask_list, attention_mask = [], torch.ones([1, seqlen]).to(torch.int64)
+        buffer_input_id = torch.Tensor().to(torch.int64)
+        bos_token_id, eos_token_id = tokenizer.bos_token_id, tokenizer.eos_token_id
+        os_cnt, have_bos, have_eos = 0, False, False
+
+        for input_id in input_ids:
+            if input_id[0] == bos_token_id:
+                input_id = input_id[1:]
+                os_cnt, have_bos = os_cnt + 1, True
+            if input_id[-1] == eos_token_id:
+                input_id = input_id[:-1] 
+                os_cnt, have_eos = os_cnt + 1, True
+
+            if buffer_input_id.shape[-1] + input_id.shape[-1] + os_cnt > seqlen:
+                idx_keep = seqlen - buffer_input_id.shape[-1] - os_cnt
+                input_id_to_append = [buffer_input_id, input_id[:idx_keep]]
+                if have_bos:
+                    input_id_to_append = [torch.tensor([bos_token_id])] + input_id_to_append
+                if have_eos:
+                    input_id_to_append.append(torch.tensor([eos_token_id]))
+                
+                concat_input_ids.append(torch.cat(input_id_to_append).to(torch.int64))
+                attention_mask_list.append(attention_mask)
+                buffer_input_id = input_id[idx_keep:]
+            else:
+                buffer_input_id = torch.cat([buffer_input_id, input_id])
+
+            if buffer_input_id.shape[-1] + os_cnt == seqlen:
+                input_id_to_append = [buffer_input_id]
+                if have_bos:
+                    input_id_to_append = [torch.tensor([bos_token_id])] + input_id_to_append
+                if have_eos:
+                    input_id_to_append.append(torch.tensor([eos_token_id]))
+                concat_input_ids.append(torch.cat(input_id_to_append).to(torch.int64))
+                attention_mask_list.append(attention_mask)
+                buffer_input_id = torch.Tensor().to(torch.int64)
+        data = [{'input_ids': a, 'attention_mask': b} for a, b in zip(concat_input_ids, attention_mask_list)]
+        import datasets
+        dataset_new = datasets.Dataset.from_list(data)
+        return dataset_new
+
+    datasets, data_lens = [], {}
     for name in dataset_names:
         split = None
+        do_concat = False
         if ":" in name:
-            name, split = name.split(":")
+            split_list = name.split(":")
+            name, split_list = name.split(":")[0], name.split(":")[1:]
+            for ele in split_list:
+                key, values = ele.split('=')[0], ele.split('=')[1:]
+                if key == "split":
+                    split = values[0].split('+')
+                if key == "num":
+                    data_lens[name] = int(values[0])
+                if key == "concat":
+                    do_concat = True if (len(values) > 0 and values[0].lower == 'false') else True
         if is_local_path(name):
             get_dataset = CALIB_DATASETS.get("local")
         else:
@@ -268,22 +327,33 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
             dataset_name=name,
         )
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+        if do_concat:
+            dataset = concat_dataset_element(dataset)
         dataset = dataset.filter(filter_func)
-
+        if name in data_lens:
+            dataset = dataset.select(range(data_lens[name]))
         datasets.append(dataset)
     indices = range(len(datasets))
     res = sorted(zip(indices, datasets), key=lambda x: len(x[1]))
     indices = [item[0] for item in res]
     datasets = [item[1] for item in res]
     dataset_names = [dataset_names[index] for index in indices]
-    cnt = 0
+    cnt = 0 if not data_lens else sum(data_lens.values())
     dataset_cnt_info = {}
+    if cnt > n_samples:
+        cnt = 0
+
     for i in range(len(datasets)):
-        target_cnt = (n_samples - cnt) // (len(datasets) - i)
-        target_cnt = min(target_cnt, len(datasets[i]))
+        name = dataset_names[i].split(':')[0]
+        if name not in data_lens:
+            target_cnt = (n_samples - cnt) // (len(datasets) - len(data_lens)) if data_lens \
+                else (n_samples - cnt) // (len(datasets) - i) 
+            target_cnt = min(target_cnt, len(datasets[i]))
+            cnt += target_cnt
+        else:
+            target_cnt = data_lens[name]
         datasets[i] = datasets[i].select(range(target_cnt))
-        dataset_cnt_info[dataset_names[i]] = target_cnt
-        cnt += target_cnt
+        dataset_cnt_info[name] = target_cnt
     if len(datasets) > 1:
         from datasets import concatenate_datasets
 
@@ -299,6 +369,10 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
         attention_mask_new = []
         for text in batch:
             input_ids, attention_mask = text["input_ids"], text["attention_mask"]
+            if isinstance(input_ids, list):
+                input_ids = torch.tensor(input_ids)
+            if isinstance(attention_mask, list):
+                attention_mask = torch.tensor(attention_mask)
             input_ids = input_ids[:seqlen]
             input_ids_list = input_ids.tolist()
             if input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
