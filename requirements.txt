@@ -5,3 +5,4 @@ sentencepiece
 torch
 transformers
 triton
+numpy < 2.0

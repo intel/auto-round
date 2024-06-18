@@ -25,6 +25,13 @@ import psutil
 import torch
 from torch.amp import autocast
 
+from functools import lru_cache
+@lru_cache(None)
+def warning_once(self, msg: str):
+    self.warning(msg)
+
+
+logging.Logger.warning_once = warning_once
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
 logger.propagate = False
@@ -35,7 +42,6 @@ logger.addHandler(fh)
 
 import importlib
 import transformers
-from functools import lru_cache
 
 class LazyImport(object):
     """Lazy import python module till use."""
@@ -607,11 +613,6 @@ def get_autogptq_backend_config(backend, bits=4):
         use_triton = False
     return use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin
 
-@lru_cache(None)
-def warning_once(logger, msg: str):
-    logger.warning(msg)
-
-logger.warning_once = warning_once
 def dynamic_import_inference_linear(bits, group_size, backend):
     """Dynamically imports and returns the appropriate QuantLinear class based on the given bits and backend.
 
@@ -660,6 +661,7 @@ def dynamic_import_inference_linear(bits, group_size, backend):
     elif bits == 4 and "exllamav2" in backend:
         logger.warning_once("Please install auto-round from source to enable exllamav2 kernels, switch to triton "
                              "kernels for now")
+        from auto_round_extension.cuda.qliner_triton import QuantLinear
     else:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     return QuantLinear
