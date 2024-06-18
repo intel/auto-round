@@ -660,6 +660,7 @@ def dynamic_import_inference_linear(bits, group_size, backend):
     elif bits == 4 and "exllamav2" in backend:
         logger.warning_once("Please install auto-round from source to enable exllamav2 kernels, switch to triton "
                              "kernels for now")
+        from auto_round_extension.cuda.qliner_triton import QuantLinear
     else:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     return QuantLinear
