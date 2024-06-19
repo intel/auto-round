@@ -257,7 +257,7 @@ class WrapperLinear(torch.nn.Module):
             assert leq_weight_scale is not None, "leq_weight_scale is required for layer equalization transform"
             from .scale import replace_linear_with_smoothed_linear
             logger.debug(f"Replace {self.orig_layer} with `MulLinear`")
-            logger.debug(f"The range of orginal layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
+            logger.debug(f"The range of original layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
             self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, leq_weight_scale)
             logger.debug(f"The range of new layer weight: {self.orig_layer.linear.weight.min()} - {self.orig_layer.linear.weight.max()}")
 
