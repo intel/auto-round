@@ -43,9 +43,9 @@ from .utils import (
     logger,
     sampling_inputs,
     to_device, get_layer_names_in_block,
+    ORIGIN_LINEAR,
 )
 
-from auto_round import config as ar_config
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
      please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
@@ -92,6 +92,7 @@ class AutoRound(object):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
                            have different choices.
+        enable_teq (bool): Whether to enable weight TEQ(Trainable Equivalent Transformation) (default is False).
 
     Returns:
         The quantized model.
@@ -127,6 +128,7 @@ class AutoRound(object):
             dynamic_max_gap: int = -1,
             data_type: str = "int",  ##only support int for now
             scale_dtype: str = "fp16",
+            enable_teq: bool = False,
             **kwargs,
     ):
         self.quantized = False
@@ -208,10 +210,12 @@ class AutoRound(object):
         self.serialization_dict["autoround_version"] = __version__
         if "scale_dtype" in self.serialization_dict.keys():
             self.serialization_dict["scale_dtype"] = str(self.serialization_dict["scale_dtype"])
+        
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+        self.enable_teq = enable_teq
 
     def check_configs(self):
         """Checks if the configurations are valid.
@@ -285,6 +289,9 @@ class AutoRound(object):
         unquantized_layers = []
         for n, m in self.model.named_modules():
             if isinstance(m, tuple(self.supported_types)):
+                # For teq, replace `Linear` with `MulLinear`, and remove the suffix of the layer name.
+                if self.enable_teq and n.endswith():
+                    n = n.replace("." + ORIGIN_LINEAR, "")
                 if self.weight_config[n]["bits"] == 16:
                     unquantized_layers.append(n)
                 else:
@@ -829,7 +836,7 @@ class AutoRound(object):
         if q_input is not None:
             input_ids = q_input
         torch.cuda.empty_cache()
-        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
+        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning, self.enable_teq)
 
         round_params = []
         minmax_params = []
@@ -847,7 +854,7 @@ class AutoRound(object):
         else:
             trainable_params.append({"params":round_params})
         
-        if ar_config.layer_equalization_transform:
+        if self.enable_teq:
             import auto_round.scale as scale_utils
             leq_params_lst = scale_utils.get_scale_param_from_block(block)
             trainable_params.append({"params": leq_params_lst})
@@ -930,7 +937,7 @@ class AutoRound(object):
                     best_v = collect_round_v(block)
                     best_min_scale, best_max_scale = collect_minmax_scale(block)
                     best_leq_weight_scales = None
-                    if ar_config.layer_equalization_transform:
+                    if self.enable_teq:
                         best_leq_weight_scales = collect_weight_scale(block)
                     last_best_iter = i
                     logger.info(f"get better result at iter {i}, the loss is {total_loss}")
@@ -938,7 +945,7 @@ class AutoRound(object):
                 best_v = collect_round_v(block)
                 best_min_scale, best_max_scale = collect_minmax_scale(block)
                 best_leq_weight_scales = None
-                if ar_config.layer_equalization_transform:
+                if self.enable_teq:
                     best_leq_weight_scales = collect_weight_scale(block)
                 logger.info(f"get better result at last iter {i}, the loss is {total_loss}")
 

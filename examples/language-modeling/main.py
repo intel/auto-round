@@ -123,7 +123,8 @@ if __name__ == '__main__':
 
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
-
+    parser.add_argument("--enable_teq", action='store_true',
+                        help="whether to enable teqg")
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
         print(
@@ -308,7 +309,9 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning)
+                      enable_minmax_tuning=not args.disable_minmax_tuning,
+                      enable_teq=args.enable_teq,
+                      )
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -333,13 +336,22 @@ if __name__ == '__main__':
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
 
+
     if not args.disable_eval and "fake" in deployment_device and lm_eval_version != "0.4.2":
         excel_name = f"{output_dir}_result.xlsx"
         output_dir += "/"
         print(excel_name, flush=True)
-        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
+        if args.enable_teq:
+            # If `enable_teq`, it introduce `MulLinear`, cann't save directly
+            eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+                    device=torch_device, excel_file=excel_name,
+                    model_tokenizer_pairs=(model.to("cuda"), tokenizer)
+                    )
+        else:
+            eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+                    device=torch_device, excel_file=excel_name)
 
     if not args.disable_eval and lm_eval_version == "0.4.2":
         if "round" in deployment_device:

@@ -12,18 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# [x] insert scale calculator ar `WrapperLinear`
-#   [x] `init` insert `self.input_scale_calculator = ScaleCalculatorV(module.in_features, module.weight.device)`
-#   [x] add parameter of `self.input_scale_calculator` into optimizer
-#   [x] `forward` transform `input` and `weight`
-# [x] at the `unwrapper` stage, replace the original `Linear` with `MulLinear`
-# [x] use the best weight scale instead of the final weight scale
-# [ ] save and export
-
-
 
 import torch
-from .utils import logger
+from auto_round import utils
+
 
 def get_scale_param_from_block(block: torch.nn.Module):
     scale_params = []
@@ -58,10 +50,10 @@ class MulLinear(torch.nn.Module):
         if weight_scale is None:
             weight_scale = torch.ones(module.in_features)
         self.register_buffer("weight_scale", weight_scale)
-        logger.info(f"Original module weight shape: {module.weight.shape}.")
+        utils.logger.info(f"Original module weight shape: {module.weight.shape}.")
         module.weight *= weight_scale.reshape(1, -1)
-        self.add_module("linear", module)
-        logger.info(f"MulLinear: {module} has been wrapped as `MulLinear`.")
+        self.add_module(utils.ORIGIN_LINEAR, module)
+        utils.logger.info(f"MulLinear: {module} has been wrapped as `MulLinear`.")
 
     def forward(self, X):
         updated_x = _transform_input(X, self.weight_scale)
@@ -89,8 +81,8 @@ class MulLinear(torch.nn.Module):
 
 def replace_linear_with_smoothed_linear(module, weight_scale):
     from .scale import MulLinear
-    logger.info(f"Replace {module} with `MulLinear`.")
-    logger.info(f"weight_scale shape: {weight_scale.shape}, weight scale min: {weight_scale.min()}, weight scale max: {weight_scale.max()}")
+    utils.logger.info(f"Replace {module} with `MulLinear`.")
+    utils.logger.info(f"weight_scale shape: {weight_scale.shape}, weight scale min: {weight_scale.min()}, weight scale max: {weight_scale.max()}")
     return MulLinear(module, weight_scale)
 
 

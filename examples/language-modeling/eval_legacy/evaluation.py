@@ -209,7 +209,9 @@ def simple_evaluate(
 
 def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
                eval_bs=32, use_accelerate=True, dtype=None, limit=None, trust_remote_code=True,
-               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
+               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx",
+               model_tokenizer_pairs=None,
+               ):
     print("evaluation with official lm-eval", flush=True)
     try:
         import lm_eval
