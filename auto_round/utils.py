@@ -24,6 +24,7 @@ import numpy as np
 import psutil
 import torch
 from torch.amp import autocast
+from typing import Dict
 
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
@@ -225,7 +226,7 @@ def collect_minmax_scale(block):
     return min_scales, max_scales
 
 
-def collect_weight_scale(block):
+def collect_weight_scale(block) -> Dict[str, torch.Tensor]:
     """Collects the weight scaling values for wrapped linear modules in the given block.
 
     Args:

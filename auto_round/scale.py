@@ -50,12 +50,15 @@ def equalization_transform(weight, x, weight_scale):
 class MulLinear(torch.nn.Module):
     def __init__(self, module, weight_scale=None):
         """A forward hook to save input max of a module
+        
         :param module: the linear module
-        :param input_scale: scale for weight."""
+        :param input_scale: scale for weight.
+        """
         super().__init__()
         if weight_scale is None:
             weight_scale = torch.ones(module.in_features)
         self.register_buffer("weight_scale", weight_scale)
+        logger.info(f"Original module weight shape: {module.weight.shape}.")
         module.weight *= weight_scale.reshape(1, -1)
         self.add_module("linear", module)
         logger.info(f"MulLinear: {module} has been wrapped as `MulLinear`.")
@@ -109,16 +112,11 @@ def get_weight_scale(weight_data):
 
 # ScaleCalculatorVanilla
 class ScaleCalculatorV(torch.nn.Module):
-    def __init__(self, shape: int, device):
+    def __init__(self, weight: torch.Tensor, device):
         super().__init__()
-        self.shape = shape
-        self.device = device
-        tensor1 = torch.ones(shape, device=device)
-        # tensor2 = torch.ones(shape, device=device)
-        # torch.nn.init.normal_(tensor1)
-        # torch.nn.init.normal_(tensor2)
-        self.scale1 = torch.nn.Parameter(tensor1, requires_grad=True)
-        # self.scale2 = torch.nn.Parameter(tensor2, requires_grad=True)
+        shape = weight.shape[1]
+        device = device
+        self.scale1 = torch.nn.Parameter(torch.ones(shape, device=device), requires_grad=True)
 
     def forward(self, x):
         update_scale = self.scale1

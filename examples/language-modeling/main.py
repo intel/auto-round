@@ -140,7 +140,6 @@ if __name__ == '__main__':
 
     set_seed(args.seed)
     
-    from auto_round import AuotoRoundConfig
     tasks = args.tasks
     use_eval_legacy = False
     import subprocess

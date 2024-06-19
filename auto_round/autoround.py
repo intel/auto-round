@@ -45,13 +45,7 @@ from .utils import (
     to_device, get_layer_names_in_block,
 )
 
-class AuotoRoundConfig:
-    layer_equalization_transform = os.environ.get("USE_LEQ", "0") == "1"
-    pass_model_to_lm_eval = os.environ.get("PASS_MODEL_TO_LM_EVAL", "0") == "1"
-    init_method = os.environ.get("INIT_METHOD", None)
-    # CUDA_VISIBL
-    
-config = AuotoRoundConfig()
+from auto_round import config as ar_config
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
      please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
@@ -855,9 +849,9 @@ class AutoRound(object):
         else:
             trainable_params.append({"params":round_params})
         
-        if config.layer_equalization_transform:
-            from .scale import get_scale_param_from_block
-            leq_params_lst = get_scale_param_from_block(block)
+        if ar_config.layer_equalization_transform:
+            import auto_round.scale as scale_utils
+            leq_params_lst = scale_utils.get_scale_param_from_block(block)
             trainable_params.append({"params": leq_params_lst})
 
         # if self.enable_minmax_tuning:
@@ -923,9 +917,6 @@ class AutoRound(object):
                 init_loss = total_loss
 
 
-            # ! we should run step before update the current best
-            self.step(scaler, optimizer, lr_schedule)
-
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
@@ -933,7 +924,7 @@ class AutoRound(object):
                     best_v = collect_round_v(block)
                     best_min_scale, best_max_scale = collect_minmax_scale(block)
                     best_leq_weight_scales = None
-                    if config.layer_equalization_transform:
+                    if ar_config.layer_equalization_transform:
                         best_leq_weight_scales = collect_weight_scale(block)
                     last_best_iter = i
                     logger.info(f"get better result at iter {i}, the loss is {total_loss}")
@@ -941,15 +932,17 @@ class AutoRound(object):
                 best_v = collect_round_v(block)
                 best_min_scale, best_max_scale = collect_minmax_scale(block)
                 best_leq_weight_scales = None
-                if config.layer_equalization_transform:
+                if ar_config.layer_equalization_transform:
                     best_leq_weight_scales = collect_weight_scale(block)
                 logger.info(f"get better result at last iter {i}, the loss is {total_loss}")
-                    
+
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
                     break
 
-
+            # Call step before update the scales/best_v
+            self.step(scaler, optimizer, lr_schedule)
+            
         last_loss = total_loss
         best_iter = self.iters
         if not self.not_use_best_mse:
@@ -963,7 +956,7 @@ class AutoRound(object):
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
-            unwrapper_block(block, best_v, best_min_scale, best_max_scale)
+            unwrapper_block(block, best_v, best_min_scale, best_max_scale, best_leq_weight_scales)
         if self.enable_quanted_input:
             q_outputs = self.get_block_outputs(
                 block, input_ids, input_others, self.train_bs, device, cache_device=self.cache_device

@@ -18,8 +18,11 @@ import transformers
 from .utils import (
     check_to_quantized,
     get_scale_shape,
-    set_module
+    set_module,
+    logger,
 )
+from typing import Optional, Dict
+import auto_round.config as ar_config
 def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
     This function is adapted from omniquant.
@@ -232,17 +235,32 @@ class WrapperLinear(torch.nn.Module):
             self.min_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
             self.max_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
 
-    def unwrapper(self, v, min_scale, max_scale):
+        if ar_config.layer_equalization_transform:
+            from auto_round import scale
+            self.weight_scale_calculator = scale.ScaleCalculator(self.orig_layer.weight.data, self.orig_layer.weight.device)
+
+    def unwrapper(self, v, min_scale, max_scale, leq_weight_scale):
         """Unwrapper the layer to the original layer.
 
         Args:
         - v (torch.Tensor): The rounding v parameter for quantization.
         - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
         - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
+        - leq_weight_scale (torch.Tensor): 
 
         Returns:
         - torch.nn.Module: The original linear layer with updated weights after quantization and dequantization.
         """
+
+        if ar_config.layer_equalization_transform:
+            # import pdb; pdb.set_trace()
+            assert leq_weight_scale is not None, "leq_weight_scale is required for layer equalization transform"
+            from .scale import replace_linear_with_smoothed_linear
+            logger.debug(f"Replace {self.orig_layer} with `MulLinear`")
+            logger.debug(f"The range of orginal layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
+            self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, leq_weight_scale)
+            logger.debug(f"The range of new layer weight: {self.orig_layer.linear.weight.min()} - {self.orig_layer.linear.weight.max()}")
+
         min_scale.clamp_(0, 1.0)
         max_scale.clamp_(0, 1.0)
 
@@ -470,7 +488,7 @@ def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
 
 
 @torch.no_grad()
-def unwrapper_block(block, vs, min_scales, max_scales):
+def unwrapper_block(block, vs, min_scales, max_scales, best_leq_weight_scales: Optional[Dict[str, torch.Tensor]] = None):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
     Args:
@@ -492,5 +510,5 @@ def unwrapper_block(block, vs, min_scales, max_scales):
             if isinstance(max_scales, dict):
                 max_scale = max_scales[n]
                 max_scale = torch.clamp(max_scale, 0, 1.0)
-            orig_layer = m.unwrapper(v, min_scale, max_scale)
+            orig_layer = m.unwrapper(v, min_scale, max_scale, best_leq_weight_scales.get(n) if best_leq_weight_scales else None)
             set_module(block, n, orig_layer)
