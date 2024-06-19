@@ -17,4 +17,5 @@ auto-gptq
 openpyxl
 wandb
 py-cpuinfo
+numpy < 2.0
 

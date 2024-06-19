@@ -35,7 +35,9 @@ def customized_data_with_tokenizer(tokenizer, seqlen=2048):
     return tokens
 ~~~
 
-Combination of different datasets has been supported, --dataset "./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test". Please note that samples with sequence length < args.seqlen will be dropped.
+We support combination of different datasets and parametrization of calibration datasets by using "--dataset ./tmp.json:concat,NeelNanda/pile-10k:split=train+val:num=256,mbpp:concat=True:num=128". Both local calibration file and huggingface dataset are supported. Through parametrization, users could specify splits of a dataset by setting "split=split1+split2". A concatenation option could enable users to merge calibration samples, a process commonly used to enhance calibration reliability. Please note that samples shorter than args.seqlen will be dropped when concatenation option is not enabled.
+Please use ',' to split datasets, ':' to split parameters of a dataset and '+' to add values for one targeted parameter. 
+
 
 <br />
 
