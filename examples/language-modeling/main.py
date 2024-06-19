@@ -342,7 +342,7 @@ if __name__ == '__main__':
         output_dir += "/"
         print(excel_name, flush=True)
         if args.enable_teq:
-            # If `enable_teq`, it introduce `MulLinear`, cann't save directly
+            # If `enable_teq`, it introduce `MulLinear`, can't save directly
             eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                     eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                     device=torch_device, excel_file=excel_name,
