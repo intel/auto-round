@@ -856,8 +856,8 @@ class AutoRound(object):
         
         if self.enable_teq:
             import auto_round.scale as scale_utils
-            leq_params_lst = scale_utils.get_scale_param_from_block(block)
-            trainable_params.append({"params": leq_params_lst})
+            teq_params_lst = scale_utils.get_scale_param_from_block(block)
+            trainable_params.append({"params": teq_params_lst})
 
         # if self.enable_minmax_tuning:
         #     optimizer = self.optimizer(
@@ -936,17 +936,17 @@ class AutoRound(object):
                     # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
                     best_v = collect_round_v(block)
                     best_min_scale, best_max_scale = collect_minmax_scale(block)
-                    best_leq_weight_scales = None
+                    best_teq_weight_scales = None
                     if self.enable_teq:
-                        best_leq_weight_scales = collect_weight_scale(block)
+                        best_teq_weight_scales = collect_weight_scale(block)
                     last_best_iter = i
                     logger.info(f"get better result at iter {i}, the loss is {total_loss}")
             if self.not_use_best_mse and i == self.iters - 1:
                 best_v = collect_round_v(block)
                 best_min_scale, best_max_scale = collect_minmax_scale(block)
-                best_leq_weight_scales = None
+                best_teq_weight_scales = None
                 if self.enable_teq:
-                    best_leq_weight_scales = collect_weight_scale(block)
+                    best_teq_weight_scales = collect_weight_scale(block)
                 logger.info(f"get better result at last iter {i}, the loss is {total_loss}")
 
             if not self.not_use_best_mse:
@@ -969,7 +969,7 @@ class AutoRound(object):
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
-            unwrapper_block(block, best_v, best_min_scale, best_max_scale, best_leq_weight_scales)
+            unwrapper_block(block, best_v, best_min_scale, best_max_scale, best_teq_weight_scales)
         if self.enable_quanted_input:
             q_outputs = self.get_block_outputs(
                 block, input_ids, input_others, self.train_bs, device, cache_device=self.cache_device
