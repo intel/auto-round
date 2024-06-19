@@ -231,16 +231,12 @@ if __name__ == '__main__':
             args.seqlen = seqlen
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
-    pt_dtype = torch.float16
     if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
         dtype = 'bfloat16'
-        pt_dtype = torch.bfloat16
     else:
-        if str(args.device) != "cpu":
-            pt_dtype = torch.float16
+        if "cpu" not in device_str:
             dtype = 'float16'
         else:
-            pt_dtype = torch.float32
             dtype = 'float32'
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
@@ -313,7 +309,7 @@ if __name__ == '__main__':
     model_name = args.model_name.rstrip("/")
 
     model.eval()
-    if args.device != "cpu":
+    if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
@@ -357,3 +353,4 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
+
