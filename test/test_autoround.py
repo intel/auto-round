@@ -86,9 +86,9 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
             enable_teq=True,
         )
-        qmodel, weight_config = autoround.quantize()
+        qmodel, _ = autoround.quantize()
         found_mul = False
-        for name, mod in qmodel.named_modules():
+        for _, mod in qmodel.named_modules():
             found_mul = found_mul or mod.__class__.__name__ == "MulLinear"
         assert found_mul, "MulLinear not found"
         
