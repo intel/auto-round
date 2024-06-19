@@ -290,7 +290,7 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if isinstance(m, tuple(self.supported_types)):
                 # For teq, replace `Linear` with `MulLinear`, and remove the suffix of the layer name.
-                if self.enable_teq and n.endswith():
+                if self.enable_teq and n.endswith(ORIGIN_LINEAR):
                     n = n.replace("." + ORIGIN_LINEAR, "")
                 if self.weight_config[n]["bits"] == 16:
                     unquantized_layers.append(n)

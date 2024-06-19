@@ -262,8 +262,10 @@ class WrapperLinear(torch.nn.Module):
             logger.debug(f"Replace {self.orig_layer} with `MulLinear`")
             logger.debug(f"The range of original layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
             self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, leq_weight_scale)
-            weight = getattr(self.orig_layer, ORIGIN_LINEAR)
-            logger.debug(f"The range of new layer weight: {weight.min()} - {weight.max()}")
+            inner_linear = getattr(self.orig_layer, ORIGIN_LINEAR)
+            if inner_linear:
+                weight = inner_linear.weight
+                logger.debug(f"The range of new layer weight: {weight.min()} - {weight.max()}")
 
         min_scale.clamp_(0, 1.0)
         max_scale.clamp_(0, 1.0)

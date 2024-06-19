@@ -73,6 +73,26 @@ class TestAutoRound(unittest.TestCase):
             autoround.save_quantized(output_dir="./saved", inplace=False)
         autoround.save_quantized(output_dir="./saved", inplace=False, format="itrex")
 
+    def test_enable_teq(self):
+        bits, group_size, sym = 4, 128, False
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            enable_teq=True,
+        )
+        qmodel, weight_config = autoround.quantize()
+        found_mul = False
+        for name, mod in qmodel.named_modules():
+            found_mul = found_mul or mod.__class__.__name__ == "MulLinear"
+        assert found_mul, "MulLinear not found"
+        
+
     def test_sym(self):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
