@@ -52,7 +52,7 @@ class MulLinear(torch.nn.Module):
         self.register_buffer("weight_scale", weight_scale)
         utils.logger.info(f"Original module weight shape: {module.weight.shape}.")
         module.weight *= weight_scale.reshape(1, -1)
-        self.add_module(utils.ORIGIN_LINEAR, module)
+        self.add_module("linear", module)
         utils.logger.info(f"MulLinear: {module} has been wrapped as `MulLinear`.")
 
     def forward(self, X):

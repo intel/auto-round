@@ -43,7 +43,6 @@ from .utils import (
     logger,
     sampling_inputs,
     to_device, get_layer_names_in_block,
-    ORIGIN_LINEAR,
 )
 
 class AutoRound(object):
@@ -290,8 +289,8 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if isinstance(m, tuple(self.supported_types)):
                 # For teq, replace `Linear` with `MulLinear`, and remove the suffix of the layer name.
-                if self.enable_teq and n.endswith(ORIGIN_LINEAR):
-                    n = n.replace("." + ORIGIN_LINEAR, "")
+                if self.enable_teq and n.endswith("linear"):
+                    n = n.replace("." + "linear", "")
                 if self.weight_config[n]["bits"] == 16:
                     unquantized_layers.append(n)
                 else:

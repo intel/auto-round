@@ -345,7 +345,7 @@ if __name__ == '__main__':
             eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                     eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
                     device=torch_device, excel_file=excel_name,
-                    model_tokenizer_pairs=(model.to("cuda"), tokenizer)
+                    model_tokenizer_pairs=(model.to("cuda").to(pt_dtype), tokenizer)
                     )
         else:
             eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,

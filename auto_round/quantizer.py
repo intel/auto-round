@@ -20,7 +20,6 @@ from .utils import (
     get_scale_shape,
     set_module,
     logger,
-    ORIGIN_LINEAR,
 )
 from typing import Optional, Dict
 def round_ste(x: torch.Tensor):
@@ -262,7 +261,7 @@ class WrapperLinear(torch.nn.Module):
             logger.debug(f"Replace {self.orig_layer} with `MulLinear`")
             logger.debug(f"The range of original layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
             self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, teq_weight_scale)
-            inner_linear = getattr(self.orig_layer, ORIGIN_LINEAR)
+            inner_linear = getattr(self.orig_layer, "linear")
             if inner_linear:
                 weight = inner_linear.weight
                 logger.debug(f"The range of new layer weight: {weight.min()} - {weight.max()}")

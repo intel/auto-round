@@ -44,7 +44,6 @@ logger.addHandler(fh)
 import importlib
 import transformers
 
-ORIGIN_LINEAR = "linear"
 class LazyImport(object):
     """Lazy import python module till use."""
 
