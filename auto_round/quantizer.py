@@ -22,6 +22,8 @@ from .utils import (
     logger,
 )
 from typing import Optional, Dict
+from auto_round import teq
+from torch.functional import F
 def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
     This function is adapted from omniquant.
@@ -217,6 +219,11 @@ class WrapperLinear(torch.nn.Module):
         self.sym = self.orig_layer.sym
         weight_dtype = self.orig_layer.weight.dtype
         weight_dtype = torch.float32
+        self.enable_teq = enable_teq
+        if self.enable_teq:
+            logger.info(f"Original module weight shape: {orig_layer.weight.shape}.")
+            self.weight_scale_calculator = teq.ScaleCalculator(self.orig_layer.weight.data, self.orig_layer.weight.device)
+        
         self.value = torch.nn.Parameter(
             torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
             requires_grad=True,
@@ -234,11 +241,6 @@ class WrapperLinear(torch.nn.Module):
             self.min_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
             self.max_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
         
-        self.enable_teq = enable_teq
-        if self.enable_teq:
-            from auto_round import scale
-            self.weight_scale_calculator = scale.ScaleCalculator(self.orig_layer.weight.data, self.orig_layer.weight.device)
-
     def unwrapper(self, v, min_scale, max_scale, teq_weight_scale=None):
         """Unwrapper the layer to the original layer.
 
@@ -257,7 +259,7 @@ class WrapperLinear(torch.nn.Module):
             logger.warning(f"Layer equalization transform is enabled for {self.orig_layer}")
             # import pdb; pdb.set_trace()
             assert teq_weight_scale is not None, "teq_weight_scale is required for layer equalization transform"
-            from auto_round.scale import replace_linear_with_smoothed_linear
+            from auto_round.teq import replace_linear_with_smoothed_linear
             logger.debug(f"Replace {self.orig_layer} with `MulLinear`")
             logger.debug(f"The range of original layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
             self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, teq_weight_scale)
@@ -297,6 +299,9 @@ class WrapperLinear(torch.nn.Module):
         from torch.functional import F
 
         weight = self.orig_layer.weight
+        if self.enable_teq:
+            weight_scale = self.weight_scale_calculator(x)
+            weight, x = teq.equalization_transform(weight, x, weight_scale)
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, 0, 1.0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, 0, 1.0))
         weight_q, _, _ = quant_weight(

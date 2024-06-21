@@ -846,6 +846,11 @@ class AutoRound(object):
                 minmax_params.append(m.max_scale)
         
         trainable_params = []
+
+        if self.enable_teq:
+            from auto_round import teq
+            teq_params_lst = teq.get_scale_param_from_block(block)
+            trainable_params.append({"params": teq_params_lst})
         
         if self.enable_minmax_tuning:
             minmax_params = [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}]
@@ -853,17 +858,6 @@ class AutoRound(object):
         else:
             trainable_params.append({"params":round_params})
         
-        if self.enable_teq:
-            import auto_round.scale as scale_utils
-            teq_params_lst = scale_utils.get_scale_param_from_block(block)
-            trainable_params.append({"params": teq_params_lst})
-
-        # if self.enable_minmax_tuning:
-        #     optimizer = self.optimizer(
-        #         [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
-        #     )
-        # else:
-        #     optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
         
         optimizer = self.optimizer(params=trainable_params, lr=self.lr, weight_decay=0)
 
