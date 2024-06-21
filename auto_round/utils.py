@@ -24,6 +24,7 @@ import numpy as np
 import psutil
 import torch
 from torch.amp import autocast
+from typing import Dict
 
 from functools import lru_cache
 @lru_cache(None)
@@ -230,6 +231,24 @@ def collect_minmax_scale(block):
             max_scales[n] = copy.deepcopy(torch.clamp(m.max_scale.data, 0, 1.0))
     return min_scales, max_scales
 
+
+def collect_weight_scale(block) -> Dict[str, torch.Tensor]:
+    """Collects the weight scaling values for wrapped linear modules in the given block.
+
+    Args:
+    block: The input block.
+
+    Returns:
+    scales: A dictionary of scaling values.
+    """
+    weight_scales = {}
+    name_list = []
+    for n, m in block.named_modules():
+        if hasattr(m, "weight_scale_calculator"):
+            weight_scales[n] = copy.deepcopy(m.weight_scale_calculator.get_final_scale().detach())
+            name_list.append(n)
+    assert len(weight_scales.keys()) == len(name_list)    
+    return weight_scales
 
 @torch.no_grad()
 def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_mask_flag=False, input_dim=0):

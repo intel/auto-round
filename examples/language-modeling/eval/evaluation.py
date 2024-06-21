@@ -329,6 +329,7 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
                eval_bs=32, use_accelerate=True, dtype=None, limit=None, trust_remote_code=True,
                device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
     print("evaluation with official lm-eval", flush=True)
+    print(f"The result will be saved to {excel_file}")
     try:
         import lm_eval.api
         import lm_eval.tasks
@@ -360,6 +361,9 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
             tasks.remove(each)
 
     results = {}
+
+
+    
     model = None
     lm = None
 
@@ -401,9 +405,10 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
             print(f'********* {tmp_tasks} ERROR ************')
             print(str(e))
             continue
-
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
-    model = lm.model
+    
+    if not model_tokenizer_pairs:
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
+        model = lm.model
     # for external tasks
     # maybe adjust for specific model
     # if hasattr(lm.model.config, "max_position_embeddings"):

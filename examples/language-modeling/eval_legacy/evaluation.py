@@ -56,6 +56,7 @@ fewshots_dict['all'] = {
     "gsm8k": [5]
 }
 
+pre_bs = None
 
 def simple_evaluate(
         model,
@@ -127,7 +128,12 @@ def simple_evaluate(
     np.random.seed(1234)
 
     assert tasks != [], "No tasks specified"
-    if lm == None:
+    assert isinstance(tasks, list), "Tasks must be a list"
+    pre_bs = None
+    if lm == None or batch_size != pre_bs:
+        torch.cuda.empty_cache()
+        print(f"Creating lm with batch size {batch_size}")
+        pre_bs = batch_size
         if isinstance(model, str):
             if model_args is None:
                 model_args = ""
@@ -203,7 +209,9 @@ def simple_evaluate(
 
 def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
                eval_bs=32, use_accelerate=True, dtype=None, limit=None, trust_remote_code=True,
-               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
+               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx",
+               model_tokenizer_pairs=None,
+               ):
     print("evaluation with official lm-eval", flush=True)
     try:
         import lm_eval
@@ -236,6 +244,9 @@ def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrand
     results = {}
     model = None
     lm = None
+    if model_tokenizer_pairs:
+        tokenizer = model_tokenizer_pairs[1]
+        model = model_tokenizer_pairs[0]
     for tmp_tasks in tasks:
         try:
             num_fewshot = fewshots_dict[mark][tmp_tasks]
@@ -254,7 +265,17 @@ def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrand
                     tmp_eval_bs = 1
                 else:
                     tmp_eval_bs = eval_bs
-                tmp_results, lm = simple_evaluate(model=model_type, model_args=model_args, tasks=task_names,
+                for _task_name in task_names:
+                    if "boolq" in _task_name or "hendr" in _task_name:
+                        tmp_eval_bs = 4
+                print(f"evaluating {task_names} with bs {tmp_eval_bs}")
+
+                if model_tokenizer_pairs:
+                    tmp_results, lm = simple_evaluate(model=model, model_args=model_args, tasks=task_names,
+                                                    num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
+                                                    max_batch_size=tmp_eval_bs, lm=lm, device=str(device))
+                else:
+                    tmp_results, lm = simple_evaluate(model=model_type, model_args=model_args, tasks=task_names,
                                                   num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
                                                   max_batch_size=tmp_eval_bs, lm=lm, device=str(device))
                 sub_name = f'{tmp_tasks} {shot}-shot'
@@ -267,8 +288,9 @@ def eval_model(model_path=None, tasks=["lambada_openai", "hellaswag", "winogrand
             print(str(e))
             continue
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
-    model = lm.model
+    if not model_tokenizer_pairs:
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
+        model = lm.model
     # for external tasks
     # maybe adjust for specific model
     # if hasattr(lm.model.config, "max_position_embeddings"):
