@@ -74,9 +74,9 @@ if __name__ == '__main__':
 
     parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
 
-    parser.add_argument("--n_blocks", default=1, type=int, help="num of blocks to tune together")
+    parser.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
 
-    parser.add_argument("--n_samples", default=512, type=int,
+    parser.add_argument("--nsamples", default=512, type=int,
                         help="number of samples")
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
@@ -255,11 +255,11 @@ if __name__ == '__main__':
     if args.adam:
         round = AutoAdamRound
 
-    weight_config = {}
+    layer_config = {}
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                weight_config[n] = {"data_type": "fp"}
+                layer_config[n] = {"data_type": "fp"}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
     lm_head_layer_name = "lm_head"
@@ -279,7 +279,7 @@ if __name__ == '__main__':
                         f"supported currently")
                     break
     if args.quant_lm_head:
-        weight_config[lm_head_layer_name] = {"data_type": "int"}
+        layer_config[lm_head_layer_name] = {"data_type": "int"}
         transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
         if transformers_version[0] == 4 and transformers_version[1] < 38:
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
@@ -291,19 +291,19 @@ if __name__ == '__main__':
     deployment_device = args.deployment_device.split(',')
     gpu_format = "auto_gptq"
     if 'gpu' in deployment_device:
-        if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
+        if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
             gpu_format = "auto_round"
 
     if "autoround" in deployment_device or "auto-round" in deployment_device or "auto_round" in deployment_device:
         gpu_format = "auto_round"
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
-                      dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
+                      dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
-                      amp=not args.disable_amp, n_samples=args.n_samples,
+                      amp=not args.disable_amp, nsamples=args.nsamples,
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, weight_config=weight_config,
+                      scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")

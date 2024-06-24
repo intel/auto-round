@@ -102,7 +102,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `minmax_lr (float)`: The learning rate for min-max tuning (default is None, it will be set to lr automatically).
 
-- `n_samples (int)`: Number of samples for tuning (default is 512).
+- `nsamples (int)`: Number of samples for tuning (default is 512).
 
 - `seqlen (int)`: Data length of the sequence for tuning (default is 2048).
 
@@ -113,7 +113,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `amp (bool)`: Whether to use automatic mixed precision (default is True).
 
-- `n_blocks (int)`: Packing several blocks as one for tuning together (default is 1).
+- `nblocks (int)`: Packing several blocks as one for tuning together (default is 1).
 
 - `gradient_accumulate_steps (int)`: Number of gradient accumulation steps (default is 1).
 
@@ -123,7 +123,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
   NeelNanda/pile-10k"). Local json file and combination of datasets have been supported, e.g. "
   ./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test"
 
-- `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
+- `layer_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
   or mixed precision.
 
 - `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.

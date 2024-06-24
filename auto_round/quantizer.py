@@ -20,6 +20,8 @@ from .utils import (
     get_scale_shape,
     set_module
 )
+
+
 def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
     This function is adapted from omniquant.
@@ -85,7 +87,7 @@ def quant_weight_sym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scal
     """
     maxq = torch.tensor(2 ** num_bits - 1)
     if isinstance(min_scale, torch.Tensor):
-        wmin_tmp = torch.clamp(weight.min(1,)[0], max=0)
+        wmin_tmp = torch.clamp(weight.min(1, )[0], max=0)
         wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
         wmin_tmp *= min_scale
         wmax_tmp *= max_scale
@@ -189,6 +191,29 @@ def quant_weight(
         return weight_new, scale, zp
 
 
+@torch.no_grad()
+def get_act_minmax_observer(act_group_size):
+    """cache group_wise or channel wise minmax
+    :param nact_group_size: act group size
+    :return: A hook function."""
+
+    def cache_input_hook(module, inputs, outputs):
+        input = inputs
+        if isinstance(inputs, tuple) or isinstance(input, list):
+            input = inputs[0]
+        if act_group_size != -1:
+            input = input.reshape(-1, act_group_size)
+        else:
+            input = input.reshape(-1, input.shape[-1])
+        current_min = torch.min(input, dim=0)[0]
+        current_max = torch.max(input, dim=0)[0]
+        module.act_min = torch.min(current_min, module.act_min) if module.act_min is not None else current_min
+        module.act_max = torch.max(current_max, module.act_max) if module.act_max is not None else current_max
+
+
+    return cache_input_hook
+
+
 class WrapperLinear(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True):
         """A wrapper module for linear layers that enables quantization and min-max tuning of weights.
@@ -213,6 +238,7 @@ class WrapperLinear(torch.nn.Module):
         self.group_size = self.orig_layer.group_size
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
+        self.act_bits = self.orig_layer.act_bits
         weight_dtype = self.orig_layer.weight.dtype
         weight_dtype = torch.float32
         self.value = torch.nn.Parameter(

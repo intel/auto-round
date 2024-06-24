@@ -57,7 +57,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     except ImportError:
         raise ImportError("export to autogptq requires autogptq library. Please run 'pip install auto-gptq'")
     model = kwargs["model"]
-    weight_config = kwargs["weight_config"]
+    layer_config = kwargs["layer_config"]
     sym = kwargs["sym"]
     bits = kwargs["bits"]
     group_size = kwargs["group_size"]
@@ -105,10 +105,10 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
         if bits == 3 and use_triton is True:
             logger.warning("triton does not support 3 bits, reset it to False")
         quantizers = {}
-        for key in weight_config:
+        for key in layer_config:
             if key == "lm_head":  ##TODO remove this after pr 87 is merged
                 continue
-            info = weight_config[key]
+            info = layer_config[key]
             if not check_to_quantized(info):
                 continue
             ##force to float32 to be compatible with torch 2.0
@@ -125,10 +125,10 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
         )
     else:
         quantizers = {}
-        for key in weight_config:
+        for key in layer_config:
             if key == "lm_head":  ##TODO remove this after pr 87 is merged
                 continue
-            info = weight_config[key]
+            info = layer_config[key]
             if not check_to_quantized(info):
                 continue
             quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
