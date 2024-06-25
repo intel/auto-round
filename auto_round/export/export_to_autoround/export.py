@@ -157,7 +157,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
             qlayer.pack(layer, scale, zero, None)
             qlayer.to(device)
         else:
-            logger.info("lyt_debug starting awq format packing")
             from awq.utils.utils import clear_memory # pylint: disable=E0401
             scale, zp = weight_config[name]["scale"].to(torch.float32), weight_config[name]["zp"].to(torch.float32)
             scale = scale.t().contiguous()
