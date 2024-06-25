@@ -176,9 +176,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
             clear_memory()
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "intel/auto-round"
-    # if "awq" in backend:
-    #     quantization_config["quant_method"], quantization_config["version"] = "awq", "gemm"
-    #     quantization_config["modules_to_not_convert"] = None if not modules_to_not_convert else modules_to_not_convert
     quantization_config["backend"] = backend
     extra_config = {}
     for layer_name in weight_config:
