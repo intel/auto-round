@@ -94,7 +94,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--tasks",
                         default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                                "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge,wikitext2,ptb-new,c4-new",
+                                "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
                         help="lm-eval tasks for lm_eval version 0.4")
 
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
@@ -221,13 +221,6 @@ if __name__ == '__main__':
         if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
             model = model.to(torch.bfloat16)
 
-    # if "llama" in model_name:
-    #     from transformers import LlamaTokenizer
-    #
-    #     tokenizer = LlamaTokenizer.from_pretrained(model_name)
-    #     if tokenizer.pad_token is None:
-    #         tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-    # else:
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
 
     if hasattr(tokenizer, "model_max_length"):
@@ -238,16 +231,12 @@ if __name__ == '__main__':
             args.seqlen = seqlen
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
-    pt_dtype = torch.float16
     if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
         dtype = 'bfloat16'
-        pt_dtype = torch.bfloat16
     else:
-        if str(args.device) != "cpu":
-            pt_dtype = torch.float16
+        if "cpu" not in device_str:
             dtype = 'float16'
         else:
-            pt_dtype = torch.float32
             dtype = 'float32'
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
@@ -320,7 +309,7 @@ if __name__ == '__main__':
     model_name = args.model_name.rstrip("/")
 
     model.eval()
-    if args.device != "cpu":
+    if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
@@ -364,3 +353,4 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
+

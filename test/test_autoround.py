@@ -33,6 +33,29 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    def test_remove_whole_block(self):
+        weight_config={"model.decoder.layers.0.self_attn.k_proj":{"data_type":"float"},
+                       "model.decoder.layers.0.self_attn.v_proj": {"data_type": "float"},
+                       "model.decoder.layers.0.self_attn.q_proj": {"data_type": "float"},
+                       "model.decoder.layers.0.self_attn.out_proj": {"data_type": "float"},
+                       "model.decoder.layers.0.fc1": {"data_type": "float"},
+                       "model.decoder.layers.0.fc2": {"data_type": "float"},
+                       }
+        bits, group_size, sym = 4, 128, False
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            weight_config=weight_config
+        )
+        autoround.quantize()
+
+
     def test_default(self):
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(

@@ -824,8 +824,6 @@ class AutoRound(object):
         output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, self.cache_device)
 
         if q_input is not None:
-            for i in range(len(input_ids)):
-                input_ids[i] = None
             input_ids = q_input
         torch.cuda.empty_cache()
         quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
@@ -844,6 +842,14 @@ class AutoRound(object):
             )
         else:
             optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+
+        if len(round_params) + len(minmax_params) <= 0:
+            dump_info = (
+                f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+                f"layers in the block"
+            )
+            logger.info(dump_info)
+            return output, output
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
@@ -885,7 +891,7 @@ class AutoRound(object):
                 output_q = block_forward(
                     block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
                 )
-                if self.amp and not check_is_cpu(device):
+                if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
@@ -1410,3 +1416,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
