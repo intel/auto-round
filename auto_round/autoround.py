@@ -1002,7 +1002,7 @@ class AutoRound(object):
         The overall quantization process:
         for block in block_list:
             for algo in algo_list:
-                qdq_block, block_output = quant_block(algo, block)
+                block, block_input = quant_block(algo, block, block_input)
 
 
         Args:
