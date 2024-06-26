@@ -41,19 +41,14 @@ def equalization_transform(weight, x, weight_scale):
 
 class MulLinear(torch.nn.Module):
     def __init__(self, module, weight_scale=None):
-        """A forward hook to save input max of a module
-        
-        :param module: the linear module
-        :param input_scale: scale for weight.
-        """
         super().__init__()
         if weight_scale is None:
             weight_scale = torch.ones(module.in_features)
         self.register_buffer("weight_scale", weight_scale)
-        utils.logger.info(f"Original module weight shape: {module.weight.shape}.")
+        utils.logger.debug(f"Original module weight shape: {module.weight.shape}.")
         module.weight *= weight_scale.reshape(1, -1)
         self.add_module("linear", module)
-        utils.logger.info(f"MulLinear: {module} has been wrapped as `MulLinear`.")
+        utils.logger.debug(f"MulLinear: {module} has been wrapped as `MulLinear`.")
 
     def forward(self, X):
         updated_x = _transform_input(X, self.weight_scale)
@@ -80,21 +75,16 @@ class MulLinear(torch.nn.Module):
 
 
 def replace_linear_with_smoothed_linear(module, weight_scale):
-    utils.logger.info(f"Replace {module} with `MulLinear`.")
-    utils.logger.info(f"weight_scale shape: {weight_scale.shape}, weight scale min: {weight_scale.min()}, weight scale max: {weight_scale.max()}")
+    utils.logger.debug(f"Replace {module} with `MulLinear`.")
+    utils.logger.debug(f"weight_scale shape: {weight_scale.shape}, weight scale min: {weight_scale.min()}, weight scale max: {weight_scale.max()}")
     return MulLinear(module, weight_scale)
 
 
 def get_weight_scale(weight_data):
     assert len(weight_data.shape) == 2, f"weight_data shape len should be 2, got {weight_data.shape}"
     alpha = 0.5
-    # print(weight_data)
     weight_amax = torch.max(torch.abs(weight_data), dim=0).values
-    # print(weight_amax)
-    # print(weight_amax.shape)
-
     norm_weight_amax = torch.pow(weight_amax, alpha)
-    # print(norm_weight_amax)
     norm_weight_amax = norm_weight_amax.reshape(1, -1)
     norm_weight_amax_clip = norm_weight_amax + 1
     return norm_weight_amax_clip.to(weight_data.device)

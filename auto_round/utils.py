@@ -34,7 +34,8 @@ def warning_once(self, msg: str):
 
 logging.Logger.warning_once = warning_once
 logger = logging.getLogger("autoround")
-logger.setLevel(logging.INFO)
+level = os.environ.get("LOGLEVEL", "INFO")
+logger.setLevel(level)
 logger.propagate = False
 fh = logging.StreamHandler()
 fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
@@ -43,6 +44,27 @@ logger.addHandler(fh)
 
 import importlib
 import transformers
+
+
+import enum
+
+class AlgoEnum(enum.Enum):
+    Rounding = enum.auto()
+    TEQ = enum.auto()
+
+algo_module_registry = {
+    AlgoEnum.Rounding: {},
+    AlgoEnum.TEQ: {}
+}
+
+# decorator to register module for give algo
+def register_algo(algo_name, float_module_cls):
+    def register_module(q_module_cls):
+        algo_module_registry[algo_name][float_module_cls] = q_module_cls
+        logger.info(f"Registering {q_module_cls.__name__} as the q module of {algo_name}' {float_module_cls.__name__}")
+        return q_module_cls
+    return register_module
+
 
 class LazyImport(object):
     """Lazy import python module till use."""

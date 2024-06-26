@@ -24,6 +24,9 @@ from .utils import (
 from typing import Optional, Dict
 from auto_round import teq
 from torch.functional import F
+
+from auto_round import utils
+
 def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
     This function is adapted from omniquant.
@@ -192,9 +195,9 @@ def quant_weight(
             zp = zp.reshape(weight_new.shape[0], -1)
         return weight_new, scale, zp
 
-
+@utils.register_algo(utils.AlgoEnum.Rounding, torch.nn.Linear)
 class WrapperLinear(torch.nn.Module):
-    def __init__(self, orig_layer, enable_minmax_tuning=True, enable_teq=False):
+    def __init__(self, orig_layer, enable_minmax_tuning=True):
         """A wrapper module for linear layers that enables quantization and min-max tuning of weights.
 
         Args:
@@ -219,10 +222,6 @@ class WrapperLinear(torch.nn.Module):
         self.sym = self.orig_layer.sym
         weight_dtype = self.orig_layer.weight.dtype
         weight_dtype = torch.float32
-        self.enable_teq = enable_teq
-        if self.enable_teq:
-            logger.info(f"Original module weight shape: {orig_layer.weight.shape}.")
-            self.weight_scale_calculator = teq.ScaleCalculator(self.orig_layer.weight.data, self.orig_layer.weight.device)
         
         self.value = torch.nn.Parameter(
             torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
@@ -241,7 +240,7 @@ class WrapperLinear(torch.nn.Module):
             self.min_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
             self.max_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
         
-    def unwrapper(self, v, min_scale, max_scale, teq_weight_scale=None):
+    def unwrapper(self, v, min_scale, max_scale):
         """Unwrapper the layer to the original layer.
 
         Args:
@@ -253,21 +252,6 @@ class WrapperLinear(torch.nn.Module):
         Returns:
         - torch.nn.Module: The original linear layer with updated weights after quantization and dequantization.
         """
-
-        if teq_weight_scale is not None:
-            assert self.enable_teq, f"enable_teq is False, but got teq_weight_scale {teq_weight_scale}"
-            logger.warning(f"Layer equalization transform is enabled for {self.orig_layer}")
-            # import pdb; pdb.set_trace()
-            assert teq_weight_scale is not None, "teq_weight_scale is required for layer equalization transform"
-            from auto_round.teq import replace_linear_with_smoothed_linear
-            logger.debug(f"Replace {self.orig_layer} with `MulLinear`")
-            logger.debug(f"The range of original layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
-            self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, teq_weight_scale)
-            inner_linear = getattr(self.orig_layer, "linear")
-            if inner_linear:
-                weight = inner_linear.weight
-                logger.debug(f"The range of new layer weight: {weight.min()} - {weight.max()}")
-
         min_scale.clamp_(0, 1.0)
         max_scale.clamp_(0, 1.0)
 
@@ -299,9 +283,6 @@ class WrapperLinear(torch.nn.Module):
         from torch.functional import F
 
         weight = self.orig_layer.weight
-        if self.enable_teq:
-            weight_scale = self.weight_scale_calculator(x)
-            weight, x = teq.equalization_transform(weight, x, weight_scale)
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, 0, 1.0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, 0, 1.0))
         weight_q, _, _ = quant_weight(
@@ -319,6 +300,85 @@ class WrapperLinear(torch.nn.Module):
         return F.linear(x, weight_q, self.orig_layer.bias)
 
 
+
+@utils.register_algo(utils.AlgoEnum.TEQ, torch.nn.Linear)
+class WrapperLinearForTEQ(torch.nn.Module):
+    def __init__(self, orig_layer):
+        super().__init__()
+        self.orig_layer = orig_layer
+        self.num_bits = self.orig_layer.bits
+        self.group_size = self.orig_layer.group_size
+        self.scale_dtype = self.orig_layer.scale_dtype
+        self.sym = self.orig_layer.sym
+
+        logger.debug(f"Original module weight shape: {orig_layer.weight.shape}.")
+        self.weight_scale_calculator = teq.ScaleCalculator(self.orig_layer.weight.data, self.orig_layer.weight.device)
+
+        
+    def unwrapper(self, teq_weight_scale=None):
+        """Unwrapper the layer to the original layer.
+
+        Args:
+        - v (torch.Tensor): The rounding v parameter for quantization.
+        - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
+        - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
+        - teq_weight_scale (torch.Tensor): 
+
+        Returns:
+        - torch.nn.Module: The original linear layer with updated weights after quantization and dequantization.
+        """
+        assert teq_weight_scale is not None, "teq_weight_scale is required for layer equalization transform"
+        from auto_round.teq import replace_linear_with_smoothed_linear
+        logger.debug(f"Replace {self.orig_layer} with `MulLinear`")
+        logger.debug(f"The range of original layer weight: {self.orig_layer.weight.min()} - {self.orig_layer.weight.max()}")
+        self.orig_layer = replace_linear_with_smoothed_linear(self.orig_layer, teq_weight_scale)
+        inner_linear = getattr(self.orig_layer, "linear")
+        if inner_linear:
+            weight = inner_linear.weight
+            logger.debug(f"The range of new layer weight: {weight.min()} - {weight.max()}")
+        
+        # TODO: remove it?
+        q_dq_weight, scale, zp = quant_weight(
+            self.orig_layer.weight,
+            self.num_bits,
+            self.group_size,
+            self.sym,
+            scale_dtype= self.scale_dtype,
+        )
+        self.orig_layer.weight.data.copy_(q_dq_weight)
+        self.orig_layer.weight.grad = None  ##clear grad
+        self.orig_layer.scale = scale.to("cpu")
+        self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+        return self.orig_layer
+
+    def forward(self, x):
+        """Performs forward pass through the wrapped linear layer with quantized weights.
+
+        Args:
+        - x (torch.Tensor): The input tensor.
+
+        Returns:
+        - torch.Tensor: The output tensor after applying the linear transformation with quantized weights.
+        """
+        from torch.functional import F
+
+        weight = self.orig_layer.weight
+        weight_scale = self.weight_scale_calculator(x)
+        weight, x = teq.equalization_transform(weight, x, weight_scale)
+        weight_q, _, _ = quant_weight(
+            weight,
+            self.num_bits,
+            self.group_size,
+            self.sym,
+            scale_dtype=self.scale_dtype,
+        )
+        weight_q = weight_q.to(weight.dtype)
+        # pylint: disable=not-callable
+        return F.linear(x, weight_q, self.orig_layer.bias)
+
+
+
+@utils.register_algo(utils.AlgoEnum.Rounding, transformers.Conv1D)
 class WrapperTransformerConv1d(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True):
         """A wrapper module for transformers 1D convolutional layers used in transformers,
@@ -440,7 +500,30 @@ class WrapperMultiblock(torch.nn.Module):
         return hidden_states
 
 
-def wrapper_block(block, enable_minmax_tuning, enable_teq=False):
+
+def wrapper_block_entry(block, enable_minmax_tuning, algo = utils.AlgoEnum.Rounding):
+    if algo == utils.AlgoEnum.Rounding:
+        return wrapper_block(block, enable_minmax_tuning)
+    elif algo == utils.AlgoEnum.TEQ:
+        return wrapper_block_teq(block)
+
+def wrapper_block_teq(block):
+    quantized_layers = []
+    unquantized_layers = []
+    for n, m in block.named_modules():
+        if isinstance(m, torch.nn.Linear):
+            if not check_to_quantized(m):
+                unquantized_layers.append(n)
+                continue
+            wrapper_cls = utils.algo_module_registry[utils.AlgoEnum.TEQ][m.__class__]
+            new_m = wrapper_cls(m)
+            set_module(block, n, new_m)
+            quantized_layers.append(n)
+
+    return quantized_layers, unquantized_layers
+
+
+def wrapper_block(block, enable_minmax_tuning):
     """Wraps the layers in the given block with a custom Wrapper module.
 
     Args:
@@ -457,7 +540,7 @@ def wrapper_block(block, enable_minmax_tuning, enable_teq=False):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning, enable_teq=enable_teq)
+            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning)
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
@@ -497,8 +580,27 @@ def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
         set_module(model, layer_name, orig_layer)
 
 
+
+
 @torch.no_grad()
-def unwrapper_block(block, vs, min_scales, max_scales, best_teq_weight_scales: Optional[Dict[str, torch.Tensor]] = None):
+def unwrapper_block_entry(algo, block, vs, min_scales, max_scales, best_teq_weight_scales: Optional[Dict[str, torch.Tensor]] = None):
+    if algo == utils.AlgoEnum.Rounding:
+        return unwrapper_block(block, vs, min_scales, max_scales)
+    elif algo == utils.AlgoEnum.TEQ:
+        return unwrapper_block_teq(block, best_teq_weight_scales)
+
+@torch.no_grad()
+def unwrapper_block_teq(block, best_teq_weight_scales: Optional[Dict[str, torch.Tensor]] = None):
+    for n, m in block.named_modules():
+        if hasattr(m, "orig_layer"):
+            v = 0
+            min_scale = torch.tensor(1.0)
+            max_scale = torch.tensor(1.0)
+            orig_layer = m.unwrapper(best_teq_weight_scales.get(n))
+            set_module(block, n, orig_layer)
+
+@torch.no_grad()
+def unwrapper_block(block, vs, min_scales, max_scales):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
     Args:
@@ -520,5 +622,5 @@ def unwrapper_block(block, vs, min_scales, max_scales, best_teq_weight_scales: O
             if isinstance(max_scales, dict):
                 max_scale = max_scales[n]
                 max_scale = torch.clamp(max_scale, 0, 1.0)
-            orig_layer = m.unwrapper(v, min_scale, max_scale, best_teq_weight_scales.get(n) if best_teq_weight_scales else None)
+            orig_layer = m.unwrapper(v, min_scale, max_scale)
             set_module(block, n, orig_layer)
