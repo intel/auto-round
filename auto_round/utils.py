@@ -52,12 +52,14 @@ class AlgoEnum(enum.Enum):
     Rounding = enum.auto()
     TEQ = enum.auto()
 
-algo_module_registry = {
+
+# For each algorithm, the dictionary maps the float module to its corresponding Q module
+algo_module_registry: Dict[AlgoEnum, Dict[torch.nn.Module, torch.nn.Module]] = {
     AlgoEnum.Rounding: {},
     AlgoEnum.TEQ: {}
 }
 
-# decorator to register module for give algo
+# Decorator to register module for given algo and float module
 def register_qmodule(algo_name, float_module_cls):
     def decorator(q_module_cls):
         algo_module_registry[algo_name][float_module_cls] = q_module_cls

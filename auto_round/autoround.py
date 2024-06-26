@@ -1000,6 +1000,7 @@ class AutoRound(object):
         """Quantize and dequantize the weights of the specified blocks in the model.
         
         The overall quantization process:
+        block_input = get_input_of_the_first_block(...)
         for block in block_list:
             for algo in algo_list:
                 block, block_input = quant_block(algo, block, block_input)
