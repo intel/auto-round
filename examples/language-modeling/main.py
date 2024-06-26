@@ -12,7 +12,6 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
 from transformers import set_seed
-
 import re
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -123,7 +122,8 @@ if __name__ == '__main__':
 
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
-
+    parser.add_argument("--enable_teq", action='store_true',
+                        help="whether to enable teqg")
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
         print(
@@ -139,6 +139,7 @@ if __name__ == '__main__':
             "enable_quanted_input is deprecated. It has been set to the default; use disable_quanted_input to turn it off")
 
     set_seed(args.seed)
+    
     tasks = args.tasks
     use_eval_legacy = False
     import subprocess
@@ -165,8 +166,7 @@ if __name__ == '__main__':
 
         if isinstance(tasks, list):
             if "mmlu" in tasks:
-                tmp_tasks = tasks
-                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
+                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tasks]
             if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
                 tmp_tasks = tasks
                 tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
@@ -304,7 +304,9 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning)
+                      enable_minmax_tuning=not args.disable_minmax_tuning,
+                      enable_teq=args.enable_teq,
+                      )
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -329,13 +331,22 @@ if __name__ == '__main__':
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
 
+
     if not args.disable_eval and "fake" in deployment_device and lm_eval_version != "0.4.2":
         excel_name = f"{output_dir}_result.xlsx"
         output_dir += "/"
         print(excel_name, flush=True)
-        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
+        if args.enable_teq:
+            # If `enable_teq`, it introduce `MulLinear`, can't save directly
+            eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+                    device=torch_device, excel_file=excel_name,
+                    model_tokenizer_pairs=(model.to("cuda").to(pt_dtype), tokenizer)
+                    )
+        else:
+            eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+                    device=torch_device, excel_file=excel_name)
 
     if not args.disable_eval and lm_eval_version == "0.4.2":
         if "round" in deployment_device:

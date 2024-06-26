@@ -18,6 +18,8 @@ import time
 from typing import Optional, Union
 
 import torch
+import os
+
 import transformers
 from torch import autocast
 
@@ -30,6 +32,7 @@ from .utils import (
     check_is_cpu,
     check_to_quantized,
     collect_minmax_scale,
+    collect_weight_scale,
     collect_round_v,
     convert_dtype_str2torch,
     detect_device,
@@ -42,6 +45,8 @@ from .utils import (
     to_device, get_layer_names_in_block,
 )
 
+from auto_round import utils
+from auto_round import quantizer
 
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
@@ -89,6 +94,7 @@ class AutoRound(object):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
                            have different choices.
+        enable_teq (bool): Whether to enable weight TEQ(Trainable Equivalent Transformation) (default is False).
 
     Returns:
         The quantized model.
@@ -124,6 +130,7 @@ class AutoRound(object):
             dynamic_max_gap: int = -1,
             data_type: str = "int",  ##only support int for now
             scale_dtype: str = "fp16",
+            enable_teq: bool = False,
             **kwargs,
     ):
         self.quantized = False
@@ -205,10 +212,12 @@ class AutoRound(object):
         self.serialization_dict["autoround_version"] = __version__
         if "scale_dtype" in self.serialization_dict.keys():
             self.serialization_dict["scale_dtype"] = str(self.serialization_dict["scale_dtype"])
+        
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+        self.enable_teq = enable_teq
 
     def check_configs(self):
         """Checks if the configurations are valid.
@@ -282,6 +291,9 @@ class AutoRound(object):
         unquantized_layers = []
         for n, m in self.model.named_modules():
             if isinstance(m, tuple(self.supported_types)):
+                # For teq, replace `Linear` with `MulLinear`, and remove the suffix of the layer name.
+                if self.enable_teq and n.endswith("linear"):
+                    n = n.replace("." + "linear", "")
                 if self.weight_config[n]["bits"] == 16:
                     unquantized_layers.append(n)
                 else:
@@ -807,7 +819,7 @@ class AutoRound(object):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
-    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
+    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu"), algo=utils.AlgoEnum.Rounding):
         """Quantize the weights of a given block of the model.
 
         Args:
@@ -820,30 +832,43 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+        logger.info(f">>>>> Start to quant block with algo: {algo}")
 
         output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, self.cache_device)
 
         if q_input is not None:
             input_ids = q_input
         torch.cuda.empty_cache()
-        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
+    
+        quantized_layer_names, unquantized_layer_names = quantizer.wrapper_block_entry(block, self.enable_minmax_tuning, algo=algo)
 
-        round_params = []
-        minmax_params = []
-        for n, m in block.named_modules():
-            if hasattr(m, "orig_layer"):
-                round_params.append(m.value)
-                minmax_params.append(m.min_scale)
-                minmax_params.append(m.max_scale)
 
-        if self.enable_minmax_tuning:
-            optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
-            )
+        trainable_params = []
+        # TODO: Refactor code
+        if algo == utils.AlgoEnum.Rounding:
+            round_params = []
+            minmax_params = []
+            for n, m in block.named_modules():
+                if hasattr(m, "orig_layer"):
+                    round_params.append(m.value)
+                    minmax_params.append(m.min_scale)
+                    minmax_params.append(m.max_scale)
+            if self.enable_minmax_tuning:
+                minmax_params = [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}]
+                trainable_params += minmax_params
+            else:
+                trainable_params.append({"params":round_params})
+
+        elif algo == utils.AlgoEnum.TEQ:
+            from auto_round import teq
+            teq_params_lst = teq.get_scale_param_from_block(block)
+            trainable_params.append({"params": teq_params_lst})
         else:
-            optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+            raise NotImplementedError(f"Unsupported algo: {algo}")
+        
+        optimizer = self.optimizer(params=trainable_params, lr=self.lr, weight_decay=0)
 
-        if len(round_params) + len(minmax_params) <= 0:
+        if algo == utils.AlgoEnum.Rounding and len(round_params) + len(minmax_params) <= 0:
             dump_info = (
                 f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
                 f"layers in the block"
@@ -868,6 +893,7 @@ class AutoRound(object):
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
+        best_teq_weight_scales = None
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
@@ -903,23 +929,37 @@ class AutoRound(object):
                 self.scale_loss_and_backward(scaler, loss)
             if i == 0:
                 init_loss = total_loss
+                
 
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
                     # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
+                    if algo == utils.AlgoEnum.Rounding:
+                        best_v = collect_round_v(block)
+                        best_min_scale, best_max_scale = collect_minmax_scale(block)
+                    elif algo == utils.AlgoEnum.TEQ:
+                        best_teq_weight_scales = None
+                        best_teq_weight_scales = collect_weight_scale(block)
+                    last_best_iter = i
+                    logger.info(f"get better result at iter {i}, the loss is {total_loss}")
+            
+            if self.not_use_best_mse and i == self.iters - 1:
+                if algo == utils.AlgoEnum.Rounding:
                     best_v = collect_round_v(block)
                     best_min_scale, best_max_scale = collect_minmax_scale(block)
-                    last_best_iter = i
-            if self.not_use_best_mse and i == self.iters - 1:
-                best_v = collect_round_v(block)
-                best_min_scale, best_max_scale = collect_minmax_scale(block)
+                elif algo == utils.AlgoEnum.TEQ:
+                    best_teq_weight_scales = None
+                    best_teq_weight_scales = collect_weight_scale(block)
+                logger.info(f"get better result at last iter {i}, the loss is {total_loss}")
 
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
                     break
-            self.step(scaler, optimizer, lr_schedule)
 
+            # Call step before update the scales/best_v
+            self.step(scaler, optimizer, lr_schedule)
+            
         last_loss = total_loss
         best_iter = self.iters
         if not self.not_use_best_mse:
@@ -933,9 +973,8 @@ class AutoRound(object):
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
-            unwrapper_block(block, best_v, best_min_scale, best_max_scale)
+            quantizer.unwrapper_block_entry(algo, block, best_v, best_min_scale, best_max_scale, best_teq_weight_scales)
         if self.enable_quanted_input:
-
             q_outputs = self.get_block_outputs(
                 block, input_ids, input_others, self.train_bs, device, cache_device=self.cache_device
             )
@@ -960,6 +999,13 @@ class AutoRound(object):
             device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
+        
+        The overall quantization process:
+        block_input = get_input_of_the_first_block(...)
+        for block in block_list:
+            for algo in algo_list:
+                block, block_input = quant_block(algo, block, block_input)
+
 
         Args:
         model: The PyTorch model to be quantized.
@@ -1008,13 +1054,18 @@ class AutoRound(object):
 
             m = m.to(device)
 
-            q_input, input_ids = self.quant_block(
-                m,
-                input_ids,
-                input_others,
-                q_input=q_input,
-                device=device,
-            )
+            algo_lst = [utils.AlgoEnum.Rounding, utils.AlgoEnum.TEQ] if self.enable_teq else [utils.AlgoEnum.Rounding]
+            logger.info(f"Apply quantization for block {n} with algos: {algo_lst}")
+            
+            for algo in algo_lst:
+                q_input, input_ids = self.quant_block(
+                    m,
+                    input_ids,
+                    input_others,
+                    q_input=q_input,
+                    device=device,
+                    algo=algo,
+                )
             m = m.to("cpu")
             torch.cuda.empty_cache()
 
