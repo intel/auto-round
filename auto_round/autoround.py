@@ -998,6 +998,12 @@ class AutoRound(object):
             device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
+        
+        The overall quantization process:
+        for block in block_list:
+            for algo in algo_list:
+                qdq_block, block_output = quant_block(algo, block)
+
 
         Args:
         model: The PyTorch model to be quantized.
@@ -1045,9 +1051,8 @@ class AutoRound(object):
                 m = WrapperMultiblock(modules)
 
             m = m.to(device)
-            
-            
-            algo_lst = [utils.AlgoEnum.Rounding, utils.AlgoEnum.TEQ]
+
+            algo_lst = [utils.AlgoEnum.Rounding, utils.AlgoEnum.TEQ] if self.enable_teq else [utils.AlgoEnum.Rounding]
             for algo in algo_lst:
                 q_input, input_ids = self.quant_block(
                     m,

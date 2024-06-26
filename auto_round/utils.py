@@ -58,12 +58,12 @@ algo_module_registry = {
 }
 
 # decorator to register module for give algo
-def register_algo(algo_name, float_module_cls):
-    def register_module(q_module_cls):
+def register_qmodule(algo_name, float_module_cls):
+    def decorator(q_module_cls):
         algo_module_registry[algo_name][float_module_cls] = q_module_cls
-        logger.info(f"Registering {q_module_cls.__name__} as the q module of {algo_name}' {float_module_cls.__name__}")
+        logger.info(f"Registering {q_module_cls.__name__} as the {float_module_cls.__name__}'s Q module for {algo_name}.")
         return q_module_cls
-    return register_module
+    return decorator
 
 
 class LazyImport(object):
