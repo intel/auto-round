@@ -51,7 +51,7 @@ from ..utils import convert_dtype_torch2str_hf
 
 @register_format("auto_gptq")
 def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True,
-                               **kwargs):  ##TODO align with autoround format
+                               **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
     try:
         import auto_gptq
@@ -151,6 +151,6 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        model.config.quantization_config["quant_method"] = "gptq"
+        model.config.quantization_config["quant_method"] = "intel/auto-round"
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)

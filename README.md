@@ -133,13 +133,13 @@ Please run the quantization code first.
 ### CPU
 
 ```python
-##Install the latest https://github.com/intel/intel-extension-for-transformers from source first.
+##pip install intel-extension-for-transformers
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
@@ -152,8 +152,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 ##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with auto_round format
 
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
@@ -170,10 +170,10 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | google/gemma-2b                      | [HF-int4-model](https://huggingface.co/Intel/gemma-2b-int4-inc), [accuracy](./docs/gemma-2b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-2b.sh),  [example](./examples/language-modeling/)                                                                                                          
 | tiiuae/falcon-7b                     | [HF-int4-model-G64](https://huggingface.co/Intel/falcon-7b-int4-inc), [accuracy](./docs/falcon-7b-acc.md), [recipe](./examples/language-modeling/scripts/falcon-7b.sh), [example](./examples/language-modeling/)                                                                                                    |
 | mistralai/Mistral-7B-Instruct-v0.2   | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-Instruct-v0.2-int4-inc) (under review), [accuracy](./docs/Mistral-7B-Instruct-v0.2-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-Instruct-v0.2.sh),  [example](./examples/language-modeling/)                                           |
-| google/gemma-7b                      | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-int4-inc) (under review), [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                                                                           |
 | mistralai/Mixtral-8x7B-Instruct-v0.1 | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh),  [example](./examples/language-modeling/)                                     |
 | mistralai/Mixtral-8x7B-v0.1          | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh), [example](./examples/language-modeling/)                                                                 |
 | meta-llama/Meta-Llama-3-8B-Instruct  | [accuracy](./docs/Meta-Llama-3-8B-Instruct-acc.md), [recipe](./examples/language-modeling/scripts/Meta-Llama-3-8B-Instruct.sh), [example](./examples/language-modeling/)                                                                                                                                            |
+| google/gemma-7b                      | [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                                                                           |
 | meta-llama/Llama-2-7b-chat-hf        | [accuracy](./docs/Llama-2-7b-chat-hf-acc.md), [recipe](./examples/language-modeling/scripts/Llama-2-7b-chat-hf.sh), [example](./examples/language-modeling/)                                                                                                                                                        |
 | Qwen/Qwen1.5-7B-Chat                 | [accuracy](./docs/Qwen1.5-7B-Chat-acc.md), [sym recipe](./examples/language-modeling/scripts/Qwen1.5-7B-Chat-sym.sh), [asym recipe ](./examples/language-modeling/scripts/Qwen1.5-7B-Chat-asym.sh), [example](./examples/language-modeling/)                                                                        |
 | baichuan-inc/Baichuan2-7B-Chat       | [accuracy](./docs/baichuan2-7b-chat-acc.md), [recipe](./examples/language-modeling/scripts/baichuan2-7b-chat.sh), [example](./examples/language-modeling/)                                                                                                                                                          |
