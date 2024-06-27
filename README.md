@@ -11,12 +11,9 @@ AutoRound
 <div align="left">
 
 AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference. It's tailored for a wide range
-of models and consistently delivers noticeable improvements, often significantly outperforming SignRound with the cost
-of more tuning time for quantization.
-
-Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps,
+of models. Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps,
 which competes impressively against recent methods without introducing any additional inference overhead. The below
-image presents an overview of AutoRound.
+image presents an overview of AutoRound.  Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
 
 <div align="center">
 
@@ -26,7 +23,6 @@ image presents an overview of AutoRound.
 
 ## What's New
 * [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant performance drop issue with the asymmetric kernel
-* [2024/05] Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
 * [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
 * [2024/05] AutoRound performs well
   in [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)
@@ -102,7 +98,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `minmax_lr (float)`: The learning rate for min-max tuning (default is None, it will be set to lr automatically).
 
-- `n_samples (int)`: Number of samples for tuning (default is 512).
+- `nsamples (int)`: Number of samples for tuning (default is 512).
 
 - `seqlen (int)`: Data length of the sequence for tuning (default is 2048).
 
@@ -113,7 +109,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `amp (bool)`: Whether to use automatic mixed precision (default is True).
 
-- `n_blocks (int)`: Packing several blocks as one for tuning together (default is 1).
+- `nblocks (int)`: Packing several blocks as one for tuning together (default is 1).
 
 - `gradient_accumulate_steps (int)`: Number of gradient accumulation steps (default is 1).
 
@@ -137,13 +133,13 @@ Please run the quantization code first.
 ### CPU
 
 ```python
-##Install the latest https://github.com/intel/intel-extension-for-transformers from source first.
+##pip install intel-extension-for-transformers
 from intel_extension_for_transformers.transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
@@ -156,8 +152,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 ##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with auto_round format
 
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, use_fast=True)
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
@@ -174,10 +170,10 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | google/gemma-2b                      | [HF-int4-model](https://huggingface.co/Intel/gemma-2b-int4-inc), [accuracy](./docs/gemma-2b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-2b.sh),  [example](./examples/language-modeling/)                                                                                                          
 | tiiuae/falcon-7b                     | [HF-int4-model-G64](https://huggingface.co/Intel/falcon-7b-int4-inc), [accuracy](./docs/falcon-7b-acc.md), [recipe](./examples/language-modeling/scripts/falcon-7b.sh), [example](./examples/language-modeling/)                                                                                                    |
 | mistralai/Mistral-7B-Instruct-v0.2   | [HF-int4-model](https://huggingface.co/Intel/Mistral-7B-Instruct-v0.2-int4-inc) (under review), [accuracy](./docs/Mistral-7B-Instruct-v0.2-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-Instruct-v0.2.sh),  [example](./examples/language-modeling/)                                           |
-| google/gemma-7b                      | [HF-int4-model](https://huggingface.co/Intel/gemma-7b-int4-inc) (under review), [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                                                                           |
 | mistralai/Mixtral-8x7B-Instruct-v0.1 | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh),  [example](./examples/language-modeling/)                                     |
 | mistralai/Mixtral-8x7B-v0.1          | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh), [example](./examples/language-modeling/)                                                                 |
 | meta-llama/Meta-Llama-3-8B-Instruct  | [accuracy](./docs/Meta-Llama-3-8B-Instruct-acc.md), [recipe](./examples/language-modeling/scripts/Meta-Llama-3-8B-Instruct.sh), [example](./examples/language-modeling/)                                                                                                                                            |
+| google/gemma-7b                      | [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                                                                           |
 | meta-llama/Llama-2-7b-chat-hf        | [accuracy](./docs/Llama-2-7b-chat-hf-acc.md), [recipe](./examples/language-modeling/scripts/Llama-2-7b-chat-hf.sh), [example](./examples/language-modeling/)                                                                                                                                                        |
 | Qwen/Qwen1.5-7B-Chat                 | [accuracy](./docs/Qwen1.5-7B-Chat-acc.md), [sym recipe](./examples/language-modeling/scripts/Qwen1.5-7B-Chat-sym.sh), [asym recipe ](./examples/language-modeling/scripts/Qwen1.5-7B-Chat-asym.sh), [example](./examples/language-modeling/)                                                                        |
 | baichuan-inc/Baichuan2-7B-Chat       | [accuracy](./docs/baichuan2-7b-chat-acc.md), [recipe](./examples/language-modeling/scripts/baichuan2-7b-chat.sh), [example](./examples/language-modeling/)                                                                                                                                                          |
@@ -205,9 +201,7 @@ average accuracies of 11 zero-shot tasks.
 
 1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time.
 
-2 Setting 'enable_quanted_input' to False has been observed to occasionally yield improved results.
-
-3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
+2 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
 ## Reference
 

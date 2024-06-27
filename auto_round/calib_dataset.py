@@ -227,7 +227,7 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
     return calib_dataset
 
 
-def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, bs=8, n_samples=512):
+def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, bs=8, nsamples=512):
     """Generate a DataLoader for calibration using specified parameters.
 
     Args:
@@ -239,7 +239,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
         split (str, optional): The data split to use. Defaults to None.
         seed (int, optional): The random seed for reproducibility. Defaults to 42.
         bs (int, optional): The batch size. Defaults to 4.
-        n_samples (int, optional): The total number of samples to include. Defaults to 512.
+        nsamples (int, optional): The total number of samples to include. Defaults to 512.
 
     Returns:
         DataLoader: The DataLoader for the calibrated dataset.
@@ -340,14 +340,14 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
     dataset_names = [dataset_names[index] for index in indices]
     cnt = 0 if not data_lens else sum(data_lens.values())
     dataset_cnt_info = {}
-    if cnt > n_samples:
+    if cnt > nsamples:
         cnt = 0
 
     for i in range(len(datasets)):
         name = dataset_names[i].split(':')[0]
         if name not in data_lens:
-            target_cnt = (n_samples - cnt) // (len(datasets) - len(data_lens)) if data_lens \
-                else (n_samples - cnt) // (len(datasets) - i) 
+            target_cnt = (nsamples - cnt) // (len(datasets) - len(data_lens)) if data_lens \
+                else (nsamples - cnt) // (len(datasets) - i) 
             target_cnt = min(target_cnt, len(datasets[i]))
             cnt += target_cnt
         else:
