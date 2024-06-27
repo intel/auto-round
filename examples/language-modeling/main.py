@@ -123,6 +123,8 @@ if __name__ == '__main__':
 
     parser.add_argument("--layer_wise", action='store_true',
                         help="whether use layer wise mode")
+    parser.add_argument("--block_wise", action='store_true',
+                        help="whether use block wise mode")
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 
@@ -219,6 +221,27 @@ if __name__ == '__main__':
                 trust_remote_code=not args.disable_trust_remote_code
                 )
             # convert_model(model, './layer_wise_tmp')
+    elif args.block_wise:
+        from auto_round.layer_wise.utils import load_empty_model
+        if is_glm:
+            model = load_empty_model(
+                model_name,
+                AutoModel,
+                device=device_str,
+                clean_weight=True,
+                torch_dtype=torch_dtype,
+                trust_remote_code=not args.disable_trust_remote_code
+                )
+        else:
+            model = load_empty_model(
+                model_name,
+                AutoModelForCausalLM,
+                device=device_str,
+                clean_weight=True,
+                torch_dtype=torch_dtype,
+                trust_remote_code=not args.disable_trust_remote_code
+                )
+
     elif is_glm:
         model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     else:
@@ -330,7 +353,7 @@ if __name__ == '__main__':
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning,
-                      layer_wise=args.layer_wise)
+                      layer_wise=args.layer_wise, block_wise=args.block_wise)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 

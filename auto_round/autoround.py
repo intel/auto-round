@@ -42,7 +42,7 @@ from .utils import (
     to_device, get_layer_names_in_block,
 )
 
-from .layer_wise.utils import _get_path, register_weight_hooks, LWQ_WORKSPACE
+from .layer_wise.utils import get_layers_before_block
 
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
@@ -125,13 +125,16 @@ class AutoRound(object):
             dynamic_max_gap: int = -1,
             data_type: str = "int",  ##only support int for now
             scale_dtype: str = "fp16",
-            layer_wise: bool = False,
+            block_wise: bool = False,
             **kwargs,
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
-        self.layer_wise = layer_wise
-        self.model = model.eval().to("cpu") if not self.layer_wise else model.eval()
+        self.block_wise = block_wise
+        if model.device.type == 'meta':
+            self.model = model.eval()
+        else:
+            self.model = model.eval().to("cpu")
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -262,7 +265,7 @@ class AutoRound(object):
                 self.train_bs = total_samples
                 logger.warning(f"force the train batch size to {total_samples} ")
 
-        if not self.layer_wise:
+        if not self.model.device.type == "meta":
             self.model = self.model.to("cpu")
         torch.cuda.empty_cache()
         self.quant_blocks(
@@ -350,7 +353,7 @@ class AutoRound(object):
         if self.enable_quanted_input:
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.n_samples, layer_names=layer_names)
 
-        if not self.layer_wise:
+        if not self.model.device.type == "meta":
             self.model = self.model.to("cpu")
         torch.cuda.empty_cache()
         for layer_name in layer_names:
@@ -471,11 +474,18 @@ class AutoRound(object):
         else:
             self.dataloader = self.dataset
         total_cnt = 0
+
+        # load embed weight if use block_wise
+        if self.block_wise:
+            embed_layers = get_layers_before_block(self.model)
+            for n, m in embed_layers:
+                m = m.to(self.device)
+        
         for data in self.dataloader:
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
-                input_ids = data.to(self.model.device)
+                input_ids = data.to(self.device)
                 data_new = input_ids
 
             elif isinstance(data, str):
@@ -485,15 +495,12 @@ class AutoRound(object):
                 data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
                 data_new = {}
                 for key in data.keys():
-                    data_new[key] = data[key].to(self.model.device)
+                    data_new[key] = data[key].to(self.device)
                 input_ids = data_new["input_ids"]
             else:
                 data_new = {}
                 for key in data.keys():
-                    if self.layer_wise:
-                        data_new[key] = data[key].to(self.device)
-                    else:
-                        data_new[key] = data[key].to(self.model.device)
+                    data_new[key] = data[key].to(self.device)
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
@@ -521,6 +528,12 @@ class AutoRound(object):
                 f"Insufficient number of samples collected may affect the quantification. "
                 f"Valid samples size:{total_cnt}, Target sample size:{n_samples}"
             )
+        
+        # clean embed weight to save memory
+        if self.block_wise:
+            for n, m in embed_layers:
+                m = m.to("meta")
+        torch.cuda.empty_cache()
 
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, n_samples, layer_names=[], last_cache_name=None):
@@ -539,17 +552,17 @@ class AutoRound(object):
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
         try:
-            if not self.layer_wise:
+            if not self.model.device.type == "meta":
                 self.model = self.model.to(self.device)
             all_inputs = self.cache_inter_data(
                 block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name
             )
-            if not self.layer_wise:
+            if not self.model.device.type == "meta":
                 self.model = self.model.to("cpu")
             torch.cuda.empty_cache()
         except:
             logger.info("switch to cpu to cache inputs")
-            if not self.layer_wise:
+            if not self.model.device.type == "meta":
                 self.model = self.model.to("cpu")
             torch.cuda.empty_cache()
             all_inputs = self.cache_inter_data(
@@ -1012,13 +1025,18 @@ class AutoRound(object):
                 n = block_names[i]
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
+                if self.block_wise:
+                    m = m.to(device)
             else:
                 names = block_names[i: i + n_blocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
+                if self.block_wise:
+                    for module in modules:
+                        module = module.to(device)
                 m = WrapperMultiblock(modules)
 
-            if not self.layer_wise:
+            if not self.model.device.type == "meta":
                 m = m.to(device)
 
             q_input, input_ids = self.quant_block(
@@ -1028,7 +1046,13 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
             )
-            if not self.layer_wise:
+            if self.block_wise:
+                if isinstance(m, WrapperMultiblock):
+                    for layer in m.layers:
+                        layer = layer.to("meta")
+                else:
+                    m = m.to('meta')
+            if not self.model.device.type == "meta":
                 m = m.to("cpu")
             torch.cuda.empty_cache()
 

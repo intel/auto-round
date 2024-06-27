@@ -20,15 +20,18 @@ import gc
 import json
 import os
 from functools import partial
+import logging
 
 import torch
 from accelerate import init_empty_weights
 from accelerate.utils import set_module_tensor_to_device
 from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.auto_factory import _BaseAutoModelClass
-from torch.nn import ReLU
 
 from .load import load
+
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
+logger = logging.getLogger("layer_wise_tools")
 
 LWQ_WORKSPACE = os.path.join("layer_wise_tmp")
 
@@ -121,7 +124,7 @@ def dowload_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
         return file_path
 
 
-def load_empty_model(pretrained_model_name_or_path, cls=AutoModelForCausalLM, **kwargs):
+def load_empty_model(pretrained_model_name_or_path, cls=AutoModelForCausalLM, save_path=None, **kwargs):
     """Load a empty model."""
     is_local = os.path.isdir(pretrained_model_name_or_path)
     if is_local:  # pragma: no cover
@@ -139,6 +142,10 @@ def load_empty_model(pretrained_model_name_or_path, cls=AutoModelForCausalLM, **
     model.tie_weights()
     model.eval()
     model.path = pretrained_model_name_or_path
+
+    if save_path is None:
+        save_path = LWQ_WORKSPACE
+    convert_model(model, save_path)
     return model
 
 
@@ -163,14 +170,35 @@ def update_module(model, module_name, new_module):
         setattr(super_module, module_name.split(".")[-1], new_module)
 
 
-def layer_wise_to(self, device):
-    if len(self._modules) == 0:
-        if self.weight.device.type != 'meta':
-            self.to(device)
-        else:
-            for name, _ in self.named_parameters():
-                value = load_value()
-                set_module_tensor_to_device(self, name, device, value)
+def get_layers_before_block(model):
+    """get the embed layers before blocks."""
+    return_layers = []
+    block_name = None
+    def _forward(module, name, *args, **kwargs):
+        if name == block_name:
+        # if 'DecoderLayer' in name:
+            raise NotImplementedError
+        if len(module._modules) == 0:
+            return_layers.append((name, module))
+        return module.ori_forward(*args, **kwargs)
+
+    for n, m in model.named_modules():
+        if isinstance(m, torch.nn.ModuleList):
+            block_name = n + '.' + m.named_children().__next__()[0]
+        m.ori_forward = m.forward
+        m.forward = partial(_forward, m, n)
+    
+    try:
+        model.forward(input_ids=torch.tensor([[1]]), attention_mask=torch.tensor([[1]]))
+    except NotImplementedError:
+        pass
+
+    for n, m in model.named_modules():
+        m.forward = m.ori_forward
+        del m.ori_forward
+    
+    return return_layers
+
 
 
 def load_layer_wise_quantized_model(path):  # pragma: no cover
@@ -228,6 +256,7 @@ def _get_path(pretrained_model_name_or_path):
 
 
 def load_value(model, param_name, path):
+    logger.debug(f'load value for layer: {param_name}')
     if "lm_head" in param_name and getattr(model.config, "tie_word_embeddings", True):
         input_embeddings = model.get_input_embeddings()
         modules = get_named_children(model)
@@ -256,7 +285,6 @@ def register_weight_hooks(model, path, device="cpu", clean_weight=True, saved_pa
 
     def forward_pre_hook(name):
         def hook(module, input):
-            print('load value for layer: ', name)
             state_dict = None
             if os.path.exists(os.path.join(saved_path, f"{name}.pt")):
                 state_dict = torch.load(os.path.join(saved_path, f"{name}.pt"))
@@ -346,16 +374,21 @@ def convert_model(empty_model, saved_path=None):
             if len(module._parameters) == 0:
                 return module
             if module.weight.device.type != 'meta':
-                return module.ori_to(device_or_dtype)
+                module.ori_to(device_or_dtype)
+                return module
             else:
                 for n, _ in module.named_parameters():
                     param_name = name + "." + n
                     value = load_value(empty_model, param_name, empty_model.path)
-                    set_module_tensor_to_device(module, n, device_or_dtype, value, dtype=module.dtype)
+                    dtype = None
+                    if hasattr(module, 'dtype'):
+                        dtype = module.dtype
+                    set_module_tensor_to_device(module, n, device_or_dtype, value, dtype=dtype)
             return module
         else:
             for n, m in module.named_children():
-                return m.to(device_or_dtype)
+                m.to(device_or_dtype)
+            return module
 
     modules = get_named_children(empty_model)
     for name, module in modules:
