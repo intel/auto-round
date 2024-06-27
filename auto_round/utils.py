@@ -25,6 +25,13 @@ import psutil
 import torch
 from torch.amp import autocast
 
+from functools import lru_cache
+@lru_cache(None)
+def warning_once(self, msg: str):
+    self.warning(msg)
+
+
+logging.Logger.warning_once = warning_once
 logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
 logger.propagate = False
@@ -34,7 +41,7 @@ fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
 
 import importlib
-
+import transformers
 
 class LazyImport(object):
     """Lazy import python module till use."""
@@ -76,208 +83,6 @@ def is_optimum_habana_available():
     from transformers.utils.import_utils import is_optimum_available
 
     return is_optimum_available() and importlib.util.find_spec("optimum.habana") is not None
-
-
-def round_ste(x: torch.Tensor):
-    """Straight-Through Estimator for rounding.
-    This function is adapted from omniquant.
-
-    Args:
-        x: torch.Tensor
-
-    Returns:
-        torch.Tensor
-    """
-    return (x.round() - x).detach() + x
-
-
-def quant_weight_asym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16):
-    """Quantizes and dequantizes weight asymmetrically.
-
-    Args:
-        weight: Tensor containing the weight to be quantized
-        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for weight
-        max_scale: Maximum scale coefficient for weight
-
-    Returns:
-        Quantized and dequantized weight, scale, zero-point
-    """
-    maxq = torch.tensor(2**num_bits - 1)
-    if isinstance(min_scale, torch.Tensor):
-        wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
-        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
-        wmin_tmp *= min_scale + 1.0
-        wmax_tmp *= max_scale + 1.0
-        wmax = torch.maximum(wmax_tmp, wmin_tmp)
-        wmin = torch.minimum(wmax_tmp, wmin_tmp)
-    else:
-        wmin = torch.clamp(weight.min(1)[0], max=0)
-        wmax = torch.clamp(weight.max(1)[0], min=0)
-
-    tmp = (wmin == 0) & (wmax == 0)
-    wmin[tmp] = -1
-    wmax[tmp] = +1
-    scale = ((wmax - wmin) / maxq).to(scale_dtype)
-    zp = round_ste(-wmin / scale)
-    scale = scale.unsqueeze(dim=-1)
-    zp = zp.unsqueeze(dim=-1)
-    int_w = round_ste(weight / scale + v)
-    q = torch.clamp(int_w + zp, 0, maxq)
-    return scale * (q - zp), scale, zp
-
-
-def quant_weight_sym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16):
-    """Quantizes and dequantizes weight symmetrically.
-
-    Args:
-        weight: Tensor containing the weight to be quantized
-        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for weight
-        max_scale: Maximum scale coefficient for weight
-
-    Returns:
-        Quantized and dequantized weight, scale, zero-point
-    """
-    maxq = torch.tensor(2**num_bits - 1)
-    if isinstance(min_scale, torch.Tensor):
-        wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
-        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
-        wmin_tmp *= min_scale + 1.0
-        wmax_tmp *= max_scale + 1.0
-        wmax = torch.maximum(wmax_tmp, wmin_tmp)
-        wmin = torch.minimum(wmax_tmp, wmin_tmp)
-    else:
-        wmin = torch.clamp(weight.min(1)[0], max=0)
-        wmax = torch.clamp(weight.max(1)[0], min=0)
-    wmax_new = torch.max(wmin.abs(), wmax)
-    tmp = wmin < 0
-    wmin_new = wmin.clone()  ##must clone, otherwise inplace backward will occur
-    if torch.any(tmp):
-        wmin_new[tmp] = -wmax_new[tmp]
-
-    tmp = (wmin_new == 0) & (wmax_new == 0)
-    wmin_new[tmp] = -1
-    wmax_new[tmp] = +1
-    scale = ((wmax_new - wmin_new) / maxq).to(scale_dtype)
-
-    scale = scale.unsqueeze(dim=-1)
-    zp = torch.full_like(scale, (maxq + 1) / 2)
-
-    int_w = round_ste(weight / scale + v)
-    q = torch.clamp(int_w + zp, 0, maxq)
-    return scale * (q - zp), scale, zp
-
-
-def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dtype=torch.float16):
-    """Quantizes and dequantizes weight symmetrically or asymmetrically .
-
-    Args:
-        weight: Tensor containing the weight to be quantized
-        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        sym: Sym or asym
-        v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for weight
-        max_scale: Maximum scale coefficient for weight
-
-    Returns:
-        Quantized and dequantized weight, scale, zero-point
-    """
-    assert num_bits > 0, "num_bits should be larger than 0"
-    if sym:
-        return quant_weight_sym(weight, num_bits, v, min_scale, max_scale, scale_dtype)
-    else:
-        return quant_weight_asym(weight, num_bits, v, min_scale, max_scale, scale_dtype)
-
-
-def quant_weight(
-    weight, num_bits=4, group_size=-1, sym=False, v=0, min_scale=0, max_scale=0, scale_dtype=torch.float16
-):
-    """Quantizes and dequantizes weight, handing the group size issue .
-
-    Args:
-        weight: Tensor containing the weight to be quantized
-        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        group_size: The number of elements shares scale and zero point
-        sym: Sym or asym
-        v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for weight
-        max_scale: Maximum scale coefficient for weight
-
-    Returns:
-        Quantized and dequantized weight, scale, zero-point
-    """
-    if group_size == -1 or weight.shape[1] < group_size:
-        return quant_weight_actor(
-            weight, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
-        )
-    orig_shape = weight.shape
-    if weight.shape[1] % group_size == 0:
-        weight = weight.reshape(-1, group_size)
-        if isinstance(v, torch.Tensor):
-            v = v.reshape(-1, group_size)
-
-        weight, scale, zp = quant_weight_actor(
-            weight, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
-        )
-        weight = weight.reshape(orig_shape)
-        scale = scale.reshape(weight.shape[0], -1)  ##only for linear, conv1d
-        if zp is not None:
-            zp = zp.reshape(weight.shape[0], -1)
-        return weight, scale, zp
-
-    else:
-        pad_len = (weight.shape[1] + group_size - 1) // group_size * group_size - weight.shape[1]
-        weight_new = torch.nn.functional.pad(weight, (0, pad_len))
-        v = torch.nn.functional.pad(v, (0, pad_len))
-        weight_new = weight_new.reshape(-1, group_size)
-        if isinstance(v, torch.Tensor):
-            v = v.reshape(-1, group_size)
-        weight_new, scale, zp = quant_weight_actor(
-            weight_new, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
-        )
-        weight_new = weight_new.reshape(orig_shape[0], -1)
-
-        weight_new = weight_new[:, :-pad_len]
-        scale = scale.reshape(weight_new.shape[0], -1)  ##only for linear, conv1d
-        if zp is not None:
-            zp = zp.reshape(weight_new.shape[0], -1)
-        return weight_new, scale, zp
-
-
-def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
-    """Quant and dequant tensor with group size.
-
-    Args:
-        weight: input weight
-        scale: scale
-        zp: zero point
-        group_size (int, optional): how many elements share one scale/zp. Defaults to -1.
-
-    Returns:
-        output: int weight.
-    """
-    scale = scale.to(device)
-    if zp is not None:
-        zp = zp.to(device)
-    if group_size == -1:
-        return torch.round(weight / scale) if zp is None else torch.round(weight / scale + zp)
-    int_weight = torch.zeros(weight.shape).to(device)
-    leng = weight.shape[1] // group_size
-    tail_flag = False if weight.shape[1] % group_size == 0 else True
-    for i in range(leng):
-        int_weight_tmp = weight[:, i * group_size : (i + 1) * group_size] / scale[:, i].unsqueeze(1)
-        if zp is not None:
-            int_weight_tmp += zp[:, i].unsqueeze(1)
-        int_weight[:, i * group_size : (i + 1) * group_size] = torch.round(int_weight_tmp)
-    if tail_flag:
-        int_weight_tmp = weight[:, leng * group_size :] / scale[:, -1].unsqueeze(1)
-        if zp is not None:
-            int_weight_tmp += zp[:, -1].unsqueeze(1)
-        int_weight[:, leng * group_size :] = torch.round(int_weight_tmp)
-    return int_weight
 
 
 def get_module(module, key):
@@ -421,8 +226,8 @@ def collect_minmax_scale(block):
     max_scales = {}
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
-            min_scales[n] = copy.deepcopy(torch.clamp(m.min_scale.data, -1, 0))
-            max_scales[n] = copy.deepcopy(torch.clamp(m.max_scale.data, -1, 0))
+            min_scales[n] = copy.deepcopy(torch.clamp(m.min_scale.data, 0, 1.0))
+            max_scales[n] = copy.deepcopy(torch.clamp(m.max_scale.data, 0, 1.0))
     return min_scales, max_scales
 
 
@@ -472,28 +277,26 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
     output: The output of the forward pass.
     """
     if input_ids.device != device:
-        # input_ids, input_others = move_to_device(input_ids, input_others, device)
         input_ids = to_device(input_ids, device)
         input_others = to_device(input_others, device)
+    input_tuple = input_others.pop("positional_inputs", None)
     if "alibi" in input_others.keys():
-        attention_mask = input_others["attention_mask"]
-        alibi = input_others["alibi"]
+        alibi = input_others.pop("alibi")
         if alibi is not None:
             alibi = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
         if amp:
             with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
                 output = block(
-                    input_ids, attention_mask=attention_mask, alibi=alibi
+                    input_ids, alibi=alibi, *input_tuple, **input_others
                 )  ##TODO is this correct for all models with alibi?
         else:
-            output = block(input_ids, attention_mask=attention_mask, alibi=alibi)
+            output = block(input_ids, alibi=alibi, *input_tuple, **input_others)
     else:
-        input_tuple = input_others.pop("positional_inputs", None)
         if amp:
             with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
-                output = block.forward(input_ids, *input_tuple, **input_others)
+                output = block(input_ids, *input_tuple, **input_others)
         else:
-            output = block.forward(input_ids, *input_tuple, **input_others)
+            output = block(input_ids, *input_tuple, **input_others)
     if isinstance(output, list) or isinstance(output, tuple):
         output = output[0]
     return output
@@ -594,11 +397,11 @@ class CpuInfo(object):
             cmd = "sysctl -n machdep.cpu.core_count"
 
         with subprocess.Popen(
-            args=cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=False,
+                args=cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=False,
         ) as proc:
             proc.wait()
             if proc.stdout:
@@ -740,3 +543,125 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         bs = 1
 
     return False, seqlen, bs
+
+
+def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transformers.modeling_utils.Conv1D]):
+    """Retrieves the names of layers within each block of the model.
+
+    Returns:
+        list: A list of strings, where each string is the name of a layer
+              within a block of the model.
+    """
+    for n, m in model.named_modules():
+        if isinstance(m, tuple(supported_types)):
+            m.tmp_name = n
+    layers_in_block = []
+    block_names = get_block_names(model)
+    for block_name in block_names:
+        block = get_module(model, block_name)
+        for n, m in block.named_modules():
+            if hasattr(m, "tmp_name"):
+                layers_in_block.append(m.tmp_name)
+    for n, m in model.named_modules():
+        if hasattr(m, "tmp_name"):
+            delattr(m, "tmp_name")
+    return layers_in_block
+
+
+def is_autoround_exllamav2_available():
+    """Checks if the AutoRound ExLlamaV2 kernels are available.
+
+    Returns:
+        bool:
+            True if the AutoRound ExLlamaV2 kernels are available, False otherwise.
+    """
+    res = True
+    try:
+        from autoround_exllamav2_kernels import gemm_half_q_half, make_q_matrix
+    except ImportError as e:
+        res = False
+    return res
+
+
+def get_autogptq_backend_config(backend, bits=4):
+    use_triton = False
+    disable_exllamav2 = False
+    disable_exllamav1 = False
+    disable_marlin = True
+    use_qigen = False
+    if backend == "gptq:qigen":
+        use_qigen = True
+    if backend == "gptq:triton":  ##TODO refine the code
+        use_triton = True
+    if backend == "gptq:marlin":
+        use_triton = False
+        disable_marlin = True
+    if backend == "gptq:exllamav2":  ##need v1 code to export
+        use_triton = False
+        disable_marlin = True
+    if backend == "gptq:exllamav1":
+        use_triton = False
+        disable_marlin = True
+    if backend == "gptq:cuda":
+        use_triton = False
+        disable_marlin = True
+        disable_exllamav2 = True
+        disable_exllamav1 = True
+    if bits not in [2, 4, 8]:
+        use_qigen = False
+    if bits not in [2, 4]:
+        use_triton = False
+    return use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin
+
+def dynamic_import_inference_linear(bits, group_size, backend):
+    """Dynamically imports and returns the appropriate QuantLinear class based on the given bits and backend.
+
+       Args:
+           bits (int):
+               The number of bits for quantization.
+           backend (str):
+               The backend to be used for quantization, such as "qbits", "cpu", or "exllamav2".
+
+       Returns:
+           class:
+               The appropriate QuantLinear class for the given configuration.
+       """
+    exllama2_available = is_autoround_exllamav2_available()
+
+    if (not torch.cuda.is_available()) or "qbits" in backend or "cpu" in backend:
+        try:
+            from intel_extension_for_transformers import qbits # pylint: disable=E0401
+        except Exception as e:
+            raise ImportError("Please install Intel Extension for Transformers via 'pip install "
+                              "intel-extension-for-transformers' to  inference on X86 CPU")
+        import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
+        return qlinear_qbits.QuantLinear
+    if "gptq" in backend:
+        try:
+            import auto_gptq # pylint: disable=E0401
+        except Exception as e:
+            raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
+        use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
+            backend, bits
+        )
+        from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
+        QuantLinear = dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            disable_marlin=disable_marlin,
+        )
+        return QuantLinear
+    if bits == 4 and exllama2_available and "exllamav2" in backend:
+        from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
+    elif bits == 4 and "exllamav2" in backend:
+        logger.warning_once("Please install auto-round from source to enable exllamav2 kernels, switch to triton "
+                             "kernels for now")
+        from auto_round_extension.cuda.qliner_triton import QuantLinear
+    else:
+        from auto_round_extension.cuda.qliner_triton import QuantLinear
+    return QuantLinear

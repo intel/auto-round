@@ -15,17 +15,49 @@
 import copy
 import json
 import os
-from os.path import isdir, isfile, join
 from typing import Dict, List, Optional, Union
 
 import torch
-from safetensors.torch import save_file as safe_save
-
+import transformers
 from auto_round.export.register import register_format
-from auto_round.utils import get_module, logger, quant_weight_w_scale, set_module
+from auto_round.utils import get_module, logger, set_module
 
 from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear
+
+
+
+def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
+    """Quant and dequant tensor with group size.
+
+    Args:
+        weight: input weight
+        scale: scale
+        zp: zero point
+        group_size (int, optional): how many elements share one scale/zp. Defaults to -1.
+
+    Returns:
+        output: int weight.
+    """
+    scale = scale.to(device)
+    if zp is not None:
+        zp = zp.to(device)
+    if group_size == -1:
+        return torch.round(weight / scale) if zp is None else torch.round(weight / scale + zp)
+    int_weight = torch.zeros(weight.shape).to(device)
+    leng = weight.shape[1] // group_size
+    tail_flag = False if weight.shape[1] % group_size == 0 else True
+    for i in range(leng):
+        int_weight_tmp = weight[:, i * group_size: (i + 1) * group_size] / scale[:, i].unsqueeze(1)
+        if zp is not None:
+            int_weight_tmp += zp[:, i].unsqueeze(1)
+        int_weight[:, i * group_size: (i + 1) * group_size] = torch.round(int_weight_tmp)
+    if tail_flag:
+        int_weight_tmp = weight[:, leng * group_size:] / scale[:, -1].unsqueeze(1)
+        if zp is not None:
+            int_weight_tmp += zp[:, -1].unsqueeze(1)
+        int_weight[:, leng * group_size:] = torch.round(int_weight_tmp)
+    return int_weight
 
 
 @register_format("itrex")
@@ -198,12 +230,19 @@ def pack_model(
             else:
                 scale = scale.to(dtype=convert_dtype)
                 zp = zp.to(dtype=torch.int32)
-
+        if isinstance(m, transformers.modeling_utils.Conv1D):
+            fp_weight = fp_weight.t_().contiguous()
         int_weight = quant_weight_w_scale(fp_weight, scale, zp, group_size, fp_weight.device)
+        if isinstance(m, torch.nn.Linear):
+            in_features = m.in_features
+            out_features = m.out_features
+        elif isinstance(m, transformers.modeling_utils.Conv1D):
+            in_features = m.weight.shape[0]
+            out_features = m.weight.shape[1]
         int_weight = int_weight.type(torch.int32)
         new_module = WeightOnlyLinear(
-            m.in_features,
-            m.out_features,
+            in_features,
+            out_features,
             num_bits,
             group_size,
             dtype=dtype,
