@@ -43,7 +43,7 @@ from transformers.utils.quantization_config import AwqConfig, GPTQConfig, Quanti
 
 from auto_round.utils import get_module, set_module, dynamic_import_inference_linear
 import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
-
+from enum import Enum
 logger = getLogger(__name__)
 import sys
 
@@ -194,6 +194,9 @@ class AutoHfQuantizer:
 
         return quantization_config
 
+class AutoRoundQuantizationMethod(str, Enum):
+    AutoRound = "intel/auto-round"
+
 
 @dataclass
 class AutoRoundConfig(QuantizationConfigMixin):
@@ -222,6 +225,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
             weight_config: dict = None,
             **kwargs,
     ):
+
         self.bits = bits
         self.tokenizer = tokenizer
         self.dataset = dataset
@@ -232,7 +236,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
         if kwargs is not None:
             for key in kwargs.keys():
                 setattr(self, key, kwargs[key])
-
+        self.quant_method = AutoRoundQuantizationMethod.AutoRound
         self.post_init()
 
     def get_loading_attributes(self):
@@ -378,11 +382,6 @@ class AutoRoundQuantizer(HfQuantizer):
                 The input model
         """
 
-        #
-        # if self.bits == 4: if get_device(model) == torch.device("cpu") or ( hasattr(model, "hf_device_map") and
-        # any(d in model.hf_device_map for d in ["cpu", "disk"]) ): raise ValueError( "Found modules on cpu/disk.
-        # Using Exllamav2 backend requires all the modules to be on GPU." "You can deactivate exllama backend by
-        # setting `disable_exllama=True` in the quantization config object" )
 
         class StoreAttr(object):
             pass
@@ -406,11 +405,7 @@ class AutoRoundQuantizer(HfQuantizer):
             model = self.post_init_model(model)
         else:
             raise NotImplementedError
-            # if self.quantization_config.tokenizer is None:
-            #     self.quantization_config.tokenizer = model.name_or_path
-            #
-            # self.optimum_quantizer.quantize_model(model, self.quantization_config.tokenizer)
-            # model.config.quantization_config = GPTQConfig.from_dict(self.optimum_quantizer.to_dict())
+
 
     @property
     def is_trainable(self, model: Optional["PreTrainedModel"] = None):
