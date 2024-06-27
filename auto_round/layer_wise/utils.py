@@ -26,6 +26,7 @@ from accelerate import init_empty_weights
 from accelerate.utils import set_module_tensor_to_device
 from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.auto_factory import _BaseAutoModelClass
+from torch.nn import ReLU
 
 from .load import load
 
@@ -162,6 +163,16 @@ def update_module(model, module_name, new_module):
         setattr(super_module, module_name.split(".")[-1], new_module)
 
 
+def layer_wise_to(self, device):
+    if len(self._modules) == 0:
+        if self.weight.device.type != 'meta':
+            self.to(device)
+        else:
+            for name, _ in self.named_parameters():
+                value = load_value()
+                set_module_tensor_to_device(self, name, device, value)
+
+
 def load_layer_wise_quantized_model(path):  # pragma: no cover
     """Load layer wise quantized model."""
     model = torch.load(os.path.join(path, "model_arch.pt"))
@@ -245,6 +256,7 @@ def register_weight_hooks(model, path, device="cpu", clean_weight=True, saved_pa
 
     def forward_pre_hook(name):
         def hook(module, input):
+            print('load value for layer: ', name)
             state_dict = None
             if os.path.exists(os.path.join(saved_path, f"{name}.pt")):
                 state_dict = torch.load(os.path.join(saved_path, f"{name}.pt"))
@@ -326,6 +338,25 @@ def convert_model(empty_model, saved_path=None):
         file_path = os.path.join(saved_path, f"{name}.pt")
         torch.save(module.state_dict(), file_path)
 
+    def _layer_wise_to(module, name, device_or_dtype):
+        if isinstance(device_or_dtype, torch.dtype):
+            return module.ori_to(device_or_dtype)
+        elif len(module._modules) == 0:
+            # skip method type
+            if len(module._parameters) == 0:
+                return module
+            if module.weight.device.type != 'meta':
+                return module.ori_to(device_or_dtype)
+            else:
+                for n, _ in module.named_parameters():
+                    param_name = name + "." + n
+                    value = load_value(empty_model, param_name, empty_model.path)
+                    set_module_tensor_to_device(module, n, device_or_dtype, value, dtype=module.dtype)
+            return module
+        else:
+            for n, m in module.named_children():
+                return m.to(device_or_dtype)
+
     modules = get_named_children(empty_model)
     for name, module in modules:
         if hasattr(module, 'weight'):
@@ -335,7 +366,16 @@ def convert_model(empty_model, saved_path=None):
         if hasattr(module, 'bias') and module.bias is not None:
             module.get_bias = partial(_get_value, name, 'bias')
         module.update = partial(_update, module)
-
+    
+    def _repalce_to(module, name):
+        if len(module._modules) > 0:
+            for n, m in module.named_children():
+                if len(name) > 0:
+                    n = name + '.' + n
+                _repalce_to(m, n)
+        module.ori_to = module.to
+        module.to = partial(_layer_wise_to, module, name)
+    _repalce_to(empty_model, '')
 
 def load_model_with_hooks(
         pretrained_model_name_or_path,
