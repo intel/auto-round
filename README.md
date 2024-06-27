@@ -11,12 +11,9 @@ AutoRound
 <div align="left">
 
 AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference. It's tailored for a wide range
-of models and consistently delivers noticeable improvements, often significantly outperforming SignRound with the cost
-of more tuning time for quantization.
-
-Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps,
+of models. Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps,
 which competes impressively against recent methods without introducing any additional inference overhead. The below
-image presents an overview of AutoRound.
+image presents an overview of AutoRound.  Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
 
 <div align="center">
 
@@ -26,7 +23,6 @@ image presents an overview of AutoRound.
 
 ## What's New
 * [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant performance drop issue with the asymmetric kernel
-* [2024/05] Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
 * [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
 * [2024/05] AutoRound performs well
   in [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)
@@ -102,7 +98,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `minmax_lr (float)`: The learning rate for min-max tuning (default is None, it will be set to lr automatically).
 
-- `n_samples (int)`: Number of samples for tuning (default is 512).
+- `nsamples (int)`: Number of samples for tuning (default is 512).
 
 - `seqlen (int)`: Data length of the sequence for tuning (default is 2048).
 
@@ -113,7 +109,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `amp (bool)`: Whether to use automatic mixed precision (default is True).
 
-- `n_blocks (int)`: Packing several blocks as one for tuning together (default is 1).
+- `nblocks (int)`: Packing several blocks as one for tuning together (default is 1).
 
 - `gradient_accumulate_steps (int)`: Number of gradient accumulation steps (default is 1).
 
@@ -205,9 +201,7 @@ average accuracies of 11 zero-shot tasks.
 
 1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time.
 
-2 Setting 'enable_quanted_input' to False has been observed to occasionally yield improved results.
-
-3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
+2 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
 ## Reference
 

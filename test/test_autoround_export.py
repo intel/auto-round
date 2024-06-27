@@ -56,7 +56,7 @@ class TestAutoroundExport(unittest.TestCase):
         model = copy.deepcopy(self.gptj)
         out1 = model(self.lm_input)
         round = AutoRound
-        optq_1 = round(model, self.tokenizer, n_samples=20, amp=False, seqlen=10, iters=10)
+        optq_1 = round(model, self.tokenizer, nsamples=20, amp=False, seqlen=10, iters=10)
         q_model, weight_config1 = optq_1.quantize()
         from auto_round.export.export_to_itrex import pack_model
 
@@ -72,7 +72,7 @@ class TestAutoroundExport(unittest.TestCase):
 
         model = copy.deepcopy(self.gptj)
         out6 = model(self.lm_input)
-        optq_2 = round(model, self.tokenizer, device="cpu", n_samples=20, seqlen=10)
+        optq_2 = round(model, self.tokenizer, device="cpu", nsamples=20, seqlen=10)
         q_model, weight_config2 = optq_2.quantize()
         compressed_model = pack_model(model=q_model, weight_config=weight_config2, inplace=False)
         out4 = q_model(self.lm_input)

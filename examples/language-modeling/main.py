@@ -74,9 +74,9 @@ if __name__ == '__main__':
 
     parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
 
-    parser.add_argument("--n_blocks", default=1, type=int, help="num of blocks to tune together")
+    parser.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
 
-    parser.add_argument("--n_samples", default=512, type=int,
+    parser.add_argument("--nsamples", default=512, type=int,
                         help="number of samples")
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
@@ -298,9 +298,9 @@ if __name__ == '__main__':
         gpu_format = "auto_round"
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
-                      dataset=args.dataset, seqlen=seqlen, n_blocks=args.n_blocks, iters=args.iters, lr=args.lr,
+                      dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
-                      amp=not args.disable_amp, n_samples=args.n_samples,
+                      amp=not args.disable_amp, nsamples=args.nsamples,
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
@@ -344,8 +344,10 @@ if __name__ == '__main__':
 
         if 'gpu' in deployment_device or "auto_round" in gpu_format or "auto-round" in gpu_format:
             model_args = f"pretrained={export_dir}-gpu"
-        else:
+        elif "fake" in deployment_device:
             model_args = f"pretrained={output_dir}"
+        else:
+            exit() ## does not support cpu,xpu model eval
 
         res = simple_evaluate(model="hf", model_args=model_args,
                               tasks=tasks,
