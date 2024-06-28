@@ -93,7 +93,7 @@ def dynamic_QuantLienar_for_packing(backend, bits, group_size):
             from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
             return WQLinear_GEMM
         except:
-            logger.error("autoawq is required. Please install it to support auto_awq format.")
+            logger.error("autoawq is required. Please install it by 'pip install autoawq' to support auto_awq format.")
             return
     elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
