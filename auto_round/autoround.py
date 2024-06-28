@@ -459,7 +459,6 @@ class AutoRound(object):
             n_samples (int): The number of samples to use for calibration.
             bs (int): The number of samples to use for calibration
         """
-
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
             # slow here

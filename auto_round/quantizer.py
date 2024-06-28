@@ -256,10 +256,15 @@ class WrapperLinear(torch.nn.Module):
             max_scale,
             self.scale_dtype,
         )
+        if self.orig_layer.device.type == 'meta':
+            self.orig_layer.to('cpu')
         self.orig_layer.weight.data.copy_(q_dq_weight)
         self.orig_layer.weight.grad = None  ##clear grad
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+        if hasattr(self.orig_layer, 'update'):
+            self.orig_layer.update()
+            self.orig_layer.to('meta')
         return self.orig_layer
 
     def forward(self, x):
@@ -274,6 +279,8 @@ class WrapperLinear(torch.nn.Module):
         from torch.functional import F
 
         weight = self.orig_layer.weight
+        if weight.device.type == 'meta':
+            weight = self.orig_layer.get_weight()
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, 0, 1.0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, 0, 1.0))
         weight_q, _, _ = quant_weight(
@@ -288,7 +295,8 @@ class WrapperLinear(torch.nn.Module):
         )
         weight_q = weight_q.to(weight.dtype)
         # pylint: disable=not-callable
-        return F.linear(x, weight_q, self.orig_layer.bias)
+        bias = self.orig_layer.get_bias() if hasattr(self.orig_layer, 'get_bias') else self.orig_layer.bias
+        return F.linear(x, weight_q, bias)
 
 
 class WrapperTransformerConv1d(torch.nn.Module):
@@ -323,7 +331,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         weight_dtype = self.orig_layer.weight.dtype
         weight_dtype = torch.float32
         device = self.orig_layer.weight.device
-        self.weight_t = self.orig_layer.weight.t()
+        self.weight_t = self.orig_layer.weight.t() if not hasattr(self.orig_layer, 'get_weight') else self.orig_layer.get_weight().t()
         self.value = torch.nn.Parameter(
             torch.zeros(self.weight_t.shape, device=device, dtype=weight_dtype), requires_grad=True
         )
@@ -356,10 +364,15 @@ class WrapperTransformerConv1d(torch.nn.Module):
         weight_q, scale, zp = quant_weight(
             self.weight_t, self.num_bits, self.group_size, self.sym, v, min_scale, max_scale, self.scale_dtype
         )
+        if self.orig_layer.weight.device.type == 'meta':
+            self.orig_layer.weight.to('cpu')
         self.orig_layer.weight.data.copy_(weight_q.t())
         self.orig_layer.weight.grad = None
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu")
+        if hasattr(self.orig_layer, 'update'):
+            self.orig_layer.update()
+            self.orig_layer.to('meta')
         return self.orig_layer
 
     def forward(self, x):

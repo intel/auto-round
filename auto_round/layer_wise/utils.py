@@ -285,6 +285,7 @@ def register_weight_hooks(model, path, device="cpu", clean_weight=True, saved_pa
 
     def forward_pre_hook(name):
         def hook(module, input):
+            logger.debug(f"{name} forward hood load value")
             state_dict = None
             if os.path.exists(os.path.join(saved_path, f"{name}.pt")):
                 state_dict = torch.load(os.path.join(saved_path, f"{name}.pt"))
@@ -300,6 +301,7 @@ def register_weight_hooks(model, path, device="cpu", clean_weight=True, saved_pa
 
     def forward_hook(name):
         def hook(module, input, output):
+            logger.debug(f"{name} forward hood clean value")
             if saved_path:
                 file_path = os.path.join(saved_path, f"{name}.pt")
                 torch.save(module.state_dict(), file_path)
@@ -368,7 +370,8 @@ def convert_model(empty_model, saved_path=None):
 
     def _layer_wise_to(module, name, device_or_dtype):
         if isinstance(device_or_dtype, torch.dtype):
-            return module.ori_to(device_or_dtype)
+            module.ori_to(device_or_dtype)
+            return module
         elif len(module._modules) == 0:
             # skip method type
             if len(module._parameters) == 0:
@@ -420,6 +423,5 @@ def load_model_with_hooks(
     if saved_path is None:
         saved_path = LWQ_WORKSPACE
     empty_model = load_empty_model(pretrained_model_name_or_path, cls=cls, **kwargs)
-    convert_model(empty_model, saved_path=saved_path)
     register_weight_hooks(empty_model, empty_model.path, device, clean_weight, saved_path)
     return empty_model
