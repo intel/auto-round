@@ -216,7 +216,7 @@ class VQAEval:
             resAns = self.processPunctuation(resAns)
             resAns = self.processDigitArticle(resAns)
             gtAcc = []
-            gtAnswers = [ans['answer'] for ans in gts[quesId]['answers']]
+            gtAnswers = [and['answer'] for and in gts[quesId]['answers']]
             if len(set(gtAnswers)) > 1:
                 for ansDic in gts[quesId]['answers']:
                     ansDic['answer'] = self.processPunctuation(
