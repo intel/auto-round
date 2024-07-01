@@ -184,7 +184,7 @@ def get_collator_with_removed_columns(model, data_collator: Callable, descriptio
         )
         return remove_columns_collator
     
-def get_train_dataloader(train_dataset, model, data_collator, train_batch_size, num_workers) -> DataLoader:
+def get_train_dataloader(train_dataset, model, data_collator, train_batch_size=1, num_workers=0) -> DataLoader:
     """
     Returns the training [`~torch.utils.data.DataLoader`].
 
@@ -316,7 +316,7 @@ if __name__ == '__main__':
     #                     help="The dataset for quantization training. It can be a custom one.")
     
     # ================= Evaluation Related =====================
-    parser.add_argument("--eval-path", type=str, default="")
+    # parser.add_argument("--eval-path", type=str, default=None)
     
     parser.add_argument("--eval-dataset", type=str, default="textvqa_val")
 
@@ -373,7 +373,7 @@ if __name__ == '__main__':
     # dataset = SupervisedDataset(raw_data, tokenizer, max_len=tokenizer.model_max_length)
     dataset = LazySupervisedDataset(raw_data, tokenizer, max_len=min(args.seqlen, tokenizer.model_max_length))
     default_collator = default_data_collator if tokenizer is None else DataCollatorWithPadding(tokenizer)
-    dataloader = get_train_dataloader(dataset, model, default_collator, train_batch_size=1, num_workers=0)
+    dataloader = get_train_dataloader(dataset, model, default_collator, train_batch_size=args.train_bs)
     
     from auto_round import (AutoRound,
                             AutoAdamRound)
@@ -478,7 +478,7 @@ if __name__ == '__main__':
         evaluator = textVQA_evaluation(
             model,
             dataset_name=args.eval_dataset,
-            dataset_path=args.eval_path,
+            # dataset_path=args.eval_path,
             tokenizer=tokenizer,
             batch_size=args.eval_bs
         )

@@ -253,12 +253,12 @@ class InferenceSampler(torch.utils.data.sampler.Sampler):
         return len(self._local_indices)
 
 
-def textVQA_evaluation(model_name, dataset_name, dataset_path, tokenizer=None, batch_size=1, few_shot=0, seed=0):
-    torch.distributed.init_process_group(
-        backend='nccl',
-        world_size=int(os.getenv('WORLD_SIZE', '1')),
-        rank=int(os.getenv('RANK', '0')),
-    )
+def textVQA_evaluation(model_name, dataset_name, dataset_path=None, tokenizer=None, batch_size=1, few_shot=0, seed=0):
+    # torch.distributed.init_process_group(
+    #     backend='nccl',
+    #     world_size=int(os.getenv('WORLD_SIZE', '1')),
+    #     rank=int(os.getenv('RANK', '0')),
+    # )
 
     torch.cuda.set_device(int(os.getenv('LOCAL_RANK', 0)))
     if isinstance(model_name, str):
@@ -278,11 +278,15 @@ def textVQA_evaluation(model_name, dataset_name, dataset_path, tokenizer=None, b
     tokenizer.pad_token_id = tokenizer.eod_id
 
     prompt = '<img>{}</img>{} Answer:'
-
+    if dataset_path is not None:
+        for key in ds_collections[dataset_name].keys():
+            if isinstance(ds_collections[dataset_name][key], str) and "json" in ds_collections[dataset_name][key]:
+                ds_collections[dataset_name][key] = os.path.join(dataset_path,ds_collections[dataset_name][key])
+            
     random.seed(seed)
     dataset = VQADataset(
-        train=os.path.join(dataset_path,ds_collections[dataset_name]['train']),
-        test=os.path.join(dataset_path,ds_collections[dataset_name]['test']),
+        train=ds_collections[dataset_name]['train'],
+        test=ds_collections[dataset_name]['test'],
         prompt=prompt,
         few_shot=few_shot,
     )
@@ -321,18 +325,18 @@ def textVQA_evaluation(model_name, dataset_name, dataset_path, tokenizer=None, b
 
         for question_id, answer, annotation in zip(question_ids, answers,
                                                    annotations):
-            if dataset in ['vqav2_val', 'vqav2_testdev', 'okvqa_val', 'textvqa_val', 'vizwiz_val']:
+            if dataset_name in ['vqav2_val', 'vqav2_testdev', 'okvqa_val', 'textvqa_val', 'vizwiz_val']:
                 outputs.append({
                     'question_id': question_id,
                     'answer': answer,
                 })
-            elif dataset in ['docvqa_val', 'infographicsvqa', 'gqa_testdev', 'ocrvqa_val', 'ocrvqa_test']:
+            elif dataset_name in ['docvqa_val', 'infographicsvqa', 'gqa_testdev', 'ocrvqa_val', 'ocrvqa_test']:
                 outputs.append({
                     'questionId': question_id,
                     'answer': answer,
                     'annotation': annotation,
                 })
-            elif dataset in ['ai2diagram_test']:
+            elif dataset_name in ['ai2diagram_test']:
                 outputs.append({
                     'image': question_id,
                     'answer': answer,
@@ -343,12 +347,12 @@ def textVQA_evaluation(model_name, dataset_name, dataset_path, tokenizer=None, b
                     'answer': answer,
                     'annotation': annotation,
                 })
-            elif dataset in ['docvqa_test']:
+            elif dataset_name in ['docvqa_test']:
                 outputs.append({
                     'questionId': question_id,
                     'answer': answer,
                 })
-            elif dataset in ['vizwiz_test']:
+            elif dataset_name in ['vizwiz_test']:
                 outputs.append({
                     'image': question_id,
                     'answer': answer,
@@ -356,66 +360,67 @@ def textVQA_evaluation(model_name, dataset_name, dataset_path, tokenizer=None, b
             else:
                 raise NotImplementedError
 
-    torch.distributed.barrier()
+    # torch.distributed.barrier()
 
-    world_size = torch.distributed.get_world_size()
-    merged_outputs = [None for _ in range(world_size)]
-    torch.distributed.all_gather_object(merged_outputs, json.dumps(outputs))
+    # world_size = torch.distributed.get_world_size()
+    # merged_outputs = [None for _ in range(world_size)]
+    # torch.distributed.all_gather_object(merged_outputs, json.dumps(outputs))
 
+    merged_outputs = [json.dumps(outputs)]
     merged_outputs = [json.loads(_) for _ in merged_outputs]
     merged_outputs = [_ for _ in itertools.chain.from_iterable(merged_outputs)]
 
-    if torch.distributed.get_rank() == 0:
-        print(f"Evaluating {dataset} ...")
-        time_prefix = time.strftime('%y%m%d%H%M%S', time.localtime())
-        results_file = f'{dataset}_{time_prefix}_fs{few_shot}_s{seed}.json'
-        json.dump(merged_outputs, open(results_file, 'w'), ensure_ascii=False)
+    # if torch.distributed.get_rank() == 0:
+    print(f"Evaluating {dataset} ...")
+    time_prefix = time.strftime('%y%m%d%H%M%S', time.localtime())
+    results_file = f'{dataset}_{time_prefix}_fs{few_shot}_s{seed}.json'
+    json.dump(merged_outputs, open(results_file, 'w'), ensure_ascii=False)
 
-        if ds_collections[dataset_name]['metric'] == 'vqa_score':
-            vqa = VQA(os.path.join(dataset_path,ds_collections[dataset_name]['annotation']),
-                      os.path.join(dataset_path,ds_collections[dataset_name]['question']))
-            results = vqa.loadRes(
-                resFile=results_file,
-                quesFile=os.path.join(dataset_path,ds_collections[dataset_name]['question']))
-            vqa_scorer = VQAEval(vqa, results, n=2)
-            vqa_scorer.evaluate()
+    if ds_collections[dataset_name]['metric'] == 'vqa_score':
+        vqa = VQA(ds_collections[dataset_name]['annotation'],
+                    ds_collections[dataset_name]['question'])
+        results = vqa.loadRes(
+            resFile=results_file,
+            quesFile=ds_collections[dataset_name]['question'])
+        vqa_scorer = VQAEval(vqa, results, n=2)
+        vqa_scorer.evaluate()
 
-            print(vqa_scorer.accuracy)
+        print(vqa_scorer.accuracy)
 
-        elif ds_collections[dataset_name]['metric'] == 'anls':
-            json.dump(merged_outputs,
-                      open(results_file, 'w'),
-                      ensure_ascii=False)
-            print('python infographicsvqa_eval.py -g ' +
-                  os.path.join(dataset_path,ds_collections[dataset_name]['annotation']) + ' -s ' +
-                  results_file)
-            os.system('python infographicsvqa_eval.py -g ' +
-                      os.path.join(dataset_path,ds_collections[dataset_name]['annotation']) + ' -s ' +
-                      results_file)
-        elif ds_collections[dataset_name]['metric'] == 'relaxed_accuracy':
-            print({
-                'relaxed_accuracy': evaluate_relaxed_accuracy(merged_outputs)
-            })
-        elif ds_collections[dataset_name]['metric'] == 'accuracy':
-            if 'gqa' in dataset:
-                for entry in merged_outputs:
-                    response = entry['answer']
-                    response = response.strip().split('.')[0].split(
-                        ',')[0].split('!')[0].lower()
-                    if 'is ' in response:
-                        response = response.split('is ')[1]
-                    if 'are ' in response:
-                        response = response.split('are ')[1]
-                    if 'a ' in response:
-                        response = response.split('a ')[1]
-                    if 'an ' in response:
-                        response = response.split('an ')[1]
-                    if 'the ' in response:
-                        response = response.split('the ')[1]
-                    if ' of' in response:
-                        response = response.split(' of')[0]
-                    response = response.strip()
-                    entry['answer'] = response
-            print({'accuracy': evaluate_exact_match_accuracy(merged_outputs)})
+    elif ds_collections[dataset_name]['metric'] == 'anls':
+        json.dump(merged_outputs,
+                    open(results_file, 'w'),
+                    ensure_ascii=False)
+        print('python infographicsvqa_eval.py -g ' +
+                ds_collections[dataset_name]['annotation'] + ' -s ' +
+                results_file)
+        os.system('python infographicsvqa_eval.py -g ' +
+                    ds_collections[dataset_name]['annotation'] + ' -s ' +
+                    results_file)
+    elif ds_collections[dataset_name]['metric'] == 'relaxed_accuracy':
+        print({
+            'relaxed_accuracy': evaluate_relaxed_accuracy(merged_outputs)
+        })
+    elif ds_collections[dataset_name]['metric'] == 'accuracy':
+        if 'gqa' in dataset:
+            for entry in merged_outputs:
+                response = entry['answer']
+                response = response.strip().split('.')[0].split(
+                    ',')[0].split('!')[0].lower()
+                if 'is ' in response:
+                    response = response.split('is ')[1]
+                if 'are ' in response:
+                    response = response.split('are ')[1]
+                if 'a ' in response:
+                    response = response.split('a ')[1]
+                if 'an ' in response:
+                    response = response.split('an ')[1]
+                if 'the ' in response:
+                    response = response.split('the ')[1]
+                if ' of' in response:
+                    response = response.split(' of')[0]
+                response = response.strip()
+                entry['answer'] = response
+        print({'accuracy': evaluate_exact_match_accuracy(merged_outputs)})
 
-    torch.distributed.barrier()
+    # torch.distributed.barrier()

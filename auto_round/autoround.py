@@ -229,6 +229,7 @@ class AutoRound(object):
                 if total_samples < self.train_bs:
                     self.train_bs = total_samples
                     logger.warning(f"force the train batch size to {total_samples} ")
+
             self.model = self.model.to("cpu")
             torch.cuda.empty_cache()
             self.quant_blocks(
@@ -394,8 +395,9 @@ class AutoRound(object):
         """
 
         output = []
-        for i in range(0, self.nsamples, bs):
-            end_index = min(self.nsamples, i + bs)
+        nsamples = len(input_ids)
+        for i in range(0, nsamples, bs):
+            end_index = min(nsamples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
             tmp_input_ids, tmp_input_others = sampling_inputs(
                 input_ids,
@@ -447,7 +449,6 @@ class AutoRound(object):
             if isinstance(data, torch.Tensor):
                 input_ids = data.to(self.model.device)
                 data_new = input_ids
-
             elif isinstance(data, str):
                 if self.tokenizer is None:
                     logger.error("please provide tokenizer for string input")
@@ -472,7 +473,7 @@ class AutoRound(object):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-
+            
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)

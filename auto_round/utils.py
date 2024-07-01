@@ -254,12 +254,11 @@ def sampling_inputs(input_ids, input_others, indices, seqlen,
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
         if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key) \
-            or (not_share_position_ids_flag and "position_ids" in key):
+                or (not_share_position_ids_flag and "position_ids" in key):
             current_input_others[key] = None
             if input_others[key] is not None:
                 current_input_others[key] = [input_others[key][i] for i in indices]
                 current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-
         else:
             current_input_others[key] = input_others[key]
 
@@ -670,4 +669,3 @@ def dynamic_import_inference_linear(bits, group_size, backend):
     else:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     return QuantLinear
-
