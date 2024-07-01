@@ -14,10 +14,12 @@
 
 
 import torch
+
 from auto_round import utils
 
 
 def get_scale_param_from_block(block: torch.nn.Module):
+
     scale_params = []
     for name, mod in block.named_modules():
         if hasattr(mod, "weight_scale_calculator"):
@@ -111,6 +113,7 @@ def get_weight_scale(weight_data):
     norm_weight_amax = norm_weight_amax.reshape(1, -1)
     norm_weight_amax_clip = norm_weight_amax + 1
     return norm_weight_amax_clip.to(weight_data.device)
+
 
 # Vanilla ScaleCalculator
 class ScaleCalculatorV(torch.nn.Module):
