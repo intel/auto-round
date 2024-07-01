@@ -61,8 +61,8 @@ class VQA:
         for ann in self.dataset['annotations']:
             imgToQA[ann['image_id']] += [ann]
             qa[ann['question_id']] = ann
-        for ques in self.questions['questions']:
-            qqa[ques['question_id']] = ques
+        for quest in self.questions['questions']:
+            qqa[quest['question_id']] = quest
         print('index created!')
 
         # create class members
@@ -75,7 +75,7 @@ class VQA:
 
         :return:
         """
-        for key, value in self.datset['info'].items():
+        for key, value in self.dataset['info'].items():
             print('%s: %s' % (key, value))
 
     def getQuesIds(self, imgIds=[], quesTypes=[], ansTypes=[]):
@@ -162,8 +162,8 @@ class VQA:
         for ann in anns:
             quesId = ann['question_id']
             print('Question: %s' % (self.qqa[quesId]['question']))
-            for ans in ann['answers']:
-                print('Answer %d: %s' % (ans['answer_id'], ans['answer']))
+            for and in ann['answers']:
+                print('Answer %d: %s' % (and['answer_id'], and['answer']))
 
     def loadRes(self, resFile, quesFile):
         """Load result file and return a result object.
@@ -187,7 +187,7 @@ class VQA:
         annsQuesIds = [ann['question_id'] for ann in anns]
         assert set(annsQuesIds) == set(
             self.getQuesIds()
-        ), 'Results do not correspond to current VQA set. Either the results do not have predictions for all question ids in annotation file or there is atleast one question id that does not belong to the question ids in the annotation file.'
+        ), 'Results do not correspond to current VQA set. Either the results do not have predictions for all question ids in annotation file or there is at least one question id that does not belong to the question ids in the annotation file.'
         for ann in anns:
             quesId = ann['question_id']
             if res.dataset['task_type'] == 'Multiple Choice':
