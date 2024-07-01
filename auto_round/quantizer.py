@@ -190,7 +190,7 @@ def quant_weight(
 
 
 class WrapperLinear(torch.nn.Module):
-    def __init__(self, orig_layer, enable_minmax_tuning=True):
+    def __init__(self, orig_layer, enable_minmax_tuning=True, device='cpu'):
         """A wrapper module for linear layers that enables quantization and min-max tuning of weights.
 
         Args:
@@ -209,6 +209,7 @@ class WrapperLinear(torch.nn.Module):
         """
         super(WrapperLinear, self).__init__()
         self.orig_layer = orig_layer
+        self.device = device
         self.num_bits = self.orig_layer.bits
         self.group_size = self.orig_layer.group_size
         self.scale_dtype = self.orig_layer.scale_dtype
@@ -216,21 +217,21 @@ class WrapperLinear(torch.nn.Module):
         weight_dtype = self.orig_layer.weight.dtype
         weight_dtype = torch.float32
         self.value = torch.nn.Parameter(
-            torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
+            torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
             requires_grad=True,
         )
         self.enable_minmax_tuning = enable_minmax_tuning
         shape = get_scale_shape(self.orig_layer.weight, self.group_size)
         if self.enable_minmax_tuning:
             self.min_scale = torch.nn.Parameter(
-                torch.ones(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
+                torch.ones(shape, device=self.device, dtype=weight_dtype), requires_grad=True
             )
             self.max_scale = torch.nn.Parameter(
-                torch.ones(shape, device=self.orig_layer.weight.device, dtype=weight_dtype), requires_grad=True
+                torch.ones(shape, device=self.device, dtype=weight_dtype), requires_grad=True
             )
         else:
-            self.min_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
-            self.max_scale = torch.tensor(1.0, device=self.orig_layer.weight.device, dtype=weight_dtype)
+            self.min_scale = torch.tensor(1.0, device=self.device, dtype=weight_dtype)
+            self.max_scale = torch.tensor(1.0, device=self.device, dtype=weight_dtype)
 
     def unwrapper(self, v, min_scale, max_scale):
         """Unwrapper the layer to the original layer.
@@ -246,6 +247,8 @@ class WrapperLinear(torch.nn.Module):
         min_scale.clamp_(0, 1.0)
         max_scale.clamp_(0, 1.0)
 
+        if self.orig_layer.device.type == 'meta':
+            self.orig_layer.to('cpu')
         q_dq_weight, scale, zp = quant_weight(
             self.orig_layer.weight,
             self.num_bits,
@@ -256,8 +259,6 @@ class WrapperLinear(torch.nn.Module):
             max_scale,
             self.scale_dtype,
         )
-        if self.orig_layer.device.type == 'meta':
-            self.orig_layer.to('cpu')
         self.orig_layer.weight.data.copy_(q_dq_weight)
         self.orig_layer.weight.grad = None  ##clear grad
         self.orig_layer.scale = scale.to("cpu")
@@ -280,7 +281,7 @@ class WrapperLinear(torch.nn.Module):
 
         weight = self.orig_layer.weight
         if weight.device.type == 'meta':
-            weight = self.orig_layer.get_weight()
+            weight = self.orig_layer.get_weight().to(self.device)
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, 0, 1.0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, 0, 1.0))
         weight_q, _, _ = quant_weight(
@@ -295,12 +296,14 @@ class WrapperLinear(torch.nn.Module):
         )
         weight_q = weight_q.to(weight.dtype)
         # pylint: disable=not-callable
-        bias = self.orig_layer.get_bias() if hasattr(self.orig_layer, 'get_bias') else self.orig_layer.bias
+        bias = self.orig_layer.bias
+        if bias.device.type == 'meta':
+            bias = self.orig_layer.get_bias().to(self.device)
         return F.linear(x, weight_q, bias)
 
 
 class WrapperTransformerConv1d(torch.nn.Module):
-    def __init__(self, orig_layer, enable_minmax_tuning=True):
+    def __init__(self, orig_layer, enable_minmax_tuning=True, device='cpu'):
         """A wrapper module for transformers 1D convolutional layers used in transformers,
         enabling quantization and min-max tuning of weights.
 
@@ -330,8 +333,9 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.scale_dtype = self.orig_layer.scale_dtype
         weight_dtype = self.orig_layer.weight.dtype
         weight_dtype = torch.float32
-        device = self.orig_layer.weight.device
+        self.device = device
         self.weight_t = self.orig_layer.weight.t() if not hasattr(self.orig_layer, 'get_weight') else self.orig_layer.get_weight().t()
+        self.weight_t = self.weight_t.to(self.device)
         self.value = torch.nn.Parameter(
             torch.zeros(self.weight_t.shape, device=device, dtype=weight_dtype), requires_grad=True
         )
@@ -425,7 +429,7 @@ class WrapperMultiblock(torch.nn.Module):
         return hidden_states
 
 
-def wrapper_block(block, enable_minmax_tuning):
+def wrapper_block(block, enable_minmax_tuning, device='cpu'):
     """Wraps the layers in the given block with a custom Wrapper module.
 
     Args:
@@ -442,7 +446,7 @@ def wrapper_block(block, enable_minmax_tuning):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning)
+            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning, device=device)
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
@@ -450,7 +454,7 @@ def wrapper_block(block, enable_minmax_tuning):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperTransformerConv1d(m, enable_minmax_tuning=enable_minmax_tuning)
+            new_m = WrapperTransformerConv1d(m, enable_minmax_tuning=enable_minmax_tuning, device=device)
             set_module(block, n, new_m)
             quantized_layers.append(n)
 

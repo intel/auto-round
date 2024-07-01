@@ -35,6 +35,14 @@ logger = logging.getLogger("layer_wise_tools")
 
 LWQ_WORKSPACE = os.path.join("layer_wise_tmp")
 
+import pynvml
+pynvml.nvmlInit()
+
+def print_gpu_memory(gid, prefix=''):
+    handle = pynvml.nvmlDeviceGetHandleByIndex(gid)
+    meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
+    print(prefix + ' :' + str(meminfo.used / 1024**2) + 'MB')
+
 
 class QDQLayer(torch.nn.Module):
     def __init__(self, module, input_scale=None) -> None:
@@ -374,9 +382,7 @@ def convert_model(empty_model, saved_path=None):
             return module
         elif len(module._modules) == 0:
             # skip method type
-            if len(module._parameters) == 0:
-                return module
-            if module.weight.device.type != 'meta':
+            if len(module._parameters) == 0 or module.weight.device.type != 'meta':
                 module.ori_to(device_or_dtype)
                 return module
             else:
@@ -387,7 +393,7 @@ def convert_model(empty_model, saved_path=None):
                     if hasattr(module, 'dtype'):
                         dtype = module.dtype
                     set_module_tensor_to_device(module, n, device_or_dtype, value, dtype=dtype)
-            return module
+                return module
         else:
             for n, m in module.named_children():
                 m.to(device_or_dtype)

@@ -850,7 +850,7 @@ class AutoRound(object):
         if q_input is not None:
             input_ids = q_input
 
-        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
+        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning, device=self.device)
 
         round_params = []
         minmax_params = []
