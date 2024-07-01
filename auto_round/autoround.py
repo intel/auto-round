@@ -338,11 +338,11 @@ class AutoRound(object):
         Returns:
         None
         """
-        layers_inblocks = get_layer_names_in_block(self.model, self.supported_types)
+        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types)
         for n, m in self.model.named_modules():
             if not isinstance(m, tuple(self.supported_types)):
                 continue
-            if n not in weight_config.keys() and n in layers_inblocks:
+            if n not in weight_config.keys() and n in layers_in_blocks:
                 weight_config[n] = {}
                 weight_config[n]["data_type"] = self.data_type
                 weight_config[n]["bits"] = self.bits
