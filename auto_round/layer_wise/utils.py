@@ -189,7 +189,10 @@ def get_layers_before_block(model):
         m.forward = partial(_forward, m, n)
     
     try:
-        model.forward(input_ids=torch.tensor([[1]]), attention_mask=torch.tensor([[1]]))
+        model.forward(
+            input_ids=torch.zeros((1,1), device='meta', dtype=torch.int),
+            attention_mask=torch.zeros((1,1), device='meta', dtype=torch.int)
+            )
     except NotImplementedError:
         pass
 
