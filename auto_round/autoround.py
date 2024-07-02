@@ -85,7 +85,7 @@ class AutoRound(object):
         nblocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
-        dynamic_max_gap (int): The dynamic maximum gap (default is -1).
+        dynamic_iters_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
@@ -114,16 +114,18 @@ class AutoRound(object):
             minmax_lr: float = None,
             low_gpu_mem_usage: bool = True,
             iters: int = 200,
-            seqlen: int = 2048,
-            nsamples: int = 512,
+            seqlen: int = -1,
+            nsamples: int = -1,
             sampler: str = "rand",
             seed: int = 42,
             nblocks: int = 1,
             gradient_accumulate_steps: int = 1,
             not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
+            dynamic_iters_gap: int = -1,
             data_type: str = "int",  ##only support int for now
             scale_dtype: str = "fp16",
+            infer_bs_coeff=2,
+            use_fast_quant=True,
             **kwargs,
     ):
         self.quantized = False
@@ -163,13 +165,14 @@ class AutoRound(object):
         self.sampler = sampler
         self.gradient_accumulate_steps = gradient_accumulate_steps
         self.not_use_best_mse = not_use_best_mse
-        self.dynamic_max_gap = dynamic_max_gap
+        self.dynamic_iters_gap = dynamic_iters_gap
         self.enable_full_range = enable_full_range
         self.lr_scheduler = lr_scheduler
         self.set_layerwise_config(self.weight_config)
         self.optimizer = self.get_optimizer(None)
         self.share_attention_mask_flag = None
         self.hidden_dim_flag = None
+        self.infer_bs_coeff = infer_bs_coeff
         torch.set_printoptions(precision=3, sci_mode=True)
 
         self.check_configs()
@@ -542,7 +545,7 @@ class AutoRound(object):
         self.last_cache_name = last_cache_name
         if last_cache_name is None and len(block_names) + len(layer_names) == 1:
             self.last_cache_name = block_names[0] if len(block_names) == 1 else layer_names[0]
-        calib_bs = self.train_bs
+        calib_bs = self.train_bs*self.infer_bs_coeff
         self.hook_handles = []
         self._replace_forward()
         self.calib(nsamples, calib_bs)
@@ -760,7 +763,7 @@ class AutoRound(object):
                 best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, 0, 1.0))
 
             if not self.not_use_best_mse:
-                if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+                if self.dynamic_iters_gap > 0 and i - last_best_iter >= self.dynamic_iters_gap:
                     break
             self.step(scaler, optimizer, lr_schedule)
 
@@ -788,7 +791,7 @@ class AutoRound(object):
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
 
-        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, self.cache_device)
+        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs*self.infer_bs_coeff, device, self.cache_device)
 
         if q_input is not None:
             input_ids = q_input
@@ -883,7 +886,7 @@ class AutoRound(object):
                 best_min_scale, best_max_scale = collect_minmax_scale(block)
 
             if not self.not_use_best_mse:
-                if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+                if self.dynamic_iters_gap > 0 and i - last_best_iter >= self.dynamic_iters_gap:
                     break
             self.step(scaler, optimizer, lr_schedule)
 
@@ -904,7 +907,7 @@ class AutoRound(object):
         if self.enable_quanted_input:
 
             q_outputs = self.get_block_outputs(
-                block, input_ids, input_others, self.train_bs, device, cache_device=self.cache_device
+                block, input_ids, input_others, self.train_bs*self.infer_bs_coeff, device, cache_device=self.cache_device
             )
             for i in range(len(input_ids)):
                 input_ids[i] = None
@@ -1192,7 +1195,7 @@ class AutoOPTRound(AutoRound):
         nblocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
-        dynamic_max_gap (int): The dynamic maximum gap (default is -1).
+        dynamic_iters_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
@@ -1229,7 +1232,7 @@ class AutoOPTRound(AutoRound):
             nblocks: int = 1,
             gradient_accumulate_steps: int = 1,
             not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
+            dynamic_iters_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
             optimizer="AdamW",
@@ -1261,7 +1264,7 @@ class AutoOPTRound(AutoRound):
             nblocks,
             gradient_accumulate_steps,
             not_use_best_mse,
-            dynamic_max_gap,
+            dynamic_iters_gap,
             data_type,
             scale_dtype,
             **kwargs,
@@ -1340,7 +1343,7 @@ class AutoAdamRound(AutoOPTRound):
         nblocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
-        dynamic_max_gap (int): The dynamic maximum gap (default is -1).
+        dynamic_iters_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
         optimizer: string or object
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
@@ -1377,7 +1380,7 @@ class AutoAdamRound(AutoOPTRound):
             nblocks: int = 1,
             gradient_accumulate_steps: int = 1,
             not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
+            dynamic_iters_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
             optimizer="AdamW",
@@ -1409,10 +1412,9 @@ class AutoAdamRound(AutoOPTRound):
             nblocks,
             gradient_accumulate_steps,
             not_use_best_mse,
-            dynamic_max_gap,
+            dynamic_iters_gap,
             data_type,
             scale_dtype,
             optimizer,
             **kwargs,
         )
-
