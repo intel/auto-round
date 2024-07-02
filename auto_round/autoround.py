@@ -429,6 +429,7 @@ class AutoRound(object):
                 self.seed,
                 bs,
                 self.nsamples,
+                apply_template=False, # Set to True to apply chat template in calibration data tokenization.
             )
         else:
             self.dataloader = self.dataset
