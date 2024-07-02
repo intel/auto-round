@@ -102,8 +102,8 @@ class AutoRound(object):
             group_size: int = 128,
             sym: bool = False,
             weight_config: dict = {},
-            enable_full_range: bool = False,  ##for symmetric, TODO support later
-            batch_size: int = 8,
+            enable_full_range: bool = False,
+            batch_size: int = None,
             amp: bool = True,
             device=None,
             lr_scheduler=None,
@@ -114,8 +114,8 @@ class AutoRound(object):
             minmax_lr: float = None,
             low_gpu_mem_usage: bool = None,
             iters: int = 200,
-            seqlen: int = -1,
-            nsamples: int = -1,
+            seqlen: int = None,
+            nsamples: int = None,
             sampler: str = "rand",
             seed: int = 42,
             nblocks: int = 1,
@@ -136,11 +136,15 @@ class AutoRound(object):
         self.enable_minmax_tuning = enable_minmax_tuning
         self.use_fast_quant = use_fast_quant
         self.nsamples = nsamples
-        if self.nsamples < 0:
+        if self.nsamples is None:
             self.nsamples = 128 if self.use_fast_quant else 512
         self.seqlen = seqlen
-        if self.seqlen < 0:
+        if self.seqlen is None:
             self.seqlen = 512 if self.use_fast_quant else 2048
+        self.train_bs = batch_size
+        if self.train_bs is None:
+            self.train_bs = 4 if self.use_fast_quant else 8
+
         if low_gpu_mem_usage is None:
             low_gpu_mem_usage = False if self.use_fast_quant else True
         self.nblocks = nblocks
@@ -154,7 +158,6 @@ class AutoRound(object):
         self.seed = seed
         self.tokenizer = tokenizer
 
-        self.train_bs = batch_size
         self.nblocks = nblocks
         self.device = detect_device(device)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)

@@ -125,6 +125,9 @@ if __name__ == '__main__':
     parser.add_argument("--dynamic_iters_gap", default=-1, type=int,
                         help="dynamic_iters_gap")
 
+    parser.add_argument("--disable_fast_quant", action='store_true',
+                        help="disable_fast_quant")
+
     args = parser.parse_args()
     if args.low_gpu_mem_usage:
         print(
@@ -254,7 +257,8 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, dynamic_iters_gap=args.dynamic_iters_gap)
+                      enable_minmax_tuning=not args.disable_minmax_tuning, dynamic_iters_gap=args.dynamic_iters_gap,
+                      use_fast_quant= not args.disable_fast_quant)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
