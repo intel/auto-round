@@ -1,8 +1,8 @@
 import argparse
 import sys
 
-sys.path.insert(0, '../..')
-sys.path.insert(0, '.')
+sys.path.insert(0, '../../..')
+
 parser = argparse.ArgumentParser()
 import torch
 import os
@@ -22,16 +22,9 @@ import json
 import math
 import shortuuid
 from torch.utils.data import Dataset, DataLoader
-# from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-# from llava.conversation import conv_templates, SeparatorStyle
-# from llava.utils import disable_torch_init
-# from llava.mm_utils import tokenizer_image_token, process_images
-# from llava.eval.m4c_evaluator import TextVQAAccuracyEvaluator
 from llava.mm_utils import get_model_name_from_path
 from llava.train.train import preprocess, preprocess_multimodal
 from llava.model.builder import load_pretrained_model
-
-# from transformers import AutoProcessor, LlavaForConditionalGeneration
 
 class CustomDataset(Dataset): # for llava tuning
     # much refer to https://github.com/haotian-liu/LLaVA/blob/main/llava/train/train.py
@@ -44,7 +37,6 @@ class CustomDataset(Dataset): # for llava tuning
 
     def __getitem__(self, index):
         sources = self.list_data_dict[index]
-
         # image
         image_file = os.path.basename(sources["image"])
         image = Image.open(os.path.join(self.image_folder, image_file)).convert('RGB')
@@ -53,7 +45,6 @@ class CustomDataset(Dataset): # for llava tuning
             copy.deepcopy([sources["conversations"]]), # a list
             self.args,
         )
-
         data_dict = preprocess(
             sources,
             self.tokenizer,
@@ -62,24 +53,17 @@ class CustomDataset(Dataset): # for llava tuning
         if isinstance(index, int):
             data_dict = dict(input_ids=data_dict["input_ids"][0],
                             labels=data_dict["labels"][0])
-
         # image exist in the data
-        data_dict['image'] = image
-        return data_dict["input_ids"], data_dict["image"], data_dict["image"].size()
+        data_dict['images'] = image
+        return data_dict
 
     def __len__(self):
         return len(self.list_data_dict)
-    
-@torch.no_grad()
-def collate_fn(batch):
-    input_ids, image_tensors, image_sizes = zip(*batch)
-    input_ids = torch.stack(input_ids, dim=0)
-    image_tensors = torch.stack(image_tensors, dim=0)
-    return input_ids, image_tensors, image_sizes
+
 
 def create_data_loader(dataset, batch_size=1):
     assert batch_size == 1, "batch_size must be 1"
-    data_loader = DataLoader(dataset, batch_size=batch_size, num_workers=0, shuffle=False, collate_fn=collate_fn)
+    data_loader = DataLoader(dataset, batch_size=batch_size, num_workers=0, shuffle=False)
     return data_loader
 
 if __name__ == '__main__':
@@ -259,6 +243,7 @@ if __name__ == '__main__':
             dtype = 'float32'
 
     if args.eval_fp16_baseline:
+        print("Evaluating baseline model")
         if args.disable_low_gpu_mem_usage:
             model = model.to(torch_device)
         from mm_evaluation import TextVQAEvaluator
@@ -368,4 +353,5 @@ if __name__ == '__main__':
         )
         evaluator.run_evaluate(result_file = args.eval_result_file)
         evaluator.calculate_accuracy(result_file = args.eval_result_file)
+
 

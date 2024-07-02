@@ -459,17 +459,14 @@ class AutoRound(object):
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
-                if self.multimodal:
-                    data_new = {"input_ids": data[0].to(self.model.device), \
-                                "images": data[1].to(self.model.device, dtype=self.model.dtype), "image_sizes": data[2]}
-                    input_ids = data_new["input_ids"]
-                else:
                     data_new = data
                     input_ids = data_new[0]
             else:
                 data_new = {}
                 for key in data.keys():
                     data_new[key] = data[key].to(self.model.device)
+                    if key == 'images':
+                        data_new[key] = data[key].to(self.model.dtype)
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue

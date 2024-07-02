@@ -10,9 +10,9 @@ python3 main.py \
 --iters 200 \
 --deployment_device 'auto_round' \
 --image_folder /path/to/coco/images/train2017/ \
---question_file=/path/to/LLaVA-Instruct-150K/llava_v1_5_mix665k.json \
---eval-question-file=/path/to/textvqa/llava_textvqa_val_v051_ocr.jsonl \
---eval-image-folder=/path/to/textvqa/train_images \
---eval-annotation-file=/path/to/textvqa/TextVQA_0.5.1_val.json \
+--question_file /path/to/LLaVA-Instruct-150K/llava_v1_5_mix665k.json \
+--eval-question-file /path/to/textvqa/llava_textvqa_val_v051_ocr.jsonl \
+--eval-image-folder /path/to/textvqa/train_images \
+--eval-annotation-file /path/to/textvqa/TextVQA_0.5.1_val.json \
 --eval-result-file "./tmp_autoround" \
 --output_dir "./tmp_autoround"

@@ -1,8 +1,7 @@
 import argparse
 import sys
 
-sys.path.insert(0, '../..')
-sys.path.insert(0, '.')
+sys.path.insert(0, '../../..')
 parser = argparse.ArgumentParser()
 import torch
 import os
@@ -388,7 +387,7 @@ if __name__ == '__main__':
         evaluator = textVQA_evaluation(
             model,
             dataset_name=args.eval_dataset,
-            dataset_path=args.eval_path,
+            # dataset_path=args.eval_path,
             tokenizer=tokenizer,
             batch_size=args.eval_bs
         )
