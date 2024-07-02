@@ -60,24 +60,21 @@ if __name__ == '__main__':
     parser.add_argument("--seed", default=42, type=int,
                         help="seed")
 
-    parser.add_argument("--eval_fp16_baseline", action='store_true',
-                        help="whether to eval FP16 baseline")
-
     parser.add_argument("--amp", action='store_true',
                         help="amp is deprecated ")
 
     parser.add_argument("--adam", action='store_true',
                         help="adam")
 
-    parser.add_argument("--seqlen", default=2048, type=int,
-                        help="sequence length")
+    parser.add_argument("--seqlen", default=-1, type=int,
+                        help="sequence length, 512 with use_fast_quant else 2048")
 
     parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
 
     parser.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
 
-    parser.add_argument("--nsamples", default=512, type=int,
-                        help="number of samples")
+    parser.add_argument("--nsamples", default=-1, type=int,
+                        help="number of samples, 128 with use_fast_quant else 512")
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
                         help="low_gpu_mem_usage is deprecated")
@@ -245,15 +242,6 @@ if __name__ == '__main__':
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if "bloom" in model_name:
         args.disable_low_gpu_mem_usage = True
-    if args.eval_fp16_baseline:
-        if args.disable_low_gpu_mem_usage:
-            model = model.to(torch_device)
-        excel_name += "_fp16.xlsx"
-        eval_model(model_path=model_name, tasks=tasks, dtype=dtype, \
-                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
-        exit()
-
     round = AutoRound
     if args.adam:
         round = AutoAdamRound
@@ -299,12 +287,14 @@ if __name__ == '__main__':
 
     if "autoround" in deployment_device or "auto-round" in deployment_device or "auto_round" in deployment_device:
         gpu_format = "auto_round"
-
+    low_gpu_mem_usage = None
+    if args.disable_low_gpu_mem_usage:
+        low_gpu_mem_usage = False
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
                       amp=not args.disable_amp, nsamples=args.nsamples,
-                      low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
+                      low_gpu_mem_usage=low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, dynamic_iters_gap=args.dynamic_iters_gap)
