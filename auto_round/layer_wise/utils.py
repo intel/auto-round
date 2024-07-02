@@ -35,14 +35,6 @@ logger = logging.getLogger("layer_wise_tools")
 
 LWQ_WORKSPACE = os.path.join("layer_wise_tmp")
 
-import pynvml
-pynvml.nvmlInit()
-
-def print_gpu_memory(gid, prefix=''):
-    handle = pynvml.nvmlDeviceGetHandleByIndex(gid)
-    meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
-    print(prefix + ' :' + str(meminfo.used / 1024**2) + 'MB')
-
 
 class QDQLayer(torch.nn.Module):
     def __init__(self, module, input_scale=None) -> None:

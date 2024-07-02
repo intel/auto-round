@@ -334,7 +334,10 @@ class WrapperTransformerConv1d(torch.nn.Module):
         weight_dtype = self.orig_layer.weight.dtype
         weight_dtype = torch.float32
         self.device = device
-        self.weight_t = self.orig_layer.weight.t() if not hasattr(self.orig_layer, 'get_weight') else self.orig_layer.get_weight().t()
+        if hasattr(self.orig_layer, 'get_weight'):
+            self.weight_t = self.orig_layer.get_weight().t()
+        else:
+            self.weight_t = self.orig_layer.weight.t()
         self.weight_t = self.weight_t.to(self.device)
         self.value = torch.nn.Parameter(
             torch.zeros(self.weight_t.shape, device=device, dtype=weight_dtype), requires_grad=True
