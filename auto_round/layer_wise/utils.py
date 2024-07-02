@@ -30,7 +30,7 @@ from transformers.models.auto.auto_factory import _BaseAutoModelClass
 
 from .load import load
 
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
 logger = logging.getLogger("layer_wise_tools")
 
 LWQ_WORKSPACE = os.path.join("layer_wise_tmp")
@@ -304,6 +304,7 @@ def register_weight_hooks(model, path, device="cpu", clean_weight=True, saved_pa
                 else:
                     value = load_value(model, param_name, path)
                 set_module_tensor_to_device(model, param_name, device, value)
+            module = module.to(device)
             
         return hook
 
@@ -378,13 +379,11 @@ def convert_model(empty_model, saved_path=None):
 
     def _layer_wise_to(module, name, device_or_dtype):
         if isinstance(device_or_dtype, torch.dtype):
-            module.ori_to(device_or_dtype)
-            return module
+            return module.ori_to(device_or_dtype)
         elif len(module._modules) == 0:
             # skip method type
             if len(module._parameters) == 0 or module.weight.device.type != 'meta':
-                module.ori_to(device_or_dtype)
-                return module
+                return module.ori_to(device_or_dtype)
             else:
                 for n, _ in module.named_parameters():
                     param_name = name + "." + n
@@ -393,7 +392,7 @@ def convert_model(empty_model, saved_path=None):
                     if hasattr(module, 'dtype'):
                         dtype = module.dtype
                     set_module_tensor_to_device(module, n, device_or_dtype, value, dtype=dtype)
-                return module
+                return module.ori_to(device_or_dtype)
         else:
             for n, m in module.named_children():
                 m.to(device_or_dtype)

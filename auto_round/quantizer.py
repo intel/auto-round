@@ -247,8 +247,8 @@ class WrapperLinear(torch.nn.Module):
         min_scale.clamp_(0, 1.0)
         max_scale.clamp_(0, 1.0)
 
-        if self.orig_layer.device.type == 'meta':
-            self.orig_layer.to('cpu')
+        if self.orig_layer.weight.device.type == 'meta':
+            self.orig_layer.to(self.device)
         q_dq_weight, scale, zp = quant_weight(
             self.orig_layer.weight,
             self.num_bits,
@@ -297,7 +297,7 @@ class WrapperLinear(torch.nn.Module):
         weight_q = weight_q.to(weight.dtype)
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
-        if bias.device.type == 'meta':
+        if bias is not None and bias.device.type == 'meta':
             bias = self.orig_layer.get_bias().to(self.device)
         return F.linear(x, weight_q, bias)
 
@@ -369,7 +369,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
             self.weight_t, self.num_bits, self.group_size, self.sym, v, min_scale, max_scale, self.scale_dtype
         )
         if self.orig_layer.weight.device.type == 'meta':
-            self.orig_layer.weight.to('cpu')
+            self.orig_layer.weight.to(self.device)
         self.orig_layer.weight.data.copy_(weight_q.t())
         self.orig_layer.weight.grad = None
         self.orig_layer.scale = scale.to("cpu")
