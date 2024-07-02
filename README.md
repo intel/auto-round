@@ -66,7 +66,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
 from auto_round import AutoRound
 
-bits, group_size, sym = 4, 128, False
+bits, group_size, sym = 4, 128, False ## set sym to True if you want to use marlin kernel
 ##device:Optional["auto", None, "hpu", "cpu", "cuda"]
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=None)
 autoround.quantize()
@@ -98,9 +98,9 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `minmax_lr (float)`: The learning rate for min-max tuning (default is None, it will be set to lr automatically).
 
-- `nsamples (int)`: Number of samples for tuning (default is 512).
+- `nsamples (int)`: Number of samples for tuning (default is 128). 512 w/o use_fast_quant
 
-- `seqlen (int)`: Data length of the sequence for tuning (default is 2048).
+- `seqlen (int)`: Data length of the sequence for tuning (default is 512). 2048 w/o use_fast_quant
 
 - `batch_size (int)`: Batch size for training (default is 8).
 
@@ -113,7 +113,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `gradient_accumulate_steps (int)`: Number of gradient accumulation steps (default is 1).
 
-- `low_gpu_mem_usage (bool)`: Whether to save GPU memory at the cost of ~20% more tuning time (default is True).
+- `low_gpu_mem_usage (bool)`: Whether to save GPU memory at the cost of ~20% more tuning time (default is False), True w/o use_fast_quant
 
 - `dataset Union[str, list, tuple, torch.utils.data.DataLoader]`: The dataset name for tuning (default is "
   NeelNanda/pile-10k"). Local json file and combination of datasets have been supported, e.g. "
