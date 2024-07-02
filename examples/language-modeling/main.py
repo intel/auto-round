@@ -29,7 +29,7 @@ if __name__ == '__main__':
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--train_bs", default=8, type=int,
+    parser.add_argument("--train_bs", default=None, type=int,
                         help="train batch size")
 
     parser.add_argument("--eval_bs", default=4, type=int,
@@ -66,14 +66,14 @@ if __name__ == '__main__':
     parser.add_argument("--adam", action='store_true',
                         help="adam")
 
-    parser.add_argument("--seqlen", default=-1, type=int,
+    parser.add_argument("--seqlen", default=None, type=int,
                         help="sequence length, 512 with use_fast_quant else 2048")
 
     parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
 
     parser.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
 
-    parser.add_argument("--nsamples", default=-1, type=int,
+    parser.add_argument("--nsamples", default=None, type=int,
                         help="number of samples, 128 with use_fast_quant else 512")
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
@@ -209,6 +209,8 @@ if __name__ == '__main__':
                             AutoAdamRound)
 
     model = model.eval()
+    if args.seqlen is None or args.seqlen < 0:
+        args.seqlen = 512 if not args.disable_fast_quant else 2048
     # align with GPTQ to eval ppl
     if "opt" in model_name:
         seqlen = model.config.max_position_embeddings
