@@ -112,7 +112,7 @@ class AutoRound(object):
             enable_minmax_tuning: bool = True,
             lr: float = None,
             minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
+            low_gpu_mem_usage: bool = None,
             iters: int = 200,
             seqlen: int = -1,
             nsamples: int = -1,
@@ -124,7 +124,7 @@ class AutoRound(object):
             dynamic_iters_gap: int = -1,
             data_type: str = "int",  ##only support int for now
             scale_dtype: str = "fp16",
-            infer_bs_coeff=2,
+            infer_bs_coeff=4,
             use_fast_quant=True,
             **kwargs,
     ):
@@ -134,7 +134,15 @@ class AutoRound(object):
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
+        self.use_fast_quant = use_fast_quant
         self.nsamples = nsamples
+        if self.nsamples < 0:
+            self.nsamples = 128 if self.use_fast_quant else 512
+        self.seqlen = seqlen
+        if self.seqlen < 0:
+            self.seqlen = 512 if self.use_fast_quant else 2048
+        if low_gpu_mem_usage is None:
+            low_gpu_mem_usage = False if self.use_fast_quant else True
         self.nblocks = nblocks
         self.bits = bits
         self.group_size = group_size
@@ -145,7 +153,7 @@ class AutoRound(object):
         self.weight_config = weight_config
         self.seed = seed
         self.tokenizer = tokenizer
-        self.seqlen = seqlen
+
         self.train_bs = batch_size
         self.nblocks = nblocks
         self.device = detect_device(device)
@@ -545,7 +553,7 @@ class AutoRound(object):
         self.last_cache_name = last_cache_name
         if last_cache_name is None and len(block_names) + len(layer_names) == 1:
             self.last_cache_name = block_names[0] if len(block_names) == 1 else layer_names[0]
-        calib_bs = self.train_bs*self.infer_bs_coeff
+        calib_bs = self.train_bs * self.infer_bs_coeff
         self.hook_handles = []
         self._replace_forward()
         self.calib(nsamples, calib_bs)
@@ -791,7 +799,8 @@ class AutoRound(object):
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
 
-        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs*self.infer_bs_coeff, device, self.cache_device)
+        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
+                                        self.cache_device)
 
         if q_input is not None:
             input_ids = q_input
@@ -907,7 +916,8 @@ class AutoRound(object):
         if self.enable_quanted_input:
 
             q_outputs = self.get_block_outputs(
-                block, input_ids, input_others, self.train_bs*self.infer_bs_coeff, device, cache_device=self.cache_device
+                block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
+                cache_device=self.cache_device
             )
             for i in range(len(input_ids)):
                 input_ids[i] = None
