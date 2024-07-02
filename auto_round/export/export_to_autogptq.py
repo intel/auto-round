@@ -120,6 +120,9 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True,
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "gptq"
     quantization_config.pop("dataset", None) ## pile-10k is not supported in gptq
+    model.quantization_config["desc_act"] = False  ## for autogptq API
+    model.quantization_config["true_sequential"] = False
+    model.quantization_config["damp_percent"] = 0.01
     if modules_in_block_to_quantize is not None:
         quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
     if hasattr(model, "config"):
@@ -149,8 +152,8 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     """
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    config_file = "quantization_config.json"
+    config_file = "quantize_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        model.config.quantization_config["quant_method"] = "intel/auto-round"
+
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
