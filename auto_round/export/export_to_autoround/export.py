@@ -24,23 +24,8 @@ import transformers
 from auto_round.export.register import register_format
 from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
 import threadpoolctl as tctl
-import inspect
-
 
 def check_neq_config(config, data_type, bits, group_size, sym):
-    """
-    Checks if the provided configuration parameters are not equal to the values in the config dictionary.
-
-    Args:
-        config (dict): A dictionary containing the configuration parameters.
-        data_type (str): The expected data type.
-        bits (int): The expected number of bits.
-        group_size (int): The expected group size.
-        sym (bool): The expected symmetry flag.
-
-    Returns:
-        list: A list of strings indicating which configuration parameters do not match.
-    """
     res = []
     if data_type != config["data_type"]:
         res.append("data_type")
@@ -54,81 +39,58 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     return res
 
 
-def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
-    """
-    Configures and returns a QuantLinear class based on the specified backend and parameters.
-
-    Args:
-        backend (str): The backend to be used for quantization. Supported values include "qigen", "triton", "marlin",
-                       "exllama", and "cuda".
-        bits (int, optional): The number of bits for quantization. Default is 4.
-        group_size (int, optional): The group size for quantization. Default is 128.
-        sym (bool, optional): Flag indicating whether to use symmetric quantization. Default is False.
-
-    Returns:
-        class: The dynamically imported QuantLinear class configured according to the specified parameters.
-    """
-    use_triton = True
-    disable_exllamav2 = True
+def get_autogptq_backend_config(backend, bits=4):
+    use_triton = False
+    disable_exllamav2 = False
     disable_exllamav1 = False
     disable_marlin = True
     use_qigen = False
-    if "qigen" in "backend":
-        use_triton = False
+    if backend == "gptq:qigen":
         use_qigen = True
-    elif "triton" in backend:
+    if backend == "gptq:triton":  ##TODO refine the code
         use_triton = True
-    elif "marlin" in backend and sym:
+    if backend == "gptq:marlin":
         use_triton = False
         disable_marlin = False
-    elif "exllama" in backend:  ##need v1 code to export
-        use_triton = True  ##same with triton
+    if backend == "gptq:exllamav2":  ##need v1 code to export
+        use_triton = False
         disable_marlin = True
-    elif "cuda" in backend:
+    if backend == "gptq:exllamav1":
+        use_triton = False
+        disable_marlin = True
+    if backend == "gptq:cuda":
         use_triton = False
         disable_marlin = True
         disable_exllamav2 = True
         disable_exllamav1 = True
-
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
-    QuantLinear = dynamically_import_QuantLinear(
-        use_triton=use_triton,
-        desc_act=False,
-        group_size=group_size,
-        bits=bits,
-        disable_exllama=disable_exllamav1,
-        disable_exllamav2=disable_exllamav2,
-        use_qigen=use_qigen,
-        disable_marlin=disable_marlin,
-    )
-    return QuantLinear
+    if bits not in [2, 4, 8]:
+        use_qigen = False
+    if bits not in [2, 4]:
+        use_triton = False
+    return use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin
 
 
-def dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym):
-    """
-    Dynamically imports and returns the appropriate QuantLinear class based on the specified backend and parameters.
-
-    Args:
-        backend (str): The backend to be used for quantization. Supported values include "auto_round" and "gptq".
-        bits (int): The number of bits for quantization.
-        group_size (int): The group size for quantization.
-        sym (bool): Flag indicating whether to use symmetric quantization.
-
-    Returns:
-        class: The dynamically imported QuantLinear class configured according to the specified parameters.
-
-    Raises:
-        AssertionError: If the backend is not supported.
-    """
-    if "auto_round" in backend:
-        ##only support triton and exllamav2
-        if not ("triton" in backend or "exllamav2" in backend):
-            logger.warning_once(f"autoround format does not support {backend}, try to packing with autogptq")
-            return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
+def dynamic_QuantLienar_for_packing(backend, bits, group_size):
+    if "gptq" in backend:
+        use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
+            backend, bits
+        )
+        from auto_gptq.utils.import_utils import dynamically_import_QuantLinear # pylint: disable=E0401
+        QuantLinear = dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            disable_marlin=disable_marlin,
+        )
+        return QuantLinear
+    ##export all use trition, inference use exllamav2
+    elif "autoround" in backend or "auto-round" in backend or "auto_round" in backend:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
         return QuantLinear
-    elif "gptq" in backend:
-        return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
 
     else:
         assert False, f"only support gptq and autoround backend"
@@ -136,43 +98,12 @@ def dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym):
 
 @register_format("auto_round")
 def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exllamav2", **kwargs):
-    """
-    Saves a quantized model in the auto-round format.
-
-    Args:
-        output_dir (str): The directory where the quantized model will be saved.
-        inplace (bool, optional): If True, modifies the model in place. Otherwise, creates a deepcopy of the model.
-                                Default is True.
-        backend (str, optional): The backend to be used for quantization.
-                                  Default is "autoround:exllamav2".
-        **kwargs: Additional keyword arguments including:
-            - model (nn.Module): The model to be quantized.
-            - weight_config (dict): The weight configuration for each layer.
-            - serialization_dict (dict): The serialization configuration.
-            - tokenizer (Tokenizer, optional): The tokenizer to be saved.
-
-    Returns:
-        None
-
-    Raises:
-        AssertionError: If the backend is not supported.
-    """
-    if ":" not in backend:
-        backend = "autoround:exllamav2"
-    if not ("triton" in backend or "exllamav2" in backend):
-        logger.info(f"autoround format does not support {backend}, try to packing with autogptq")
-
-    backend = backend.replace("autoround", "auto_round")
-    backend = backend.replace("auto-round", "auto_round")
-    backend = backend.replace("auto_round", "auto_gptq")
     model = kwargs["model"]
-    model = model.to(torch.float16)  ##force to fp16
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
     layer_names_in_block = get_layer_names_in_block(model)
 
     weight_config = kwargs["weight_config"]
-
     with tctl.threadpool_limits(limits=1):
         for name in weight_config.keys():
 
@@ -183,12 +114,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
 
             bits = config["bits"]
             group_size = config["group_size"]
-            sym = config["sym"]
 
             layer = get_module(model, name)
             device = layer.weight.device
 
-            QuantLinear = dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym)
+            QuantLinear = dynamic_QuantLienar_for_packing(backend, bits, group_size)
 
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
@@ -214,12 +144,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
             qlayer.to("cpu")
             ##force to float32 to be compatible with torch 2.0
             layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
-            sig = inspect.signature(qlayer.pack)
-            param_count = len(sig.parameters)
-            if param_count == 2:
-                qlayer.pack(layer, scale)
-            else:
-                qlayer.pack(layer, scale, zero, None)
+            qlayer.pack(layer, scale, zero, None)
             qlayer.to(device)
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "intel/auto-round"
