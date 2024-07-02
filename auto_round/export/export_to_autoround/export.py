@@ -51,7 +51,7 @@ def get_autogptq_backend_config(backend, bits=4):
         use_triton = True
     if backend == "gptq:marlin":
         use_triton = False
-        disable_marlin = True
+        disable_marlin = False
     if backend == "gptq:exllamav2":  ##need v1 code to export
         use_triton = False
         disable_marlin = True
