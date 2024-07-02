@@ -120,9 +120,9 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True,
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "gptq"
     quantization_config.pop("dataset", None) ## pile-10k is not supported in gptq
-    model.quantization_config["desc_act"] = False  ## for autogptq API
-    model.quantization_config["true_sequential"] = False
-    model.quantization_config["damp_percent"] = 0.01
+    quantization_config["desc_act"] = False  ## for autogptq API
+    quantization_config["true_sequential"] = False
+    quantization_config["damp_percent"] = 0.01
     if modules_in_block_to_quantize is not None:
         quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
     if hasattr(model, "config"):
