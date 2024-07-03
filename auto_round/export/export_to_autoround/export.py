@@ -176,7 +176,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
             clear_memory()
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "intel/auto-round"
-    quantization_config["backend"] = backend
+    if "awq" not in backend:
+        quantization_config["backend"] = backend
     extra_config = {}
     for layer_name in weight_config:
         if weight_config[layer_name]["bits"] >= 16:
@@ -203,22 +204,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
         quantization_config["extra_config"] = extra_config
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
-        if "awq" in backend:
-            awq_quant_config = {
-                "quant_method": "awq",
-                "zero_point": not quantization_config["sym"],
-                "group_size": quantization_config["group_size"],
-                "bits": quantization_config["bits"],
-                "version": "gemm",
-                "modules_to_not_convert": None if not modules_to_not_convert else modules_to_not_convert,
-            }
     tokenizer = kwargs["tokenizer"]
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     if "awq" not in backend:
         save(model, output_dir)
     else:
-        save_awq(model, output_dir, awq_quant_config=awq_quant_config)
+        save_awq(model, output_dir, modules_to_not_convert=modules_to_not_convert)
 
 
 def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
@@ -255,7 +247,7 @@ def save_awq(
         save_dir: str, 
         max_shard_size: str = "5GB", 
         safe_serialization: bool = True, 
-        awq_quant_config: dict = {}
+        modules_to_not_convert: list = [], 
 ):
     """Save model state dict and configs.
 
@@ -277,11 +269,10 @@ def save_awq(
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
     os.makedirs(save_dir, exist_ok=True)
-    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        quantization_config = model.config.quantization_config
-    else:
-        quantization_config = awq_quant_config
-    model.config.quantization_config = awq_quant_config
+    quantization_config = model.config.quantization_config
+    model.config.quantization_config["quant_method"] = "awq"
+    model.config.quantization_config["modules_to_not_convert"] = None if not modules_to_not_convert \
+        else modules_to_not_convert
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
