@@ -660,7 +660,8 @@ def dynamic_import_inference_linear(bits, group_size, backend):
         try:
             from awq.modules.linear import WQLinear_GEMM # pylint: disable=E0401
         except:
-            raise ImportError("autoawq is required. Please install it by 'pip install autoawq' to support auto_awq format.")
+            raise ImportError("autoawq is required. Please install it by 'pip install autoawq' to \
+                support auto_awq format.")
         return WQLinear_GEMM
     if bits == 4 and exllama2_available and "exllamav2" in backend:
         from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
