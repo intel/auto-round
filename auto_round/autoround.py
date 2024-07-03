@@ -136,11 +136,13 @@ class AutoRound(object):
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_fast_quant = enable_fast_quant
         self.nsamples = nsamples
+
         if self.nsamples is None or self.nsamples < 0:
             self.nsamples = 128 if self.enable_fast_quant else 512
         self.seqlen = seqlen
         if self.seqlen is None or self.seqlen < 0:
             self.seqlen = 512 if self.enable_fast_quant else 2048
+
         self.train_bs = batch_size
         if self.train_bs is None or self.train_bs < 0:
             self.train_bs = 4 if self.enable_fast_quant else 8
