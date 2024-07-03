@@ -141,7 +141,7 @@ if __name__ == '__main__':
     use_eval_legacy = False
 
     if "marlin" in args.deployment_device and args.sym == False:
-        assert False, "backend only supports sym quantization, please set --sym"
+        assert False, "marlin backend only supports sym quantization, please set --sym"
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -282,7 +282,7 @@ if __name__ == '__main__':
             eval_folder = f'{export_dir}-round'
             autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
         elif "gptq" in gpu_format:
-            eval_folder = f'{export_dir}-gptq'
+            eval_folder = f'{export_dir}-gpu'
             autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
 
     if 'xpu' in deployment_device:
@@ -348,7 +348,7 @@ if __name__ == '__main__':
             from auto_round.auto_quantizer import AutoHfQuantizer
         from eval_042.evaluation import simple_evaluate
 
-        if 'gpu' in deployment_device or len(gpu_formats) >0:
+        if 'gpu' in deployment_device or len(gpu_formats) > 0:
             model_args = f"pretrained={eval_folder}"
         elif "fake" in deployment_device:
             model_args = f"pretrained={eval_folder}"

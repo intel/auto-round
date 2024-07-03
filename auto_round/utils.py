@@ -639,9 +639,9 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
                The appropriate QuantLinear class for the given configuration.
        """
     exllama2_available = is_autoround_exllamav2_available()
-
+    ##TODO may have bug for marlin backend
     if (
-            not torch.cuda.is_available()) or "qbits" in backend or "cpu" in backend:  ##TODO may have bug for marlin backend
+            not torch.cuda.is_available()) or "qbits" in backend or "cpu" in backend:
         try:
             from intel_extension_for_transformers import qbits  # pylint: disable=E0401
         except Exception as e:
