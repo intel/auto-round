@@ -273,7 +273,6 @@ def get_dataloader(
         seed=42, 
         bs=8, 
         nsamples=512, 
-        apply_template=False
 ):
     """Generate a DataLoader for calibration using specified parameters.
 
@@ -352,6 +351,7 @@ def get_dataloader(
     for name in dataset_names:
         split = None
         do_concat = False
+        apply_template = False
         if ":" in name:
             split_list = name.split(":")
             name, split_list = name.split(":")[0], name.split(":")[1:]
@@ -362,7 +362,9 @@ def get_dataloader(
                 if key == "num":
                     data_lens[name] = int(values[0])
                 if key == "concat":
-                    do_concat = True if (len(values) > 0 and values[0].lower == 'false') else True
+                    do_concat = False if (len(values) > 0 and values[0].lower() == 'false') else True
+                if key == "apply_template":
+                    apply_template = False if (len(values) > 0 and values[0].lower() == 'false') else True
         if is_local_path(name):
             get_dataset = CALIB_DATASETS.get("local")
         else:
