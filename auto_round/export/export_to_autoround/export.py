@@ -40,8 +40,6 @@ def check_neq_config(config, data_type, bits, group_size, sym):
 
     Returns:
         list: A list of strings indicating which configuration parameters do not match.
-            If the `data_type` does not match, the list will contain "data_type" and the function will return immediately.
-            If other parameters do not match, the list will include "bits", "group_size", and/or "sym" as applicable.
     """
     res = []
     if data_type != config["data_type"]:
