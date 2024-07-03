@@ -58,14 +58,15 @@ def get_tokenizer_function(tokenizer, seqlen, apply_template=False):
         if not apply_template:
             example = tokenizer(examples["text"], truncation=True, max_length=seqlen)
         else:
-            from jinja2 import Template
+            from jinja2 import Template # pylint: disable=E0401
             chat_template = tokenizer.chat_template if tokenizer.chat_template is not None \
                 else tokenizer.default_chat_template
             template = Template(chat_template)
             rendered_messages = []
             for text in examples["text"]:
                 message = [{"role": "user", "content": text}]
-                rendered_message = template.render(messages=message, add_generation_prompt=True, bos_token=tokenizer.bos_token)
+                rendered_message = template.render(messages=message, add_generation_prompt=True, \
+                    bos_token=tokenizer.bos_token)
                 rendered_messages.append(rendered_message)
             example = tokenizer(rendered_messages, truncation=True, max_length=seqlen)
         return example
@@ -101,7 +102,14 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
 
 
 @register_dataset("madao33/new-title-chinese")
-def get_new_chinese_title_dataset(tokenizer, seqlen, dataset_name="madao33/new-title-chinese", split=None, seed=42, apply_template=False):
+def get_new_chinese_title_dataset(
+        tokenizer, 
+        seqlen, 
+        dataset_name="madao33/new-title-chinese", 
+        split=None, 
+        seed=42, 
+        apply_template=False
+):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -139,7 +147,8 @@ def get_new_chinese_title_dataset(tokenizer, seqlen, dataset_name="madao33/new-t
                 rendered_messages = []
                 for text in examples["text"]:
                     message = [{"role": "user", "content": text}]
-                    rendered_message = template.render(messages=message, add_generation_prompt=True, bos_token=tokenizer.bos_token)
+                    rendered_message = template.render(messages=message, add_generation_prompt=True, \
+                        bos_token=tokenizer.bos_token)
                     rendered_messages.append(rendered_message)
                 example = tokenizer(rendered_messages, truncation=True, max_length=seqlen)
             return example
@@ -257,7 +266,15 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
     return calib_dataset
 
 
-def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, bs=8, nsamples=512, apply_template=False):
+def get_dataloader(
+        tokenizer, 
+        seqlen, 
+        dataset_name="NeelNanda/pile-10k", 
+        seed=42, 
+        bs=8, 
+        nsamples=512, 
+        apply_template=False
+):
     """Generate a DataLoader for calibration using specified parameters.
 
     Args:
