@@ -10,7 +10,8 @@ import transformers
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
-
+from auto_round import (AutoRound,
+                        AutoAdamRound)
 from transformers import set_seed
 
 import re
@@ -67,14 +68,14 @@ if __name__ == '__main__':
                         help="adam")
 
     parser.add_argument("--seqlen", default=None, type=int,
-                        help="sequence length, 512 with use_fast_quant else 2048")
+                        help="sequence length, 512 with enable_fast_quant else 2048")
 
     parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
 
     parser.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
 
     parser.add_argument("--nsamples", default=None, type=int,
-                        help="number of samples, 128 with use_fast_quant else 512")
+                        help="number of samples, 128 with enable_fast_quant else 512")
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
                         help="low_gpu_mem_usage is deprecated")
@@ -124,7 +125,7 @@ if __name__ == '__main__':
     parser.add_argument("--dynamic_iters_gap", default=-1, type=int,
                         help="dynamic_iters_gap")
 
-    parser.add_argument("--disable_fast_quant", action='store_true',
+    parser.add_argument("--enable_fast_quant", action='store_true',
                         help="disable_fast_quant")
 
     args = parser.parse_args()
@@ -154,35 +155,6 @@ if __name__ == '__main__':
         except subprocess.CalledProcessError:
             return "Library not found"
 
-
-    lm_eval_version = get_library_version("lm-eval")
-    if lm_eval_version == "0.3.0":
-        use_eval_legacy = True
-
-    if isinstance(tasks, str):
-        tasks = tasks.split(',')
-    if not use_eval_legacy:
-        from eval import eval_model
-    else:
-        from eval_legacy import eval_model
-
-        if isinstance(tasks, list):
-            if "mmlu" in tasks:
-                tmp_tasks = tasks
-                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
-            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
-                tmp_tasks = tasks
-                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-            seen = set()
-            tmp_tasks = tasks
-            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
-
-    if 'fake' in args.deployment_device and not args.disable_eval:
-        if use_eval_legacy:
-            print("Using the legacy lm_eval(0.3.0)")
-        else:
-            print(f"Using the latest {lm_eval_version}")
-
     model_name = args.model_name
     if model_name[-1] == "/":
         model_name = model_name[:-1]
@@ -205,12 +177,10 @@ if __name__ == '__main__':
             trust_remote_code=not args.disable_trust_remote_code
         )
 
-    from auto_round import (AutoRound,
-                            AutoAdamRound)
 
     model = model.eval()
     if args.seqlen is None or args.seqlen < 0:
-        args.seqlen = 512 if not args.disable_fast_quant else 2048
+        args.seqlen = 512 if args.enable_fast_quant else 2048
     # align with GPTQ to eval ppl
     if "opt" in model_name:
         seqlen = model.config.max_position_embeddings
@@ -235,16 +205,7 @@ if __name__ == '__main__':
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
 
-    excel_name = f"{model_name}_{args.bits}_{args.group_size}"
-    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
-        dtype = 'bfloat16'
-    else:
-        if "cpu" not in device_str:
-            dtype = 'float16'
-        else:
-            dtype = 'float32'
 
-    excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if "bloom" in model_name:
         args.disable_low_gpu_mem_usage = True
     round = AutoRound
@@ -303,7 +264,7 @@ if __name__ == '__main__':
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, dynamic_iters_gap=args.dynamic_iters_gap,
-                      use_fast_quant= not args.disable_fast_quant)
+                      enable_fast_quant=args.enable_fast_quant)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -327,6 +288,43 @@ if __name__ == '__main__':
         model = model.to("cpu")
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
+
+    excel_name = f"{model_name}_{args.bits}_{args.group_size}"
+    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
+        dtype = 'bfloat16'
+    else:
+        if "cpu" not in device_str:
+            dtype = 'float16'
+        else:
+            dtype = 'float32'
+
+    lm_eval_version = get_library_version("lm-eval")
+    if lm_eval_version == "0.3.0":
+        use_eval_legacy = True
+
+    if isinstance(tasks, str):
+        tasks = tasks.split(',')
+    if not use_eval_legacy:
+        from eval import eval_model
+    else:
+        from eval_legacy import eval_model
+
+        if isinstance(tasks, list):
+            if "mmlu" in tasks:
+                tmp_tasks = tasks
+                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
+            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
+                tmp_tasks = tasks
+                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
+            seen = set()
+            tmp_tasks = tasks
+            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
+
+    if 'fake' in args.deployment_device and not args.disable_eval:
+        if use_eval_legacy:
+            print("Using the legacy lm_eval(0.3.0)")
+        else:
+            print(f"Using the latest {lm_eval_version}")
 
     if not args.disable_eval and "fake" in deployment_device and lm_eval_version != "0.4.2":
         excel_name = f"{output_dir}_result.xlsx"
