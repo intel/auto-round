@@ -66,9 +66,10 @@ tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
 from auto_round import AutoRound
 
-bits, group_size, sym = 4, 128, False ## set sym to True if you want to use marlin kernel
-##device:Optional["auto", None, "hpu", "cpu", "cuda"]
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=None)
+bits, group_size, sym = 4, 128, False 
+
+## enable_fast_quant to speed up the tuning by 3-4X and lower gpu memory usage with negligible accuracy loss at W4G128
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, enable_fast_quant=False)
 autoround.quantize()
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_round")
@@ -98,11 +99,11 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `minmax_lr (float)`: The learning rate for min-max tuning (default is None, it will be set to lr automatically).
 
-- `nsamples (int)`: Number of samples for tuning (default is 128). 512 w/o use_fast_quant
+- `nsamples (int)`: Number of samples for tuning (default is 512). 128 with enable_fast_quant
 
-- `seqlen (int)`: Data length of the sequence for tuning (default is 512). 2048 w/o use_fast_quant
+- `seqlen (int)`: Data length of the sequence for tuning (default is 2048). 512 with enable_fast_quant
 
-- `batch_size (int)`: Batch size for training (default is 8).
+- `batch_size (int)`: Batch size for training (default is 8). 4 with enable_fast_quant
 
 - `scale_dtype (str)`: The data type of quantization scale to be used (default is "float16"), different kernels have
   different choices.
@@ -113,7 +114,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `gradient_accumulate_steps (int)`: Number of gradient accumulation steps (default is 1).
 
-- `low_gpu_mem_usage (bool)`: Whether to save GPU memory at the cost of ~20% more tuning time (default is False), True w/o use_fast_quant
+- `low_gpu_mem_usage (bool)`: Whether to save GPU memory at the cost of ~20% more tuning time (default is True), False with enable_fast_quant
 
 - `dataset Union[str, list, tuple, torch.utils.data.DataLoader]`: The dataset name for tuning (default is "
   NeelNanda/pile-10k"). Local json file and combination of datasets have been supported, e.g. "
@@ -159,6 +160,13 @@ inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
+## Tips
+
+1 Increasing the tuning steps, for example to 1000, has been observed to likely yield improved results.
+
+2 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
+
+
 ## Support List
 
 | Model                                | Supported                                                                                                                                                                                                                                                                                                           |
@@ -197,11 +205,6 @@ approach achieved superior performance compared to GPTQ, scoring 30/32, AWQ with
 with a perfect score of 16/16 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, and W2G128, based on the
 average accuracies of 11 zero-shot tasks.
 
-## Tips
-
-1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time.
-
-2 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
 ## Reference
 
