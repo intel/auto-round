@@ -16,11 +16,13 @@
 # limitations under the License.
 """Utils for layer wise quantization."""
 
+import os
 import gc
 import json
-import os
+import pickle
 from functools import partial
 import logging
+from collections import OrderedDict
 
 import torch
 from accelerate import init_empty_weights
@@ -343,7 +345,7 @@ def clean_module_weight(module):
     gc.collect()
 
 
-def convert_model(empty_model, saved_path=None):
+def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
     def _get_value(name, n):
         state_dict = None
         if os.path.exists(os.path.join(saved_path, f"{name}.pt")):
@@ -356,7 +358,6 @@ def convert_model(empty_model, saved_path=None):
         return value
 
     def _update(module):
-        assert saved_path is not None, 'saved_path should not be None'
         state_dict = None
         if os.path.exists(os.path.join(saved_path, f"{name}.pt")):
             state_dict = torch.load(os.path.join(saved_path, f"{name}.pt"))
@@ -425,3 +426,27 @@ def load_model_with_hooks(
     empty_model = load_empty_model(pretrained_model_name_or_path, cls=cls, **kwargs)
     register_weight_hooks(empty_model, empty_model.path, device, clean_weight, saved_path)
     return empty_model
+
+
+def layer_wise_save(model, path):
+    os.makedirs(path, exist_ok=True)
+    file_path = os.path.join(path, 'layer_wise_model.bin')
+    modules = get_named_children(model)
+    with open(file_path, 'wb') as f:
+        for name, module in modules:
+            output = OrderedDict()
+            if hasattr(module, "get_weight"):
+                output[f"{name}.weight"] = module.get_weight()
+            if hasattr(module, "get_bias"):
+                output[f"{name}.bias"] = module.get_bias()
+            output = pickle.dumps(output)
+            f.write(output + b'split_tag')
+
+def layer_wise_load(path):
+    file_path = os.path.join(path, 'layer_wise_model.bin')
+    state_dict = OrderedDict()
+    data = open(file_path, 'rb').read().split(b'split_tag')
+    for d in data:
+        if len(d) > 0:
+            d = pickle.loads(d)
+            state_dict.update(d)
