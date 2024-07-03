@@ -1,0 +1,61 @@
+parameters:
+  - name: dockerConfigName
+    type: string
+    default: "commonDockerConfig"
+  - name: repo
+    type: string
+    default: "https://github.com/intel/auto-round"
+  - name: utScriptFileName
+    type: string
+  - name: uploadPath
+    type: string
+  - name: utArtifact
+    type: string
+  - name: utTestMode
+    type: string
+    default: "coverage"
+  - name: utContainerNameh
+    type: string
+    default: "utTest"
+
+steps:
+  - template: docker-template.yml
+    parameters:
+      dockerConfigName: ${{ parameters.dockerConfigName }}
+      repoName: "auto-round"
+      repoTag: "py310"
+      dockerFileName: "Dockerfile"
+      containerName: ${{ parameters.utContainerName }}
+      repo: ${{ parameters.repo }}
+
+  - script: |
+      docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round/.azure-pipelines/scripts \
+      && pip install -r requirements.txt && python setup.py install"
+    displayName: "Env Setup"
+
+  - script: |
+      docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round/.azure-pipelines/scripts \
+      && bash ut/${{ parameters.utScriptFileName }}.sh ${{ parameters.utTestMode }}"
+    displayName: "Run UT"
+
+  - task: PublishPipelineArtifact@1
+    condition: succeededOrFailed()
+    inputs:
+      targetPath: ${{ parameters.uploadPath }}
+      artifact: $(System.JobAttempt)_${{ parameters.utArtifact }}_report
+      publishLocation: "pipeline"
+
+  - ${{ if eq(parameters.utTestMode, 'coverage') }}:
+    - task: PublishPipelineArtifact@1
+      inputs:
+        targetPath: ${{ parameters.uploadPath }}
+        artifact: ${{ parameters.utArtifact }}_coverage
+        publishLocation: "pipeline"
+
+  - task: Bash@3
+    condition: always()
+    inputs:
+      targetType: "inline"
+      script: |
+        docker exec ${{ parameters.utContainerName }} bash -c "rm -fr /auto-round/* && rm -fr /auto-round/.* || true"
+    displayName: "Docker clean up"
