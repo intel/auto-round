@@ -80,6 +80,14 @@ Currently only support in Intel xpu and AutoRound format,however, we found the f
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128 --quant_lm_head --disable_low_gpu_mem_usage
 ```
 
+- **Enable marlin kernel:**
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --sym --bits 4 --group_size 128  --disable_low_gpu_mem_usage --deployment_device "auto_round:marlin"
+```
+
+for AutoGPTQ format, enable `--sym` in the quantization and set the deployment_device to "gpu" and then follow the API in AutoGPTQ
+
 - **Utilizing the AdamW Optimizer:**
 
 Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.

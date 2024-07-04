@@ -6,6 +6,7 @@ parser = argparse.ArgumentParser()
 import torch
 import os
 import transformers
+import subprocess
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
@@ -59,9 +60,6 @@ if __name__ == '__main__':
 
     parser.add_argument("--seed", default=42, type=int,
                         help="seed")
-
-    parser.add_argument("--eval_fp16_baseline", action='store_true',
-                        help="whether to eval FP16 baseline")
 
     parser.add_argument("--amp", action='store_true',
                         help="amp is deprecated ")
@@ -141,44 +139,9 @@ if __name__ == '__main__':
     set_seed(args.seed)
     tasks = args.tasks
     use_eval_legacy = False
-    import subprocess
 
-
-    def get_library_version(library_name):
-        try:
-            version = subprocess.check_output(['pip', 'show', library_name]).decode().split('\n')[1].split(': ')[1]
-            return version
-        except subprocess.CalledProcessError:
-            return "Library not found"
-
-
-    lm_eval_version = get_library_version("lm-eval")
-    if lm_eval_version == "0.3.0":
-        use_eval_legacy = True
-
-    if isinstance(tasks, str):
-        tasks = tasks.split(',')
-    if not use_eval_legacy:
-        from eval import eval_model
-    else:
-        from eval_legacy import eval_model
-
-        if isinstance(tasks, list):
-            if "mmlu" in tasks:
-                tmp_tasks = tasks
-                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
-            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
-                tmp_tasks = tasks
-                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-            seen = set()
-            tmp_tasks = tasks
-            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
-
-    if 'fake' in args.deployment_device and not args.disable_eval:
-        if use_eval_legacy:
-            print("Using the legacy lm_eval(0.3.0)")
-        else:
-            print(f"Using the latest {lm_eval_version}")
+    if "marlin" in args.deployment_device and args.sym == False:
+        assert False, "marlin backend only supports sym quantization, please set --sym"
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -242,14 +205,6 @@ if __name__ == '__main__':
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if "bloom" in model_name:
         args.disable_low_gpu_mem_usage = True
-    if args.eval_fp16_baseline:
-        if args.disable_low_gpu_mem_usage:
-            model = model.to(torch_device)
-        excel_name += "_fp16.xlsx"
-        eval_model(model_path=model_name, tasks=tasks, dtype=dtype, \
-                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
-        exit()
 
     round = AutoRound
     if args.adam:
@@ -288,14 +243,6 @@ if __name__ == '__main__':
     if args.quant_lm_head and not args.disable_low_gpu_mem_usage:
         print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
               f"gpu")
-    deployment_device = args.deployment_device.split(',')
-    gpu_format = "auto_gptq"
-    if 'gpu' in deployment_device:
-        if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
-            gpu_format = "auto_round"
-
-    if "autoround" in deployment_device or "auto-round" in deployment_device or "auto_round" in deployment_device:
-        gpu_format = "auto_round"
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
@@ -315,9 +262,29 @@ if __name__ == '__main__':
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
+    deployment_device = args.deployment_device.split(',')
+    gpu_formats = []
+    for item in deployment_device:
+        if "gpu" in item or "auto_gptq" in item or "auto_round" in item:
+            gpu_formats.append(item)
+
+    if 'gpu' in deployment_device:
+        if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
+            gpu_formats.append("auto_round")
+        else:
+            gpu_formats.append("auto_gptq")
+    gpu_formats = list(set(gpu_formats))
+
     inplace = True if len(deployment_device) < 2 else False
-    if 'gpu' in deployment_device or "auto_round" in gpu_format or "auto-round" in gpu_format:
-        autoround.save_quantized(f'{export_dir}-gpu', format=gpu_format, use_triton=True, inplace=inplace)
+    eval_folder = None
+    for gpu_format in gpu_formats:
+        if "round" in gpu_format:
+            eval_folder = f'{export_dir}-round'
+            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+        elif "gptq" in gpu_format:
+            eval_folder = f'{export_dir}-gpu'
+            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
@@ -328,6 +295,45 @@ if __name__ == '__main__':
         model = model.to("cpu")
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
+        if eval_folder is None:
+            eval_folder = output_dir
+
+
+    def get_library_version(library_name):
+        try:
+            version = subprocess.check_output(['pip', 'show', library_name]).decode().split('\n')[1].split(': ')[1]
+            return version
+        except subprocess.CalledProcessError:
+            return "Library not found"
+
+
+    lm_eval_version = get_library_version("lm-eval")
+    if lm_eval_version == "0.3.0":
+        use_eval_legacy = True
+
+    if isinstance(tasks, str):
+        tasks = tasks.split(',')
+    if not use_eval_legacy:
+        from eval import eval_model
+    else:
+        from eval_legacy import eval_model
+
+        if isinstance(tasks, list):
+            if "mmlu" in tasks:
+                tmp_tasks = tasks
+                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
+            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
+                tmp_tasks = tasks
+                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
+            seen = set()
+            tmp_tasks = tasks
+            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
+
+    if 'fake' in args.deployment_device and not args.disable_eval:
+        if use_eval_legacy:
+            print("Using the legacy lm_eval(0.3.0)")
+        else:
+            print(f"Using the latest {lm_eval_version}")
 
     if not args.disable_eval and "fake" in deployment_device and lm_eval_version != "0.4.2":
         excel_name = f"{output_dir}_result.xlsx"
@@ -338,16 +344,16 @@ if __name__ == '__main__':
                    device=torch_device, excel_file=excel_name)
 
     if not args.disable_eval and lm_eval_version == "0.4.2":
-        if "round" in deployment_device:
+        if "round" in eval_folder:
             from auto_round.auto_quantizer import AutoHfQuantizer
         from eval_042.evaluation import simple_evaluate
 
-        if 'gpu' in deployment_device or "auto_round" in gpu_format or "auto-round" in gpu_format:
-            model_args = f"pretrained={export_dir}-gpu"
+        if 'gpu' in deployment_device or len(gpu_formats) > 0:
+            model_args = f"pretrained={eval_folder}"
         elif "fake" in deployment_device:
-            model_args = f"pretrained={output_dir}"
+            model_args = f"pretrained={eval_folder}"
         else:
-            exit() ## does not support cpu,xpu model eval
+            exit()  ## does not support cpu,xpu model eval
 
         res = simple_evaluate(model="hf", model_args=model_args,
                               tasks=tasks,
@@ -355,4 +361,3 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
-

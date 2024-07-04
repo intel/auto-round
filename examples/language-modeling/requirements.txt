@@ -18,4 +18,4 @@ openpyxl
 wandb
 py-cpuinfo
 numpy < 2.0
-
+threadpoolctl

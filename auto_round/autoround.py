@@ -1008,7 +1008,8 @@ class AutoRound(object):
             logger.warning("please run autoround.quantize first")
             return
         from auto_round.export import EXPORT_FORMAT
-
+        backend = format
+        format = format.split(":")[0]
         if format not in EXPORT_FORMAT:
             logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
             exit()
@@ -1061,7 +1062,8 @@ class AutoRound(object):
             supported_types=self.supported_types,
             data_type=self.data_type,
             serialization_dict=serialization_dict,
-            **kwargs,
+            backend=backend,
+            **kwargs
         )
         return compressed_model
 
