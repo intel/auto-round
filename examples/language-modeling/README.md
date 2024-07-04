@@ -52,43 +52,41 @@ pip install -r requirements.txt
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128
 ```
 - **Reduced GPU Memory Usage:**
+- 
+enable low_gpu_mem_usage(more tuning cost)
 
 set "--train_bs 1 --gradient_accumulate_steps 8" (more tuning cost)
 
 reduce the train bs to 4(potential accuracy drop) 
 
-reduce the nsamples to 128 (potential accuracy drop)
+reduce the seqlen to 512 (potential accuracy drop)
 
 or combine them
 
 - **Speedup the tuning:**
 
-disable_low_gpu_mem_usage(more gpu memory)
-
 reduce the train bs to 4(little accuracy drop) 
 
 reduce the seqlen to 512(potential large accuracy drop)
-
-reduce the nsamples to 128 (potential accuracy drop)
 
 or combine them
 
 - **Enable quantized lm-head:**
 
-Currently only support in Intel xpu and AutoRound format,however, we found the fake tuning could improve the accuracy is some scenarios. --disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing nsamples,e.g. 128, to alleviate the issue.
+Currently only support in Intel xpu and AutoRound format,however, we found the fake tuning could improve the accuracy is some scenarios. 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128 --quant_lm_head --disable_low_gpu_mem_usage
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128 --quant_lm_head 
 ```
 
 - **Enable marlin kernel:**
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --sym --bits 4 --group_size 128  --disable_low_gpu_mem_usage --deployment_device "auto_round:marlin"
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --sym --bits 4 --group_size 128  --deployment_device "auto_round:marlin"
 ```
 
 for AutoGPTQ format, enable `--sym` in the quantization and set the deployment_device to "gpu" and then follow the API in AutoGPTQ
 
-- **Utilizing the AdamW Optimizer:**
+- **Utilize the AdamW Optimizer:**
 
 Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
@@ -128,7 +126,7 @@ CUDA_VISIBLE_DEVICES=1,2 python3 eval/evaluation.py --model_name /save_model_pat
 You can also utilize the official lm_eval [link](https://github.com/EleutherAI/lm-evaluation-harness/tree/main?tab=readme-ov-file#basic-usage).
 
 ## 4. Known Issues
-* Random issues in tuning some models
+* Random quantization results in tuning some models
 * ChatGlm-V1 is not supported
 
 

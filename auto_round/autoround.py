@@ -149,14 +149,13 @@ class AutoRound(object):
         self.device = detect_device(device)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
-        self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else device
-        logger.info(f"using {self.model.dtype} for quantization tuning")
+        self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
         self.dataset = dataset
+
         self.iters = iters
         if self.iters <= 0:
             logger.warning("iters must be positive, reset it to 200")
             self.iters = 200
-
         self.lr = lr or (1.0 / self.iters)
         self.minmax_lr = minmax_lr or self.lr
 
@@ -172,8 +171,8 @@ class AutoRound(object):
         self.hidden_dim_flag = None
         self.infer_bs_coeff = 1
         torch.set_printoptions(precision=3, sci_mode=True)
-
         self.check_configs()
+        logger.info(f"using {self.model.dtype} for quantization tuning")
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
@@ -1216,7 +1215,7 @@ class AutoOPTRound(AutoRound):
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
-            device="auto",
+            device=None,
             lr_scheduler=None,
             dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
             enable_quanted_input: bool = True,
@@ -1364,7 +1363,7 @@ class AutoAdamRound(AutoOPTRound):
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
-            device="auto",
+            device=None,
             lr_scheduler=None,
             dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
             enable_quanted_input: bool = True,
