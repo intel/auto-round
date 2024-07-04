@@ -3,6 +3,7 @@ set -xe
 
 # install requirements
 echo "set up UT env..."
+rm -rf build
 pip install pytest-cov pytest-html
 pip list
 
