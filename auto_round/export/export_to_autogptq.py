@@ -47,7 +47,7 @@ from auto_round.export.register import register_format
 from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
 
 from ..utils import convert_dtype_torch2str_hf
-
+import threadpoolctl as tctl
 
 @register_format("auto_gptq")
 def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwargs):##TODO align with autoround format
@@ -113,16 +113,17 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
                 continue
             ##force to float32 to be compatible with torch 2.0
             quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
-        pack_model(
-            compressed_model,
-            quantizers,
-            bits,
-            group_size,
-            use_cuda_fp16=True,
-            desc_act=False,
-            force_layer_back_to_cpu=True,
-            use_triton=False,
-        )
+        with tctl.threadpool_limits(limits=1):
+            pack_model(
+                compressed_model,
+                quantizers,
+                bits,
+                group_size,
+                use_cuda_fp16=True,
+                desc_act=False,
+                force_layer_back_to_cpu=True,
+                use_triton=False,
+            )
     else:
         quantizers = {}
         for key in weight_config:
@@ -132,16 +133,17 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             if not check_to_quantized(info):
                 continue
             quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
-        pack_model(
-            compressed_model,
-            quantizers,
-            bits,
-            group_size,
-            use_cuda_fp16=True,
-            desc_act=False,
-            force_layer_back_to_cpu=True,
-            use_triton=True,
-        )
+        with tctl.threadpool_limits(limits=1):
+            pack_model(
+                compressed_model,
+                quantizers,
+                bits,
+                group_size,
+                use_cuda_fp16=True,
+                desc_act=False,
+                force_layer_back_to_cpu=True,
+                use_triton=True,
+            )
     if output_dir is None:
         return compressed_model
 
