@@ -31,7 +31,7 @@ steps:
   - script: |
       docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
         && pip install -r requirements.txt && python setup.py install \
-        && pip install -r /auto-round/test/requirements.txt && pip list"
+        && pip list"
     displayName: "Env Setup"
 
   - script: |
