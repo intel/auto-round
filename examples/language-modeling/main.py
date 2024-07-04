@@ -244,7 +244,7 @@ if __name__ == '__main__':
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
                       amp=not args.disable_amp, nsamples=args.nsamples,
-                      low_gpu_mem_usage=low_gpu_mem_usage,
+                      low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, dynamic_iters_gap=args.dynamic_iters_gap,
