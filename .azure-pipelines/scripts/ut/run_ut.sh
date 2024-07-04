@@ -6,9 +6,10 @@ echo "set up UT env..."
 pip install pytest-cov pytest-html
 pip list
 
+cd /auto-round/test || exit 1
+export FORCE_BF16=1
 export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
 aoto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
-cd /auto-round/test || exit 1
 
 LOG_DIR=/auto-round/log_dir
 mkdir -p ${LOG_DIR}

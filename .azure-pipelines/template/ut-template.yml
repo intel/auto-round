@@ -33,6 +33,7 @@ steps:
         && pip install -r requirements.txt \
         && python setup.py bdist_wheel \
         && pip install dist/auto_round*.whl \
+        && rm -rf build dist\ 
         && pip list"
     displayName: "Env Setup"
 
