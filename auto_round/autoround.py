@@ -89,7 +89,6 @@ class AutoRound(object):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
-        enable_fast_quant (bool): Whether to enable faster quantization with lightweight hyperparameters (default is False)
 
     Returns:
         The quantized model.
@@ -113,7 +112,7 @@ class AutoRound(object):
             enable_minmax_tuning: bool = True,
             lr: float = None,
             minmax_lr: float = None,
-            low_gpu_mem_usage: bool = False,
+            low_gpu_mem_usage: bool = None,
             iters: int = 200,
             seqlen: int = None,
             nsamples: int = None,
@@ -123,9 +122,10 @@ class AutoRound(object):
             gradient_accumulate_steps: int = 1,
             not_use_best_mse: bool = False,
             dynamic_iters_gap: int = -1,
-            data_type: str = "int",
+            data_type: str = "int",  ##only support int for now
             scale_dtype: str = "fp16",
-            enable_fast_quant: bool = False,
+            infer_bs_coeff=4,
+            use_fast_quant=True,
             **kwargs,
     ):
         self.quantized = False
@@ -134,19 +134,19 @@ class AutoRound(object):
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
-        self.enable_fast_quant = enable_fast_quant
+        self.use_fast_quant = use_fast_quant
         self.nsamples = nsamples
-        if self.nsamples is None or self.nsamples < 0:
-            self.nsamples = 128 if self.enable_fast_quant else 512
+        if self.nsamples is None:
+            self.nsamples = 128 if self.use_fast_quant else 512
         self.seqlen = seqlen
-        if self.seqlen is None or self.seqlen < 0:
-            self.seqlen = 512 if self.enable_fast_quant else 2048
+        if self.seqlen is None:
+            self.seqlen = 512 if self.use_fast_quant else 2048
         self.train_bs = batch_size
-        if self.train_bs is None or self.train_bs < 0:
-            self.train_bs = 4 if self.enable_fast_quant else 8
+        if self.train_bs is None:
+            self.train_bs = 4 if self.use_fast_quant else 8
 
         if low_gpu_mem_usage is None:
-            low_gpu_mem_usage = False if self.enable_fast_quant else True
+            low_gpu_mem_usage = False if self.use_fast_quant else True
         self.nblocks = nblocks
         self.bits = bits
         self.group_size = group_size
@@ -183,7 +183,7 @@ class AutoRound(object):
         self.optimizer = self.get_optimizer(None)
         self.share_attention_mask_flag = None
         self.hidden_dim_flag = None
-        self.infer_bs_coeff = 4
+        self.infer_bs_coeff = infer_bs_coeff
         torch.set_printoptions(precision=3, sci_mode=True)
 
         self.check_configs()
@@ -1024,8 +1024,7 @@ class AutoRound(object):
             logger.warning("please run autoround.quantize first")
             return
         from auto_round.export import EXPORT_FORMAT
-        backend = format
-        format = format.split(":")[0]
+
         if format not in EXPORT_FORMAT:
             logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
             exit()
@@ -1078,8 +1077,7 @@ class AutoRound(object):
             supported_types=self.supported_types,
             data_type=self.data_type,
             serialization_dict=serialization_dict,
-            backend=backend,
-            **kwargs
+            **kwargs,
         )
         return compressed_model
 
@@ -1212,8 +1210,6 @@ class AutoOPTRound(AutoRound):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
-        enable_fast_quant (bool): Whether to enable faster quantization with lightweight hyperparameters
-                                (default is False)
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -1250,7 +1246,6 @@ class AutoOPTRound(AutoRound):
             dynamic_iters_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
-            enable_fast_quant: bool = False,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1283,7 +1278,6 @@ class AutoOPTRound(AutoRound):
             dynamic_iters_gap,
             data_type,
             scale_dtype,
-            enable_fast_quant,
             **kwargs,
         )
 
@@ -1362,11 +1356,9 @@ class AutoAdamRound(AutoOPTRound):
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_iters_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
+        optimizer: string or object
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
-        enable_fast_quant (bool): Whether to enable faster quantization with lightweight hyperparameters
-                                (default is False)
-        optimizer: string or object
 
     Returns:
         The quantized model.
@@ -1402,7 +1394,6 @@ class AutoAdamRound(AutoOPTRound):
             dynamic_iters_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
-            enable_fast_quant : bool = False,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1435,7 +1426,6 @@ class AutoAdamRound(AutoOPTRound):
             dynamic_iters_gap,
             data_type,
             scale_dtype,
-            enable_fast_quant,
             optimizer,
             **kwargs,
         )
