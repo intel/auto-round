@@ -2,9 +2,7 @@
 
 # install requirements
 echo "set up UT env..."
-pip install -r /auto-round/test/requirements.txt
-pip install pytest-cov
-pip install pytest-html
+pip install pytest-cov pytest-html
 pip list
 
 export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/coverage.ort
