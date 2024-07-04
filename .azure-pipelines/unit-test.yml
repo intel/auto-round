@@ -26,7 +26,7 @@ variables:
   REPO: $(Build.Repository.Uri)
 
 stages:
-  - stage: Unit-test
+  - stage: Unit_test
     displayName: Unit Test
     dependsOn: []
     jobs:
@@ -41,7 +41,7 @@ stages:
               utArtifact: "unit-test"
 
 
-  - stage: Unit-test-baseline
+  - stage: Unit_test_baseline
     displayName: Unit Test Baseline
     dependsOn: []
     jobs:
@@ -60,7 +60,7 @@ stages:
     displayName: "Coverage Compare"
     pool:
       vmImage: "ubuntu-latest"
-    dependsOn: [Unit-test, Unit-test-baseline]
+    dependsOn: [Unit_test, Unit_test_baseline]
     jobs:
       - job: CollectDatafiles
         steps:
