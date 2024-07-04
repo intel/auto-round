@@ -162,7 +162,16 @@ def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dty
         return quant_weight_asym(weight, num_bits, v, min_scale, max_scale, scale_dtype, weight_min, weight_max)
 
 
-def reshape_v(v, group_size=-1):
+def reshape_tensor(v, group_size=-1):
+    """Reshapes the tensor based on the group size.
+
+    Args:
+        v (torch.Tensor): The input tensor to be reshaped.
+        group_size (int, optional): The number of elements to group together. If -1, no reshaping is performed. Defaults to -1.
+
+    Returns:
+        torch.Tensor: The reshaped tensor. If padding is applied, the padded tensor is returned.
+    """
     if group_size == -1 or v.shape[1] < group_size:
         return v
     if v.shape[1] % group_size == 0:
@@ -247,11 +256,11 @@ class WrapperLinear(torch.nn.Module):
         self.sym = self.orig_layer.sym
         weight_dtype = torch.float32
         self.value = torch.nn.Parameter(
-            reshape_v(
+            reshape_tensor(
                 torch.zeros(self.orig_layer.weight.shape, device=self.orig_layer.weight.device, dtype=weight_dtype),
                 self.group_size),
             requires_grad=True)
-        weight_reshape = reshape_v(self.orig_layer.weight.data, self.group_size)
+        weight_reshape = reshape_tensor(self.orig_layer.weight.data, self.group_size)
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
         self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
 
@@ -367,10 +376,11 @@ class WrapperTransformerConv1d(torch.nn.Module):
         device = self.orig_layer.weight.device
         self.weight_t = self.orig_layer.weight.t()
         self.value = torch.nn.Parameter(
-            reshape_v(torch.zeros(self.weight_t.shape, device=device, dtype=weight_dtype), group_size=self.group_size),
+            reshape_tensor(torch.zeros(self.weight_t.shape, device=device, dtype=weight_dtype),
+                           group_size=self.group_size),
             requires_grad=True
         )
-        weight_reshape = reshape_v(self.weight_t, self.group_size)
+        weight_reshape = reshape_tensor(self.weight_t, self.group_size)
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
         self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
 
