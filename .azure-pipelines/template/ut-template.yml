@@ -30,7 +30,9 @@ steps:
 
   - script: |
       docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-        && pip install -r requirements.txt && python setup.py install \
+        && pip install -r requirements.txt \
+        && python setup.py bdist_wheel \
+        && pip install dist/auto_round*.whl \
         && pip list"
     displayName: "Env Setup"
 
@@ -46,17 +48,10 @@ steps:
       artifact: $(System.JobAttempt)_${{ parameters.utArtifact }}_report
       publishLocation: "pipeline"
 
-  - ${{ if eq(parameters.utTestMode, 'coverage') }}:
-    - task: PublishPipelineArtifact@1
-      inputs:
-        targetPath: ${{ parameters.uploadPath }}
-        artifact: ${{ parameters.utArtifact }}_coverage
-        publishLocation: "pipeline"
-
   - task: Bash@3
     condition: always()
     inputs:
       targetType: "inline"
       script: |
-        docker exec ${{ parameters.utContainerName }} bash -c "rm -fr /auto-round/* && rm -fr /auto-round/.* || true"
+        docker exec ${{ parameters.utContainerName }} bash -c "rm -rf /auto-round/* && rm -rf /auto-round/.* || true"
     displayName: "Docker clean up"
