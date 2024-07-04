@@ -16,7 +16,7 @@ parameters:
     default: "coverage"
   - name: utContainerName
     type: string
-    default: "utTest"
+    default: "AutoRoundUnitTest"
 
 steps:
   - template: docker-template.yml
