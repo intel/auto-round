@@ -45,6 +45,8 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, sca
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for weight
         max_scale: Maximum scale coefficient for weight
+            weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
+        weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
 
     Returns:
         Quantized and dequantized weight, scale, zero-point
@@ -91,6 +93,8 @@ def quant_weight_sym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scal
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for weight
         max_scale: Maximum scale coefficient for weight
+        weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
+        weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
 
     Returns:
         Quantized and dequantized weight, scale, zero-point
@@ -145,6 +149,8 @@ def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dty
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for weight
         max_scale: Maximum scale coefficient for weight
+             weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
+        weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
 
     Returns:
         Quantized and dequantized weight, scale, zero-point
@@ -181,6 +187,8 @@ def quant_weight(
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for weight
         max_scale: Maximum scale coefficient for weight
+        weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
+        weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
 
     Returns:
         Quantized and dequantized weight, scale, zero-point
