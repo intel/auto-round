@@ -86,7 +86,7 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --sym --b
 
 for AutoGPTQ format, enable `--sym` in the quantization and set the deployment_device to "gpu" and then follow the API in AutoGPTQ
 
-- **Utilizing the AdamW Optimizer:**
+- **Utilize the AdamW Optimizer:**
 
 Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
@@ -126,7 +126,7 @@ CUDA_VISIBLE_DEVICES=1,2 python3 eval/evaluation.py --model_name /save_model_pat
 You can also utilize the official lm_eval [link](https://github.com/EleutherAI/lm-evaluation-harness/tree/main?tab=readme-ov-file#basic-usage).
 
 ## 4. Known Issues
-* Random issues in tuning some models
+* Random quantization results in tuning some models
 * ChatGlm-V1 is not supported
 
 
