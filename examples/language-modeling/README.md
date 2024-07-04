@@ -81,11 +81,12 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 
 ```
 
 - **Enable marlin kernel:**
-enable `--sym` in the quantization
+
 ```bash
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --sym --bits 4 --group_size 128  --disable_low_gpu_mem_usage --deployment_device "auto_round:marlin"
 ```
-for AutoGPTQ format, please set the deployment_device to "gpu" and then follow the API in AutoGPTQ
+
+for AutoGPTQ format, enable `--sym` in the quantization and set the deployment_device to "gpu" and then follow the API in AutoGPTQ
 
 - **Utilizing the AdamW Optimizer:**
 
