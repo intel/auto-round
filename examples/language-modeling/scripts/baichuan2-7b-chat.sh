@@ -4,5 +4,6 @@ python3 main.py \
 --group_size 128 \
 --bits 4 \
 --iters 1000 \
+--nsamples 512 \
 --deployment_device 'gpu' \
 --minmax_lr 2e-3

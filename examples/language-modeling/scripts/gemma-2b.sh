@@ -8,6 +8,6 @@ python3 main.py \
 --bits 4 \
 --iters 400 \
 --model_dtype "float16" \
---disable_low_gpu_mem_usage \
+--nsamples 512 \
 --deployment_device 'gpu' \
 --output_dir "./tmp_autoround"

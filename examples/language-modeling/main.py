@@ -74,11 +74,11 @@ if __name__ == '__main__':
 
     parser.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
 
-    parser.add_argument("--nsamples", default=512, type=int,
+    parser.add_argument("--nsamples", default=128, type=int,
                         help="number of samples")
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
-                        help="low_gpu_mem_usage is deprecated")
+                        help="lower gpu memory but 50%-100% slower")
 
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="enable_minmax_tuning is deprecated")
@@ -104,9 +104,6 @@ if __name__ == '__main__':
     parser.add_argument("--disable_amp", action='store_true',
                         help="disable amp")
 
-    parser.add_argument("--disable_low_gpu_mem_usage", action='store_true',
-                        help="disable low_gpu_mem_usage")
-
     parser.add_argument("--disable_minmax_tuning", action='store_true',
                         help="whether disable  enable weight minmax tuning")
 
@@ -123,9 +120,7 @@ if __name__ == '__main__':
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 
     args = parser.parse_args()
-    if args.low_gpu_mem_usage:
-        print(
-            "low_gpu_mem_usage is deprecated, it has been set to the default, use disable_low_gpu_mem_usage to turn it off")
+
     if args.enable_minmax_tuning:
         print(
             "enable_minmax_tuning is deprecated, it has been set to the default, use disable_minmax_tuning to turn it off")
@@ -204,7 +199,7 @@ if __name__ == '__main__':
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if "bloom" in model_name:
-        args.disable_low_gpu_mem_usage = True
+        args.low_gpu_mem_usage = False
 
     round = AutoRound
     if args.adam:
@@ -240,15 +235,15 @@ if __name__ == '__main__':
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 
-    if args.quant_lm_head and not args.disable_low_gpu_mem_usage:
-        print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
+    if args.quant_lm_head and not args.low_gpu_mem_usage:
+        print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
                       amp=not args.disable_amp, nsamples=args.nsamples,
-                      low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
+                      low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning)
@@ -340,7 +335,7 @@ if __name__ == '__main__':
         output_dir += "/"
         print(excel_name, flush=True)
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                    device=torch_device, excel_file=excel_name)
 
     if not args.disable_eval and lm_eval_version == "0.4.2":
