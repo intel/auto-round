@@ -75,7 +75,7 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, sca
     wmin[tmp] = -1
     wmax[tmp] = +1
     scale = ((wmax - wmin) / maxq).to(scale_dtype)
-    zp = round_ste(-wmin / scale)
+    zp = round_ste(-wmin / scale)  # pylint: disable=E1130
     scale = scale.unsqueeze(dim=-1)
     zp = zp.unsqueeze(dim=-1)
     int_w = round_ste(weight / scale + v)
