@@ -149,6 +149,7 @@ class AutoRound(object):
         self.device = detect_device(device)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
+        ##self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else device
         logger.info(f"using {self.model.dtype} for quantization tuning")
         self.dataset = dataset
@@ -1216,7 +1217,7 @@ class AutoOPTRound(AutoRound):
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
-            device="auto",
+            device=None,
             lr_scheduler=None,
             dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
             enable_quanted_input: bool = True,
@@ -1364,7 +1365,7 @@ class AutoAdamRound(AutoOPTRound):
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
-            device="auto",
+            device=None,
             lr_scheduler=None,
             dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
             enable_quanted_input: bool = True,
