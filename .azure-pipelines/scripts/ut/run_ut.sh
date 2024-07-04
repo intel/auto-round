@@ -1,4 +1,5 @@
 #!/bin/bash
+set -xe
 
 # install requirements
 echo "set up UT env..."

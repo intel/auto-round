@@ -36,7 +36,7 @@ stages:
           - template: template/ut-template.yml
             parameters:
               dockerConfigName: "commonDockerConfig"
-              utScriptFileName: "."
+              utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "unit-test"
 
@@ -51,7 +51,7 @@ stages:
           - template: template/ut-template.yml
             parameters:
               dockerConfigName: "gitCloneDockerConfig"
-              utScriptFileName: "."
+              utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "unit-test-baseline"
               repo: $(REPO)
