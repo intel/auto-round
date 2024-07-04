@@ -149,7 +149,7 @@ def quant_weight_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dty
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for weight
         max_scale: Maximum scale coefficient for weight
-             weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
+        weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
         weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
 
     Returns:
