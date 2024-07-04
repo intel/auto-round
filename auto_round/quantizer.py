@@ -35,8 +35,8 @@ def round_ste(x: torch.Tensor):
     return (x.round() - x).detach() + x
 
 
-def quant_weight_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, weight_min=None,
-                      weight_max=None):
+def quant_weight_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
+                      weight_min=None, weight_max=None):
     """Quantizes and dequantizes weight asymmetrically.
 
     Args:
@@ -45,7 +45,7 @@ def quant_weight_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, sca
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for weight
         max_scale: Maximum scale coefficient for weight
-            weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
+        weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
         weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
 
     Returns:
@@ -167,7 +167,7 @@ def reshape_tensor(v, group_size=-1):
 
     Args:
         v (torch.Tensor): The input tensor to be reshaped.
-        group_size (int, optional): The number of elements to group together. If -1, no reshaping is performed. Defaults to -1.
+        group_size (int, optional): The number of elements to group together.
 
     Returns:
         torch.Tensor: The reshaped tensor. If padding is applied, the padded tensor is returned.
