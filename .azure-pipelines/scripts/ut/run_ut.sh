@@ -13,7 +13,8 @@ cd /auto-round/test || exit 1
 LOG_DIR=/auto-round/log_dir
 mkdir -p ${LOG_DIR}
 ut_log_name=${LOG_DIR}/ut.log
-pytest --cov="${aoto_round_path}" -vs --disable-warnings --html=report.html --self-contained-html . 2>&1 | tee -a ${ut_log_name}
+pytest --cov="${aoto_round_path}" -vs --disable-warnings --cov-report term --cov-report xml:coverage.xml \
+    --html=report.html --self-contained-html --cov-append . 2>&1 | tee -a ${ut_log_name}
 
 cp report.html ${LOG_DIR}/
 
