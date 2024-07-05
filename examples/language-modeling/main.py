@@ -219,7 +219,7 @@ if __name__ == '__main__':
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                layer_config[n] = {"data_type": "fp"}
+                layer_config[n] = {"bits": 32}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
     lm_head_layer_name = "lm_head"
@@ -239,7 +239,7 @@ if __name__ == '__main__':
                         f"supported currently")
                     break
     if args.quant_lm_head:
-        layer_config[lm_head_layer_name] = {"data_type": "int"}
+        layer_config[lm_head_layer_name] = {"bits": args.bits}
         transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
         if transformers_version[0] == 4 and transformers_version[1] < 38:
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
