@@ -60,10 +60,10 @@ class AutoRound(object):
                    {
                        'data_type': 'int',
                        'bits': 4,
-                       'group_size': 32,
+                       'group_size': 128,
                        'sym': False
                        'act_data_type': None,
-                       'act_bits': 16,
+                       'act_bits': 32,
                        'group_size': None,
                        'sym': None,
 
@@ -94,6 +94,10 @@ class AutoRound(object):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
+        act_bits (int): Number of bits for activation quantization. Default is 32.
+        act_group_size (int): Group size for activation quantization. Default is None.
+        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
+        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
 
     Returns:
         The quantized model.
@@ -132,7 +136,7 @@ class AutoRound(object):
             act_bits: int = 32,
             act_group_size: int = None,
             act_sym: bool = None,
-            act_dynamic: bool = True,  ##only support dynamic now
+            act_dynamic: bool = True,
             **kwargs,
     ):
         self.quantized = False
@@ -208,7 +212,7 @@ class AutoRound(object):
         assert self.nblocks > 0, "nblocks must be positive"
         assert self.gradient_accumulate_steps > 0, "gradient accumulate step must be positive"
         assert self.enable_full_range is False, "only support enable_full_range=False currently"
-        assert self.act_dynamic == True, "only support dynamic quantization for activation currently"
+        assert self.act_dynamic is True, "only support dynamic quantization for activation currently"
         # assert self.tokenizer != None or self.dataloader != None
 
     def quantize(self):
@@ -1210,6 +1214,11 @@ class AutoOPTRound(AutoRound):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
+        act_bits (int): Number of bits for activation quantization. Default is 32.
+        act_group_size (int): Group size for activation quantization. Default is None.
+        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
+        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
+
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -1246,6 +1255,10 @@ class AutoOPTRound(AutoRound):
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
+            act_bits: int = 32,
+            act_group_size: int = None,
+            act_sym: bool = None,
+            act_dynamic: bool = True,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1278,6 +1291,10 @@ class AutoOPTRound(AutoRound):
             dynamic_max_gap,
             data_type,
             scale_dtype,
+            act_bits,
+            act_group_size,
+            act_sym,
+            act_dynamic,
             **kwargs,
         )
 
@@ -1359,6 +1376,10 @@ class AutoAdamRound(AutoOPTRound):
         optimizer: string or object
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
+        act_bits (int): Number of bits for activation quantization. Default is 32.
+        act_group_size (int): Group size for activation quantization. Default is None.
+        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
+        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
 
     Returns:
         The quantized model.
@@ -1394,6 +1415,10 @@ class AutoAdamRound(AutoOPTRound):
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
+            act_bits: int = 32,
+            act_group_size: int = None,
+            act_sym: bool = None,
+            act_dynamic: bool = True,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1426,6 +1451,10 @@ class AutoAdamRound(AutoOPTRound):
             dynamic_max_gap,
             data_type,
             scale_dtype,
+            act_bits,
+            act_group_size,
+            act_sym,
+            act_dynamic,
             optimizer,
             **kwargs,
         )
