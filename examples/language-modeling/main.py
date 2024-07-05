@@ -119,6 +119,9 @@ if __name__ == '__main__':
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 
+    parser.add_argument("--act_bits", default=32, type=int,
+                        help="activation bits")
+
     args = parser.parse_args()
 
     if args.enable_minmax_tuning:
@@ -131,12 +134,19 @@ if __name__ == '__main__':
         print(
             "enable_quanted_input is deprecated. It has been set to the default; use disable_quanted_input to turn it off")
 
+    if args.act_bits <= 8:
+        print(
+            "Warning, activation quantization is an experiment feature")
+
     set_seed(args.seed)
     tasks = args.tasks
     use_eval_legacy = False
 
     if "marlin" in args.deployment_device and args.sym == False:
         assert False, "marlin backend only supports sym quantization, please set --sym"
+
+    if args.act_bits <= 8 and args.deployment_device != "fake":
+        assert False, "only support fake mode for activation quantization currently"
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -205,11 +215,11 @@ if __name__ == '__main__':
     if args.adam:
         round = AutoAdamRound
 
-    weight_config = {}
+    layer_config = {}
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                weight_config[n] = {"data_type": "fp"}
+                layer_config[n] = {"bits": 32}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
     lm_head_layer_name = "lm_head"
@@ -229,7 +239,7 @@ if __name__ == '__main__':
                         f"supported currently")
                     break
     if args.quant_lm_head:
-        weight_config[lm_head_layer_name] = {"data_type": "int"}
+        layer_config[lm_head_layer_name] = {"bits": args.bits}
         transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
         if transformers_version[0] == 4 and transformers_version[1] < 38:
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
@@ -245,8 +255,8 @@ if __name__ == '__main__':
                       amp=not args.disable_amp, nsamples=args.nsamples,
                       low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning)
+                      scale_dtype=args.scale_dtype, layer_config=layer_config,
+                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -264,7 +274,7 @@ if __name__ == '__main__':
             gpu_formats.append(item)
 
     if 'gpu' in deployment_device:
-        if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
+        if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
             gpu_formats.append("auto_round")
         else:
             gpu_formats.append("auto_gptq")
@@ -349,10 +359,13 @@ if __name__ == '__main__':
             model_args = f"pretrained={eval_folder}"
         else:
             exit()  ## does not support cpu,xpu model eval
+        user_model = None
+        if args.act_bits <= 8:
+            user_model = model.to(device_str)
 
         res = simple_evaluate(model="hf", model_args=model_args,
                               tasks=tasks,
-                              batch_size=args.eval_bs)
+                              batch_size=args.eval_bs, user_model=user_model)
         from lm_eval.utils import make_table
 
         print(make_table(res))

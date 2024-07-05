@@ -147,7 +147,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
                                   Default is "autoround:exllamav2".
         **kwargs: Additional keyword arguments including:
             - model (nn.Module): The model to be quantized.
-            - weight_config (dict): The weight configuration for each layer.
+            - layer_config (dict): The layer configuration for each layer.
             - serialization_dict (dict): The serialization configuration.
             - tokenizer (Tokenizer, optional): The tokenizer to be saved.
 
@@ -171,12 +171,12 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
         model = copy.deepcopy(model.to("cpu"))
     layer_names_in_block = get_layer_names_in_block(model)
 
-    weight_config = kwargs["weight_config"]
+    layer_config = kwargs["layer_config"]
 
     with tctl.threadpool_limits(limits=1):
-        for name in weight_config.keys():
+        for name in layer_config.keys():
 
-            config = kwargs["weight_config"][name]
+            config = kwargs["layer_config"][name]
             if config["data_type"] != "int" and config["bits"] >= 16:
                 continue
             logger.info(f"packing {name}")
@@ -208,8 +208,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
             new_layer.device = device
             set_module(model, name, new_layer)
             qlayer = new_layer
-            scale = weight_config[name]["scale"]
-            zero = weight_config[name]["zp"]
+            scale = layer_config[name]["scale"]
+            zero = layer_config[name]["zp"]
             # so far can only pack layer on CPU
             qlayer.to("cpu")
             ##force to float32 to be compatible with torch 2.0
@@ -225,18 +225,18 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
     quantization_config["quant_method"] = "intel/auto-round"
     quantization_config["backend"] = backend
     extra_config = {}
-    for layer_name in weight_config:
-        if weight_config[layer_name]["bits"] >= 16:
+    for layer_name in layer_config:
+        if layer_config[layer_name]["bits"] >= 16:
             continue
         if layer_name not in layer_names_in_block:
             extra_config[layer_name] = {}
-            extra_config[layer_name]["bits"] = weight_config[layer_name]["bits"]
-            extra_config[layer_name]["data_type"] = weight_config[layer_name]["data_type"]
-            extra_config[layer_name]["group_size"] = weight_config[layer_name]["group_size"]
-            extra_config[layer_name]["sym"] = weight_config[layer_name]["sym"]
+            extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
+            extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
+            extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
+            extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
         else:
             neq_keys = check_neq_config(
-                weight_config[layer_name],
+                layer_config[layer_name],
                 data_type=quantization_config["data_type"],
                 bits=quantization_config["bits"],
                 group_size=quantization_config["group_size"],
@@ -245,7 +245,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
             for key in neq_keys:
-                extra_config[layer_name][key] = weight_config[layer_name][key]
+                extra_config[layer_name][key] = layer_config[layer_name][key]
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     if hasattr(model, "config"):

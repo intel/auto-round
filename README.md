@@ -2,7 +2,7 @@
 
 AutoRound
 ===========================
-<h3> Advanced Weight-Only Quantization Algorithm for LLMs</h3>
+<h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.8%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.2-green)](https://github.com/intel/auto-round)
@@ -10,7 +10,7 @@ AutoRound
 ---
 <div align="left">
 
-AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference. It's tailored for a wide range
+AutoRound is an advanced quantization algorithm for low-bits LLM inference. It's tailored for a wide range
 of models. Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps,
 which competes impressively against recent methods without introducing any additional inference overhead. The below
 image presents an overview of AutoRound.  Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
@@ -120,7 +120,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
   NeelNanda/pile-10k"). Local json file and combination of datasets have been supported, e.g. "
   ./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test"
 
-- `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
+- `layer_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
   or mixed precision.
 
 - `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.

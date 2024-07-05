@@ -64,7 +64,7 @@ def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
 def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     """Save configure file and weights for CPU backend inference."""
     model = kwargs["model"]
-    weight_config = kwargs["weight_config"]
+    layer_config = kwargs["layer_config"]
     sym = kwargs["sym"]
     bits = kwargs["bits"]
     group_size = kwargs["group_size"]
@@ -76,7 +76,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
 
-    compressed_model = pack_model(model, weight_config, inplace=inplace)
+    compressed_model = pack_model(model, layer_config, inplace=inplace)
     if output_dir is None:
         return compressed_model
     quantize_config = QuantConfig(
@@ -110,7 +110,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
 def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
     """Save configure file and weights for CPU backend inference."""
     model = kwargs["model"]
-    weight_config = kwargs["weight_config"]
+    layer_config = kwargs["layer_config"]
     sym = kwargs["sym"]
     bits = kwargs["bits"]
     group_size = kwargs["group_size"]
@@ -156,7 +156,7 @@ def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
 
 def pack_model(
     model,
-    weight_config: Union[str, dict],
+    layer_config: Union[str, dict],
     enable_full_range=False,
     compression_dtype=torch.int32,
     compression_dim=1,
@@ -168,7 +168,7 @@ def pack_model(
     """Convert Linear to WeightOnlyLinear for low memory inference.
 
     Args:
-        weight_config (str|dict): qconfig dict or Path of qconfig.json.
+        layer_config (str|dict): qconfig dict or Path of qconfig.json.
         enable_full_range (bool, optional): Whether to leverage the full compression range
                                             under symmetric quantization. Defaults to False.
         compression_dtype (torch.Tensor, optional): The target dtype after comoression.
@@ -195,11 +195,11 @@ def pack_model(
         compressed_model = model
     else:
         compressed_model = copy.deepcopy(model)
-    if isinstance(weight_config, str):
-        with open(weight_config, "r") as f:
+    if isinstance(layer_config, str):
+        with open(layer_config, "r") as f:
             q_config = json.load(f)
     else:
-        q_config = weight_config
+        q_config = layer_config
     for k, v in q_config.items():
         logger.info(f"Packing {k}")
         if "float" in v["data_type"]:
