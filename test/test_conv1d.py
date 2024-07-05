@@ -32,7 +32,7 @@ class TestQuantizationConv1d(unittest.TestCase):
 
     def test_wa_quant(self):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        bits, group_size, sym, act_bits = 4, 128, False, 4
+        bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,
             self.tokenizer,
@@ -42,9 +42,10 @@ class TestQuantizationConv1d(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
-            act_bits=act_bits
+
         )
         autoround.quantize()
+        autoround.save_quantized("./saved")
 
 
 if __name__ == "__main__":
