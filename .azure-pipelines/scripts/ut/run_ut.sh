@@ -16,8 +16,9 @@ aoto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 LOG_DIR=/auto-round/log_dir
 mkdir -p ${LOG_DIR}
 ut_log_name=${LOG_DIR}/ut.log
-pytest --cov="${aoto_round_path}" -vs --disable-warnings --cov-report term --cov-report xml:coverage.xml \
-    --html=report.html --self-contained-html . 2>&1 | tee -a ${ut_log_name}
+
+find . -name "test*.py" | sed "s,\.\/,python -m pytest --cov=\"${aoto_round_path}\" --cov-report term --html=report.html --self-contained-html  --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run.sh
+bash run.sh 2>&1 | tee ${ut_log_name}
 
 cp report.html ${LOG_DIR}/
 cp coverage.xml ${LOG_DIR}/
