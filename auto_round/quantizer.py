@@ -36,7 +36,7 @@ def round_ste(x: torch.Tensor):
 
 
 def quant_tensor_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-                      weight_min=None, weight_max=None, scale_min=0.0):
+                      weight_min=None, weight_max=None, q_scale_thresh=0.0):
     """Quantizes and dequantizes weight asymmetrically.
 
     Args:
@@ -75,7 +75,7 @@ def quant_tensor_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, sca
     wmin[tmp] = -1
     wmax[tmp] = +1
     scale = ((wmax - wmin) / maxq).to(scale_dtype)
-    scale = torch.clamp(scale, min=scale_min)
+    scale = torch.clamp(scale, min=q_scale_thresh)
     zp = round_ste(-wmin / scale)  # pylint: disable=E1130
     scale = scale.unsqueeze(dim=-1)
     zp = zp.unsqueeze(dim=-1)
@@ -85,7 +85,7 @@ def quant_tensor_asym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, sca
 
 
 def quant_tensor_sym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, weight_min=None,
-                     weight_max=None, scale_min=0.0):
+                     weight_max=None, q_scale_thresh=0.0):
     """Quantizes and dequantizes weight symmetrically.
 
     Args:
@@ -130,7 +130,7 @@ def quant_tensor_sym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scal
     wmin_new[tmp] = -1
     wmax_new[tmp] = +1
     scale = ((wmax_new - wmin_new) / maxq).to(scale_dtype)
-    scale = torch.clamp(scale, min=scale_min)
+    scale = torch.clamp(scale, min=q_scale_thresh)
     scale = scale.unsqueeze(dim=-1)
     zp = torch.full_like(scale, (maxq + 1) / 2)
 
@@ -140,7 +140,7 @@ def quant_tensor_sym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scal
 
 
 def quant_tensor_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dtype=torch.float16, weight_min=None,
-                       weight_max=None, scale_min=0.0):
+                       weight_max=None, q_scale_thresh=0.0):
     """Quantizes and dequantizes weight symmetrically or asymmetrically .
 
     Args:
@@ -159,10 +159,10 @@ def quant_tensor_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dty
     assert num_bits > 0, "num_bits should be larger than 0"
     if sym:
         return quant_tensor_sym(weight, num_bits, v, min_scale, max_scale, scale_dtype, weight_min, weight_max,
-                                scale_min)
+                                q_scale_thresh)
     else:
         return quant_tensor_asym(weight, num_bits, v, min_scale, max_scale, scale_dtype, weight_min, weight_max,
-                                 scale_min)
+                                 q_scale_thresh)
 
 
 def reshape_tensor(v, group_size=-1):
@@ -187,7 +187,7 @@ def reshape_tensor(v, group_size=-1):
 
 def quant_tensor(
         data, num_bits=4, group_size=-1, sym=False, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-        weight_min=None, weight_max=None, scale_min=0.0
+        weight_min=None, weight_max=None, q_scale_thresh=0.0
 ):
     """Quantizes and dequantizes weight, handing the group size issue .
 
@@ -211,7 +211,7 @@ def quant_tensor(
     if group_size == -1 or data.shape[1] < group_size:
         data, scale, zp = quant_tensor_actor(data, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale,
                                              scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
-                                             scale_min=scale_min)
+                                             q_scale_thresh=q_scale_thresh)
         data = data.reshape(orig_shape)
         return data, scale, zp
 
@@ -219,7 +219,7 @@ def quant_tensor(
         data = data.reshape(-1, group_size)
         data, scale, zp = quant_tensor_actor(data, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale,
                                              scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
-                                             scale_min=scale_min)
+                                             q_scale_thresh=q_scale_thresh)
         data = data.reshape(orig_shape)
         return data, scale, zp
 
@@ -230,7 +230,7 @@ def quant_tensor(
         data_new = data_new.reshape(-1, group_size)
         data_new, scale, zp = quant_tensor_actor(data_new, num_bits, sym=sym, v=v, min_scale=min_scale,
                                                  max_scale=max_scale, scale_dtype=scale_dtype, weight_min=weight_min,
-                                                 weight_max=weight_max, scale_min=scale_min)
+                                                 weight_max=weight_max, q_scale_thresh=q_scale_thresh)
         data_new = data_new.reshape(tmp_shape[0], -1)
         data_new = data_new[:, :-pad_len]
         data_new = data_new.reshape(orig_shape)
@@ -244,7 +244,7 @@ class WrapperWALayer(torch.nn.Module):
 
     def forward(self, x):
         x, _, _ = quant_tensor(x, self.orig_layer.act_bits, self.orig_layer.group_size, self.orig_layer.sym,
-                               scale_dtype=self.orig_layer.scale_dtype, scale_min=self.orig_layer.scale_min)
+                               scale_dtype=self.orig_layer.scale_dtype, q_scale_thresh=self.orig_layer.q_scale_thresh)
         return self.orig_layer.forward(x)
 
 
@@ -277,7 +277,7 @@ class WrapperLinear(torch.nn.Module):
         self.act_sym = self.orig_layer.act_sym
         self.act_dynamic = self.orig_layer.act_dynamic
         self.act_quant = self.act_bits <= 8
-        self.scale_min = 1e-5
+        self.q_scale_thresh = 1e-5
 
         weight_dtype = torch.float32
         self.value = torch.nn.Parameter(
@@ -325,7 +325,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.weight.grad = None
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
-        self.orig_layer.scale_min = self.scale_min
+        self.orig_layer.q_scale_thresh = self.q_scale_thresh
         if self.act_quant:
             wrapper_layer = WrapperWALayer(self.orig_layer)
             return wrapper_layer
@@ -350,7 +350,7 @@ class WrapperLinear(torch.nn.Module):
         weight_q = weight_q.to(weight.dtype)
         if self.act_quant:
             x, _, _ = quant_tensor(x, self.act_bits, self.act_group_size, self.act_sym,
-                                   scale_dtype=self.scale_dtype, scale_min=self.scale_min)
+                                   scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh)
         # pylint: disable=not-callable
         return F.linear(x, weight_q, self.orig_layer.bias)
 
@@ -389,7 +389,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.act_sym = self.orig_layer.act_sym
         self.act_dynamic = self.orig_layer.act_dynamic
         self.act_quant = self.act_bits <= 8
-        self.scale_min = 1e-5
+        self.q_scale_thresh = 1e-5
         weight_dtype = torch.float32
         device = self.orig_layer.weight.device
         self.weight_t = self.orig_layer.weight.t()
@@ -437,7 +437,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.orig_layer.weight.grad = None
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu")
-        self.orig_layer.scale_min = self.scale_min
+        self.orig_layer.q_scale_thresh = self.q_scale_thresh
         if self.act_quant:
             wrapper_layer = WrapperWALayer(self.orig_layer)
             return wrapper_layer
@@ -462,7 +462,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         size_out = x.size()[:-1] + (self.orig_layer.nf,)
         if self.act_quant:
             x, _, _ = quant_tensor(x, self.act_bits, self.act_group_size, self.act_sym,
-                                   scale_dtype=self.scale_dtype, scale_min=self.scale_min)
+                                   scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh)
         x = torch.addmm(self.orig_layer.bias, x.view(-1, x.size(-1)), weight_q.t())
         x = x.view(*size_out)
         return x

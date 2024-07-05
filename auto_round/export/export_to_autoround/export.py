@@ -147,7 +147,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
                                   Default is "autoround:exllamav2".
         **kwargs: Additional keyword arguments including:
             - model (nn.Module): The model to be quantized.
-            - layer_config (dict): The weight configuration for each layer.
+            - layer_config (dict): The layer configuration for each layer.
             - serialization_dict (dict): The serialization configuration.
             - tokenizer (Tokenizer, optional): The tokenizer to be saved.
 

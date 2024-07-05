@@ -205,7 +205,8 @@ class AutoRound(object):
         assert self.bits > 0, "bits must be positive"
         assert self.act_bits > 0, "bits must be positive"
         assert self.group_size == -1 or self.group_size >= 1, "only supports positive group_size or -1(per channel)"
-        assert self.act_group_size == -1 or self.act_group_size >= 1, "only supports positive group_size or -1(per channel)"
+        assert self.act_group_size == -1 or self.act_group_size >= 1,\
+            "only supports positive group_size or -1(per channel)"
         assert self.train_bs > 0, "batch size must be positive"
         assert self.iters > 0, "iters must be positive"
         assert self.seqlen > 0, "seqlen must be positive"
@@ -216,11 +217,11 @@ class AutoRound(object):
         # assert self.tokenizer != None or self.dataloader != None
 
     def quantize(self):
-        """Quantize the model and return the quantized model along with weight configurations.
+        """Quantize the model and return the quantized model along with layer configurations.
         the entry of AutoRound.
 
         Returns:
-        The quantized model and weight configurations.
+        The quantized model and layer configurations.
         """
         # logger.info("cache block input")
         block_names = get_block_names(self.model)
@@ -259,7 +260,7 @@ class AutoRound(object):
 
         self.quant_layers(layer_names, all_inputs)
 
-        self.dump_data_to_layer_config()
+        self.dump_qinfo_to_layer_config()
 
         end_time = time.time()
         cost_time = end_time - self.start_time
@@ -285,9 +286,9 @@ class AutoRound(object):
         ##self.model = self.model.to(self.model_orig_dtype)##keep it as amp dtype
         return self.model, self.layer_config
 
-    def dump_data_to_layer_config(self):
+    def dump_qinfo_to_layer_config(self):
         """
-        dump quantization scale and zp to  weight configuration
+        dump quantization scale and zp to layer configuration
         Args:
 
         Returns:
@@ -353,7 +354,7 @@ class AutoRound(object):
            By default, only quantize layers in blocks.
 
         Args:
-        layer_config: The weight configuration.
+        layer_config: The layer configuration.
 
         Returns:
         None
@@ -1018,7 +1019,7 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
-        if format == "fake" or format == "qdq" or self.act_bits <= 8:##TODO fix act quantizaiton later
+        if format == "fake" or format == "qdq" or self.act_bits <= 8:  ##TODO fix act quantizaiton later
             self.model = self.model.to("cpu")
             self.model.save_pretrained(output_dir)
             if self.tokenizer is not None:
