@@ -54,14 +54,19 @@ class AutoRound(object):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether symmetric quantization is to be used (default is False).
-        weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
-        weight_config={
+        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config={
                    'layer1':##layer_name
                    {
                        'data_type': 'int',
                        'bits': 4,
                        'group_size': 32,
                        'sym': False
+                       'act_data_type': None,
+                       'act_bits': 16,
+                       'group_size': None,
+                       'sym': None,
+
                    }
                    ...
                }
@@ -101,11 +106,11 @@ class AutoRound(object):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            weight_config: dict = {},
+            layer_config: dict = {},
             enable_full_range: bool = False,  ##for symmetric, TODO support later
             batch_size: int = 8,
             amp: bool = True,
-            device=None,
+            device: str = None,
             lr_scheduler=None,
             dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
             enable_quanted_input: bool = True,
@@ -122,8 +127,12 @@ class AutoRound(object):
             gradient_accumulate_steps: int = 1,
             not_use_best_mse: bool = False,
             dynamic_max_gap: int = -1,
-            data_type: str = "int",  ##only support int for now
+            data_type: str = "int",
             scale_dtype: str = "fp16",
+            act_bits: int = 32,
+            act_group_size: int = None,
+            act_sym: bool = None,
+            act_dynamic: bool = True,  ##only support dynamic now
             **kwargs,
     ):
         self.quantized = False
@@ -140,7 +149,7 @@ class AutoRound(object):
         self.low_gpu_mem_usage = low_gpu_mem_usage
         self.data_type = data_type
         self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
-        self.weight_config = weight_config
+        self.layer_config = layer_config
         self.seed = seed
         self.tokenizer = tokenizer
         self.seqlen = seqlen
@@ -165,11 +174,15 @@ class AutoRound(object):
         self.dynamic_max_gap = dynamic_max_gap
         self.enable_full_range = enable_full_range
         self.lr_scheduler = lr_scheduler
-        self.set_layerwise_config(self.weight_config)
         self.optimizer = self.get_optimizer(None)
         self.share_attention_mask_flag = None
         self.hidden_dim_flag = None
         self.infer_bs_coeff = 1
+        self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
+        self.act_bits = act_bits if not (act_bits is None) else self.bits
+        self.act_sym = act_sym if not (act_sym is None) else self.sym
+        self.act_dynamic = act_dynamic
+        self.set_layerwise_config(self.layer_config)
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
         logger.info(f"using {self.model.dtype} for quantization tuning")
@@ -186,13 +199,16 @@ class AutoRound(object):
         """
         assert isinstance(self.model, torch.nn.Module)
         assert self.bits > 0, "bits must be positive"
+        assert self.act_bits > 0, "bits must be positive"
         assert self.group_size == -1 or self.group_size >= 1, "only supports positive group_size or -1(per channel)"
+        assert self.act_group_size == -1 or self.act_group_size >= 1, "only supports positive group_size or -1(per channel)"
         assert self.train_bs > 0, "batch size must be positive"
         assert self.iters > 0, "iters must be positive"
         assert self.seqlen > 0, "seqlen must be positive"
         assert self.nblocks > 0, "nblocks must be positive"
         assert self.gradient_accumulate_steps > 0, "gradient accumulate step must be positive"
         assert self.enable_full_range is False, "only support enable_full_range=False currently"
+        assert self.act_dynamic == True, "only support dynamic quantization for activation currently"
         # assert self.tokenizer != None or self.dataloader != None
 
     def quantize(self):
@@ -206,7 +222,7 @@ class AutoRound(object):
         block_names = get_block_names(self.model)
         if len(block_names) == 0:
             logger.warning("could not find blocks, exit with original model")
-            return self.model, self.weight_config
+            return self.model, self.layer_config
 
         if self.amp:
             self.model = self.model.to(self.amp_dtype)
@@ -239,7 +255,7 @@ class AutoRound(object):
 
         self.quant_layers(layer_names, all_inputs)
 
-        self.dump_data_to_weight_config()
+        self.dump_data_to_layer_config()
 
         end_time = time.time()
         cost_time = end_time - self.start_time
@@ -250,7 +266,7 @@ class AutoRound(object):
         unquantized_layers = []
         for n, m in self.model.named_modules():
             if isinstance(m, tuple(self.supported_types)):
-                if self.weight_config[n]["bits"] == 16:
+                if m.bits > 8:
                     unquantized_layers.append(n)
                 else:
                     quantized_layers.append(n)
@@ -263,9 +279,9 @@ class AutoRound(object):
 
         self.quantized = True
         ##self.model = self.model.to(self.model_orig_dtype)##keep it as amp dtype
-        return self.model, self.weight_config
+        return self.model, self.layer_config
 
-    def dump_data_to_weight_config(self):
+    def dump_data_to_layer_config(self):
         """
         dump quantization scale and zp to  weight configuration
         Args:
@@ -274,28 +290,28 @@ class AutoRound(object):
             None
         """
         for n, m in self.model.named_modules():
-            if n not in self.weight_config.keys():
+            if n not in self.layer_config.keys():
                 continue
             if hasattr(m, "scale"):
-                self.weight_config[n]["scale"] = m.scale
-                self.weight_config[n]["zp"] = m.zp
+                self.layer_config[n]["scale"] = m.scale
+                self.layer_config[n]["zp"] = m.zp
                 if self.group_size <= 0:
-                    self.weight_config[n]["g_idx"] = torch.tensor(
+                    self.layer_config[n]["g_idx"] = torch.tensor(
                         [0 for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu"
                     )
                 else:
-                    self.weight_config[n]["g_idx"] = torch.tensor(
+                    self.layer_config[n]["g_idx"] = torch.tensor(
                         [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu"
                     )
                 delattr(m, "scale")
                 delattr(m, "zp")
             else:
-                self.weight_config[n]["data_type"] = "float"
+                self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
-                    self.weight_config[n]["data_type"] = "bfloat"
-                self.weight_config[n]["bits"] = 16
-                self.weight_config[n]["group_size"] = None
-                self.weight_config[n]["sym"] = None
+                    self.layer_config[n]["data_type"] = "bfloat"
+                self.layer_config[n]["bits"] = 16
+                self.layer_config[n]["group_size"] = None
+                self.layer_config[n]["sym"] = None
 
     def quant_layers(self, layer_names, layer_inputs):
         """Quantizes specified layers based on inputs and configuration.
@@ -328,51 +344,40 @@ class AutoRound(object):
                     q_layer_input[i] = None
             torch.cuda.empty_cache()
 
-    def set_layerwise_config(self, weight_config):
-        """Sets the layer-wise configuration based on the provided weight_config.
+    def set_layerwise_config(self, layer_config):
+        """Sets the layer-wise configuration based on the provided layer_config.
            By default, only quantize layers in blocks.
 
         Args:
-        weight_config: The weight configuration.
+        layer_config: The weight configuration.
 
         Returns:
         None
         """
         layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types)
+        keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
+                "act_dynamic"]
         for n, m in self.model.named_modules():
             if not isinstance(m, tuple(self.supported_types)):
                 continue
-            if n not in weight_config.keys() and n in layers_in_blocks:
-                weight_config[n] = {}
-                weight_config[n]["data_type"] = self.data_type
-                weight_config[n]["bits"] = self.bits
-                weight_config[n]["group_size"] = self.group_size
-                weight_config[n]["sym"] = self.sym
-                weight_config[n]["scale_dtype"] = self.scale_dtype
-            elif n in weight_config.keys():
-                if "data_type" not in weight_config[n].keys():
-                    weight_config[n]["data_type"] = self.data_type
-                if "bits" not in weight_config[n].keys():
-                    weight_config[n]["bits"] = self.bits
-                if "group_size" not in weight_config[n].keys():
-                    weight_config[n]["group_size"] = self.group_size
-                if "sym" not in weight_config[n].keys():
-                    weight_config[n]["sym"] = self.sym
-                if "scale_dtype" not in weight_config[n].keys():
-                    weight_config[n]["scale_dtype"] = self.scale_dtype
-            else:
-                weight_config[n] = {}
-                weight_config[n]["data_type"] = "float"
-                weight_config[n]["bits"] = 16
-                weight_config[n]["group_size"] = self.group_size
-                weight_config[n]["sym"] = self.sym
-                weight_config[n]["scale_dtype"] = self.scale_dtype
+            ##not set in layer config, so use the default values
+            if n not in layer_config.keys() and n in layers_in_blocks:
+                layer_config[n] = {}
+                for key in keys:
+                    layer_config[n][key] = getattr(self, key)
+            elif n in layer_config.keys():  ## partly set
+                for key in keys:
+                    if key not in layer_config[n].keys():
+                        layer_config[n][key] = getattr(self, key)
+            else:  ##not in layer_config and layers in block,
+                layer_config[n] = {}
+                for key in keys:
+                    layer_config[n][key] = getattr(self, key)
+                layer_config[n]["bits"] = 32
+                layer_config[n]["act_bits"] = 32
 
-            m.data_type = weight_config[n]["data_type"]
-            m.bits = weight_config[n]["bits"]
-            m.group_size = weight_config[n]["group_size"]
-            m.sym = weight_config[n]["sym"]
-            m.scale_dtype = weight_config[n]["scale_dtype"]
+            for key in keys:
+                setattr(m, key, layer_config[n][key])
 
     @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
@@ -1009,6 +1014,13 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
+        if format == "fake" or format == "qdq" or self.act_bits <= 8:##TODO fix act quantizaiton later
+            self.model = self.model.to("cpu")
+            self.model.save_pretrained(output_dir)
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(output_dir)
+            return
+
         from auto_round.export import EXPORT_FORMAT
         backend = format
         format = format.split(":")[0]
@@ -1049,7 +1061,7 @@ class AutoRound(object):
         compressed_model = save_quantized_as_format(  ##TODO refine the code
             output_dir,
             model=self.model,
-            weight_config=self.weight_config,
+            layer_config=self.layer_config,
             inplace=inplace,
             bits=self.bits,
             group_size=self.group_size,
@@ -1075,20 +1087,20 @@ class AutoRound(object):
         Returns:
             list: List of layer names outside blocks.
         """
-        if self.weight_config is None or len(self.weight_config) == 0:
+        if self.layer_config is None or len(self.layer_config) == 0:
             return []
 
         layer_names = []
         all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types)
 
-        for key in self.weight_config.keys():
+        for key in self.layer_config.keys():
             if key in all_layers_in_block:
                 continue
             layer = get_module(self.model, key)
             if layer is None:
                 logger.error(f"could not find layer {key} in the model, exit...")
                 exit()
-            if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.weight_config[key]):
+            if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.layer_config[key]):
                 layer_names.append(key)
 
         return layer_names
@@ -1174,7 +1186,7 @@ class AutoOPTRound(AutoRound):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is False).
-        weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
@@ -1211,7 +1223,7 @@ class AutoOPTRound(AutoRound):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            weight_config: dict = {},
+            layer_config: dict = {},
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
@@ -1243,7 +1255,7 @@ class AutoOPTRound(AutoRound):
             bits,
             group_size,
             sym,
-            weight_config,
+            layer_config,
             enable_full_range,
             batch_size,
             amp,
@@ -1321,7 +1333,7 @@ class AutoAdamRound(AutoOPTRound):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (str): Whether symmetric quantization to be used (default is False).
-        weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
@@ -1359,7 +1371,7 @@ class AutoAdamRound(AutoOPTRound):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            weight_config: dict = {},
+            layer_config: dict = {},
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
@@ -1391,7 +1403,7 @@ class AutoAdamRound(AutoOPTRound):
             bits,
             group_size,
             sym,
-            weight_config,
+            layer_config,
             enable_full_range,
             batch_size,
             amp,

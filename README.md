@@ -120,7 +120,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
   NeelNanda/pile-10k"). Local json file and combination of datasets have been supported, e.g. "
   ./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test"
 
-- `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
+- `layer_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
   or mixed precision.
 
 - `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.

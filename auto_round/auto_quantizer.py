@@ -224,7 +224,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
             group_size: int = 128,
             sym: bool = False,
             backend="autoround:exllamav2",
-            weight_config: dict = None,
+            layer_config: dict = None,
             **kwargs,
     ):
 
@@ -234,7 +234,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.group_size = group_size
         self.sym = sym
         self.backend = backend
-        self.weight_config = weight_config
+        self.layer_config = layer_config
         if kwargs is not None:
             for key in kwargs.keys():
                 setattr(self, key, kwargs[key])

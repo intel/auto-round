@@ -307,11 +307,11 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
 
 def check_to_quantized(config):
     if isinstance(config, dict):
-        if config["bits"] > 8 or "fp" in config["data_type"] or "float" in config["data_type"]:
+        if config["bits"] > 8:
             return False
         return True
     else:
-        if config.bits > 8 or "fp" in config.data_type or "float" in config.data_type:
+        if config.bits > 8:
             return False
         return True
 
