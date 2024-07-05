@@ -213,6 +213,7 @@ def quant_tensor(
                                              scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
                                              scale_min=scale_min)
         data = data.reshape(orig_shape)
+        return data, scale, zp
 
     if data.shape[1] % group_size == 0:
         data = data.reshape(-1, group_size)

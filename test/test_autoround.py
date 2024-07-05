@@ -192,6 +192,21 @@ class TestAutoRound(unittest.TestCase):
             layer_config=layer_config,
         )
         autoround.quantize()
+    def test_wa_quant(self):
+        bits, group_size, sym, act_bits = 4, 128, False, 4
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            act_bits=4,
+        )
+        autoround.quantize()
+
 
 
 if __name__ == "__main__":
