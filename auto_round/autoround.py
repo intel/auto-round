@@ -306,7 +306,7 @@ class AutoRound(object):
                 self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
                     self.layer_config[n]["data_type"] = "bfloat"
-                self.layer_config[n]["bits"] = 16
+                self.layer_config[n]["bits"] = 32
                 self.layer_config[n]["group_size"] = None
                 self.layer_config[n]["sym"] = None
 
