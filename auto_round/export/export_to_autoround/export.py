@@ -104,7 +104,7 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     return QuantLinear
 
 
-def dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym):
+def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
     """
     Dynamically imports and returns the appropriate QuantLinear class based on the specified backend and parameters.
 
@@ -123,7 +123,7 @@ def dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym):
     if "auto_round" in backend:
         ##only support triton and exllamav2
         if not ("triton" in backend or "exllamav2" in backend):
-            logger.warning_once(f"autoround format does not support {backend}, try to packing with autogptq")
+            logger.warning_once(f"autoround format does not support {backend}, try to pack with autogptq")
             return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
         from auto_round_extension.cuda.qliner_triton import QuantLinear
         return QuantLinear
@@ -162,7 +162,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         backend = backend.replace("autoround", "auto_round")
         backend = backend.replace("auto-round", "auto_round")
     if not ("triton" in backend or "exllamav2" in backend):
-        logger.info(f"autoround format does not support {backend}, try to packing with autogptq")
+        logger.info(f"autoround format does not support {backend}, try to pack with autogptq")
         backend.replace("auto_round", "auto_gptq")
 
     model = kwargs["model"]
@@ -188,7 +188,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             layer = get_module(model, name)
             device = layer.weight.device
 
-            QuantLinear = dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym)
+            QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
 
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
