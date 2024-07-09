@@ -44,6 +44,10 @@ class TestQuantizationConv1d(unittest.TestCase):
             dataset=self.llm_dataloader,
 
         )
+        try:
+            import auto_gptq
+        except:
+            return
         autoround.quantize()
         autoround.save_quantized("./saved")
 
