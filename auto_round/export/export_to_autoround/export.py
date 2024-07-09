@@ -163,7 +163,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     backend = backend.replace("auto-round", "auto_round")
     if not ("triton" in backend or "exllamav2" in backend):
         logger.info(f"autoround format does not support {backend}, try to pack with autogptq")
-        backend.replace("auto_round", "auto_gptq")
+        backend = backend.replace("auto_round", "auto_gptq")
 
     model = kwargs["model"]
     model = model.to(torch.float16)  ##force to fp16
