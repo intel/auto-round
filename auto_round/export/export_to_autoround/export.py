@@ -177,7 +177,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         for name in layer_config.keys():
 
             config = kwargs["layer_config"][name]
-            if config["bits"] >= 8:
+            if config["bits"] > 8:
                 continue
             logger.info(f"packing {name}")
 
@@ -226,7 +226,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     quantization_config["backend"] = backend
     extra_config = {}
     for layer_name in layer_config:
-        if layer_config[layer_name]["bits"] >= 16:
+        if layer_config[layer_name]["bits"] > 8:
             continue
         if layer_name not in layer_names_in_block:
             extra_config[layer_name] = {}
