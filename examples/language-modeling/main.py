@@ -142,7 +142,7 @@ if __name__ == '__main__':
     tasks = args.tasks
     use_eval_legacy = False
 
-    if "marlin" in args.deployment_device and args.sym == False:
+    if "marlin" in args.deployment_device and args.sym is False:
         assert False, "marlin backend only supports sym quantization, please set --sym"
 
     if args.act_bits <= 8 and args.deployment_device != "fake":
