@@ -158,13 +158,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         AssertionError: If the backend is not supported.
     """
     if ":" not in backend:
-        backend = "auto_round:exllamav2"
+        backend = "autoround:exllamav2"
+        backend = backend.replace("autoround", "auto_round")
+        backend = backend.replace("auto-round", "auto_round")
     if not ("triton" in backend or "exllamav2" in backend):
-        logger.info(f"auto_round format does not support {backend}, try to packing with autogptq")
+        logger.info(f"autoround format does not support {backend}, try to packing with autogptq")
+        backend.replace("auto_round", "auto_gptq")
 
-    backend = backend.replace("autoround", "auto_round")
-    backend = backend.replace("auto-round", "auto_round")
-    backend = backend.replace("auto_round", "auto_gptq")
     model = kwargs["model"]
     model = model.to(torch.float16)  ##force to fp16
     if not inplace:
