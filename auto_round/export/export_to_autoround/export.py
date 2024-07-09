@@ -73,7 +73,7 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     disable_exllamav1 = False
     disable_marlin = True
     use_qigen = False
-    if "qigen" in "backend":
+    if "qigen" in backend:
         use_triton = False
         use_qigen = True
     elif "triton" in backend:
