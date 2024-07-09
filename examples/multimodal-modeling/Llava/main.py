@@ -2,7 +2,6 @@ import argparse
 import sys
 
 sys.path.insert(0, '../../..')
-
 parser = argparse.ArgumentParser()
 import torch
 import os
@@ -23,7 +22,7 @@ import math
 import shortuuid
 from torch.utils.data import Dataset, DataLoader
 from llava.mm_utils import get_model_name_from_path
-from llava.train.train import preprocess, preprocess_multimodal
+from llava.train.train import preprocess, preprocess_multimodal, DataCollatorForSupervisedDataset
 from llava.model.builder import load_pretrained_model
 
 class CustomDataset(Dataset): # for llava tuning
@@ -48,28 +47,28 @@ class CustomDataset(Dataset): # for llava tuning
         data_dict = preprocess(
             sources,
             self.tokenizer,
-            has_image=('image' in self.list_data_dict[index])
+            has_image=('image' in self.list_data_dict[index]),
         )
         if isinstance(index, int):
             data_dict = dict(input_ids=data_dict["input_ids"][0],
                             labels=data_dict["labels"][0])
         # image exist in the data
-        data_dict['images'] = image
+        data_dict['image'] = image
         return data_dict
 
     def __len__(self):
         return len(self.list_data_dict)
 
 
-def create_data_loader(dataset, batch_size=1):
+def create_data_loader(dataset, batch_size=1, data_collator=None):
     assert batch_size == 1, "batch_size must be 1"
-    data_loader = DataLoader(dataset, batch_size=batch_size, num_workers=0, shuffle=False)
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=data_collator)
     return data_loader
 
 if __name__ == '__main__':
 
     parser.add_argument(
-        "--model_name", default="facebook/opt-125m"
+        "--model_name", default="liuhaotian/llava-v1.5-7b"
     )
 
     parser.add_argument("--bits", default=4, type=int,
@@ -161,11 +160,11 @@ if __name__ == '__main__':
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
     
+    parser.add_argument("--do_multimodal", action='store_true',
+                        help="To determine whether the preprocessing should handle multimodal component.")
+    
     # ========== Calibration Datasets ============= 
     parser.add_argument("--mm-use-im-start-end", type=bool, default=False)
-    
-    parser.add_argument("--is_multimodal", type=bool, default=False,
-                        help="To determine whether the preprocessing should handle multimodal data.")
     
     parser.add_argument("--image_folder", default="coco", type=str,
                         help="The dataset for quantization training. It can be a custom one.")
@@ -204,12 +203,9 @@ if __name__ == '__main__':
     torch_device = torch.device(device_str)
     model_path = args.model_name
     model_name = get_model_name_from_path(model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, model_base=None, model_name=model_name,
+    tokenizer, model, image_processor, _ = load_pretrained_model(model_path, model_base=None, model_name=model_name,
             torch_dtype=torch_dtype)
-    questions = json.load(open(args.question_file, "r"))
-    dataset = CustomDataset(questions, args.image_folder, tokenizer, image_processor, args)
-    dataloader = create_data_loader(dataset, args.train_bs)
-
+    
     from auto_round import (AutoRound,
                             AutoAdamRound)
 
@@ -259,6 +255,11 @@ if __name__ == '__main__':
         evaluator.run_evaluate(result_file = args.eval_result_file)
         evaluator.calculate_accuracy(result_file = args.eval_result_file)
         exit()
+        
+    questions = json.load(open(args.question_file, "r"))
+    dataset = CustomDataset(questions, args.image_folder, tokenizer, image_processor, args=args)
+    data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
+    dataloader = create_data_loader(dataset, args.train_bs, data_collator)
 
     round = AutoRound
     if args.adam:
@@ -313,7 +314,7 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, multimodal=True)
+                      enable_minmax_tuning=not args.disable_minmax_tuning, multimodal=args.do_multimodal)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 

@@ -10,7 +10,7 @@ In this example, we introduce an straight-forward way to execute quantization on
 
 Our calibration process resembles the official visual instruction tuning process.
 
-Please download the annotation of the final mixture our instruction tuning data [Qwen-VL_mix665k.json](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/blob/main/llava_v1_5_mix665k.json), and download the images from constituting datasets:
+Please download the annotation of the final mixture our instruction tuning data [llava_v1_5_mix665k.json](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/blob/main/llava_v1_5_mix665k.json), and download the images from constituting datasets:
 
 COCO: [train2017](http://images.cocodataset.org/zips/train2017.zip), and unzip the image folder to any directory you desire.
 
@@ -18,6 +18,7 @@ You can also refer to the official Qwen-VL finetuning requirements to create a [
 
 ## Download the evaluation data
 
+Please refer to [Qwen-VL evaluation](https://github.com/cognitedata/Qwen-VL-finetune/blob/master/eval_mm/EVALUATION.md)
 <details>
 <summary>TextVQA Data Preparation</summary>
 
@@ -40,9 +41,33 @@ wget https://ofasys-wlcb.oss-cn-wulanchabu.aliyuncs.com/Qwen-VL/evaluation/textv
 wget https://ofasys-wlcb.oss-cn-wulanchabu.aliyuncs.com/Qwen-VL/evaluation/textvqa/textvqa_val.jsonl
 
 cd ../..
+
 ```
 </details>
 
+<br />
+
+<details>
+<summary>ScienceQA Data Preparation</summary>
+
+```bash
+mkdir -p data/scienceqa/images && cd data/scienceqa/images
+
+# download images
+wget https://scienceqa.s3.us-west-1.amazonaws.com/images/test.zip && unzip test.zip
+
+cd ..
+
+# download original questions
+wget https://github.com/lupantech/ScienceQA/blob/main/data/scienceqa/problems.json
+
+# download converted files
+wget https://ofasys-wlcb.oss-cn-wulanchabu.aliyuncs.com/Qwen-VL/evaluation/scienceqa/scienceqa_test_img.jsonl
+
+cd ../..
+
+```
+</details>
 <br />
 
 ## 2. Run Examples
@@ -100,6 +125,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 

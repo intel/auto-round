@@ -6,24 +6,17 @@ parser = argparse.ArgumentParser()
 import torch
 import os
 import transformers
-
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 from transformers import set_seed
-
 import re
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import copy
 from PIL import Image
 import json
 import math
-import shortuuid
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
-from transformers.generation import GenerationConfig
 import torch
 from auto_round.utils import convert_dtype_torch2str
 from typing import Dict, Optional, List
@@ -209,7 +202,7 @@ def get_train_dataloader(train_dataset, model, data_collator, train_batch_size=1
 if __name__ == '__main__':
 
     parser.add_argument(
-        "--model_name", default="facebook/opt-125m"
+        "--model_name", default="Qwen/Qwen-VL"
     )
 
     parser.add_argument("--bits", default=4, type=int,
@@ -304,6 +297,9 @@ if __name__ == '__main__':
     parser.add_argument("--model_max_length", default=2048, type=int,
                         help="")
     
+    parser.add_argument("--do_multimodal", action='store_true',
+                        help="To determine whether the preprocessing should handle multimodal component.")
+    
     # ========== Calibration Datasets ============= 
     parser.add_argument("--image_folder", default="coco", type=str,
                         help="The dataset for quantization training. It can be a custom one.")
@@ -317,7 +313,7 @@ if __name__ == '__main__':
     # ================= Evaluation Related =====================
     # parser.add_argument("--eval-path", type=str, default=None)
     
-    parser.add_argument("--eval-dataset", type=str, default="textvqa_val")
+    parser.add_argument("--eval-dataset", type=str, default="textvqa_val,scienceqa_test_img")
 
     args = parser.parse_args()
 
@@ -358,9 +354,9 @@ if __name__ == '__main__':
     config.use_cache = False
     if args.model_dtype != None:
         if args.model_dtype == "float16" or args.model_dtype == "fp16":
-            torch_device = torch.float16
+            torch_dtype = torch.float16
         if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
-            torch_device = torch.bfloat16
+            torch_dtype = torch.bfloat16
     dtype_abd = convert_dtype_torch2str(torch_dtype)
     if dtype_abd == "bf16":
         model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, trust_remote_code=not args.disable_trust_remote_code, bf16=True).eval()
@@ -383,14 +379,28 @@ if __name__ == '__main__':
     if args.eval_fp16_baseline:
         if args.disable_low_gpu_mem_usage:
             model = model.to(torch_device)
-        from mm_evaluation.evaluate_vqa import textVQA_evaluation
-        evaluator = textVQA_evaluation(
-            model,
-            dataset_name=args.eval_dataset,
-            # dataset_path=args.eval_path,
-            tokenizer=tokenizer,
-            batch_size=args.eval_bs
-        )
+        datasets=args.eval_dataset.split(',')
+        for dataset in datasets:
+            if 'vqa' in dataset:
+                from mm_evaluation.evaluate_vqa import textVQA_evaluation
+                evaluator = textVQA_evaluation(
+                    model,
+                    dataset_name=dataset,
+                    # dataset_path=args.eval_path,
+                    tokenizer=tokenizer,
+                    batch_size=args.eval_bs,
+                    device=str(torch_device)
+                )
+            elif 'scienceqa' in dataset:
+                from mm_evaluation.evaluate_multiple_choice import scienceQA_evaluation
+                evaluator = scienceQA_evaluation(
+                    model,
+                    dataset_name=dataset,
+                    # dataset_path=args.eval_path,
+                    tokenizer=tokenizer,
+                    batch_size=args.eval_bs,
+                    device=str(torch_device)
+                )
         exit()
 
     round = AutoRound
@@ -446,7 +456,7 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, multimodal=True)
+                      enable_minmax_tuning=not args.disable_minmax_tuning, multimodal=args.do_multimodal)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -473,11 +483,25 @@ if __name__ == '__main__':
     if not args.disable_eval and "fake" in deployment_device:  ## TODO
         model = model.half()
         model = model.to(torch_device)
-        from mm_evaluation.evaluate_vqa import textVQA_evaluation
-        evaluator = textVQA_evaluation(
-            model,
-            dataset_name=args.eval_dataset,
-            # dataset_path=args.eval_path,
-            tokenizer=tokenizer,
-            batch_size=args.eval_bs
-        )
+        datasets=args.eval_dataset.split(',')
+        for dataset in datasets:
+            if 'vqa' in dataset:
+                from mm_evaluation.evaluate_vqa import textVQA_evaluation
+                evaluator = textVQA_evaluation(
+                    model,
+                    dataset_name=dataset,
+                    # dataset_path=args.eval_path,
+                    tokenizer=tokenizer,
+                    batch_size=args.eval_bs,
+                    device=str(torch_device)
+                )
+            elif 'scienceqa' in dataset:
+                from mm_evaluation.evaluate_multiple_choice import scienceQA_evaluation
+                evaluator = scienceQA_evaluation(
+                    model,
+                    dataset_name=dataset,
+                    # dataset_path=args.eval_path,
+                    tokenizer=tokenizer,
+                    batch_size=args.eval_bs,
+                    device=str(torch_device)
+                )

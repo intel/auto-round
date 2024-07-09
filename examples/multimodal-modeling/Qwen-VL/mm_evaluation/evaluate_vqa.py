@@ -9,7 +9,7 @@ from typing import Optional
 
 import torch
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from .vqa import VQA
 from .vqa_eval import VQAEval
 
@@ -253,7 +253,8 @@ class InferenceSampler(torch.utils.data.sampler.Sampler):
         return len(self._local_indices)
 
 
-def textVQA_evaluation(model_name, dataset_name, dataset_path=None, tokenizer=None, batch_size=1, few_shot=0, seed=0):
+def textVQA_evaluation(model_name, dataset_name, dataset_path=None, tokenizer=None,
+                       batch_size=1, few_shot=0, seed=0, trust_remote_code=True, device="cuda:0"):
     # torch.distributed.init_process_group(
     #     backend='nccl',
     #     world_size=int(os.getenv('WORLD_SIZE', '1')),
@@ -262,14 +263,11 @@ def textVQA_evaluation(model_name, dataset_name, dataset_path=None, tokenizer=No
 
     torch.cuda.set_device(int(os.getenv('LOCAL_RANK', 0)))
     if isinstance(model_name, str):
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name, 
-            device_map='cuda', 
-            trust_remote_code=True).eval()
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            trust_remote_code=True
-            )
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        model = AutoModelForCausalLM.from_pretrained(model_name, config=config, trust_remote_code=trust_remote_code).eval()
+        model = model.to(torch.device(device))
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code,
+                                              padding_side="right", use_fast=False)
     else:
         assert tokenizer is not None, "Two types of parameter passing are supported:model_path or model with tokenizer."
         model = model_name
@@ -371,7 +369,7 @@ def textVQA_evaluation(model_name, dataset_name, dataset_path=None, tokenizer=No
     merged_outputs = [_ for _ in itertools.chain.from_iterable(merged_outputs)]
 
     # if torch.distributed.get_rank() == 0:
-    print(f"Evaluating {dataset} ...")
+    print(f"Evaluating {dataset_name} ...")
     time_prefix = time.strftime('%y%m%d%H%M%S', time.localtime())
     results_file = f'{dataset}_{time_prefix}_fs{few_shot}_s{seed}.json'
     json.dump(merged_outputs, open(results_file, 'w'), ensure_ascii=False)
@@ -424,3 +422,37 @@ def textVQA_evaluation(model_name, dataset_name, dataset_path=None, tokenizer=No
         print({'accuracy': evaluate_exact_match_accuracy(merged_outputs)})
 
     # torch.distributed.barrier()
+    
+    
+    
+
+if __name__ == "__main__":
+    import sys
+
+    import time
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model_name", default="Qwen/Qwen-VL"
+    )
+    parser.add_argument(
+        "--dataset_name", default="textvqa_val"
+    )
+    parser.add_argument(
+        "--eval_bs", default=4,
+    )
+    parser.add_argument(
+        "--trust_remote_code", action='store_true',
+        help="Whether to enable trust_remote_code"
+    )
+    args = parser.parse_args()
+    s = time.time()
+    evaluator = textVQA_evaluation(
+        args.model_name,
+        dataset_name=args.dataset_name,
+        # dataset_path=args.eval_path,
+        batch_size=args.eval_bs,
+        trust_remote_code=args.trust_remote_code
+    )
+    print("cost time: ", time.time() - s)

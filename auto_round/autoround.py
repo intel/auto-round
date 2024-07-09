@@ -206,7 +206,8 @@ class AutoRound(object):
         The quantized model and weight configurations.
         """
         # logger.info("cache block input")
-        all_blocks = get_block_names(self.model)
+        all_blocks = get_block_names(self.model, self.multimodal)
+                    
         if len(all_blocks) == 0:
             logger.warning("could not find blocks, exit with original model")
             return self.model, self.weight_config
@@ -341,7 +342,7 @@ class AutoRound(object):
         Returns:
         None
         """
-        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types)
+        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.multimodal)
         for n, m in self.model.named_modules():
             if not isinstance(m, tuple(self.supported_types)):
                 continue
@@ -1101,7 +1102,7 @@ class AutoRound(object):
             return []
 
         layer_names = []
-        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types)
+        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.multimodal)
 
         for key in self.weight_config.keys():
             if key in all_layers_in_block:
