@@ -82,7 +82,7 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     try:
         import auto_gptq
     except:
-        logger.warning_once(f"please install auto_gptq via 'pip install auto-gptq' to support export to {backend}")
+        logger.warning_once(f"please install auto_gptq via 'pip install auto-gptq' to support exporting to {backend}")
         exit()
 
     from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
