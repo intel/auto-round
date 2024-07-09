@@ -6,4 +6,6 @@ python3 main.py \
 --iters 200 \
 --deployment_device gpu \
 --sym \
---minmax_lr 0.01 
+--nsamples 512 \
+--minmax_lr 0.01
+

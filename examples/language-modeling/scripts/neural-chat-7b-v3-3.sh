@@ -5,6 +5,7 @@ python3 main.py \
 --bits 4 \
 --iters 1000 \
 --minmax_lr 2e-3 \
+--nsamples 512 \
 --deployment_device 'gpu' \
 --output_dir "./tmp_autoround" \
 --disable_quanted_input

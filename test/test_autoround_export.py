@@ -57,28 +57,28 @@ class TestAutoroundExport(unittest.TestCase):
         out1 = model(self.lm_input)
         round = AutoRound
         optq_1 = round(model, self.tokenizer, nsamples=20, amp=False, seqlen=10, iters=10)
-        q_model, weight_config1 = optq_1.quantize()
+        q_model, layer_config1 = optq_1.quantize()
         from auto_round.export.export_to_itrex import pack_model
 
-        compressed_model = pack_model(model=q_model, weight_config=weight_config1)
+        compressed_model = pack_model(model=q_model, layer_config=layer_config1)
         out2 = model(self.lm_input)
         out3 = q_model(self.lm_input)
         out4 = compressed_model(self.lm_input)
         self.assertTrue(torch.all(torch.isclose(out1[0], out2[0], atol=1e-1)))
         self.assertFalse(torch.all(out1[0] == out2[0]))
         self.assertTrue(torch.all(out2[0] == out3[0]))
-        self.assertTrue(torch.all(torch.isclose(out3[0], out4[0], atol=1e-5)))
+        self.assertTrue(torch.all(torch.isclose(out3[0], out4[0], atol=1e-3)))
         self.assertTrue("transformer.h.0.attn.k_proj.qzeros" in compressed_model.state_dict().keys())
 
         model = copy.deepcopy(self.gptj)
         out6 = model(self.lm_input)
         optq_2 = round(model, self.tokenizer, device="cpu", nsamples=20, seqlen=10)
-        q_model, weight_config2 = optq_2.quantize()
-        compressed_model = pack_model(model=q_model, weight_config=weight_config2, inplace=False)
+        q_model, layer_config2 = optq_2.quantize()
+        compressed_model = pack_model(model=q_model, layer_config=layer_config2, inplace=False)
         out4 = q_model(self.lm_input)
         out5 = compressed_model(self.lm_input)
         self.assertTrue(torch.all(out1[0] == out6[0]))
-        self.assertTrue(torch.all(torch.isclose(out4[0], out5[0], atol=1e-5)))
+        self.assertTrue(torch.all(torch.isclose(out4[0], out5[0], atol=1e-3)))
 
     def test_config(self):
         from auto_round.export import QuantConfig

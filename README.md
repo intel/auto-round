@@ -2,7 +2,7 @@
 
 AutoRound
 ===========================
-<h3> Advanced Weight-Only Quantization Algorithm for LLMs</h3>
+<h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.8%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.2-green)](https://github.com/intel/auto-round)
@@ -10,7 +10,7 @@ AutoRound
 ---
 <div align="left">
 
-AutoRound is an advanced weight-only quantization algorithm for low-bits LLM inference. It's tailored for a wide range
+AutoRound is an advanced quantization algorithm for low-bits LLM inference. It's tailored for a wide range
 of models. Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps,
 which competes impressively against recent methods without introducing any additional inference overhead. The below
 image presents an overview of AutoRound.  Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
@@ -22,6 +22,7 @@ image presents an overview of AutoRound.  Check out our updated paper on [arxiv]
 <div align="left">
 
 ## What's New
+* [2024/07] Important change: the default value of nsamples has been changed from 512 to 128 to reduce the  memory usages, which may cause a slight accuracy drop in some scenarios
 * [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant performance drop issue with the asymmetric kernel
 * [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
 * [2024/05] AutoRound performs well
@@ -98,7 +99,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `minmax_lr (float)`: The learning rate for min-max tuning (default is None, it will be set to lr automatically).
 
-- `nsamples (int)`: Number of samples for tuning (default is 512).
+- `nsamples (int)`: Number of samples for tuning (default is 128).
 
 - `seqlen (int)`: Data length of the sequence for tuning (default is 2048).
 
@@ -113,18 +114,26 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_r
 
 - `gradient_accumulate_steps (int)`: Number of gradient accumulation steps (default is 1).
 
-- `low_gpu_mem_usage (bool)`: Whether to save GPU memory at the cost of ~20% more tuning time (default is True).
+- `low_gpu_mem_usage (bool)`: Whether to save GPU memory at the cost of ~20% more tuning time (default is False).
 
 - `dataset Union[str, list, tuple, torch.utils.data.DataLoader]`: The dataset name for tuning (default is "
   NeelNanda/pile-10k"). Local json file and combination of datasets have been supported, e.g. "
   ./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test"
 
-- `weight_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
+- `layer_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
   or mixed precision.
 
 - `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.
 
 </details>
+
+### Tips
+
+1 Consider increasin 'iters' (e.g. 1000) to achieve better results, albeit with increased tuning time.
+
+2 Consider increasing 'nsamples' (e.g. 512) to achieve better results, albeit with more memory(~20G).
+
+3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
 ## Model inference
 
@@ -197,11 +206,7 @@ approach achieved superior performance compared to GPTQ, scoring 30/32, AWQ with
 with a perfect score of 16/16 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, and W2G128, based on the
 average accuracies of 11 zero-shot tasks.
 
-## Tips
 
-1 Consider increasing tuning steps to achieve better results, albeit with increased tuning time.
-
-2 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
 ## Reference
 

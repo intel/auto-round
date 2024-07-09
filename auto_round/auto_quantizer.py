@@ -44,6 +44,7 @@ from transformers.utils.quantization_config import AwqConfig, GPTQConfig, Quanti
 from auto_round.utils import get_module, set_module, dynamic_import_inference_linear
 import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
 from enum import Enum
+
 logger = getLogger(__name__)
 import sys
 
@@ -194,6 +195,7 @@ class AutoHfQuantizer:
 
         return quantization_config
 
+
 class AutoRoundQuantizationMethod(str, Enum):
     AutoRound = "intel/auto-round"
 
@@ -222,7 +224,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
             group_size: int = 128,
             sym: bool = False,
             backend="autoround:exllamav2",
-            weight_config: dict = None,
+            layer_config: dict = None,
             **kwargs,
     ):
 
@@ -232,7 +234,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.group_size = group_size
         self.sym = sym
         self.backend = backend
-        self.weight_config = weight_config
+        self.layer_config = layer_config
         if kwargs is not None:
             for key in kwargs.keys():
                 setattr(self, key, kwargs[key])
@@ -336,12 +338,13 @@ class AutoRoundQuantizer(HfQuantizer):
             bits = config["bits"]
             group_size = config["group_size"]
             data_type = config["data_type"]
-            if not (bits <= 8 and data_type == "int"):
+            sym = config["sym"]
+            if not (bits <= 8):
                 continue
 
             layer = get_module(module, layer_name)
             device = get_device(layer)
-            QuantLinear = dynamic_import_inference_linear(bits, group_size, backend)
+            QuantLinear = dynamic_import_inference_linear(backend, bits, group_size, sym)
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
                 out_features = layer.out_features
@@ -382,7 +385,6 @@ class AutoRoundQuantizer(HfQuantizer):
                 The input model
         """
 
-
         class StoreAttr(object):
             pass
 
@@ -405,7 +407,6 @@ class AutoRoundQuantizer(HfQuantizer):
             model = self.post_init_model(model)
         else:
             raise NotImplementedError
-
 
     @property
     def is_trainable(self, model: Optional["PreTrainedModel"] = None):
