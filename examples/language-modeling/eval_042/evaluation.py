@@ -54,6 +54,7 @@ def simple_evaluate(
         random_seed: int = 0,
         numpy_random_seed: int = 1234,
         torch_random_seed: int = 1234,
+        user_model = None, ##user model does not support tensor parallelism
 ):
     """Instantiate and evaluate a model on a list of tasks.
 
@@ -185,6 +186,8 @@ def simple_evaluate(
             + str(lm.rank)
             + ".db",
         )
+    if user_model is not None:
+        lm._model = user_model
 
     if task_manager is None:
         task_manager = TaskManager(verbosity)

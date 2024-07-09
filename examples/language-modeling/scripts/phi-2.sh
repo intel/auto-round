@@ -5,6 +5,6 @@ python3 main.py \
 --bits 4 \
 --iters 1000 \
 --sym \
+--nsamples 512 \
 --deployment_device 'gpu' \
---output_dir "./tmp_autoround" \
---disable_low_gpu_mem_usage
+--output_dir "./tmp_autoround"

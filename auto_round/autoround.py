@@ -55,14 +55,19 @@ class AutoRound(object):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether symmetric quantization is to be used (default is False).
-        weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
-        weight_config={
+        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config={
                    'layer1':##layer_name
                    {
                        'data_type': 'int',
                        'bits': 4,
-                       'group_size': 32,
+                       'group_size': 128,
                        'sym': False
+                       'act_data_type': None,
+                       'act_bits': 32,
+                       'group_size': None,
+                       'sym': None,
+
                    }
                    ...
                }
@@ -80,16 +85,20 @@ class AutoRound(object):
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is True).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Data length of the sequence for tuning (default is 2048).
-        n_samples (int): Number of samples (default is 512).
+        nsamples (int): Number of samples (default is 128).
         sampler (str): The sampling method (default is "rand").
         seed (int): The random seed (default is 42).
-        n_blocks (int): Number of blocks (default is 1).
+        nblocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
-        scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
+        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
+        act_bits (int): Number of bits for activation quantization. Default is 32.
+        act_group_size (int): Group size for activation quantization. Default is None.
+        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
+        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
 
     Returns:
         The quantized model.
@@ -102,29 +111,33 @@ class AutoRound(object):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            weight_config: dict = {},
+            layer_config: dict = {},
             enable_full_range: bool = False,  ##for symmetric, TODO support later
             batch_size: int = 8,
             amp: bool = True,
-            device=None,
+            device: str = None,
             lr_scheduler=None,
             dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
             enable_quanted_input: bool = True,
             enable_minmax_tuning: bool = True,
             lr: float = None,
             minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
+            low_gpu_mem_usage: bool = False,
             iters: int = 200,
             seqlen: int = 2048,
-            n_samples: int = 512,
+            nsamples: int = 128,
             sampler: str = "rand",
             seed: int = 42,
-            n_blocks: int = 1,
+            nblocks: int = 1,
             gradient_accumulate_steps: int = 1,
             not_use_best_mse: bool = False,
             dynamic_max_gap: int = -1,
-            data_type: str = "int",  ##only support int for now
+            data_type: str = "int",
             scale_dtype: str = "fp16",
+            act_bits: int = 32,
+            act_group_size: int = None,
+            act_sym: bool = None,
+            act_dynamic: bool = True,
             block_wise: bool = False,
             **kwargs,
     ):
@@ -138,36 +151,32 @@ class AutoRound(object):
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
-        self.n_samples = n_samples
-        self.n_blocks = n_blocks
+        self.nsamples = nsamples
+        self.nblocks = nblocks
         self.bits = bits
         self.group_size = group_size
         self.sym = sym
         self.low_gpu_mem_usage = low_gpu_mem_usage
         self.data_type = data_type
         self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
-        self.weight_config = weight_config
+        self.layer_config = layer_config
         self.seed = seed
         self.tokenizer = tokenizer
         self.seqlen = seqlen
         self.train_bs = batch_size
-        self.n_blocks = n_blocks
+        self.nblocks = nblocks
         self.device = detect_device(device)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
-        self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else device
-        logger.info(f"using {self.model.dtype} for quantization tuning")
+        self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
         self.dataset = dataset
+
         self.iters = iters
         if self.iters <= 0:
             logger.warning("iters must be positive, reset it to 200")
             self.iters = 200
-        self.lr = lr
-        if self.lr is None:
-            self.lr = 1.0 / self.iters
-        self.minmax_lr = minmax_lr
-        if self.minmax_lr is None:
-            self.minmax_lr = self.lr
+        self.lr = lr or (1.0 / self.iters)
+        self.minmax_lr = minmax_lr or self.lr
 
         self.sampler = sampler
         self.gradient_accumulate_steps = gradient_accumulate_steps
@@ -175,42 +184,18 @@ class AutoRound(object):
         self.dynamic_max_gap = dynamic_max_gap
         self.enable_full_range = enable_full_range
         self.lr_scheduler = lr_scheduler
-        self.set_layerwise_config(self.weight_config)
         self.optimizer = self.get_optimizer(None)
         self.share_attention_mask_flag = None
         self.hidden_dim_flag = None
+        self.infer_bs_coeff = 1
+        self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
+        self.act_bits = act_bits if not (act_bits is None) else self.bits
+        self.act_sym = act_sym if not (act_sym is None) else self.sym
+        self.act_dynamic = act_dynamic
+        self.set_layerwise_config(self.layer_config)
         torch.set_printoptions(precision=3, sci_mode=True)
-
         self.check_configs()
-        serialization_keys = [
-            "bits",
-            "group_size",
-            "sym",
-            "data_type",
-            "enable_quanted_input",
-            "enable_minmax_tuning",
-            "data_type",
-            "seqlen",
-            "train_bs",
-            "scale_dtype",
-            "lr",
-            "minmax_lr",
-            "gradient_accumulate_steps",
-            "iters",
-            "amp",
-            "n_samples",
-            "low_gpu_mem_usage",
-        ]
-        if isinstance(dataset, str):
-            serialization_keys.append("dataset")
-        self.serialization_dict = {}
-        for key in serialization_keys:
-            self.serialization_dict[key] = getattr(self, key)
-        from .version import __version__
-
-        self.serialization_dict["autoround_version"] = __version__
-        if "scale_dtype" in self.serialization_dict.keys():
-            self.serialization_dict["scale_dtype"] = str(self.serialization_dict["scale_dtype"])
+        logger.info(f"using {self.model.dtype} for quantization tuning")
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
@@ -224,34 +209,38 @@ class AutoRound(object):
         """
         assert isinstance(self.model, torch.nn.Module)
         assert self.bits > 0, "bits must be positive"
+        assert self.act_bits > 0, "bits must be positive"
         assert self.group_size == -1 or self.group_size >= 1, "only supports positive group_size or -1(per channel)"
+        assert self.act_group_size == -1 or self.act_group_size >= 1,\
+            "only supports positive group_size or -1(per channel)"
         assert self.train_bs > 0, "batch size must be positive"
         assert self.iters > 0, "iters must be positive"
         assert self.seqlen > 0, "seqlen must be positive"
-        assert self.n_blocks > 0, "n_blocks must be positive"
+        assert self.nblocks > 0, "nblocks must be positive"
         assert self.gradient_accumulate_steps > 0, "gradient accumulate step must be positive"
         assert self.enable_full_range is False, "only support enable_full_range=False currently"
+        assert self.act_dynamic is True, "only support dynamic quantization for activation currently"
         # assert self.tokenizer != None or self.dataloader != None
 
     def quantize(self):
-        """Quantize the model and return the quantized model along with weight configurations.
+        """Quantize the model and return the quantized model along with layer configurations.
         the entry of AutoRound.
 
         Returns:
-        The quantized model and weight configurations.
+        The quantized model and layer configurations.
         """
         # logger.info("cache block input")
         block_names = get_block_names(self.model)
         if len(block_names) == 0:
             logger.warning("could not find blocks, exit with original model")
-            return self.model, self.weight_config
+            return self.model, self.layer_config
 
         if self.amp:
             self.model = self.model.to(self.amp_dtype)
 
         layer_names = self.get_quantized_layer_names_outside_blocks()
         self.start_time = time.time()
-        all_inputs = self.try_cache_inter_data_gpucpu([block_names[0]], self.n_samples, layer_names=layer_names)
+        all_inputs = self.try_cache_inter_data_gpucpu([block_names[0]], self.nsamples, layer_names=layer_names)
         del self.inputs
         inputs = all_inputs[block_names[0]]
 
@@ -260,7 +249,7 @@ class AutoRound(object):
         del self.inputs
         if "input_ids" in inputs.keys():
             total_samples = len(inputs["input_ids"])
-            self.n_samples = total_samples
+            self.nsamples = total_samples
             if total_samples < self.train_bs:
                 self.train_bs = total_samples
                 logger.warning(f"force the train batch size to {total_samples} ")
@@ -272,13 +261,13 @@ class AutoRound(object):
             self.model,
             inputs,
             block_names,
-            n_blocks=self.n_blocks,
+            nblocks=self.nblocks,
             device=self.device,
         )
 
         self.quant_layers(layer_names, all_inputs)
 
-        self.dump_data_to_weight_config()
+        self.dump_qinfo_to_layer_config()
 
         end_time = time.time()
         cost_time = end_time - self.start_time
@@ -289,7 +278,7 @@ class AutoRound(object):
         unquantized_layers = []
         for n, m in self.model.named_modules():
             if isinstance(m, tuple(self.supported_types)):
-                if self.weight_config[n]["bits"] == 16:
+                if m.bits > 8:
                     unquantized_layers.append(n)
                 else:
                     quantized_layers.append(n)
@@ -302,39 +291,45 @@ class AutoRound(object):
 
         self.quantized = True
         ##self.model = self.model.to(self.model_orig_dtype)##keep it as amp dtype
-        return self.model, self.weight_config
+        return self.model, self.layer_config
 
-    def dump_data_to_weight_config(self):
+    def dump_qinfo_to_layer_config(self):
         """
-        dump quantization scale and zp to  weight configuration
+        dump quantization scale and zp to layer configuration
         Args:
 
         Returns:
             None
         """
         for n, m in self.model.named_modules():
-            if n not in self.weight_config.keys():
+            if n not in self.layer_config.keys():
                 continue
             if hasattr(m, "scale"):
-                self.weight_config[n]["scale"] = m.scale
-                self.weight_config[n]["zp"] = m.zp
+                self.layer_config[n]["scale"] = m.scale
+                self.layer_config[n]["zp"] = m.zp
+                if isinstance(m, transformers.modeling_utils.Conv1D):
+                    weight = m.weight.t()
+                else:
+                    weight = m.weight
+
                 if self.group_size <= 0:
-                    self.weight_config[n]["g_idx"] = torch.tensor(
-                        [0 for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu"
+
+                    self.layer_config[n]["g_idx"] = torch.tensor(
+                        [0 for i in range(weight.shape[1])], dtype=torch.int32, device="cpu"
                     )
                 else:
-                    self.weight_config[n]["g_idx"] = torch.tensor(
-                        [i // self.group_size for i in range(m.weight.shape[1])], dtype=torch.int32, device="cpu"
+                    self.layer_config[n]["g_idx"] = torch.tensor(
+                        [i // self.group_size for i in range(weight.shape[1])], dtype=torch.int32, device="cpu"
                     )
                 delattr(m, "scale")
                 delattr(m, "zp")
             else:
-                self.weight_config[n]["data_type"] = "float"
+                self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
-                    self.weight_config[n]["data_type"] = "bfloat"
-                self.weight_config[n]["bits"] = 16
-                self.weight_config[n]["group_size"] = None
-                self.weight_config[n]["sym"] = None
+                    self.layer_config[n]["data_type"] = "bfloat"
+                self.layer_config[n]["bits"] = 16
+                self.layer_config[n]["group_size"] = None
+                self.layer_config[n]["sym"] = None
 
     def quant_layers(self, layer_names, layer_inputs):
         """Quantizes specified layers based on inputs and configuration.
@@ -351,7 +346,7 @@ class AutoRound(object):
             return
         q_layer_inputs = None
         if self.enable_quanted_input:
-            q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.n_samples, layer_names=layer_names)
+            q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
 
         if not self.model.device.type == "meta":
             self.model = self.model.to("cpu")
@@ -368,51 +363,41 @@ class AutoRound(object):
                     q_layer_input[i] = None
             torch.cuda.empty_cache()
 
-    def set_layerwise_config(self, weight_config):
-        """Sets the layer-wise configuration based on the provided weight_config.
+    def set_layerwise_config(self, layer_config):
+        """Sets the layer-wise configuration based on the provided layer_config.
            By default, only quantize layers in blocks.
 
         Args:
-        weight_config: The weight configuration.
+        layer_config: The layer configuration.
 
         Returns:
         None
         """
         layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types)
+        keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
+                "act_dynamic"]
         for n, m in self.model.named_modules():
             if not isinstance(m, tuple(self.supported_types)):
                 continue
-            if n not in weight_config.keys() and n in layers_in_blocks:
-                weight_config[n] = {}
-                weight_config[n]["data_type"] = self.data_type
-                weight_config[n]["bits"] = self.bits
-                weight_config[n]["group_size"] = self.group_size
-                weight_config[n]["sym"] = self.sym
-                weight_config[n]["scale_dtype"] = self.scale_dtype
-            elif n in weight_config.keys():
-                if "data_type" not in weight_config[n].keys():
-                    weight_config[n]["data_type"] = self.data_type
-                if "bits" not in weight_config[n].keys():
-                    weight_config[n]["bits"] = self.bits
-                if "group_size" not in weight_config[n].keys():
-                    weight_config[n]["group_size"] = self.group_size
-                if "sym" not in weight_config[n].keys():
-                    weight_config[n]["sym"] = self.sym
-                if "scale_dtype" not in weight_config[n].keys():
-                    weight_config[n]["scale_dtype"] = self.scale_dtype
-            else:
-                weight_config[n] = {}
-                weight_config[n]["data_type"] = "float"
-                weight_config[n]["bits"] = 16
-                weight_config[n]["group_size"] = self.group_size
-                weight_config[n]["sym"] = self.sym
-                weight_config[n]["scale_dtype"] = self.scale_dtype
+            ##not set in layer config, so use the default values
+            if n not in layer_config.keys() and n in layers_in_blocks:
+                layer_config[n] = {}
+                for key in keys:
+                    layer_config[n][key] = getattr(self, key)
+            elif n in layer_config.keys():  ## partly set
+                for key in keys:
+                    if key not in layer_config[n].keys():
+                        layer_config[n][key] = getattr(self, key)
+            else:  ##not in layer_config and layers in block,
+                layer_config[n] = {}
+                for key in keys:
+                    layer_config[n][key] = getattr(self, key)
+                layer_config[n]["bits"] = 32
+                layer_config[n]["act_bits"] = 32
 
-            m.data_type = weight_config[n]["data_type"]
-            m.bits = weight_config[n]["bits"]
-            m.group_size = weight_config[n]["group_size"]
-            m.sym = weight_config[n]["sym"]
-            m.scale_dtype = weight_config[n]["scale_dtype"]
+            for key in keys:
+                setattr(m, key, layer_config[n][key])
+        tmp=1
 
     @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
@@ -432,8 +417,8 @@ class AutoRound(object):
         """
 
         output = []
-        for i in range(0, self.n_samples, bs):
-            end_index = min(self.n_samples, i + bs)
+        for i in range(0, self.nsamples, bs):
+            end_index = min(self.nsamples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
             tmp_input_ids, tmp_input_others = sampling_inputs(
                 input_ids, input_others, indices, self.seqlen, self.share_attention_mask_flag, self.input_dim
@@ -447,7 +432,7 @@ class AutoRound(object):
         return output
 
     @torch.no_grad()
-    def calib(self, n_samples, bs):
+    def calib(self, nsamples, bs):
         """Perform calibration for quantization.
 
         This method calibrates the model for quantization by processing a specified
@@ -456,7 +441,7 @@ class AutoRound(object):
         is less than the specified number, it logs a warning. If no samples are processed,
         it logs an error and exits.
         Args:
-            n_samples (int): The number of samples to use for calibration.
+            nsamples (int): The number of samples to use for calibration.
             bs (int): The number of samples to use for calibration
         """
         if isinstance(self.dataset, str):
@@ -468,7 +453,7 @@ class AutoRound(object):
                 dataset,
                 self.seed,
                 bs,
-                self.n_samples,
+                self.nsamples,
             )
         else:
             self.dataloader = self.dataset
@@ -514,7 +499,7 @@ class AutoRound(object):
             except Exception as error:
                 logger.error(error)
             total_cnt += input_ids.shape[0]
-            if total_cnt >= n_samples:
+            if total_cnt >= nsamples:
                 break
         if total_cnt == 0:
             logger.error(
@@ -522,10 +507,10 @@ class AutoRound(object):
                 f"dataset or decease the sequence length"
             )
             exit()
-        elif total_cnt < n_samples:
+        elif total_cnt < nsamples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantification. "
-                f"Valid samples size:{total_cnt}, Target sample size:{n_samples}"
+                f"Valid samples size:{total_cnt}, Target sample size:{nsamples}"
             )
         
         # clean embed weight to save memory
@@ -535,12 +520,12 @@ class AutoRound(object):
         torch.cuda.empty_cache()
 
     @torch.no_grad()
-    def try_cache_inter_data_gpucpu(self, block_names, n_samples, layer_names=[], last_cache_name=None):
+    def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=[], last_cache_name=None):
         """Attempts to cache intermediate data on GPU，if failed, then using CPU.
 
         Args:
             block_names (list): List of block names to cache data for.
-            n_samples (int): Number of samples to use for caching.
+            nsamples (int): Number of samples to use for caching.
             layer_names (list, optional): List of layer names to cache data for. Defaults to [].
             last_cache_name (str, optional): Name of the last cache. Defaults to None.
 
@@ -554,7 +539,7 @@ class AutoRound(object):
             if not self.model.device.type == "meta":
                 self.model = self.model.to(self.device)
             all_inputs = self.cache_inter_data(
-                block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name
+                block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
             if not self.model.device.type == "meta":
                 self.model = self.model.to("cpu")
@@ -565,12 +550,12 @@ class AutoRound(object):
                 self.model = self.model.to("cpu")
             torch.cuda.empty_cache()
             all_inputs = self.cache_inter_data(
-                block_names, n_samples, layer_names=layer_names, last_cache_name=last_cache_name
+                block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
         return all_inputs
 
     @torch.no_grad()
-    def cache_inter_data(self, block_names, n_samples, layer_names=[], last_cache_name=None):
+    def cache_inter_data(self, block_names, nsamples, layer_names=[], last_cache_name=None):
         """Save the inputs of block_name for calibration. For layers, we cache both of inputs and output.
 
         This method temporarily replaces the forward method of the model to capture
@@ -580,7 +565,7 @@ class AutoRound(object):
         Args:
             block_names (list): The names of the blocks for which inputs are to be saved.
             layer_names (list):The names of the layers for which inputs are to be saved.
-            n_samples (int): The number of samples to use for calibration.
+            nsamples (int): The number of samples to use for calibration.
             last_cache_name (str, optional): The name of the last layer to be cached,
                                        we could break the forward in this layer to save time
 
@@ -601,7 +586,7 @@ class AutoRound(object):
         calib_bs = self.train_bs
         self.hook_handles = []
         self._replace_forward()
-        self.calib(n_samples, calib_bs)
+        self.calib(nsamples, calib_bs)
         self._recover_forward()
         res = self.inputs
         del self.last_cache_name
@@ -756,7 +741,7 @@ class AutoRound(object):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
-        n_samples = len(inputs)
+        nsamples = len(inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         mse_loss = torch.nn.MSELoss().to(device)
@@ -768,13 +753,12 @@ class AutoRound(object):
         pick_samples = train_bs * gradient_accumulate_steps
 
         if self.sampler != "rand":
-            whole_indices = torch.randperm(n_samples)[:pick_samples]
+            whole_indices = torch.randperm(nsamples)[:pick_samples]
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
-                whole_indices = torch.randperm(n_samples)[:pick_samples]
+                whole_indices = torch.randperm(nsamples)[:pick_samples]
             for tmp_step in range(gradient_accumulate_steps):
-                org_input = None
                 indices = whole_indices[tmp_step * train_bs: (tmp_step + 1) * train_bs]
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
@@ -845,7 +829,8 @@ class AutoRound(object):
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
 
-        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs, device, self.cache_device)
+        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
+                                        self.cache_device)
 
         if q_input is not None:
             input_ids = q_input
@@ -883,9 +868,9 @@ class AutoRound(object):
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
         pick_samples = self.train_bs * self.gradient_accumulate_steps
-        n_samples = len(input_ids)
+        nsamples = len(input_ids)
         if self.sampler != "rand":
-            whole_indices = torch.randperm(n_samples)[:pick_samples]
+            whole_indices = torch.randperm(nsamples)[:pick_samples]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         mse_loss = torch.nn.MSELoss().to(device)
@@ -895,7 +880,7 @@ class AutoRound(object):
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
-                whole_indices = torch.randperm(n_samples)[:pick_samples]
+                whole_indices = torch.randperm(nsamples)[:pick_samples]
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.train_bs: (tmp_step + 1) * self.train_bs]
                 current_input_ids, current_input_others = sampling_inputs(
@@ -961,7 +946,8 @@ class AutoRound(object):
         if self.enable_quanted_input:
 
             q_outputs = self.get_block_outputs(
-                block, input_ids, input_others, self.train_bs, device, cache_device=self.cache_device
+                block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
+                cache_device=self.cache_device
             )
             for i in range(len(input_ids)):
                 input_ids[i] = None
@@ -980,7 +966,7 @@ class AutoRound(object):
             model: torch.nn.Module,
             inputs,
             block_names,
-            n_blocks=1,
+            nblocks=1,
             device=torch.device("cpu"),
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
@@ -989,7 +975,7 @@ class AutoRound(object):
         model: The PyTorch model to be quantized.
         inputs: The input data for quantization.
         block_names: The names of the blocks to be quantized and dequantized.
-        n_blocks: The number of blocks to quantize and dequantize.
+        nblocks: The number of blocks to quantize and dequantize.
         device: The device for quantization and dequantization.
 
         Returns:
@@ -1019,15 +1005,15 @@ class AutoRound(object):
                 for i in range(len(input_others[key])):
                     input_others[key][i].to(tmp_dtype)
 
-        for i in range(0, len(block_names), n_blocks):
-            if n_blocks == 1:
+        for i in range(0, len(block_names), nblocks):
+            if nblocks == 1:
                 n = block_names[i]
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
                 if self.block_wise:
                     m = m.to(device)
             else:
-                names = block_names[i: i + n_blocks]
+                names = block_names[i: i + nblocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
                 if self.block_wise:
@@ -1077,16 +1063,54 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
-        from auto_round.export import EXPORT_FORMAT
+        if format == "fake" or format == "qdq" or self.act_bits <= 8:  ##TODO fix act quantizaiton later
+            self.model = self.model.to("cpu")
+            self.model.save_pretrained(output_dir)
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(output_dir)
+            return
 
+        from auto_round.export import EXPORT_FORMAT
+        backend = format
+        format = format.split(":")[0]
         if format not in EXPORT_FORMAT:
             logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
             exit()
         save_quantized_as_format = EXPORT_FORMAT.get(format)
+        serialization_keys = [
+            "bits",
+            "group_size",
+            "sym",
+            "data_type",
+            "enable_quanted_input",
+            "enable_minmax_tuning",
+            "data_type",
+            "seqlen",
+            "train_bs",
+            "scale_dtype",
+            "lr",
+            "minmax_lr",
+            "gradient_accumulate_steps",
+            "iters",
+            "amp",
+            "nsamples",
+            "low_gpu_mem_usage",
+        ]
+        if isinstance(self.dataset, str):
+            serialization_keys.append("dataset")
+        serialization_dict = {}
+        for key in serialization_keys:
+            serialization_dict[key] = getattr(self, key)
+        from .version import __version__
+
+        serialization_dict["autoround_version"] = __version__
+        if "scale_dtype" in serialization_dict.keys():
+            serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
+
         compressed_model = save_quantized_as_format(  ##TODO refine the code
             output_dir,
             model=self.model,
-            weight_config=self.weight_config,
+            layer_config=self.layer_config,
             inplace=inplace,
             bits=self.bits,
             group_size=self.group_size,
@@ -1100,8 +1124,9 @@ class AutoRound(object):
             tokenizer=self.tokenizer,
             supported_types=self.supported_types,
             data_type=self.data_type,
-            serialization_dict=self.serialization_dict,
-            **kwargs,
+            serialization_dict=serialization_dict,
+            backend=backend,
+            **kwargs
         )
         return compressed_model
 
@@ -1111,20 +1136,20 @@ class AutoRound(object):
         Returns:
             list: List of layer names outside blocks.
         """
-        if self.weight_config is None or len(self.weight_config) == 0:
+        if self.layer_config is None or len(self.layer_config) == 0:
             return []
 
         layer_names = []
         all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types)
 
-        for key in self.weight_config.keys():
+        for key in self.layer_config.keys():
             if key in all_layers_in_block:
                 continue
             layer = get_module(self.model, key)
             if layer is None:
                 logger.error(f"could not find layer {key} in the model, exit...")
                 exit()
-            if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.weight_config[key]):
+            if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.layer_config[key]):
                 layer_names.append(key)
 
         return layer_names
@@ -1210,7 +1235,7 @@ class AutoOPTRound(AutoRound):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is False).
-        weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
@@ -1221,19 +1246,24 @@ class AutoOPTRound(AutoRound):
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is True).
+        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
-        n_samples (int): Number of samples (default is 512).
+        nsamples (int): Number of samples (default is 128).
         sampler (str): The sampling method (default is "rand").
         seed (int): The random seed (default is 42).
-        n_blocks (int): Number of blocks (default is 1).
+        nblocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
         data_type (str): The data type to be used (default is "int").
-        scale_dtype (str): The data type of quantization scale to be used (default is "float32"), different kernels
+        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
+        act_bits (int): Number of bits for activation quantization. Default is 32.
+        act_group_size (int): Group size for activation quantization. Default is None.
+        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
+        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
+
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -1247,29 +1277,33 @@ class AutoOPTRound(AutoRound):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            weight_config: dict = {},
+            layer_config: dict = {},
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
-            device="auto",
+            device=None,
             lr_scheduler=None,
             dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
             enable_quanted_input: bool = True,
             enable_minmax_tuning: bool = True,
             lr: float = None,
             minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
+            low_gpu_mem_usage: bool = False,
             iters: int = 200,
             seqlen: int = 2048,
-            n_samples: int = 512,
+            nsamples: int = 128,
             sampler: str = "rand",
             seed: int = 42,
-            n_blocks: int = 1,
+            nblocks: int = 1,
             gradient_accumulate_steps: int = 1,
             not_use_best_mse: bool = False,
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
+            act_bits: int = 32,
+            act_group_size: int = None,
+            act_sym: bool = None,
+            act_dynamic: bool = True,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1279,7 +1313,7 @@ class AutoOPTRound(AutoRound):
             bits,
             group_size,
             sym,
-            weight_config,
+            layer_config,
             enable_full_range,
             batch_size,
             amp,
@@ -1293,15 +1327,19 @@ class AutoOPTRound(AutoRound):
             low_gpu_mem_usage,
             iters,
             seqlen,
-            n_samples,
+            nsamples,
             sampler,
             seed,
-            n_blocks,
+            nblocks,
             gradient_accumulate_steps,
             not_use_best_mse,
             dynamic_max_gap,
             data_type,
             scale_dtype,
+            act_bits,
+            act_group_size,
+            act_sym,
+            act_dynamic,
             **kwargs,
         )
 
@@ -1357,7 +1395,7 @@ class AutoAdamRound(AutoOPTRound):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (str): Whether symmetric quantization to be used (default is False).
-        weight_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
@@ -1369,13 +1407,13 @@ class AutoAdamRound(AutoOPTRound):
         enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
-        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is True).
+        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
-        n_samples (int): Number of samples (default is 512).
+        nsamples (int): Number of samples (default is 128).
         sampler (str): The sampling method (default is "rand").
         seed (int): The random seed (default is 42).
-        n_blocks (int): Number of blocks (default is 1).
+        nblocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
         dynamic_max_gap (int): The dynamic maximum gap (default is -1).
@@ -1383,6 +1421,10 @@ class AutoAdamRound(AutoOPTRound):
         optimizer: string or object
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
+        act_bits (int): Number of bits for activation quantization. Default is 32.
+        act_group_size (int): Group size for activation quantization. Default is None.
+        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
+        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
 
     Returns:
         The quantized model.
@@ -1395,29 +1437,33 @@ class AutoAdamRound(AutoOPTRound):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            weight_config: dict = {},
+            layer_config: dict = {},
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
-            device="auto",
+            device=None,
             lr_scheduler=None,
             dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
             enable_quanted_input: bool = True,
             enable_minmax_tuning: bool = True,
             lr: float = None,
             minmax_lr: float = None,
-            low_gpu_mem_usage: bool = True,
+            low_gpu_mem_usage: bool = False,
             iters: int = 200,
             seqlen: int = 2048,
-            n_samples: int = 512,
+            nsamples: int = 128,
             sampler: str = "rand",
             seed: int = 42,
-            n_blocks: int = 1,
+            nblocks: int = 1,
             gradient_accumulate_steps: int = 1,
             not_use_best_mse: bool = False,
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
+            act_bits: int = 32,
+            act_group_size: int = None,
+            act_sym: bool = None,
+            act_dynamic: bool = True,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1427,7 +1473,7 @@ class AutoAdamRound(AutoOPTRound):
             bits,
             group_size,
             sym,
-            weight_config,
+            layer_config,
             enable_full_range,
             batch_size,
             amp,
@@ -1441,16 +1487,19 @@ class AutoAdamRound(AutoOPTRound):
             low_gpu_mem_usage,
             iters,
             seqlen,
-            n_samples,
+            nsamples,
             sampler,
             seed,
-            n_blocks,
+            nblocks,
             gradient_accumulate_steps,
             not_use_best_mse,
             dynamic_max_gap,
             data_type,
             scale_dtype,
+            act_bits,
+            act_group_size,
+            act_sym,
+            act_dynamic,
             optimizer,
             **kwargs,
         )
-
