@@ -40,16 +40,16 @@ def collate_fn(batches, pad_token_id):
 class MultipleChoiceDataste(torch.utils.data.Dataset):
 
     def __init__(self, test, prompt, tokenizer):
-        self.datas = open(test).readlines()
+        self.data = open(test).readlines()
         self.prompt = prompt
         self.tokenizer = tokenizer
 
     def __len__(self):
-        return len(self.datas)
+        return len(self.data)
 
     def __getitem__(self, idx):
 
-        data = json.loads(self.datas[idx].strip())
+        data = json.loads(self.data[idx].strip())
         image = data['image']
         hint = data['hint'] if data['hint'] else 'N/A'
         question = data['question']
