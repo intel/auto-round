@@ -13,12 +13,6 @@
 # limitations under the License.
 
 
-import copy
-import json
-import os
-from os.path import isdir, isfile, join
-from typing import Dict, List, Optional, Union
-
 # MIT License
 #
 # Copyright (c) 2023 潘其威(William)
@@ -42,19 +36,75 @@ from typing import Dict, List, Optional, Union
 # SOFTWARE.
 import torch
 
+from auto_round.utils import check_to_quantized, get_block_names, get_module, logger, get_layer_names_in_block, \
+    set_module
+import copy
+import json
+import os
+
+import torch.nn as nn
+import transformers
+
 from auto_round.export.register import register_format
-from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
+import threadpoolctl as tctl
+import inspect
+
+
+def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
+    """
+    Configures and returns a QuantLinear class based on the specified backend and parameters.
+
+    Args:
+        backend (str): The backend to be used for quantization. Supported values include "qigen", "triton", "marlin",
+                       "exllama", and "cuda".
+        bits (int, optional): The number of bits for quantization. Default is 4.
+        group_size (int, optional): The group size for quantization. Default is 128.
+        sym (bool, optional): Flag indicating whether to use symmetric quantization. Default is False.
+
+    Returns:
+        class: The dynamically imported QuantLinear class configured according to the specified parameters.
+    """
+    use_triton = True
+    disable_exllamav2 = True
+    disable_exllamav1 = False
+    disable_marlin = True
+    use_qigen = False
+    if "qigen" in "backend":
+        use_triton = False
+        use_qigen = True
+    elif "marlin" in backend and sym:
+        use_triton = False
+        disable_marlin = False
+    else:
+        ##we all use triton for others, ##TODO may have bugs for some backends
+        from auto_round.export.export_to_autogptq.qlinear_triton import QuantLinear
+        return QuantLinear
+    try:
+        import auto_gptq
+    except:
+        logger.warning_once(f"please install auto_gptq via 'pip install auto-gptq' to support export to {backend}")
+        exit()
+
+    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
+    QuantLinear = dynamically_import_QuantLinear(
+        use_triton=use_triton,
+        desc_act=False,
+        group_size=group_size,
+        bits=bits,
+        disable_exllama=disable_exllamav1,
+        disable_exllamav2=disable_exllamav2,
+        use_qigen=use_qigen,
+        disable_marlin=disable_marlin,
+    )
+    return QuantLinear
 
 
 @register_format("auto_gptq")
-def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True,
+def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
                                **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
     model = kwargs["model"]
-    weight_config = kwargs["weight_config"]
-    bits = kwargs["bits"]
-    group_size = kwargs["group_size"]
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
 
@@ -82,49 +132,78 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True,
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
-    if inplace:
-        compressed_model = model.to("cpu")
-    else:
-        compressed_model = copy.deepcopy(model.to("cpu"))
+    model = model.to(torch.float16)  ##force to fp16
+    if not inplace:
+        model = copy.deepcopy(model.to("cpu"))
 
-    from auto_gptq.modeling._utils import pack_model  # pylint: disable=E0401
+    layer_config = kwargs["layer_config"]
 
-    if bits == 3 or use_triton is False:
-        use_triton = False
-    quantizers = {}
-    for key in weight_config:
-        if key == "lm_head":  ##TODO remove this after pr 87 is merged
-            continue
-        info = weight_config[key]
-        if not check_to_quantized(info):
-            continue
-        quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
-    pack_model(
-        compressed_model,
-        quantizers,
-        bits,
-        group_size,
-        use_cuda_fp16=True,
-        desc_act=False,
-        force_layer_back_to_cpu=True,
-        use_triton=use_triton
-    )
+    with tctl.threadpool_limits(limits=1):
+        for name in layer_config.keys():
+            if name == "lm_head":  ##dese not support lm-head
+                continue
+            config = kwargs["layer_config"][name]
+            if config["bits"] >= 8:
+                continue
+            logger.info(f"packing {name}")
+
+            bits = config["bits"]
+            group_size = config["group_size"]
+            sym = config["sym"]
+
+            layer = get_module(model, name)
+            device = layer.weight.device
+
+            QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
+
+            if isinstance(layer, nn.Linear):
+                in_features = layer.in_features
+                out_features = layer.out_features
+            elif isinstance(layer, nn.Conv2d):
+                in_features = layer.in_channels
+                out_features = layer.out_channels
+            elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+                in_features = layer.weight.shape[0]
+                out_features = layer.weight.shape[1]
+            bias = layer.bias is not None and torch.any(layer.bias)
+
+            new_layer = QuantLinear(  ##pylint: disable=E1123
+                bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
+            )
+
+            new_layer.device = device
+            set_module(model, name, new_layer)
+            qlayer = new_layer
+            scale = layer_config[name]["scale"]
+            zero = layer_config[name]["zp"]
+            # so far can only pack layer on CPU
+            qlayer.to("cpu")
+            ##force to float32 to be compatible with torch 2.0
+            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
+            sig = inspect.signature(qlayer.pack)
+            param_count = len(sig.parameters)
+            if param_count == 2:
+                qlayer.pack(layer, scale)
+            else:
+                qlayer.pack(layer, scale, zero, None)
+            qlayer.to(device)
     if output_dir is None:
-        return compressed_model
+        return model
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "gptq"
-    quantization_config.pop("dataset", None) ## pile-10k is not supported in gptq
-    model.quantization_config["desc_act"] = False  ## for autogptq API
-    model.quantization_config["true_sequential"] = False
-    model.quantization_config["damp_percent"] = 0.01
+    quantization_config.pop("dataset", None)  ## pile-10k is not supported in gptq
+    quantization_config["desc_act"] = False  ## for autogptq API
+    quantization_config["true_sequential"] = False
+    quantization_config["damp_percent"] = 0.01
     if modules_in_block_to_quantize is not None:
         quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
-    save(compressed_model, output_dir)
+    save(model, output_dir)
 
-##API in autogptq with marlin does not spport shard size
-def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "10000GB", safe_serialization: bool = True):
+
+##
+def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
     """Save model state dict and configs.
 
     Args:
@@ -144,10 +223,10 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "10000GB",
         safe_serialization (`bool`, defaults to `True`):
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
+    max_shard_size = "10000GB"  ## API of auto-gptq with marlin does not support shard size
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_file = "quantize_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)

@@ -135,7 +135,7 @@ def dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym):
 
 
 @register_format("auto_round")
-def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exllamav2", **kwargs):
+def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):
     """
     Saves a quantized model in the auto-round format.
 
@@ -158,9 +158,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
         AssertionError: If the backend is not supported.
     """
     if ":" not in backend:
-        backend = "autoround:exllamav2"
+        backend = "auto_round:exllamav2"
     if not ("triton" in backend or "exllamav2" in backend):
-        logger.info(f"autoround format does not support {backend}, try to packing with autogptq")
+        logger.info(f"auto_round format does not support {backend}, try to packing with autogptq")
 
     backend = backend.replace("autoround", "auto_round")
     backend = backend.replace("auto-round", "auto_round")
@@ -177,7 +177,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
         for name in layer_config.keys():
 
             config = kwargs["layer_config"][name]
-            if config["data_type"] != "int" and config["bits"] >= 16:
+            if config["bits"] >= 8:
                 continue
             logger.info(f"packing {name}")
 

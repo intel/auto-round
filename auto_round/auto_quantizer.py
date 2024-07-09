@@ -223,7 +223,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
             dataset: str = None,
             group_size: int = 128,
             sym: bool = False,
-            backend="autoround:exllamav2",
+            backend="auto_round:exllamav2",
             layer_config: dict = None,
             **kwargs,
     ):

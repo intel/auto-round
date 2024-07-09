@@ -389,7 +389,7 @@ class AutoRound(object):
 
             for key in keys:
                 setattr(m, key, layer_config[n][key])
-        tmp=1
+
 
     @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
