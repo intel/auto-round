@@ -674,7 +674,7 @@ class Pakcer:
     ) -> torch.Tensor:
         """Packs a 2D tensor into a compressed tensor.
         
-        This is a refer implementation for verifing the correctness of optimized implementation.
+        This is a refer implementation for verifying the correctness of optimized implementation.
 
         Args:
             raw_tensor (torch.Tensor): The input tensor to be packed. The shape of the tensor should be (out_feats, in_feats) or (1, in_feats).
