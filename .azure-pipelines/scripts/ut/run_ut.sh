@@ -18,6 +18,7 @@ mkdir -p ${LOG_DIR}
 ut_log_name=${LOG_DIR}/ut.log
 
 find . -name "test*.py" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html  --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run.sh
+cat run.sh
 bash run.sh 2>&1 | tee ${ut_log_name}
 
 cp report.html ${LOG_DIR}/

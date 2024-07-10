@@ -38,8 +38,7 @@ stages:
               dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
-              utArtifact: "unit-test"
-
+              utArtifact: "ut"
 
   - stage: Unit_test_baseline
     displayName: Unit Test Baseline
@@ -53,7 +52,7 @@ stages:
               dockerConfigName: "gitCloneDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
-              utArtifact: "unit-test-baseline"
+              utArtifact: "ut_baseline"
               repo: $(REPO)
 
   - stage: Coverage
@@ -78,7 +77,7 @@ stages:
           - task: DownloadPipelineArtifact@2
             inputs:
               artifact:
-              patterns: '*_coverage/.coverage'
+              patterns: "*_coverage/.coverage"
               path: $(DOWNLOAD_PATH)
 
           - script: |
@@ -87,8 +86,13 @@ stages:
               echo "--- docker ps ---"
               docker ps
               echo "--- collect logs ---"
+              docker exec collectLogs bash -c "cd /auto-round \
+                && pip install -r requirements.txt \
+                && python setup.py bdist_wheel && rm -rf build \
+                && pip install dist/auto_round*.whl \
+                && pip list"
               docker exec collectLogs /bin/bash +x -c "cd /auto-round/.azure-pipelines/scripts \
-              && bash ut/collect_log.sh"
+                && bash ut/collect_log.sh"
             displayName: "Collect UT Coverage"
 
           - task: PublishPipelineArtifact@1
