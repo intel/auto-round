@@ -196,35 +196,6 @@ class AutoRound(object):
         self.set_layerwise_config(self.layer_config)
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
-        serialization_keys = [
-            "bits",
-            "group_size",
-            "sym",
-            "data_type",
-            "enable_quanted_input",
-            "enable_minmax_tuning",
-            "data_type",
-            "seqlen",
-            "train_bs",
-            "scale_dtype",
-            "lr",
-            "minmax_lr",
-            "gradient_accumulate_steps",
-            "iters",
-            "amp",
-            "n_samples",
-            "low_gpu_mem_usage",
-        ]
-        if isinstance(dataset, str):
-            serialization_keys.append("dataset")
-        self.serialization_dict = {}
-        for key in serialization_keys:
-            self.serialization_dict[key] = getattr(self, key)
-        from .version import __version__
-
-        self.serialization_dict["autoround_version"] = __version__
-        if "scale_dtype" in self.serialization_dict.keys():
-            self.serialization_dict["scale_dtype"] = str(self.serialization_dict["scale_dtype"])
         
         logger.info(f"using {self.model.dtype} for quantization tuning")
         if is_optimum_habana_available():
