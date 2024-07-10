@@ -123,6 +123,8 @@ if __name__ == '__main__':
     parser.add_argument("--act_bits", default=32, type=int,
                         help="activation bits")
 
+    parser.add_argument("--eval_float_model", action='store_true',
+                        help="eval float model or not")
     args = parser.parse_args()
 
     if args.enable_minmax_tuning:
@@ -185,14 +187,16 @@ if __name__ == '__main__':
         model.seqlen = seqlen
     seqlen = args.seqlen
 
+    pt_dtype = torch.float32
     if args.model_dtype != None:
         if args.model_dtype == "float16" or args.model_dtype == "fp16":
             model = model.to(torch.float16)
+            pt_dtype = torch.float16
         if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
             model = model.to(torch.bfloat16)
+            pt_dtype = torch.bfloat16
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
             print(f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length",
@@ -250,6 +254,17 @@ if __name__ == '__main__':
     if args.quant_lm_head and not args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
+    
+    if args.eval_float_model:
+        from eval import eval_model
+        print(f"!!! evaluating the float model: {model_name}")
+        output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
+        excel_name = f"{output_dir}_result.xlsx"
+        output_dir += "/"
+        eval_model(model_path="float_", tasks=tasks, dtype=dtype, limit=None,
+                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                device=torch_device, excel_file=excel_name,
+                model_tokenizer_pairs=(model.to("cuda").to(pt_dtype), tokenizer))
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
@@ -258,11 +273,11 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype,
-                      enable_teq=args.enable_teq,
-                      scale_dtype=args.scale_dtype,
                       layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, 
-                      act_bits=args.act_bits)
+                      act_bits=args.act_bits,
+                      enable_teq=args.enable_teq
+                      )
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -324,6 +339,7 @@ if __name__ == '__main__':
 
     if isinstance(tasks, str):
         tasks = tasks.split(',')
+    print(f"!!! Use use_eval_legacy: {use_eval_legacy}")
     if not use_eval_legacy:
         from eval import eval_model
     else:
@@ -354,10 +370,9 @@ if __name__ == '__main__':
         if args.enable_teq:
             # If `enable_teq`, it introduce `MulLinear`, can't save directly
             eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                    eval_bs=args.eval_bs, use_accelerate=not args.disable_low_gpu_mem_usage,
+                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                     device=torch_device, excel_file=excel_name,
-                    model_tokenizer_pairs=(model.to("cuda").to(pt_dtype), tokenizer)
-                    )
+                    model_tokenizer_pairs=(model.to("cuda").to(pt_dtype), tokenizer))
         else:
             eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                     eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,

@@ -327,7 +327,9 @@ def simple_evaluate(
 
 def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
                eval_bs=32, use_accelerate=True, dtype=None, limit=None, trust_remote_code=True,
-               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
+               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx",
+                              model_tokenizer_pairs=None,
+               ):
     print("evaluation with official lm-eval", flush=True)
     print(f"The result will be saved to {excel_file}")
     try:
@@ -367,6 +369,10 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
     model = None
     lm = None
 
+    if model_tokenizer_pairs:
+        tokenizer = model_tokenizer_pairs[1]
+        model = model_tokenizer_pairs[0]
+
     for tmp_tasks in tasks:
         try:
             num_fewshot = fewshots_dict[mark][tmp_tasks]
@@ -384,7 +390,13 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
                     tmp_eval_bs = 1
                 else:
                     tmp_eval_bs = eval_bs
-                tmp_results, lm = simple_evaluate(model=model_type, model_args=model_args, tasks=tmp_tasks,
+                if model_tokenizer_pairs:
+                    print(f"!!! Pass the model and tokenizer to the evaluation function.")
+                    tmp_results, lm = simple_evaluate(model=model, model_args=model_args, tasks=tmp_tasks,
+                                                    num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
+                                                    max_batch_size=tmp_eval_bs, lm=lm, device=str(device))
+                else:
+                    tmp_results, lm = simple_evaluate(model=model_type, model_args=model_args, tasks=tmp_tasks,
                                                   num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
                                                   max_batch_size=tmp_eval_bs, lm=lm, device=str(device))
                 if 'mmlu' in tmp_tasks and 'cmmlu' not in tmp_tasks:
