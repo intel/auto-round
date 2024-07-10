@@ -655,6 +655,15 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         except Exception as e:
             raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
         return get_autogptq_infer_linear(backend, bits, group_size, sym)
+    if bits == 4:
+        try:
+            import habana_frameworks.torch.hpu  # noqa: F401
+        except Exception as e:
+            pass
+        else:
+            from auto_round_extension.hpu.qlinear_hpu import QuantLinear
+            logger.info(f"lyt_debug inference hpu quantlinear: {type(QuantLinear)}, {QuantLinear}")
+            return QuantLinear
     if bits == 4 and exllama2_available and "exllamav2" in backend:
         from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
     elif bits == 4 and "exllamav2" in backend:

@@ -120,6 +120,15 @@ def dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym):
     Raises:
         AssertionError: If the backend is not supported.
     """
+    logger.info(f"lyt_debug dynamic_import backend: {backend}")
+    # try:
+    #     import habana_frameworks.torch.hpu  # noqa: F401
+    # except Exception as e:
+    #     pass
+    # else:
+    #     from auto_round_extension.hpu.qlinear_hpu import QuantLinear
+    #     logger.info(f"lyt_debug hpu quantlinear: {type(QuantLinear)}, {QuantLinear}")
+    #     return QuantLinear
     if "auto_round" in backend:
         ##only support triton and exllamav2
         if not ("triton" in backend or "exllamav2" in backend):
@@ -157,6 +166,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
     Raises:
         AssertionError: If the backend is not supported.
     """
+    logger.info(f"lyt_debug backend: {backend}")
     if ":" not in backend:
         backend = "autoround:exllamav2"
     if not ("triton" in backend or "exllamav2" in backend):
@@ -189,6 +199,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
             device = layer.weight.device
 
             QuantLinear = dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym)
+            logger.info(f"lyt_debug QuantLinear: {type(QuantLinear)}, {QuantLinear}")
 
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
