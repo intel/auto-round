@@ -86,8 +86,13 @@ stages:
               echo "--- docker ps ---"
               docker ps
               echo "--- collect logs ---"
+              docker exec collectLogs bash -c "cd /auto-round \
+                && pip install -r requirements.txt \
+                && python setup.py bdist_wheel && rm -rf build \
+                && pip install dist/auto_round*.whl \
+                && pip list"
               docker exec collectLogs /bin/bash +x -c "cd /auto-round/.azure-pipelines/scripts \
-              && bash ut/collect_log.sh"
+                && bash ut/collect_log.sh"
             displayName: "Collect UT Coverage"
 
           - task: PublishPipelineArtifact@1
