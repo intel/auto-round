@@ -54,6 +54,7 @@ def simple_evaluate(
         random_seed: int = 0,
         numpy_random_seed: int = 1234,
         torch_random_seed: int = 1234,
+        user_model = None, ##user model does not support tensor parallelism
 ):
     """Instantiate and evaluate a model on a list of tasks.
 
@@ -185,6 +186,8 @@ def simple_evaluate(
             + str(lm.rank)
             + ".db",
         )
+    if user_model is not None:
+        lm._model = user_model
 
     if task_manager is None:
         task_manager = TaskManager(verbosity)
@@ -573,6 +576,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--eval_bs", default=1,
     )
+    parser.add_argument(
+        "--trust_remote_code", action='store_true',
+        help="Whether to enable trust_remote_code"
+    )
     parser.add_argument("--tasks",
                         default="lambada_openai,hellaswag,winogrande,piqa,mmlu,truthfulqa_mc1," \
                                 "openbookqa,boolq,rte,arc_easy,arc_challenge",
@@ -582,7 +589,7 @@ if __name__ == "__main__":
     s = time.time()
     from transformers import AutoConfig
 
-    config = AutoConfig.from_pretrained(args.model_name)
+    config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=args.trust_remote_code)
 
     if hasattr(config, "quantization_config"):
         quantization_config = config.quantization_config
@@ -596,9 +603,9 @@ if __name__ == "__main__":
     from lm_eval.utils import make_table
 
     model_args = f"pretrained={args.model_name}"
-    if config.torch_dtype == torch.float32:
-        model_args += ",dtype=float16"
-    # model_args += ",dtype=float16"
+    model_args += ",dtype=float16"
+    if args.trust_remote_code:
+        model_args += f",trust_remote_code=True"
     result = simple_evaluate(model="hf",
                              model_args=model_args,
                              tasks=test_tasks,
@@ -606,3 +613,4 @@ if __name__ == "__main__":
     print(make_table(result))
 
     print("cost time: ", time.time() - s)
+

@@ -6,8 +6,8 @@ python3 main.py \
 --bits 4 \
 --iters 1000 \
 --quant_lm_head \
+--nsamples 512 \
 --deployment_device 'gpu' \
---disable_low_gpu_mem_usage \
 --output_dir "./tmp_autoround"
 
 
@@ -20,5 +20,5 @@ python3 main.py \
 --bits 4 \
 --iters 1000 \
 --deployment_device 'gpu' \
---disable_low_gpu_mem_usage \
+--nsamples 512 \
 --output_dir "./tmp_autoround"

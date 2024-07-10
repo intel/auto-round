@@ -7,4 +7,5 @@ python3 main.py \
 --minmax_lr 2e-3 \
 --model_dtype "float16" \
 --deployment_device 'gpu' \
+--nsamples 512 \
 --output_dir "./tmp_autoround"
