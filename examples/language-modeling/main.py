@@ -142,7 +142,7 @@ if __name__ == '__main__':
     tasks = args.tasks
     use_eval_legacy = False
 
-    if "marlin" in args.deployment_device and args.sym == False:
+    if "marlin" in args.deployment_device and args.sym is False:
         assert False, "marlin backend only supports sym quantization, please set --sym"
 
     if args.act_bits <= 8 and args.deployment_device != "fake":
@@ -349,8 +349,6 @@ if __name__ == '__main__':
                    device=torch_device, excel_file=excel_name)
 
     if not args.disable_eval and lm_eval_version == "0.4.2":
-        if "round" in eval_folder:
-            from auto_round.auto_quantizer import AutoHfQuantizer
         from eval_042.evaluation import simple_evaluate
 
         if 'gpu' in deployment_device or len(gpu_formats) > 0:

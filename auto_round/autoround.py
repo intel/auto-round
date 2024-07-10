@@ -320,7 +320,7 @@ class AutoRound(object):
                 self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
                     self.layer_config[n]["data_type"] = "bfloat"
-                self.layer_config[n]["bits"] = 16
+                self.layer_config[n]["bits"] = 32
                 self.layer_config[n]["group_size"] = None
                 self.layer_config[n]["sym"] = None
 
@@ -389,7 +389,7 @@ class AutoRound(object):
 
             for key in keys:
                 setattr(m, key, layer_config[n][key])
-        tmp=1
+
 
     @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
