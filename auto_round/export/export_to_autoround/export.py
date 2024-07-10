@@ -165,7 +165,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     Raises:
         AssertionError: If the backend is not supported.
     """
-    # logger.info(f"lyt_debug backend: {backend}")
+    logger.info(f"lyt_debug backend: {backend}")
     if ":" not in backend:
         backend = "autoround:exllamav2"
     backend = backend.replace("autoround", "auto_round")

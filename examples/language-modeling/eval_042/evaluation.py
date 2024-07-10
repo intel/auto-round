@@ -603,12 +603,13 @@ if __name__ == "__main__":
     from lm_eval.utils import make_table
 
     model_args = f"pretrained={args.model_name}"
-    model_args += ",dtype=float16"
+    model_args += ",dtype=float32"
     if args.trust_remote_code:
         model_args += f",trust_remote_code=True"
     result = simple_evaluate(model="hf",
                              model_args=model_args,
                              tasks=test_tasks,
+                             device="hpu",
                              batch_size=args.eval_bs)
     print(make_table(result))
 

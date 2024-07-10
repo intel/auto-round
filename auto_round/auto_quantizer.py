@@ -350,6 +350,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
             layer = get_module(module, layer_name)
             device = get_device(layer)
+            logger.info(f"lyt_debug backend for dynamic_import_inference_linear: {backend}")
             QuantLinear = dynamic_import_inference_linear(backend, bits, group_size, sym)
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features

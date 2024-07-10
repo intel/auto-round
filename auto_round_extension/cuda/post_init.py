@@ -136,6 +136,7 @@ def autoround_post_init(model):
                 scratch_fixed = submodule.scratch_space_fixed()
                 fixed_bytes[device] = max(scratch_fixed, fixed_bytes.get(device, 0))
             elif submodule.QUANT_TYPE == "hpu":
+                print(f"lyt_debug submodule hpu: {type(submodule)}, {submodule}")
                 submodule.post_init()
 
     if model_uses_exllamav2:
