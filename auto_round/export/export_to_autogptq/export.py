@@ -13,12 +13,6 @@
 # limitations under the License.
 
 
-import copy
-import json
-import os
-from os.path import isdir, isfile, join
-from typing import Dict, List, Optional, Union
-
 # MIT License
 #
 # Copyright (c) 2023 潘其威(William)
@@ -41,31 +35,76 @@ from typing import Dict, List, Optional, Union
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
-from safetensors.torch import save_file as safe_save
+
+from auto_round.utils import check_to_quantized, get_block_names, get_module, logger, get_layer_names_in_block, \
+    set_module
+import copy
+import json
+import os
+
+import torch.nn as nn
+import transformers
 
 from auto_round.export.register import register_format
-from auto_round.utils import check_to_quantized, get_block_names, get_module, logger, convert_dtype_torch2str_hf
 import threadpoolctl as tctl
+import inspect
+
+
+def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
+    """
+    Configures and returns a QuantLinear class based on the specified backend and parameters.
+
+    Args:
+        backend (str): The backend to be used for quantization. Supported values include "qigen", "triton", "marlin",
+                       "exllama", and "cuda".
+        bits (int, optional): The number of bits for quantization. Default is 4.
+        group_size (int, optional): The group size for quantization. Default is 128.
+        sym (bool, optional): Flag indicating whether to use symmetric quantization. Default is False.
+
+    Returns:
+        class: The dynamically imported QuantLinear class configured according to the specified parameters.
+    """
+    use_triton = True
+    disable_exllamav2 = True
+    disable_exllamav1 = False
+    disable_marlin = True
+    use_qigen = False
+    if "qigen" in backend:
+        use_triton = False
+        use_qigen = True
+    elif "marlin" in backend and sym:
+        use_triton = False
+        disable_marlin = False
+    else:
+        ##we all use triton for others, ##TODO may have bugs for some backends
+        from auto_round.export.export_to_autogptq.qlinear_triton import QuantLinear
+        return QuantLinear
+    try:
+        import auto_gptq  # pylint: disable=E0401
+    except:
+        logger.warning_once(f"please install auto_gptq via 'pip install auto-gptq' to support exporting to {backend}")
+        exit()
+
+    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
+    QuantLinear = dynamically_import_QuantLinear(
+        use_triton=use_triton,
+        desc_act=False,
+        group_size=group_size,
+        bits=bits,
+        disable_exllama=disable_exllamav1,
+        disable_exllamav2=disable_exllamav2,
+        use_qigen=use_qigen,
+        disable_marlin=disable_marlin,
+    )
+    return QuantLinear
 
 
 @register_format("auto_gptq")
-def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwargs):  ##TODO align with autoround format
+def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
+                               **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
-    try:
-        import auto_gptq
-    except ImportError:
-        raise ImportError("export to autogptq requires autogptq library. Please run 'pip install auto-gptq'")
+
     model = kwargs["model"]
-    layer_config = kwargs["layer_config"]
-    sym = kwargs["sym"]
-    bits = kwargs["bits"]
-    group_size = kwargs["group_size"]
-    iters = kwargs["iters"]
-    lr = kwargs["lr"]
-    minmax_lr = kwargs["minmax_lr"]
-    enable_minmax_tuning = kwargs["enable_minmax_tuning"]
-    enable_quanted_input = kwargs["enable_quanted_input"]
-    scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
 
@@ -93,163 +132,102 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
-    if inplace:
-        compressed_model = model.to("cpu")
-    else:
-        compressed_model = copy.deepcopy(model.to("cpu"))
+    model = model.to(torch.float16)  ##force to fp16
+    if not inplace:
+        model = copy.deepcopy(model.to("cpu"))
 
-    from auto_gptq.modeling._utils import pack_model  # pylint: disable=E0401
+    layer_config = kwargs["layer_config"]
 
-    if bits == 3 or use_triton is False:
-        if bits == 3 and use_triton is True:
-            logger.warning("triton does not support 3 bits, reset it to False")
-            use_triton = False
-    quantizers = {}
-    for key in layer_config:
-        if key == "lm_head":  ##TODO remove this after pr 87 is merged
-            continue
-        info = layer_config[key]
-        if not check_to_quantized(info):
-            continue
-        ##force to float32 to be compatible with torch 2.0
-        quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
     with tctl.threadpool_limits(limits=1):
-        pack_model(
-            compressed_model,
-            quantizers,
-            bits,
-            group_size,
-            use_cuda_fp16=True,
-            desc_act=False,
-            force_layer_back_to_cpu=True,
-            use_triton=use_triton,
-        )
+        for name in layer_config.keys():
+            if name == "lm_head":  ##dese not support lm-head
+                continue
+            config = kwargs["layer_config"][name]
+            if config["bits"] > 8:
+                continue
+            logger.info(f"packing {name}")
+
+            bits = config["bits"]
+            group_size = config["group_size"]
+            sym = config["sym"]
+
+            layer = get_module(model, name)
+            device = layer.weight.device
+
+            QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
+
+            if isinstance(layer, nn.Linear):
+                in_features = layer.in_features
+                out_features = layer.out_features
+            elif isinstance(layer, nn.Conv2d):
+                in_features = layer.in_channels
+                out_features = layer.out_channels
+            elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+                in_features = layer.weight.shape[0]
+                out_features = layer.weight.shape[1]
+
+            ##bias = layer.bias is not None and torch.any(layer.bias)
+            bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
+            new_layer = QuantLinear(  ##pylint: disable=E1123
+                bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
+            )
+
+            new_layer.device = device
+            set_module(model, name, new_layer)
+            qlayer = new_layer
+            scale = layer_config[name]["scale"]
+            zero = layer_config[name]["zp"]
+            # so far can only pack layer on CPU
+            qlayer.to("cpu")
+            ##force to float32 to be compatible with torch 2.0
+            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
+            sig = inspect.signature(qlayer.pack)
+            param_count = len(sig.parameters)
+            if param_count == 2:
+                qlayer.pack(layer, scale)
+            else:
+                qlayer.pack(layer, scale, zero, None)
+            qlayer.to(device)
     if output_dir is None:
-        return compressed_model
-
-    _save_quantized_to_autogptq(
-        compressed_model,
-        output_dir,
-        bits=bits,
-        group_size=group_size,
-        sym=sym,
-        iters=iters,
-        lr=lr,
-        minmax_lr=minmax_lr,
-        enable_minmax_tuning=enable_minmax_tuning,
-        enable_quanted_input=enable_quanted_input,
-        scale_dtype=scale_dtype,
-        use_safetensors=True,
-        modules_in_block_to_quantize=modules_in_block_to_quantize,
-    )
-
-
-def _save_quantized_to_autogptq(
-        model,
-        save_dir: str,
-        bits=4,
-        group_size=128,
-        sym=False,
-        iters=200,
-        lr=5e-3,
-        minmax_lr=5e-3,
-        enable_minmax_tuning=True,
-        enable_quanted_input=True,
-        use_safetensors: bool = True,
-        scale_dtype=torch.float32,
-        safetensors_metadata: Optional[Dict[str, str]] = None,
-        modules_in_block_to_quantize=None,
-):
-    """Save quantized model and configs to local disk for cuda."""
-    os.makedirs(save_dir, exist_ok=True)
-    model.to("cpu")
-
-    model_base_name = "model"
-    if use_safetensors:
-        model_save_name = model_base_name + ".safetensors"
-        state_dict = model.state_dict()
-        state_dict = {k: v.clone().contiguous() for k, v in state_dict.items()}
-        if safetensors_metadata is None:
-            safetensors_metadata = {}
-        elif not isinstance(safetensors_metadata, dict):
-            raise TypeError("safetensors_metadata must be a dictionary.")
-        else:
-            logger.debug(f"Received safetensors_metadata: {safetensors_metadata}")
-            new_safetensors_metadata = {}
-            converted_keys = False
-            for key, value in safetensors_metadata.items():
-                if not isinstance(key, str) or not isinstance(value, str):
-                    converted_keys = True
-                    try:
-                        new_key = str(key)
-                        new_value = str(value)
-                    except Exception as e:
-                        raise TypeError(
-                            "safetensors_metadata: both keys and values must be strings"
-                            / f" and an error occurred when trying to convert them: {e}"
-                        )
-                    if new_key in new_safetensors_metadata:
-                        logger.warning(
-                            f"After converting safetensors_metadata keys to strings, the key '{new_key}' "
-                            / "is duplicated. Ensure that all your metadata keys are strings to avoid overwriting."
-                        )
-                    new_safetensors_metadata[new_key] = new_value
-            safetensors_metadata = new_safetensors_metadata
-            if converted_keys:
-                logger.debug(
-                    "One or more safetensors_metadata keys or values had to be converted to str()."
-                    / f" Final safetensors_metadata: {safetensors_metadata}"
-                )
-
-        # Format is required to enable Accelerate to load the metadata
-        # otherwise it raises an OSError
-        safetensors_metadata["format"] = "pt"
-
-        # Store the quantization configuration as safetensors metadata
-        from auto_round import __version__
-
-        safetensors_metadata["autoround_version"] = str(__version__)
-        safetensors_metadata["bits"] = str(bits)
-        safetensors_metadata["group_size"] = str(group_size)
-        safetensors_metadata["iters"] = str(iters)
-        safetensors_metadata["lr"] = str(lr)
-        safetensors_metadata["minmax_lr"] = str(minmax_lr)
-        safetensors_metadata["enable_minmax_tuning"] = str(enable_minmax_tuning)
-        safetensors_metadata["enable_quanted_input"] = str(enable_quanted_input)
-        safetensors_metadata["scale_dtype"] = convert_dtype_torch2str_hf(scale_dtype)
-        safe_save(state_dict, join(save_dir, model_save_name), safetensors_metadata)
-    else:
-        model_save_name = model_base_name + ".bin"
-        torch.save(model.state_dict(), join(save_dir, model_save_name))
-
-    from auto_gptq.modeling._base import BaseQuantizeConfig  # pylint: disable=E0401
-
-    quantization_config = BaseQuantizeConfig(
-        bits=bits,
-        group_size=group_size,
-        desc_act=False,
-        sym=sym,
-        true_sequential=False,
-        static_groups=False,
-        model_file_base_name=model_base_name,
-    )
-    quantization_config.model_file_base_name = model_base_name
-
-    config_dict = quantization_config.to_dict()
-    config_dict["quant_method"] = "gptq"
-    config_dict["autoround_version"] = __version__
-    config_dict["iters"] = iters
-    config_dict["lr"] = lr
-    config_dict["minmax_lr"] = minmax_lr
-    config_dict["enable_minmax_tuning"] = enable_minmax_tuning
-    config_dict["enable_quanted_input"] = enable_quanted_input
-    config_dict["scale_dtype"] = convert_dtype_torch2str_hf(scale_dtype)
+        return model
+    quantization_config = kwargs["serialization_dict"]
+    quantization_config["quant_method"] = "gptq"
+    quantization_config.pop("dataset", None)  ## pile-10k is not supported in gptq
+    quantization_config["desc_act"] = False  ## for autogptq API
+    quantization_config["true_sequential"] = False
+    quantization_config["damp_percent"] = 0.01
     if modules_in_block_to_quantize is not None:
-        config_dict["modules_in_block_to_quantize"] = modules_in_block_to_quantize
+        quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
+    if hasattr(model, "config"):
+        model.config.quantization_config = quantization_config
+    save(model, output_dir)
 
-    with open(join(save_dir, "quantize_config.json"), "w", encoding="utf-8") as f:
-        json.dump(config_dict, f, indent=2)
 
-    config_dict["quant_method"] = "gptq"  ##hf transformers could only recognize this value
-    model.config.quantization_config = config_dict
-    model.config.save_pretrained(save_dir)
+##
+def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
+    """Save model state dict and configs.
+
+    Args:
+        model (`nn.Module`):
+            Model to be saved. The model can be wrapped or unwrapped.
+        save_dir (`str`):
+            Directory to which to save. Will be created if it doesn't exist.
+        max_shard_size (`str`, defaults to `"10GB"`):
+            The maximum size for a checkpoint before being sharded. Checkpoints shard will then be each of size
+            lower than this size. If expressed as a string, needs to be digits followed by a unit (like `"5MB"`).
+            <Tip warning={true}>
+
+            If a single weight of the model is bigger than `max_shard_size`, it will be in its own checkpoint shard
+            which will be bigger than `max_shard_size`.
+
+            </Tip>
+        safe_serialization (`bool`, defaults to `True`):
+            Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
+    """
+    max_shard_size = "10000GB"  ## API of auto-gptq with marlin does not support shard size
+    os.makedirs(save_dir, exist_ok=True)
+    model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    config_file = "quantize_config.json"
+    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
+            json.dump(model.config.quantization_config, f, indent=2)

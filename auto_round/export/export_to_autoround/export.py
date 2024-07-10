@@ -44,7 +44,6 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     res = []
     if data_type != config["data_type"]:
         res.append("data_type")
-        return res
     if bits != config["bits"]:
         res.append("bits")
     if group_size != config["group_size"]:
@@ -172,7 +171,31 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     layer_names_in_block = get_layer_names_in_block(model)
 
     layer_config = kwargs["layer_config"]
-
+    quantization_config = kwargs["serialization_dict"]
+    quantization_config["quant_method"] = "intel/auto-round"
+    quantization_config["backend"] = backend
+    extra_config = {}
+    for layer_name in layer_config:
+        if layer_name not in layer_names_in_block and layer_config[layer_name]["bits"] <= 8:  ##lm head
+            extra_config[layer_name] = {}
+            extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
+            extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
+            extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
+            extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
+        elif layer_name in layer_names_in_block:
+            neq_keys = check_neq_config(
+                layer_config[layer_name],
+                data_type=quantization_config["data_type"],
+                bits=quantization_config["bits"],
+                group_size=quantization_config["group_size"],
+                sym=quantization_config["sym"],
+            )
+            if len(neq_keys) > 0:
+                extra_config[layer_name] = {}
+            for key in neq_keys:
+                extra_config[layer_name][key] = layer_config[layer_name][key]
+    if len(extra_config) > 0:
+        quantization_config["extra_config"] = extra_config
     with tctl.threadpool_limits(limits=1):
         for name in layer_config.keys():
 
@@ -221,33 +244,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             else:
                 qlayer.pack(layer, scale, zero, None)
             qlayer.to(device)
-    quantization_config = kwargs["serialization_dict"]
-    quantization_config["quant_method"] = "intel/auto-round"
-    quantization_config["backend"] = backend
-    extra_config = {}
-    for layer_name in layer_config:
-        if layer_config[layer_name]["bits"] > 8:
-            continue
-        if layer_name not in layer_names_in_block:
-            extra_config[layer_name] = {}
-            extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
-            extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
-            extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
-            extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
-        else:
-            neq_keys = check_neq_config(
-                layer_config[layer_name],
-                data_type=quantization_config["data_type"],
-                bits=quantization_config["bits"],
-                group_size=quantization_config["group_size"],
-                sym=quantization_config["sym"],
-            )
-            if len(neq_keys) > 0:
-                extra_config[layer_name] = {}
-            for key in neq_keys:
-                extra_config[layer_name][key] = layer_config[layer_name][key]
-    if len(extra_config) > 0:
-        quantization_config["extra_config"] = extra_config
+
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     tokenizer = kwargs["tokenizer"]

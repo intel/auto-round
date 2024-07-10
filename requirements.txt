@@ -7,4 +7,3 @@ transformers
 triton
 numpy < 2.0
 threadpoolctl
-auto-gptq

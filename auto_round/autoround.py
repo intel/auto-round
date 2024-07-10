@@ -300,20 +300,6 @@ class AutoRound(object):
             if hasattr(m, "scale"):
                 self.layer_config[n]["scale"] = m.scale
                 self.layer_config[n]["zp"] = m.zp
-                if isinstance(m, transformers.modeling_utils.Conv1D):
-                    weight = m.weight.t()
-                else:
-                    weight = m.weight
-
-                if self.group_size <= 0:
-
-                    self.layer_config[n]["g_idx"] = torch.tensor(
-                        [0 for i in range(weight.shape[1])], dtype=torch.int32, device="cpu"
-                    )
-                else:
-                    self.layer_config[n]["g_idx"] = torch.tensor(
-                        [i // self.group_size for i in range(weight.shape[1])], dtype=torch.int32, device="cpu"
-                    )
                 delattr(m, "scale")
                 delattr(m, "zp")
             else:
