@@ -32,7 +32,7 @@ from transformers.models.auto.auto_factory import _BaseAutoModelClass
 
 from .load import load
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
 logger = logging.getLogger("layer_wise_tools")
 
 LWQ_WORKSPACE = os.path.join("layer_wise_tmp")
@@ -346,6 +346,7 @@ def clean_module_weight(module):
 
 
 def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
+    os.makedirs(saved_path, exist_ok=True)
     def _get_value(name, n):
         state_dict = None
         if os.path.exists(os.path.join(saved_path, f"{name}.pt")):
@@ -357,7 +358,7 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
             value = load_value(empty_model, param_name, empty_model.path)
         return value
 
-    def _update(module):
+    def _update(name, module):
         state_dict = None
         if os.path.exists(os.path.join(saved_path, f"{name}.pt")):
             state_dict = torch.load(os.path.join(saved_path, f"{name}.pt"))
@@ -373,12 +374,25 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
         file_path = os.path.join(saved_path, f"{name}.pt")
         torch.save(module.state_dict(), file_path)
 
+        # save quant_info
+        quant_info = {}
+        if hasattr(module, "scale"):
+            quant_info["scale"] = module.scale
+        if hasattr(module, "zp"):
+            quant_info["zp"]= module.zp
+        logger.debug(f"save quant info for layer: {name}")
+        pickle.dump(quant_info, open(os.path.join(saved_path, f"{name}_quant_info.pkl"), 'wb'))
+
     def _layer_wise_to(module, name, device_or_dtype):
         if isinstance(device_or_dtype, torch.dtype):
             return module.ori_to(device_or_dtype)
         elif len(module._modules) == 0:
             # skip method type
             if len(module._parameters) == 0 or module.weight.device.type != 'meta':
+                if hasattr(module, "scale"):
+                    module.scale = module.scale.to(device_or_dtype)
+                if hasattr(module, "zp"):
+                    module.zp = module.zp.to(device_or_dtype)
                 return module.ori_to(device_or_dtype)
             else:
                 for n, _ in module.named_parameters():
@@ -388,6 +402,13 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
                     if hasattr(module, 'dtype'):
                         dtype = module.dtype
                     set_module_tensor_to_device(module, n, device_or_dtype, value, dtype=dtype)
+
+                if hasattr(module, "scale"):
+                    quant_info = pickle.load(
+                        open(os.path.join(saved_path, f"{name}_quant_info.pkl"), 'rb'))
+                    module.scale = quant_info["scale"].to(device_or_dtype)
+                    if "zp" in quant_info:
+                        module.zp = quant_info["zp"].to(device_or_dtype)
                 return module.ori_to(device_or_dtype)
         else:
             for n, m in module.named_children():
@@ -402,7 +423,7 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
             module.get_weight = partial(_get_value, name, 'weight')
         if hasattr(module, 'bias') and module.bias is not None:
             module.get_bias = partial(_get_value, name, 'bias')
-        module.update = partial(_update, module)
+        module.update = partial(_update, name, module)
     
     def _repalce_to(module, name):
         if len(module._modules) > 0:

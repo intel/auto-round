@@ -329,12 +329,12 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
-        if self.act_quant:
-            wrapper_layer = WrapperWALayer(self.orig_layer)
-            return wrapper_layer
         if hasattr(self.orig_layer, 'update'):
             self.orig_layer.update()
             self.orig_layer.to('meta')
+        if self.act_quant:
+            wrapper_layer = WrapperWALayer(self.orig_layer)
+            return wrapper_layer
         return self.orig_layer
 
     def forward(self, x):
@@ -589,5 +589,6 @@ def unwrapper_block(block, vs, min_scales, max_scales):
             if isinstance(max_scales, dict):
                 max_scale = max_scales[n]
                 max_scale = torch.clamp(max_scale, 0, 1.0)
+            print(n)
             orig_layer = m.unwrapper(v, min_scale, max_scale)
             set_module(block, n, orig_layer)
