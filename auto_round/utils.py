@@ -664,3 +664,161 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
     else:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     return QuantLinear
+
+
+import numba
+class Pakcer:
+    @staticmethod
+    def pack_2d_tensor(
+        raw_tensor: torch.Tensor, n_pack: int, bits: int, compression_dtype: torch.dtype = torch.int32
+    ) -> torch.Tensor:
+        """Packs a 2D tensor into a compressed tensor.
+        
+        This is a refer implementation for verifing the correctness of optimized implementation.
+
+        Args:
+            raw_tensor (torch.Tensor): The input tensor to be packed. The shape of the tensor should be (out_feats, in_feats) or (1, in_feats).
+            n_pack (int): The number of elements to pack together.
+            bits (int): The number of bits to use for each packed element.
+            compression_dtype (torch.dtype, optional): The data type of the compressed tensor. Defaults to torch.int32.
+
+        Returns:
+            torch.Tensor: The packed tensor.
+
+        """
+        raw_array = raw_tensor.cpu().numpy()
+        target_len = np.ceil(raw_array.shape[1] / n_pack).astype(int)
+        target_dtype = torch.tensor(0, dtype=compression_dtype).numpy().dtype
+        packed_array = np.zeros((raw_array.shape[0], target_len), dtype=target_dtype)
+        mask = np.uint8(2**bits - 1)
+        for j in range(packed_array.shape[1]):
+            start = n_pack * j
+            end = n_pack * (j + 1)
+            tmp = raw_array[:, start:end].astype(target_dtype)
+            tmp &= mask
+            for e in range(tmp.shape[1]):
+                tmp[:, e] = np.left_shift(tmp[:, e], bits * e)
+                packed_array[:, j] |= tmp[:, e]
+        packed_tensor = torch.from_numpy(packed_array).to(device=raw_tensor.device)
+        return packed_tensor
+
+
+    @staticmethod
+    @numba.jit(nopython=True, parallel=True, cache=True)
+    def pack_tensor_with_numpy_opt_np_numba(
+        raw_tensor: np.ndarray, n_pack: int, bits: int, compression_dtype=np.int32
+    ) -> np.ndarray:
+        out_features, in_features = raw_tensor.shape
+        new_in_features = (in_features + n_pack - 1) // n_pack
+        packed_tensor = np.zeros((out_features, new_in_features), dtype=compression_dtype)
+        raw_tensor = raw_tensor.astype(compression_dtype)
+
+        if bits == 4:
+            for i in range(new_in_features):
+                packed_tensor[:, i] = (
+                    (raw_tensor[:, i * n_pack + 7] << 28)
+                    | (raw_tensor[:, i * n_pack + 6] << 24)
+                    | (raw_tensor[:, i * n_pack + 5] << 20)
+                    | (raw_tensor[:, i * n_pack + 4] << 16)
+                    | (raw_tensor[:, i * n_pack + 3] << 12)
+                    | (raw_tensor[:, i * n_pack + 2] << 8)
+                    | (raw_tensor[:, i * n_pack + 1] << 4)
+                    | raw_tensor[:, i * n_pack]
+                )
+        elif bits == 2:
+            orig_arr = raw_tensor
+            packed_arr = packed_tensor
+            for i in range(new_in_features):
+                packed_arr[:, i] = (
+                    (orig_arr[:, i * n_pack + 15] << 30)
+                    | (orig_arr[:, i * n_pack + 14] << 28)
+                    | (orig_arr[:, i * n_pack + 13] << 26)
+                    | (orig_arr[:, i * n_pack + 12] << 24)
+                    | (orig_arr[:, i * n_pack + 11] << 22)
+                    | (orig_arr[:, i * n_pack + 10] << 20)
+                    | (orig_arr[:, i * n_pack + 9] << 18)
+                    | (orig_arr[:, i * n_pack + 8] << 16)
+                    | (orig_arr[:, i * n_pack + 7] << 14)
+                    | (orig_arr[:, i * n_pack + 6] << 12)
+                    | (orig_arr[:, i * n_pack + 5] << 10)
+                    | (orig_arr[:, i * n_pack + 4] << 8)
+                    | (orig_arr[:, i * n_pack + 3] << 6)
+                    | (orig_arr[:, i * n_pack + 2] << 4)
+                    | (orig_arr[:, i * n_pack + 1] << 2)
+                    | orig_arr[:, i * n_pack]
+                )
+        return packed_tensor
+    
+    @staticmethod
+    def pack_tensor_with_numpy_opt_np_numba_v2(
+        orig_arr: np.ndarray, n_pack: int, bits: int
+    ) -> np.ndarray:
+        """Packs a numpy array into a new numpy array using optimized numpy and numba functions.
+        
+        This is a optimized implementation of `pack_2d_tensor`.
+
+        Args:
+            orig_arr (np.ndarray): The original numpy array to be packed.
+            n_pack (int): The number of values to pack together.
+            bits (int): The number of bits per packed value. Must be 2 or 4.
+
+        Returns:
+            np.ndarray: The packed numpy array.
+
+        Raises:
+            AssertionError: If orig_arr is not a numpy array or if it is not 2D.
+            AssertionError: If bits is not 2 or 4.
+            AssertionError: If n_pack * bits is not equal to 32.
+        """
+        assert isinstance(orig_arr, np.ndarray), f"orig_arr must be a numpy array, but got {type(orig_arr)}"
+        assert orig_arr.ndim == 2, f"orig_arr must be a 2D array, but got {orig_arr.ndim}D"
+        assert bits in [2, 4], f"bits must be 2 or 4, but got {bits}"
+        assert n_pack * bits == 32, f"n_pack * bits must be 32, but got {n_pack} * {bits} = {n_pack * bits}"
+        return Pakcer._pack_tensor_with_numpy_opt_np_numba(orig_arr, n_pack, bits)
+
+
+    @staticmethod
+    @numba.jit(nopython=True, parallel=True, cache=True)
+    def _pack_tensor_with_numpy_opt_np_numba(
+        orig_arr: np.ndarray, n_pack: int, bits: int
+    ) -> np.ndarray:
+        # !! This function will be compiled by Numba, only invoke numpy functions inside the function.
+        
+        compression_dtype = np.int32
+        out_features, in_features = orig_arr.shape
+        new_in_features = (in_features + n_pack - 1) // n_pack
+        packed_arr = np.zeros((out_features, new_in_features), dtype=compression_dtype)
+
+        if bits == 4:
+            for i in range(new_in_features):
+                packed_arr[:, i] = (
+                    (orig_arr[:, i * n_pack + 7] << 28)
+                    | (orig_arr[:, i * n_pack + 6] << 24)
+                    | (orig_arr[:, i * n_pack + 5] << 20)
+                    | (orig_arr[:, i * n_pack + 4] << 16)
+                    | (orig_arr[:, i * n_pack + 3] << 12)
+                    | (orig_arr[:, i * n_pack + 2] << 8)
+                    | (orig_arr[:, i * n_pack + 1] << 4)
+                    | orig_arr[:, i * n_pack]
+                )
+        elif bits == 2:
+            for i in range(new_in_features):
+                packed_arr[:, i] = (
+                    (orig_arr[:, i * n_pack + 15] << 30)
+                    | (orig_arr[:, i * n_pack + 14] << 28)
+                    | (orig_arr[:, i * n_pack + 13] << 26)
+                    | (orig_arr[:, i * n_pack + 12] << 24)
+                    | (orig_arr[:, i * n_pack + 11] << 22)
+                    | (orig_arr[:, i * n_pack + 10] << 20)
+                    | (orig_arr[:, i * n_pack + 9] << 18)
+                    | (orig_arr[:, i * n_pack + 8] << 16)
+                    | (orig_arr[:, i * n_pack + 7] << 14)
+                    | (orig_arr[:, i * n_pack + 6] << 12)
+                    | (orig_arr[:, i * n_pack + 5] << 10)
+                    | (orig_arr[:, i * n_pack + 4] << 8)
+                    | (orig_arr[:, i * n_pack + 3] << 6)
+                    | (orig_arr[:, i * n_pack + 2] << 4)
+                    | (orig_arr[:, i * n_pack + 1] << 2)
+                    | orig_arr[:, i * n_pack]
+                )
+        return packed_arr
