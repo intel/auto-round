@@ -33,6 +33,7 @@ class CustomDataset(Dataset): # for llava tuning
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.args = args
+        self.args.is_multimodal = args.do_multimodal
 
     def __getitem__(self, index):
         sources = self.list_data_dict[index]
@@ -354,5 +355,6 @@ if __name__ == '__main__':
         )
         evaluator.run_evaluate(result_file = args.eval_result_file)
         evaluator.calculate_accuracy(result_file = args.eval_result_file)
+
 
 

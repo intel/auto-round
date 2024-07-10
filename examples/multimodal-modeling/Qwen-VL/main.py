@@ -31,6 +31,8 @@ def DataFormating(raw_data, image_folder):
     for source in raw_data:
         source_inputs = source['conversations']
         for sentence in source_inputs:
+            sentence['from'] = sentence['from'].replace('human', 'user')
+            sentence['from'] = sentence['from'].replace('gpt', 'assistant')
             if OLD_IMAGE_TOKEN in sentence['value']:
                 sentence['value'] = sentence['value'].replace(OLD_IMAGE_TOKEN, '').strip()
                 sentence['value'] = OLD_IMAGE_TOKEN + '\n' + sentence['value']
@@ -505,3 +507,4 @@ if __name__ == '__main__':
                     batch_size=args.eval_bs,
                     device=str(torch_device)
                 )
+
