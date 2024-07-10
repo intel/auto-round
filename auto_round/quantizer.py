@@ -389,7 +389,7 @@ class WrapperLinearForTEQ(torch.nn.Module):
             logger.debug(f"The range of new layer weight: {weight.min()} - {weight.max()}")
         
         # TODO: remove it?
-        q_dq_weight, scale, zp = quant_weight(
+        q_dq_weight, scale, zp = quant_tensor(
             self.orig_layer.weight,
             self.num_bits,
             self.group_size,
@@ -408,7 +408,7 @@ class WrapperLinearForTEQ(torch.nn.Module):
         weight = self.orig_layer.weight
         weight_scale = self.weight_scale_calculator(x)
         weight, x = teq.equalization_transform(weight, x, weight_scale)
-        weight_q, _, _ = quant_weight(
+        weight_q, _, _ = quant_tensor(
             weight,
             self.num_bits,
             self.group_size,
