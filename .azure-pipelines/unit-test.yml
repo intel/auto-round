@@ -38,7 +38,7 @@ stages:
               dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
-              utArtifact: "unit-test"
+              utArtifact: "ut"
 
   - stage: Unit_test_baseline
     displayName: Unit Test Baseline
@@ -52,7 +52,7 @@ stages:
               dockerConfigName: "gitCloneDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
-              utArtifact: "unit-test-baseline"
+              utArtifact: "ut_baseline"
               repo: $(REPO)
 
   - stage: Coverage

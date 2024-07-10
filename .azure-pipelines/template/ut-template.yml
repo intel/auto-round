@@ -45,7 +45,7 @@ steps:
     condition: succeededOrFailed()
     inputs:
       targetPath: ${{ parameters.uploadPath }}
-      artifact: $(System.JobAttempt)_${{ parameters.utArtifact }}_coverage
+      artifact: ${{ parameters.utArtifact }}_coverage
       publishLocation: "pipeline"
 
   - task: Bash@3
