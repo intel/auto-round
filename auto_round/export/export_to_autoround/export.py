@@ -44,7 +44,6 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     res = []
     if data_type != config["data_type"]:
         res.append("data_type")
-        return res
     if bits != config["bits"]:
         res.append("bits")
     if group_size != config["group_size"]:
@@ -223,8 +222,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             elif isinstance(layer, transformers.pytorch_utils.Conv1D):
                 in_features = layer.weight.shape[0]
                 out_features = layer.weight.shape[1]
-            ##bias = layer.bias is not None and torch.any(layer.bias)
-            bias = True ##using True to ensure keeping same with autogptq
+            bias = layer.bias is not None and torch.any(layer.bias)
 
             new_layer = QuantLinear(  ##pylint: disable=E1123
                 bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
