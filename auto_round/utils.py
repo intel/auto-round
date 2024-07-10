@@ -24,6 +24,7 @@ import numpy as np
 import psutil
 import torch
 from torch.amp import autocast
+from typing import Dict
 
 from functools import lru_cache
 
@@ -35,7 +36,8 @@ def warning_once(self, msg: str):
 
 logging.Logger.warning_once = warning_once
 logger = logging.getLogger("autoround")
-logger.setLevel(logging.INFO)
+level = os.environ.get("LOGLEVEL", "INFO")
+logger.setLevel(level)
 logger.propagate = False
 fh = logging.StreamHandler()
 fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
@@ -44,6 +46,28 @@ logger.addHandler(fh)
 
 import importlib
 import transformers
+
+
+import enum
+
+class AlgoEnum(enum.Enum):
+    Rounding = enum.auto()
+    TEQ = enum.auto()
+
+
+# For each algorithm, the dictionary maps the float module to its corresponding Q module
+algo_module_registry: Dict[AlgoEnum, Dict[torch.nn.Module, torch.nn.Module]] = {
+    AlgoEnum.Rounding: {},
+    AlgoEnum.TEQ: {}
+}
+
+# Decorator to register module for given algo and float module
+def register_qmodule(algo_name, float_module_cls):
+    def decorator(q_module_cls):
+        algo_module_registry[algo_name][float_module_cls] = q_module_cls
+        logger.info(f"Registering {q_module_cls.__name__} as the {float_module_cls.__name__}'s Q module for {algo_name}.")
+        return q_module_cls
+    return decorator
 
 
 class LazyImport(object):
@@ -233,6 +257,24 @@ def collect_minmax_scale(block):
             max_scales[n] = copy.deepcopy(torch.clamp(m.max_scale.data, 0, 1.0))
     return min_scales, max_scales
 
+
+def collect_weight_scale(block) -> Dict[str, torch.Tensor]:
+    """Collects the weight scaling values for wrapped linear modules in the given block.
+
+    Args:
+    block: The input block.
+
+    Returns:
+    scales: A dictionary of scaling values.
+    """
+    weight_scales = {}
+    name_list = []
+    for n, m in block.named_modules():
+        if hasattr(m, "weight_scale_calculator"):
+            weight_scales[n] = copy.deepcopy(m.weight_scale_calculator.get_final_scale().detach())
+            name_list.append(n)
+    assert len(weight_scales.keys()) == len(name_list)    
+    return weight_scales
 
 @torch.no_grad()
 def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_mask_flag=False, input_dim=0):
