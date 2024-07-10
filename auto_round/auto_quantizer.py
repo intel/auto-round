@@ -223,7 +223,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
             dataset: str = None,
             group_size: int = 128,
             sym: bool = False,
-            backend="autoround:exllamav2",
+            backend="auto_round:exllamav2",
             layer_config: dict = None,
             **kwargs,
     ):
@@ -273,9 +273,15 @@ class AutoRoundQuantizer(HfQuantizer):
         if not is_auto_round_available():
             raise ImportError("Loading a AutoRound quantized model requires auto-round library (`pip install "
                               "auto-round`)")
-        elif version.parse(importlib.metadata.version("auto_round")) < version.parse("0.2.0"):
-            raise ImportError("You need a version of auto_round > 0.2.0 to use AutoRound: `pip install --upgrade "
-                              "auto-round`")
+        else:
+            try:
+                import auto_round
+                autoround_version = version.parse(auto_round.__version__)
+            except:
+                autoround_version = version.parse(importlib.metadata.version("auto_round"))
+            if autoround_version < version.parse("0.2.0"):
+                raise ImportError("You need a version of auto_round > 0.2.0 to use AutoRound: `pip install --upgrade "
+                                  "auto-round` or install from source")
 
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:

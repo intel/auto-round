@@ -44,13 +44,12 @@ import torch
 from safetensors.torch import save_file as safe_save
 
 from auto_round.export.register import register_format
-from auto_round.utils import check_to_quantized, get_block_names, get_module, logger
-
-from ..utils import convert_dtype_torch2str_hf
+from auto_round.utils import check_to_quantized, get_block_names, get_module, logger, convert_dtype_torch2str_hf
+import threadpoolctl as tctl
 
 
 @register_format("auto_gptq")
-def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwargs):##TODO align with autoround format
+def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwargs):  ##TODO align with autoround format
     """Export the model to autogptq format to easily leverage cuda kernel."""
     try:
         import auto_gptq
@@ -104,15 +103,17 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     if bits == 3 or use_triton is False:
         if bits == 3 and use_triton is True:
             logger.warning("triton does not support 3 bits, reset it to False")
-        quantizers = {}
-        for key in layer_config:
-            if key == "lm_head":  ##TODO remove this after pr 87 is merged
-                continue
-            info = layer_config[key]
-            if not check_to_quantized(info):
-                continue
-            ##force to float32 to be compatible with torch 2.0
-            quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
+            use_triton = False
+    quantizers = {}
+    for key in layer_config:
+        if key == "lm_head":  ##TODO remove this after pr 87 is merged
+            continue
+        info = layer_config[key]
+        if not check_to_quantized(info):
+            continue
+        ##force to float32 to be compatible with torch 2.0
+        quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
+    with tctl.threadpool_limits(limits=1):
         pack_model(
             compressed_model,
             quantizers,
@@ -121,26 +122,7 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
             use_cuda_fp16=True,
             desc_act=False,
             force_layer_back_to_cpu=True,
-            use_triton=False,
-        )
-    else:
-        quantizers = {}
-        for key in layer_config:
-            if key == "lm_head":  ##TODO remove this after pr 87 is merged
-                continue
-            info = layer_config[key]
-            if not check_to_quantized(info):
-                continue
-            quantizers[key] = (None, info["scale"], info["zp"].to(torch.float32), info["g_idx"])
-        pack_model(
-            compressed_model,
-            quantizers,
-            bits,
-            group_size,
-            use_cuda_fp16=True,
-            desc_act=False,
-            force_layer_back_to_cpu=True,
-            use_triton=True,
+            use_triton=use_triton,
         )
     if output_dir is None:
         return compressed_model
