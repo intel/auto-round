@@ -662,7 +662,6 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
             pass
         else:
             from auto_round_extension.hpu.qlinear_hpu import QuantLinear
-            logger.info(f"lyt_debug inference hpu quantlinear: {type(QuantLinear)}, {QuantLinear}")
             return QuantLinear
     if bits == 4 and exllama2_available and "exllamav2" in backend:
         from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
