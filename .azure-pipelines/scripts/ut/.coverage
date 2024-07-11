@@ -1,0 +1,13 @@
+[run]
+branch = True
+
+[report]
+include =
+ */auto_round/**
+ */auto_round_extension/**
+exclude_lines =
+ pragma: no cover
+ raise NotImplementedError
+ raise TypeError
+ except ImportError:
+ except Exception as e:

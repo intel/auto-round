@@ -69,9 +69,14 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         autoround.quantize()
+
+        autoround.save_quantized(output_dir="./saved", inplace=False, format="itrex")
+        try:
+            import auto_gptq
+        except:
+            return
         if torch.cuda.is_available():
             autoround.save_quantized(output_dir="./saved", inplace=False)
-        autoround.save_quantized(output_dir="./saved", inplace=False, format="itrex")
 
     def test_sym(self):
         bits, group_size, sym = 4, 128, True

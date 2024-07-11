@@ -306,27 +306,13 @@ class AutoRound(object):
             if hasattr(m, "scale"):
                 self.layer_config[n]["scale"] = m.scale
                 self.layer_config[n]["zp"] = m.zp
-                if isinstance(m, transformers.modeling_utils.Conv1D):
-                    weight = m.weight.t()
-                else:
-                    weight = m.weight
-
-                if self.group_size <= 0:
-
-                    self.layer_config[n]["g_idx"] = torch.tensor(
-                        [0 for i in range(weight.shape[1])], dtype=torch.int32, device="cpu"
-                    )
-                else:
-                    self.layer_config[n]["g_idx"] = torch.tensor(
-                        [i // self.group_size for i in range(weight.shape[1])], dtype=torch.int32, device="cpu"
-                    )
                 delattr(m, "scale")
                 delattr(m, "zp")
             else:
                 self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
                     self.layer_config[n]["data_type"] = "bfloat"
-                self.layer_config[n]["bits"] = 16
+                self.layer_config[n]["bits"] = 32
                 self.layer_config[n]["group_size"] = None
                 self.layer_config[n]["sym"] = None
 
@@ -395,7 +381,7 @@ class AutoRound(object):
 
             for key in keys:
                 setattr(m, key, layer_config[n][key])
-        tmp=1
+
 
     @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):

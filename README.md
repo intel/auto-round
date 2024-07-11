@@ -61,18 +61,17 @@ quantization in some scenarios, especially at lower bits,like 2. Please save qua
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model_name = "meta-llama/Llama-2-7b-hf"
-model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+model_name = "facebook/opt-125m"
+model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 from auto_round import AutoRound
 
 bits, group_size, sym = 4, 128, False
-##device:Optional["auto", None, "hpu", "cpu", "cuda"]
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, device=None)
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
 autoround.quantize()
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir) ##save_quantized(output_dir,format=="auto_round")
+autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_round")
 ```
 
 <details>
@@ -157,6 +156,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ### GPU
 
 ```python
+##pip install auto-gptq
 from transformers import AutoModelForCausalLM, AutoTokenizer
 ##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with auto_round format
 

@@ -30,7 +30,7 @@ class TestQuantizationConv1d(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
 
-    def test_wa_quant(self):
+    def test_quant(self):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
@@ -44,7 +44,12 @@ class TestQuantizationConv1d(unittest.TestCase):
             dataset=self.llm_dataloader,
 
         )
+
         autoround.quantize()
+        try:
+            import auto_gptq
+        except:
+            return
         autoround.save_quantized("./saved")
 
 
