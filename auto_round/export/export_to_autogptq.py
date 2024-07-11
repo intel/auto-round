@@ -69,12 +69,12 @@ def save_quantized_as_autogptq(output_dir, use_triton=True, inplace=True, **kwar
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
-
+    multimodal = kwargs["multimodal"]
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
-    all_blocks = get_block_names(model)
+    all_blocks = get_block_names(model, multimodal=True)
     all_to_quantized = True
     modules_in_block_to_quantize = []
     for block_names in all_blocks:

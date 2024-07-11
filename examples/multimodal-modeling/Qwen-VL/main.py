@@ -264,11 +264,6 @@ if __name__ == '__main__':
     parser.add_argument("--scale_dtype", default='fp16',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
-    parser.add_argument("--tasks",
-                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                                "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge,wikitext2,ptb-new,c4-new",
-                        help="lm-eval tasks for lm_eval version 0.4")
-
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
                         help="Where to store the final model.")
 
@@ -296,6 +291,9 @@ if __name__ == '__main__':
     parser.add_argument("--model_max_length", default=2048, type=int,
                         help="")
     
+    parser.add_argument("--act_bits", default=32, type=int,
+                    help="activation bits")
+    
     parser.add_argument("--do_multimodal", action='store_true',
                         help="To determine whether the preprocessing should handle multimodal component.")
     
@@ -314,8 +312,17 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     set_seed(args.seed)
-    tasks = args.tasks
 
+    if args.act_bits <= 8:
+        print(
+            "Warning, activation quantization is an experiment feature")
+    
+    if args.act_bits <= 8 and args.deployment_device != "fake":
+        assert False, "only support fake mode for activation quantization currently"
+        
+    if "marlin" in args.deployment_device and args.sym == False:
+        assert False, "marlin backend only supports sym quantization, please set --sym"
+        
     model_name = args.model_name
     if model_name[-1] == "/":
         model_name = model_name[:-1]
@@ -403,11 +410,11 @@ if __name__ == '__main__':
     if args.adam:
         round = AutoAdamRound
 
-    weight_config = {}
+    layer_config = {}
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                weight_config[n] = {"data_type": "fp"}
+                layer_config[n] = {"bits": 32}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
     lm_head_layer_name = "lm_head"
@@ -416,7 +423,7 @@ if __name__ == '__main__':
     if args.quant_lm_head:
         from transformers import AutoConfig
 
-        config = model.config
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
         if config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
             tied_keys = model._tied_weights_keys
             for item in tied_keys:
@@ -427,23 +434,15 @@ if __name__ == '__main__':
                         f"supported currently")
                     break
     if args.quant_lm_head:
-        weight_config[lm_head_layer_name] = {"data_type": "int"}
+        layer_config[lm_head_layer_name] = {"bits": args.bits}
         transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
         if transformers_version[0] == 4 and transformers_version[1] < 38:
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 
     if args.quant_lm_head and args.low_gpu_mem_usage:
-        print(f"warning, disable low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
+        print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
-    deployment_device = args.deployment_device.split(',')
-    gpu_format = "auto_gptq"
-    if 'gpu' in deployment_device:
-        if lm_head_layer_name in weight_config.keys() and weight_config[lm_head_layer_name]["data_type"] == "int":
-            gpu_format = "auto_round"
-
-    if "autoround" in deployment_device or "auto-round" in deployment_device or "auto_round" in deployment_device:
-        gpu_format = "auto_round"
     
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
@@ -451,8 +450,8 @@ if __name__ == '__main__':
                       amp=not args.disable_amp, nsamples=args.nsamples,
                       low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, weight_config=weight_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, multimodal=args.do_multimodal)
+                      scale_dtype=args.scale_dtype, layer_config=layer_config,
+                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits, multimodal=args.do_multimodal)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -462,9 +461,30 @@ if __name__ == '__main__':
     
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
+
+    deployment_device = args.deployment_device.split(',')
+    gpu_formats = []
+    for item in deployment_device:
+        if "gpu" in item or "auto_gptq" in item or "auto_round" in item:
+            gpu_formats.append(item)
+
+    if 'gpu' in deployment_device:
+        if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
+            gpu_formats.append("auto_round")
+        else:
+            gpu_formats.append("auto_gptq")
+    gpu_formats = list(set(gpu_formats))
+
     inplace = True if len(deployment_device) < 2 else False
-    if 'gpu' in deployment_device or "auto_round" in gpu_format or "auto-round" in gpu_format:
-        autoround.save_quantized(f'{export_dir}-gpu', format=gpu_format, use_triton=True, inplace=inplace)
+    eval_folder = None
+    for gpu_format in gpu_formats:
+        if "round" in gpu_format:
+            eval_folder = f'{export_dir}-round'
+            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+        elif "gptq" in gpu_format:
+            eval_folder = f'{export_dir}-gpu'
+            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
@@ -475,6 +495,8 @@ if __name__ == '__main__':
         model = model.to("cpu")
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
+        if eval_folder is None:
+            eval_folder = output_dir
 
     if not args.disable_eval and "fake" in deployment_device:  ## TODO
         model = model.half()

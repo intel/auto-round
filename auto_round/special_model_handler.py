@@ -16,7 +16,7 @@ from .utils import logger, torch
 
 share_attention_mask_tuple = ("baichuan",)
 special_states_dim_tuple = ("chatglm",)
-not_share_position_ids_tuple = ("llava",)
+not_share_position_ids_tuple = ("llava","phi3_v")
 
 
 def check_share_attention_mask(model, hidden_states, attention_mask=None, **kwargs):
