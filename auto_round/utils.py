@@ -583,7 +583,8 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     return False, seqlen, bs
 
 
-def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transformers.modeling_utils.Conv1D], multimodal=False):
+def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
+                                                     transformers.modeling_utils.Conv1D], multimodal=False):
     """Retrieves the names of layers within each block of the model.
 
     Returns:

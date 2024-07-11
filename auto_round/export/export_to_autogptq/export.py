@@ -112,22 +112,23 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
-    block_name = get_block_names(model)[0]
-    first_block = get_module(model, block_name)
+    all_blocks = get_block_names(model, multimodal=True)
     all_to_quantized = True
     modules_in_block_to_quantize = []
-    for n, m in first_block.named_modules():
-        is_supported_type = False
-        for supported_type in supported_types:
-            if isinstance(m, supported_type):
-                is_supported_type = True
-                break
-        if not is_supported_type:
-            continue
-        if not check_to_quantized(m):
-            all_to_quantized = False
-        else:
-            modules_in_block_to_quantize.append(n)
+    for block_names in all_blocks:
+        first_block = get_module(model, block_names[0])
+        for n, m in first_block.named_modules():
+            is_supported_type = False
+            for supported_type in supported_types:
+                if isinstance(m, supported_type):
+                    is_supported_type = True
+                    break
+            if not is_supported_type:
+                continue
+            if not check_to_quantized(m):
+                all_to_quantized = False
+            else:
+                modules_in_block_to_quantize.append(n)
     modules_in_block_to_quantize = [modules_in_block_to_quantize]
     if all_to_quantized:
         modules_in_block_to_quantize = None
@@ -231,3 +232,4 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
