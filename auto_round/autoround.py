@@ -40,6 +40,7 @@ from .utils import (
     logger,
     sampling_inputs,
     to_device, get_layer_names_in_block,
+    mv_module_from_gpu,
 )
 
 from .layer_wise.utils import get_layers_before_block
@@ -138,16 +139,14 @@ class AutoRound(object):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
-            block_wise: bool = False,
+            low_cpu_mem_usage: bool = False,
             **kwargs,
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
-        self.block_wise = block_wise
-        if model.device.type == 'meta':
-            self.model = model.eval()
-        else:
-            self.model = model.eval().to("cpu")
+        self.low_cpu_mem_usage = low_cpu_mem_usage
+        self.model = model.eval()
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -254,8 +253,7 @@ class AutoRound(object):
                 self.train_bs = total_samples
                 logger.warning(f"force the train batch size to {total_samples} ")
 
-        if not self.model.device.type == "meta":
-            self.model = self.model.to("cpu")
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         torch.cuda.empty_cache()
         self.quant_blocks(
             self.model,
@@ -348,8 +346,7 @@ class AutoRound(object):
         if self.enable_quanted_input:
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
 
-        if not self.model.device.type == "meta":
-            self.model = self.model.to("cpu")
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         torch.cuda.empty_cache()
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
@@ -459,8 +456,8 @@ class AutoRound(object):
             self.dataloader = self.dataset
         total_cnt = 0
 
-        # load embed weight if use block_wise
-        if self.block_wise:
+        # load embed weight if use low_cpu_mem_usage
+        if self.low_cpu_mem_usage:
             embed_layers = get_layers_before_block(self.model)
             for n, m in embed_layers:
                 m = m.to(self.device)
@@ -514,7 +511,7 @@ class AutoRound(object):
             )
         
         # clean embed weight to save memory
-        if self.block_wise:
+        if self.low_cpu_mem_usage:
             for n, m in embed_layers:
                 m = m.to("meta")
         torch.cuda.empty_cache()
@@ -541,13 +538,11 @@ class AutoRound(object):
             all_inputs = self.cache_inter_data(
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
-            if not self.model.device.type == "meta":
-                self.model = self.model.to("cpu")
+            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             torch.cuda.empty_cache()
         except:
             logger.info("switch to cpu to cache inputs")
-            if not self.model.device.type == "meta":
-                self.model = self.model.to("cpu")
+            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             torch.cuda.empty_cache()
             all_inputs = self.cache_inter_data(
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
@@ -945,14 +940,12 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.enable_quanted_input:
-            if self.block_wise:
-                block = block.to(device)
+            block = block.to(device)
             q_outputs = self.get_block_outputs(
                 block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
                 cache_device=self.cache_device
             )
-            if self.block_wise:
-                block = block.to('meta')
+            block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
             for i in range(len(input_ids)):
                 input_ids[i] = None
             torch.cuda.empty_cache()
@@ -1014,19 +1007,13 @@ class AutoRound(object):
                 n = block_names[i]
                 logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
-                if self.block_wise:
-                    m = m.to(device)
             else:
                 names = block_names[i: i + nblocks]
                 logger.info(names)
                 modules = [get_module(model, n) for n in names]
-                if self.block_wise:
-                    for module in modules:
-                        module = module.to(device)
                 m = WrapperMultiblock(modules)
 
-            if not self.model.device.type == "meta":
-                m = m.to(device)
+            m = m.to(device)
 
             q_input, input_ids = self.quant_block(
                 m,
@@ -1035,14 +1022,7 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
             )
-            if self.block_wise:
-                if isinstance(m, WrapperMultiblock):
-                    for layer in m.layers:
-                        layer = layer.to("meta")
-                else:
-                    m = m.to('meta')
-            if not self.model.device.type == "meta":
-                m = m.to("cpu")
+            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             torch.cuda.empty_cache()
 
         del q_input
@@ -1064,8 +1044,7 @@ class AutoRound(object):
         Returns:
             object: The compressed model object.
         """
-        if self.model.device.type == 'meta':
-            self.model.to("cpu")
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
 
         if not self.quantized:
             logger.warning("please run autoround.quantize first")

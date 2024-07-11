@@ -589,6 +589,5 @@ def unwrapper_block(block, vs, min_scales, max_scales):
             if isinstance(max_scales, dict):
                 max_scale = max_scales[n]
                 max_scale = torch.clamp(max_scale, 0, 1.0)
-            print(n)
             orig_layer = m.unwrapper(v, min_scale, max_scale)
             set_module(block, n, orig_layer)
