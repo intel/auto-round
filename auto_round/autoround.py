@@ -39,7 +39,9 @@ from .utils import (
     is_optimum_habana_available,
     logger,
     sampling_inputs,
-    to_device, get_layer_names_in_block,
+    to_device,
+    to_dtype,
+    get_layer_names_in_block,
 )
 
 
@@ -482,9 +484,9 @@ class AutoRound(object):
             else:
                 data_new = {}
                 for key in data.keys():
-                    data_new[key] = data[key].to(self.model.device)
+                    data_new[key] = to_device(data[key], self.model.device)
                     if key == 'images':
-                        data_new[key] = data[key].to(self.model.dtype)
+                        data_new[key] = to_dtype(data[key], self.model.dtype)
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
@@ -1493,4 +1495,5 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
 

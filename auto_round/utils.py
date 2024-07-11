@@ -166,6 +166,37 @@ def to_device(input, device=torch.device("cpu")):
     return input
 
 
+def to_dtype(input, dtype=torch.float32):
+    """Moves input data to the specified data type.
+
+    Args:
+    input: The input data to be moved.
+    dtype: The target data type.
+
+    Returns:
+    The input data on the specified data type.
+    """
+    if input is None:
+        return None
+    if isinstance(input, torch.Tensor):
+        return input.to(dtype)
+    if isinstance(input, dict) or isinstance(input, UserDict):
+        for inp in input.keys():
+            input[inp] = to_dtype(input[inp], dtype)
+
+    elif isinstance(input, list) or isinstance(input, tuple):
+        if len(input) == 0:
+            return input
+        input_res = []
+        for inp in input:
+            input_res.append(to_dtype(inp, dtype))
+        if isinstance(input, tuple):
+            input_res = tuple(input_res)
+        input = input_res
+
+    return input
+
+
 def check_is_cpu(device):
     """Check if the device is a CPU.
 
@@ -669,4 +700,5 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
     else:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     return QuantLinear
+
 

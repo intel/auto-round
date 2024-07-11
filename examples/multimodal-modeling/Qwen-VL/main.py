@@ -278,9 +278,6 @@ if __name__ == '__main__':
     parser.add_argument("--disable_amp", action='store_true',
                         help="disable amp")
 
-    parser.add_argument("--disable_low_gpu_mem_usage", action='store_true',
-                        help="disable low_gpu_mem_usage")
-
     parser.add_argument("--disable_minmax_tuning", action='store_true',
                         help="whether disable  enable weight minmax tuning")
 
@@ -308,9 +305,6 @@ if __name__ == '__main__':
     
     parser.add_argument("--question_file", default=None, type=str,
                             help="The dataset for quantization training. It can be a custom one.")
-    
-    # parser.add_argument("--dataset", default=None, type=str,
-    #                     help="The dataset for quantization training. It can be a custom one.")
     
     # ================= Evaluation Related =====================
     # parser.add_argument("--eval-path", type=str, default=None)
@@ -379,8 +373,8 @@ if __name__ == '__main__':
     seqlen = args.seqlen
 
     if args.eval_fp16_baseline:
-        if args.disable_low_gpu_mem_usage:
-            model = model.to(torch_device)
+        model = model.half()
+        model = model.to(torch_device)
         datasets=args.eval_dataset.split(',')
         for dataset in datasets:
             if 'vqa' in dataset:
@@ -439,8 +433,8 @@ if __name__ == '__main__':
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 
-    if args.quant_lm_head and not args.disable_low_gpu_mem_usage:
-        print(f"warning, disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
+    if args.quant_lm_head and args.low_gpu_mem_usage:
+        print(f"warning, disable low_gpu_mem_usage is strongly recommended if the whole model could be loaded to "
               f"gpu")
     deployment_device = args.deployment_device.split(',')
     gpu_format = "auto_gptq"
@@ -455,7 +449,7 @@ if __name__ == '__main__':
                       dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
                       amp=not args.disable_amp, nsamples=args.nsamples,
-                      low_gpu_mem_usage=not args.disable_low_gpu_mem_usage,
+                      low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, weight_config=weight_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, multimodal=args.do_multimodal)

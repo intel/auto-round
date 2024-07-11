@@ -253,7 +253,7 @@ class InferenceSampler(torch.utils.data.sampler.Sampler):
         return len(self._local_indices)
 
 
-def textVQA_evaluation(model_name, dataset_name, dataset_path=None, tokenizer=None,
+def textVQA_evaluation(model_name, dataset_name, base_model="Qwen/Qwen-VL", dataset_path=None, tokenizer=None,
                        batch_size=1, few_shot=0, seed=0, trust_remote_code=True, device="cuda:0"):
     # torch.distributed.init_process_group(
     #     backend='nccl',
@@ -266,7 +266,7 @@ def textVQA_evaluation(model_name, dataset_name, dataset_path=None, tokenizer=No
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
         model = AutoModelForCausalLM.from_pretrained(model_name, config=config, trust_remote_code=trust_remote_code).eval()
         model = model.to(torch.device(device))
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code,
+        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=trust_remote_code,
                                               padding_side="right", use_fast=False)
     else:
         assert tokenizer is not None, "Two types of parameter passing are supported:model_path or model with tokenizer."
@@ -437,6 +437,9 @@ if __name__ == "__main__":
         "--model_name", default="Qwen/Qwen-VL"
     )
     parser.add_argument(
+        "--base_model", default="Qwen/Qwen-VL"
+    )
+    parser.add_argument(
         "--dataset_name", default="textvqa_val"
     )
     parser.add_argument(
@@ -450,9 +453,11 @@ if __name__ == "__main__":
     s = time.time()
     evaluator = textVQA_evaluation(
         args.model_name,
+        base_model=args.base_model,
         dataset_name=args.dataset_name,
         # dataset_path=args.eval_path,
         batch_size=args.eval_bs,
         trust_remote_code=args.trust_remote_code
     )
     print("cost time: ", time.time() - s)
+
