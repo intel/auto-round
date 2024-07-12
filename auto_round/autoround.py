@@ -23,7 +23,7 @@ from torch import autocast
 
 from .calib_dataset import get_dataloader
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
-from .special_model_handler import check_hidden_state_dim, check_share_attention_mask
+from .special_model_handler import check_hidden_state_dim, check_share_attention_mask, check_not_share_position_ids
 from .utils import (
     CpuInfo,
     block_forward,
@@ -39,7 +39,9 @@ from .utils import (
     is_optimum_habana_available,
     logger,
     sampling_inputs,
-    to_device, get_layer_names_in_block,
+    to_device,
+    to_dtype,
+    get_layer_names_in_block,
     mv_module_from_gpu,
 )
 
@@ -96,6 +98,7 @@ class AutoRound(object):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
+        multimodal(bool): Enable multimodal model quantization, (default is "False").
         act_bits (int): Number of bits for activation quantization. Default is 32.
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
@@ -135,6 +138,7 @@ class AutoRound(object):
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
+            multimodal:bool = False,
             act_bits: int = 32,
             act_group_size: int = None,
             act_sym: bool = None,
@@ -171,6 +175,7 @@ class AutoRound(object):
         self.dataset = dataset
 
         self.iters = iters
+        self.multimodal = multimodal
         if self.iters <= 0:
             logger.warning("iters must be positive, reset it to 200")
             self.iters = 200
@@ -229,8 +234,9 @@ class AutoRound(object):
         The quantized model and layer configurations.
         """
         # logger.info("cache block input")
-        block_names = get_block_names(self.model)
-        if len(block_names) == 0:
+        all_blocks = get_block_names(self.model, self.multimodal)
+                    
+        if len(all_blocks) == 0:
             logger.warning("could not find blocks, exit with original model")
             return self.model, self.layer_config
 
@@ -239,19 +245,19 @@ class AutoRound(object):
 
         layer_names = self.get_quantized_layer_names_outside_blocks()
         self.start_time = time.time()
-        all_inputs = self.try_cache_inter_data_gpucpu([block_names[0]], self.nsamples, layer_names=layer_names)
-        del self.inputs
-        inputs = all_inputs[block_names[0]]
-
-        all_inputs.pop(block_names[0])
-        self.inputs = None
-        del self.inputs
-        if "input_ids" in inputs.keys():
-            total_samples = len(inputs["input_ids"])
-            self.nsamples = total_samples
-            if total_samples < self.train_bs:
-                self.train_bs = total_samples
-                logger.warning(f"force the train batch size to {total_samples} ")
+        all_first_block_names = [block[0] for block in all_blocks]
+        all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
+        for block_names in all_blocks:
+            inputs = all_inputs[block_names[0]]
+            all_inputs.pop(block_names[0])
+            self.inputs = None
+            del self.inputs
+            if "input_ids" in inputs.keys():
+                total_samples = len(inputs["input_ids"])
+                self.n_samples = total_samples
+                if total_samples < self.train_bs:
+                    self.train_bs = total_samples
+                    logger.warning(f"force the train batch size to {total_samples} ")
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         torch.cuda.empty_cache()
@@ -359,7 +365,7 @@ class AutoRound(object):
         Returns:
         None
         """
-        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types)
+        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.multimodal)
         keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
                 "act_dynamic"]
         for n, m in self.model.named_modules():
@@ -403,11 +409,18 @@ class AutoRound(object):
         """
 
         output = []
-        for i in range(0, self.nsamples, bs):
-            end_index = min(self.nsamples, i + bs)
+        nsamples = len(input_ids)
+        for i in range(0, nsamples, bs):
+            end_index = min(nsamples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
             tmp_input_ids, tmp_input_others = sampling_inputs(
-                input_ids, input_others, indices, self.seqlen, self.share_attention_mask_flag, self.input_dim
+                input_ids,
+                input_others,
+                indices,
+                self.seqlen,
+                self.share_attention_mask_flag,
+                self.not_share_position_ids_flag,
+                self.input_dim
             )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
@@ -457,7 +470,6 @@ class AutoRound(object):
             if isinstance(data, torch.Tensor):
                 input_ids = data.to(self.device)
                 data_new = input_ids
-
             elif isinstance(data, str):
                 if self.tokenizer is None:
                     logger.error("please provide tokenizer for string input")
@@ -467,24 +479,31 @@ class AutoRound(object):
                 for key in data.keys():
                     data_new[key] = data[key].to(self.device)
                 input_ids = data_new["input_ids"]
+            elif isinstance(data, tuple) or isinstance(data, list):
+                    data_new = data
+                    input_ids = data_new[0]
             else:
                 data_new = {}
                 for key in data.keys():
-                    data_new[key] = data[key].to(self.device)
+                    data_new[key] = to_device(data[key], self.model.device)
+                    if key == 'images':
+                        data_new[key] = to_dtype(data[key], self.model.dtype)
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-
+            
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
+                elif isinstance(data_new, tuple) or isinstance(data_new, list):
+                    self.model(*data_new)
                 else:
                     self.model(**data_new)
             except NotImplementedError:
                 pass
             except Exception as error:
                 logger.error(error)
-            total_cnt += input_ids.shape[0]
+            total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
             if total_cnt >= nsamples:
                 break
         if total_cnt == 0:
@@ -507,7 +526,7 @@ class AutoRound(object):
 
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=[], last_cache_name=None):
-        """Attempts to cache intermediate data on GPU，if failed, then using CPU.
+        """Attempts to cache intermediate data on GPU, if failed, then using CPU.
 
         Args:
             block_names (list): List of block names to cache data for.
@@ -567,6 +586,7 @@ class AutoRound(object):
         self.last_cache_name = last_cache_name
         if last_cache_name is None and len(block_names) + len(layer_names) == 1:
             self.last_cache_name = block_names[0] if len(block_names) == 1 else layer_names[0]
+        # do not set last_cache_name for multimodal models
         calib_bs = self.train_bs
         self.hook_handles = []
         self._replace_forward()
@@ -604,6 +624,7 @@ class AutoRound(object):
             if self.share_attention_mask_flag is None:
                 self.input_dim = check_hidden_state_dim(self.model, positional_args)
                 self.share_attention_mask_flag = check_share_attention_mask(self.model, hidden_states, **kwargs)
+                self.not_share_position_ids_flag = check_not_share_position_ids(self.model, **kwargs)
             if name in self.inputs:
                 self.inputs[name]["input_ids"].extend(list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim)))
             else:
@@ -637,6 +658,13 @@ class AutoRound(object):
                                 self.inputs[name][key].extend(list(torch.split(alibi.to("cpu"), 1, dim=0)))
                             else:
                                 self.inputs[name][key] = list(torch.split(alibi.to("cpu"), 1, dim=0))
+                    elif "position_ids" in key:
+                        if key not in self.inputs[name].keys():
+                            self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
+                                                    if self.not_share_position_ids_flag \
+                                                    else to_device(kwargs[key], device=torch.device("cpu"))
+                        elif kwargs[key] is not None and self.not_share_position_ids_flag:
+                            self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif key not in self.inputs[name].keys():
                         self.inputs[name][key] = to_device(kwargs[key], device=torch.device("cpu"))
             if name == self.last_cache_name:
@@ -874,6 +902,7 @@ class AutoRound(object):
                     indices,
                     seqlen=self.seqlen,
                     share_attention_mask_flag=self.share_attention_mask_flag,
+                    not_share_position_ids_flag=self.not_share_position_ids_flag,
                     input_dim=self.input_dim,
                 )
 
@@ -1102,6 +1131,7 @@ class AutoRound(object):
             data_type=self.data_type,
             serialization_dict=serialization_dict,
             backend=backend,
+            multimodal=self.multimodal,
             **kwargs
         )
         return compressed_model
@@ -1116,7 +1146,7 @@ class AutoRound(object):
             return []
 
         layer_names = []
-        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types)
+        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.multimodal)
 
         for key in self.layer_config.keys():
             if key in all_layers_in_block:
@@ -1479,3 +1509,5 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
+
