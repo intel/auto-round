@@ -49,8 +49,8 @@ class TestLowCPUMem(unittest.TestCase):
         for key in input:
             input[key] = torch.tensor(input[key])
         ori_output = self.ori_model(**input)
-        ouptut = self.model(**input)
-        self.assertTrue(torch.equal(ori_output[0], ouptut[0]))
+        output = self.model(**input)
+        self.assertTrue(torch.equal(ori_output[0], output[0]))
 
         # test save and load
         layer_wise_save(self.model, self.saved_path)
