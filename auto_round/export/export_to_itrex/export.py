@@ -191,6 +191,8 @@ def pack_model(
         scale_dtype=convert_dtype_str2torch(config.scale_dtype),
         device="xpu",
     """
+    if model.device.type == 'meta':
+        model = model.to("cuda" if device == "xpu" else device)
     if inplace:
         compressed_model = model
     else:

@@ -165,6 +165,19 @@ def to_device(input, device=torch.device("cpu")):
 
     return input
 
+def mv_module_from_gpu(module, low_cpu_mem_usage=False):
+    if hasattr(module, "device"):
+        target_device ="meta" if low_cpu_mem_usage else "cpu"
+        if module.device.type == target_device:
+            return module
+        else:
+            return module.to(target_device)
+    else:
+        if low_cpu_mem_usage:
+            return module.to('meta')
+        else:
+            return module.to('cpu')
+
 
 def to_dtype(input, dtype=torch.float32):
     """Moves input data to the specified data type.

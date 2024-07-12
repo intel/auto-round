@@ -42,8 +42,10 @@ from .utils import (
     to_device,
     to_dtype,
     get_layer_names_in_block,
+    mv_module_from_gpu,
 )
 
+from .layer_wise.utils import get_layers_before_block
 
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
@@ -141,11 +143,14 @@ class AutoRound(object):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
+            low_cpu_mem_usage: bool = False,
             **kwargs,
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
-        self.model = model.eval().to("cpu")
+        self.low_cpu_mem_usage = low_cpu_mem_usage
+        self.model = model.eval()
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -254,15 +259,15 @@ class AutoRound(object):
                     self.train_bs = total_samples
                     logger.warning(f"force the train batch size to {total_samples} ")
 
-            self.model = self.model.to("cpu")
-            torch.cuda.empty_cache()
-            self.quant_blocks(
-                self.model,
-                inputs,
-                block_names,
-                nblocks=self.nblocks,
-                device=self.device,
-            )
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        torch.cuda.empty_cache()
+        self.quant_blocks(
+            self.model,
+            inputs,
+            block_names,
+            nblocks=self.nblocks,
+            device=self.device,
+        )
 
         self.quant_layers(layer_names, all_inputs)
 
@@ -300,6 +305,9 @@ class AutoRound(object):
         Returns:
             None
         """
+        # load scale and zp if use low_cpu_memory
+        self.model = self.model.to('cpu')
+
         for n, m in self.model.named_modules():
             if n not in self.layer_config.keys():
                 continue
@@ -333,7 +341,7 @@ class AutoRound(object):
         if self.enable_quanted_input:
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
 
-        self.model = self.model.to("cpu")
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         torch.cuda.empty_cache()
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
@@ -435,9 +443,9 @@ class AutoRound(object):
             nsamples (int): The number of samples to use for calibration.
             bs (int): The number of samples to use for calibration
         """
-
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
+            # slow here
             self.dataloader = get_dataloader(
                 self.tokenizer,
                 self.seqlen,
@@ -449,11 +457,18 @@ class AutoRound(object):
         else:
             self.dataloader = self.dataset
         total_cnt = 0
+
+        # load embed weight if use low_cpu_mem_usage
+        if self.low_cpu_mem_usage:
+            embed_layers = get_layers_before_block(self.model)
+            for n, m in embed_layers:
+                m = m.to(self.device)
+        
         for data in self.dataloader:
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
-                input_ids = data.to(self.model.device)
+                input_ids = data.to(self.device)
                 data_new = input_ids
             elif isinstance(data, str):
                 if self.tokenizer is None:
@@ -462,7 +477,7 @@ class AutoRound(object):
                 data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
                 data_new = {}
                 for key in data.keys():
-                    data_new[key] = data[key].to(self.model.device)
+                    data_new[key] = data[key].to(self.device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
                     data_new = data
@@ -502,6 +517,12 @@ class AutoRound(object):
                 f"Insufficient number of samples collected may affect the quantification. "
                 f"Valid samples size:{total_cnt}, Target sample size:{nsamples}"
             )
+        
+        # clean embed weight to save memory
+        if self.low_cpu_mem_usage:
+            for n, m in embed_layers:
+                m = m.to("meta")
+        torch.cuda.empty_cache()
 
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=[], last_cache_name=None):
@@ -520,15 +541,16 @@ class AutoRound(object):
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
         try:
-            self.model = self.model.to(self.device)
+            if not self.model.device.type == "meta":
+                self.model = self.model.to(self.device)
             all_inputs = self.cache_inter_data(
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
-            self.model = self.model.to("cpu")
+            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             torch.cuda.empty_cache()
         except:
             logger.info("switch to cpu to cache inputs")
-            self.model = self.model.to("cpu")
+            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             torch.cuda.empty_cache()
             all_inputs = self.cache_inter_data(
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
@@ -712,7 +734,7 @@ class AutoRound(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        wrapper_linear = WrapperLinear(layer, self.enable_minmax_tuning).to(device)
+        wrapper_linear = WrapperLinear(layer, self.enable_minmax_tuning, device).to(device)
         round_params = []
         minmax_params = []
         round_params.append(wrapper_linear.value)
@@ -824,8 +846,9 @@ class AutoRound(object):
 
         if q_input is not None:
             input_ids = q_input
-        torch.cuda.empty_cache()
-        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
+
+        quantized_layer_names, unquantized_layer_names = wrapper_block(
+            block, self.enable_minmax_tuning, device=self.device)
 
         round_params = []
         minmax_params = []
@@ -935,11 +958,12 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.enable_quanted_input:
-
+            block = block.to(device)
             q_outputs = self.get_block_outputs(
                 block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
                 cache_device=self.cache_device
             )
+            block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
             for i in range(len(input_ids)):
                 input_ids[i] = None
             torch.cuda.empty_cache()
@@ -1016,7 +1040,7 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
             )
-            m = m.to("cpu")
+            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             torch.cuda.empty_cache()
 
         del q_input
@@ -1038,6 +1062,9 @@ class AutoRound(object):
         Returns:
             object: The compressed model object.
         """
+        if self.low_cpu_mem_usage:
+            self.model = self.model.to('cpu')
+
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return

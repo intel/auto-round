@@ -116,6 +116,8 @@ if __name__ == '__main__':
     parser.add_argument("--quant_lm_head", action='store_true',
                         help="quant_lm_head")
 
+    parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
+                        help="choose low cpu memory mode, 1 for block-wise, 2 for layer-wise, others means not use low cpu memory.")
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 
@@ -162,10 +164,32 @@ if __name__ == '__main__':
     torch_device = torch.device(device_str)
 
     is_glm = bool(re.search("chatglm", model_name.lower()))
-    if is_glm:
-        model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+    low_cpu_mem_usage = False
+    model_cls = AutoModel if is_glm else AutoModelForCausalLM
+    if args.low_cpu_mem_mode == 2:
+        from auto_round.layer_wise.utils import load_model_with_hooks
+        model = load_model_with_hooks(
+            model_name,
+            model_cls,
+            device=device_str,
+            clean_weight=True,
+            saved_path=os.path.join(args.output_dir, "layer_wise_tmp"),
+            torch_dtype=torch_dtype,
+            trust_remote_code=not args.disable_trust_remote_code
+        )
+    elif args.low_cpu_mem_mode == 1:
+        from auto_round.layer_wise.utils import load_empty_model
+        low_cpu_mem_usage = True
+        model = load_empty_model(
+            model_name,
+            model_cls,
+            device=device_str,
+            saved_path=os.path.join(args.output_dir, "layer_wise_tmp"),
+            torch_dtype=torch_dtype,
+            trust_remote_code=not args.disable_trust_remote_code
+            )
     else:
-        model = AutoModelForCausalLM.from_pretrained(
+        model = model_cls.from_pretrained(
             model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
             trust_remote_code=not args.disable_trust_remote_code
         )
@@ -256,9 +280,13 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits)
+                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
+                      low_cpu_mem_usage=low_cpu_mem_usage)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
+    if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
+        import shutil
+        shutil.rmtree(os.path.join(args.output_dir, "layer_wise_tmp"), ignore_errors=True)
 
     model.eval()
     if "cpu" not in device_str:
