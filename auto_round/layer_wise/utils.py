@@ -32,27 +32,10 @@ from transformers.models.auto.auto_factory import _BaseAutoModelClass
 
 from .load import load
 
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
 logger = logging.getLogger("layer_wise_tools")
 
 LWQ_WORKSPACE = os.path.join("layer_wise_tmp")
-
-
-class QDQLayer(torch.nn.Module):
-    def __init__(self, module, input_scale=None) -> None:
-        super().__init__()
-        self.quant = torch.ao.quantization.QuantStub()
-        self.module = module
-        self.dequant = torch.ao.quantization.DeQuantStub()
-        self.input_scale = input_scale
-
-    def forward(self, X):
-        if self.input_scale is not None:
-            X = torch.mul(X, self.input_scale)
-        X = self.quant(X)
-        X = self.module(X)
-        X = self.dequant(X)
-        return X
 
 
 def get_module(model, key):
@@ -126,7 +109,7 @@ def dowload_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
         return file_path
 
 
-def load_empty_model(pretrained_model_name_or_path, cls=AutoModelForCausalLM, save_path=None, **kwargs):
+def load_empty_model(pretrained_model_name_or_path, cls=AutoModelForCausalLM, saved_path=None, **kwargs):
     """Load a empty model."""
     is_local = os.path.isdir(pretrained_model_name_or_path)
     if is_local:  # pragma: no cover
@@ -143,11 +126,12 @@ def load_empty_model(pretrained_model_name_or_path, cls=AutoModelForCausalLM, sa
             model = cls(config)
     model.tie_weights()
     model.eval()
-    model.path = pretrained_model_name_or_path
+    model.path = path
 
-    if save_path is None:
-        save_path = LWQ_WORKSPACE
-    convert_model(model, save_path)
+    if saved_path is None:
+        logger.warning(f"saved_path is not set, use default working space: {LWQ_WORKSPACE}")
+        saved_path = LWQ_WORKSPACE
+    convert_model(model, saved_path)
     return model
 
 
@@ -324,12 +308,7 @@ def register_weight_hooks(model, path, device="cpu", clean_weight=True, saved_pa
     return handle
 
 
-def clean_module_weight(module):
-    if isinstance(module, QDQLayer):
-        submodule = module.module
-    else:
-        submodule = module
-
+def clean_module_weight(submodule):  # pragma: no cover
     for n, m in submodule.named_parameters():
         is_buffer = n in submodule._buffers
         old_value = getattr(submodule, n)
@@ -443,8 +422,9 @@ def load_model_with_hooks(
         saved_path=None, 
         **kwargs):
     if saved_path is None:
+        logger.warning(f"saved_path is not set, use default working space: {LWQ_WORKSPACE}")
         saved_path = LWQ_WORKSPACE
-    empty_model = load_empty_model(pretrained_model_name_or_path, cls=cls, **kwargs)
+    empty_model = load_empty_model(pretrained_model_name_or_path, cls=cls, saved_path=saved_path, **kwargs)
     register_weight_hooks(empty_model, empty_model.path, device, clean_weight, saved_path)
     return empty_model
 
@@ -466,8 +446,10 @@ def layer_wise_save(model, path):
 def layer_wise_load(path):
     file_path = os.path.join(path, 'layer_wise_model.bin')
     state_dict = OrderedDict()
-    data = open(file_path, 'rb').read().split(b'split_tag')
-    for d in data:
-        if len(d) > 0:
-            d = pickle.loads(d)
-            state_dict.update(d)
+    with open(file_path, 'rb') as f:
+        data = f.read().split(b'split_tag')
+        for d in data:
+            if len(d) > 0:
+                d = pickle.loads(d)
+                state_dict.update(d)
+    return state_dict
