@@ -378,7 +378,9 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
         if hasattr(module, "zp"):
             quant_info["zp"]= module.zp
         logger.debug(f"save quant info for layer: {name}")
-        pickle.dump(quant_info, open(os.path.join(saved_path, f"{name}_quant_info.pkl"), 'wb'))
+        f = open(os.path.join(saved_path, f"{name}_quant_info.pkl"), 'wb')
+        pickle.dump(quant_info, f)
+        f.close()
 
     def _layer_wise_to(module, name, device_or_dtype):
         if isinstance(device_or_dtype, torch.dtype):
@@ -401,8 +403,9 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
                     set_module_tensor_to_device(module, n, device_or_dtype, value, dtype=dtype)
 
                 if hasattr(module, "scale"):
-                    quant_info = pickle.load(
-                        open(os.path.join(saved_path, f"{name}_quant_info.pkl"), 'rb'))
+                    f = open(os.path.join(saved_path, f"{name}_quant_info.pkl"), 'rb')
+                    quant_info = pickle.load(f)
+                    f.close()
                     module.scale = quant_info["scale"].to(device_or_dtype)
                     if "zp" in quant_info:
                         module.zp = quant_info["zp"].to(device_or_dtype)

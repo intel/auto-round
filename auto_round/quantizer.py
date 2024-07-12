@@ -281,12 +281,14 @@ class WrapperLinear(torch.nn.Module):
         self.q_scale_thresh = 1e-5
 
         weight_dtype = torch.float32
+        orig_layer_weight = self.orig_layer.weight if not hasattr(self.orig_layer, 'get_weight') \
+            else self.orig_layer.get_weight()
         self.value = torch.nn.Parameter(
             reshape_tensor(
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
                 self.group_size),
             requires_grad=True)
-        weight_reshape = reshape_tensor(self.orig_layer.weight.data, self.group_size)
+        weight_reshape = reshape_tensor(orig_layer_weight.data, self.group_size)
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
         self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
 

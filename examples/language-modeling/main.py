@@ -117,7 +117,7 @@ if __name__ == '__main__':
                         help="quant_lm_head")
 
     parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
-                        help="choose low cpu memory mode, 1 for block-wise, 0 for layer-wise, others means not use low cpu memory.")
+                        help="choose low cpu memory mode, 1 for block-wise, 2 for layer-wise, others means not use low cpu memory.")
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 
