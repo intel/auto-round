@@ -71,7 +71,7 @@ cd ../..
 <br />
 
 ## 2. Run Examples
-Enter into the examples folder and install lm-eval to run the evaluation
+Enter into the examples folder and install requirements
 ```bash
 pip install -r requirements.txt
 ```
@@ -91,7 +91,7 @@ or combine them
 
 Currently only support in Intel xpu and AutoRound format,however, we found the fake tuning could improve the accuracy is some scenarios. low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing nsamples,e.g. 128, to alleviate the issue.
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Qwen-VL  --bits 4 --group_size 128 --quant_lm_head
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Qwen/Qwen-VL  --bits 4 --group_size 128 --quant_lm_head
 ```
 
 - **Utilizing the AdamW Optimizer:**
@@ -104,11 +104,16 @@ bash run_autoround_on_gaudi.sh
 ```
 
 
-<!-- ## 4. Known Issues
-* huggingface format model is not support yet, e.g. llava-1.5-7b-hf -->
+## 4. Results
+Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K) datasets for quantization calibration, and TextVQA dataset for evaluation. It is able to achieve accuracy loss within 1% Whether or not the visual component is quantified. The results for Qwen-VL are as follows:
+| Model | Config | Precision | Hyperparameter | Accuracy% | Relative drop |
+|  :----: | :----: | :----: | :----: | :----: | :----: |
+| Qwen/Qwen-VL | - | FP16 | - | 63.94 | - |
+| Qwen/Qwen-VL | W4G128 | FP16 | with vision | 63.68 | -0.41% |
+| Qwen/Qwen-VL | W4G128 | FP16 | w/o vision | 63.73 | -0.33% |
 
 
-## 4. Environment
+## 5. Environment
 
 PyTorch 1.8 or higher version is needed
 

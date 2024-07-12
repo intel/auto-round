@@ -10,11 +10,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import set_seed
-import re
-import copy
-from PIL import Image
 import json
-import math
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
@@ -244,7 +240,7 @@ if __name__ == '__main__':
     parser.add_argument("--adam", action='store_true',
                         help="adam")
 
-    parser.add_argument("--seqlen", default=2048, type=int,
+    parser.add_argument("--seqlen", default=512, type=int,
                         help="sequence length")
 
     parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")

@@ -32,7 +32,8 @@ COCO: [train2017](http://images.cocodataset.org/zips/train2017.zip), and unzip t
 <br />
 
 ## 2. Run Examples
-Enter into the examples folder and install lm-eval to run the evaluation
+Enter into the examples folder and install requirements
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -64,12 +65,21 @@ Include the flag `--adam`. Note that AdamW is less effective than sign gradient 
 bash run_autoround_on_gaudi.sh
 ```
 
+## 4. Results
+Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K) datasets for quantization calibration, and TextVQA dataset for evaluation. When the vision components are not involved in quantization, it is able to achieve accuracy loss within 1%. The results for LLava-7b are as follows:
+| Model | Config | Precision | Hyperparameter | Accuracy% | Relative drop |
+|  :----: | :----: | :----: | :----: | :----: | :----: |
+| liuhaotian/llava-v1.5-7b | - | FP16 | - | 58.21 | - |
+| liuhaotian/llava-v1.5-7b | W4G128 | FP16 | with vision | 56.39 | -3.13% |
+| liuhaotian/llava-v1.5-7b | W4G128 | FP16 | w/o vision | 58.08 | -0.22% |
 
-## 4. Known Issues
+
+## 5. Known Issues
 * huggingface format model is not support yet, e.g. llava-1.5-7b-hf
+* Setting seqlen to 2048 is not working yet.
 
 
-## 5. Environment
+## 6. Environment
 
 PyTorch 1.8 or higher version is needed
 

@@ -111,7 +111,7 @@ if __name__ == '__main__':
     parser.add_argument("--adam", action='store_true',
                         help="adam")
 
-    parser.add_argument("--seqlen", default=2048, type=int,
+    parser.add_argument("--seqlen", default=512, type=int,
                         help="sequence length")
 
     parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
