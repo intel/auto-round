@@ -12,7 +12,7 @@ cmd_list = \
             --nsamples 64 --iters 10 --deployment_device fake,auto_round --disable_eval --seqlen 128 \
             --output_dir './output/opt125m2'",    
         # "/usr/bin/python3 eval_042/evaluation.py --model_name ./output/opt125m/opt-125m-autoround-w4g128-round \
-        #     --eval_bs 16 --trust_remote_code --tasks lambada_openai",
+        #     --eval_bs 16 --trust_remote_code --tasks winogrande --device hpu",
 
 
     

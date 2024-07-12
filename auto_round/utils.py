@@ -639,8 +639,6 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
                The appropriate QuantLinear class for the given configuration.
        """
     exllama2_available = is_autoround_exllamav2_available()
-    logger.info(f"lyt_debug dynamic_import_inference backend: {backend}")
-    logger.info(f"lyt_debug hpu_available: {is_optimum_habana_available()}")
     ##TODO may have bug for marlin backend
     if (not torch.cuda.is_available() and not is_optimum_habana_available()) or "qbits" in backend or "cpu" in backend:
         try:
@@ -656,15 +654,13 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         except Exception as e:
             raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
         return get_autogptq_infer_linear(backend, bits, group_size, sym)
-    if bits == 4:
+    if bits == 4 and is_optimum_habana_available():
         try:
             import habana_frameworks.torch.hpu  # noqa: F401
-            logger.info("lyt_debug utils inference-linear habana imported")
         except Exception as e:
             pass
         else:
             from auto_round_extension.hpu.qlinear_hpu import QuantLinear
-            logger.info(f"lyt_debug dynamic_import inference linear: {type(QuantLinear)}, {QuantLinear}")
             return QuantLinear
     if bits == 4 and exllama2_available and "exllamav2" in backend:
         from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
