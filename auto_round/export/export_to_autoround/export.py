@@ -44,7 +44,6 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     res = []
     if data_type != config["data_type"]:
         res.append("data_type")
-        return res
     if bits != config["bits"]:
         res.append("bits")
     if group_size != config["group_size"]:
@@ -73,7 +72,7 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     disable_exllamav1 = False
     disable_marlin = True
     use_qigen = False
-    if "qigen" in "backend":
+    if "qigen" in backend:
         use_triton = False
         use_qigen = True
     elif "triton" in backend:
@@ -104,7 +103,7 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     return QuantLinear
 
 
-def dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym):
+def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
     """
     Dynamically imports and returns the appropriate QuantLinear class based on the specified backend and parameters.
 
@@ -123,7 +122,7 @@ def dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym):
     if "auto_round" in backend:
         ##only support triton and exllamav2
         if not ("triton" in backend or "exllamav2" in backend):
-            logger.warning_once(f"autoround format does not support {backend}, try to packing with autogptq")
+            logger.warning_once(f"autoround format does not support {backend}, try to pack with autogptq")
             return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
         from auto_round_extension.cuda.qliner_triton import QuantLinear
         return QuantLinear
@@ -135,7 +134,7 @@ def dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym):
 
 
 @register_format("auto_round")
-def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exllamav2", **kwargs):
+def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):
     """
     Saves a quantized model in the auto-round format.
 
@@ -159,12 +158,12 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
     """
     if ":" not in backend:
         backend = "autoround:exllamav2"
-    if not ("triton" in backend or "exllamav2" in backend):
-        logger.info(f"autoround format does not support {backend}, try to packing with autogptq")
-
     backend = backend.replace("autoround", "auto_round")
     backend = backend.replace("auto-round", "auto_round")
-    backend = backend.replace("auto_round", "auto_gptq")
+    if not ("triton" in backend or "exllamav2" in backend):
+        logger.info(f"autoround format does not support {backend}, try to pack with autogptq")
+        backend = backend.replace("auto_round", "auto_gptq")
+
     model = kwargs["model"]
     model = model.to(torch.float16)  ##force to fp16
     if not inplace:
@@ -172,12 +171,36 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
     layer_names_in_block = get_layer_names_in_block(model)
 
     layer_config = kwargs["layer_config"]
-
+    quantization_config = kwargs["serialization_dict"]
+    quantization_config["quant_method"] = "intel/auto-round"
+    quantization_config["backend"] = backend
+    extra_config = {}
+    for layer_name in layer_config:
+        if layer_name not in layer_names_in_block and layer_config[layer_name]["bits"] <= 8:  ##lm head
+            extra_config[layer_name] = {}
+            extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
+            extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
+            extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
+            extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
+        elif layer_name in layer_names_in_block:
+            neq_keys = check_neq_config(
+                layer_config[layer_name],
+                data_type=quantization_config["data_type"],
+                bits=quantization_config["bits"],
+                group_size=quantization_config["group_size"],
+                sym=quantization_config["sym"],
+            )
+            if len(neq_keys) > 0:
+                extra_config[layer_name] = {}
+            for key in neq_keys:
+                extra_config[layer_name][key] = layer_config[layer_name][key]
+    if len(extra_config) > 0:
+        quantization_config["extra_config"] = extra_config
     with tctl.threadpool_limits(limits=1):
         for name in layer_config.keys():
 
             config = kwargs["layer_config"][name]
-            if config["data_type"] != "int" and config["bits"] >= 16:
+            if config["bits"] > 8:
                 continue
             logger.info(f"packing {name}")
 
@@ -188,7 +211,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
             layer = get_module(model, name)
             device = layer.weight.device
 
-            QuantLinear = dynamic_import_quantLienar_for_packing(backend, bits, group_size, sym)
+            QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
 
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
@@ -221,33 +244,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="autoround:exl
             else:
                 qlayer.pack(layer, scale, zero, None)
             qlayer.to(device)
-    quantization_config = kwargs["serialization_dict"]
-    quantization_config["quant_method"] = "intel/auto-round"
-    quantization_config["backend"] = backend
-    extra_config = {}
-    for layer_name in layer_config:
-        if layer_config[layer_name]["bits"] >= 16:
-            continue
-        if layer_name not in layer_names_in_block:
-            extra_config[layer_name] = {}
-            extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
-            extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
-            extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
-            extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
-        else:
-            neq_keys = check_neq_config(
-                layer_config[layer_name],
-                data_type=quantization_config["data_type"],
-                bits=quantization_config["bits"],
-                group_size=quantization_config["group_size"],
-                sym=quantization_config["sym"],
-            )
-            if len(neq_keys) > 0:
-                extra_config[layer_name] = {}
-            for key in neq_keys:
-                extra_config[layer_name][key] = layer_config[layer_name][key]
-    if len(extra_config) > 0:
-        quantization_config["extra_config"] = extra_config
+
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     tokenizer = kwargs["tokenizer"]
