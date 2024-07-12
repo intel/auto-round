@@ -168,6 +168,23 @@ inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
+### Intel Gaudi-2
+
+```python
+##pip install auto-gptq
+from transformers import AutoModelForCausalLM, AutoTokenizer
+##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with auto_round format
+import habana_frameworks.torch.core as htcore
+import habana_frameworks.torch.hpu as hthpu
+quantized_model_path = "./tmp_autoround"
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto").to('hpu')
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+```
+
+
 ## Support List
 
 | Model                                | Supported                                                                                                                                                                                                                                                                                                           |
