@@ -116,14 +116,24 @@ def load_empty_model(pretrained_model_name_or_path, cls=AutoModelForCausalLM, sa
         path = pretrained_model_name_or_path
     else:
         path = dowload_hf_model(pretrained_model_name_or_path)
+    torch_dtype = kwargs.pop("torch_dtype", None)
     if cls.__base__ == _BaseAutoModelClass:
         config = AutoConfig.from_pretrained(path, **kwargs)
+        if str(torch_dtype) == "auto":
+            if hasattr(config, "torch_dtype") and config.torch_dtype is not None:
+                torch_dtype = config.torch_dtype
+            else:
+                torch_dtype = torch.float32
         with init_empty_weights():
-            model = cls.from_config(config)
+            model = cls.from_config(config, torch_dtype=torch_dtype)
     else:  # pragma: no cover
         config = cls.config_class.from_pretrained(path, **kwargs)
+        if hasattr(config, "torch_dtype") and config.torch_dtype is not None:
+            torch_dtype = config.torch_dtype
+        else:
+            torch_dtype = torch.float32
         with init_empty_weights():
-            model = cls(config)
+            model = cls(config, torch_dtype=torch_dtype)
     model.tie_weights()
     model.eval()
     model.path = path
@@ -157,12 +167,14 @@ def update_module(model, module_name, new_module):
 
 
 def get_layers_before_block(model):
-    """get the embed layers before blocks."""
+    """get the embed layers before blocks.
+    validate on: Llama, opt, bloom, gpt-j, Qwen, Baichuan, Mistral, Mixtral
+    not work for: phi
+    """
     return_layers = []
     block_name = None
     def _forward(module, name, *args, **kwargs):
         if name == block_name:
-        # if 'DecoderLayer' in name:
             raise NotImplementedError
         if len(module._modules) == 0:
             return_layers.append((name, module))
@@ -175,10 +187,16 @@ def get_layers_before_block(model):
         m.forward = partial(_forward, m, n)
     
     try:
-        model.forward(
-            input_ids=torch.zeros((1,1), device='meta', dtype=torch.int),
-            attention_mask=torch.zeros((1,1), device='meta', dtype=torch.int)
-            )
+        if model.device.type == 'meta':
+            target_device = 'meta'
+            
+        else:
+            target_device = model.device
+        input = {
+            "input_ids": torch.zeros((1,1), device=target_device, dtype=torch.int),
+            "attention_mask": torch.zeros((1,1), device=target_device, dtype=torch.int)
+            }
+        model.forward(**input)
     except NotImplementedError:
         pass
 

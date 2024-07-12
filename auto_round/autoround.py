@@ -299,6 +299,9 @@ class AutoRound(object):
         Returns:
             None
         """
+        # load scale and zp if use low_cpu_memory
+        self.model = self.model.to('cpu')
+
         for n, m in self.model.named_modules():
             if n not in self.layer_config.keys():
                 continue
@@ -1044,7 +1047,8 @@ class AutoRound(object):
         Returns:
             object: The compressed model object.
         """
-        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        if self.low_cpu_mem_usage:
+            self.model = self.model.to('cpu')
 
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
