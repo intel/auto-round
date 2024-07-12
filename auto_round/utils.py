@@ -166,6 +166,37 @@ def to_device(input, device=torch.device("cpu")):
     return input
 
 
+def to_dtype(input, dtype=torch.float32):
+    """Moves input data to the specified data type.
+
+    Args:
+    input: The input data to be moved.
+    dtype: The target data type.
+
+    Returns:
+    The input data on the specified data type.
+    """
+    if input is None:
+        return None
+    if isinstance(input, torch.Tensor):
+        return input.to(dtype)
+    if isinstance(input, dict) or isinstance(input, UserDict):
+        for inp in input.keys():
+            input[inp] = to_dtype(input[inp], dtype)
+
+    elif isinstance(input, list) or isinstance(input, tuple):
+        if len(input) == 0:
+            return input
+        input_res = []
+        for inp in input:
+            input_res.append(to_dtype(inp, dtype))
+        if isinstance(input, tuple):
+            input_res = tuple(input_res)
+        input = input_res
+
+    return input
+
+
 def check_is_cpu(device):
     """Check if the device is a CPU.
 
@@ -178,7 +209,7 @@ def check_is_cpu(device):
     return device == torch.device("cpu") or device == "cpu"
 
 
-def get_block_names(model):
+def get_block_names(model, multimodal=False):
     """Get the block names for transformers-like networks.
 
     Args:
@@ -188,13 +219,16 @@ def get_block_names(model):
     block_names: A list of block names.
     """
     block_names = []
-    target_m = None
+    target_modules = []
     for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            target_m = (n, m)
-            break  ## only find the first modulelist, may be not robust
-    for n, m in target_m[1].named_children():
-        block_names.append(target_m[0] + "." + n)
+        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__ \
+                and (multimodal or ('vision' not in n and 'visual' not in n)):
+            target_modules.append((n, m))
+            # break  ## only find the first modulelist, may be not robust
+    for i,target_m in enumerate(target_modules):
+        block_names.append([])
+        for n, m in target_m[1].named_children():
+            block_names[i].append(target_m[0] + "." + n)
     return block_names
 
 
@@ -235,7 +269,8 @@ def collect_minmax_scale(block):
 
 
 @torch.no_grad()
-def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_mask_flag=False, input_dim=0):
+def sampling_inputs(input_ids, input_others, indices, seqlen,
+                    share_attention_mask_flag=False, not_share_position_ids_flag=False, input_dim=0):
     """Samples inputs based on the given indices and sequence length.
 
     Args:
@@ -253,12 +288,12 @@ def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_ma
 
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
-        if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key):
+        if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key) \
+                or (not_share_position_ids_flag and "position_ids" in key):
             current_input_others[key] = None
             if input_others[key] is not None:
                 current_input_others[key] = [input_others[key][i] for i in indices]
                 current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-
         else:
             current_input_others[key] = input_others[key]
 
@@ -548,7 +583,8 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     return False, seqlen, bs
 
 
-def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transformers.modeling_utils.Conv1D]):
+def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
+                                                     transformers.modeling_utils.Conv1D], multimodal=False):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -559,12 +595,13 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transforme
         if isinstance(m, tuple(supported_types)):
             m.tmp_name = n
     layers_in_block = []
-    block_names = get_block_names(model)
-    for block_name in block_names:
-        block = get_module(model, block_name)
-        for n, m in block.named_modules():
-            if hasattr(m, "tmp_name"):
-                layers_in_block.append(m.tmp_name)
+    all_blocks = get_block_names(model, multimodal)
+    for block_names in all_blocks:
+        for block_name in block_names:
+            block = get_module(model, block_name)
+            for n, m in block.named_modules():
+                if hasattr(m, "tmp_name"):
+                    layers_in_block.append(m.tmp_name)
     for n, m in model.named_modules():
         if hasattr(m, "tmp_name"):
             delattr(m, "tmp_name")
@@ -664,3 +701,5 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
     else:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     return QuantLinear
+
+

@@ -165,10 +165,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         backend = backend.replace("auto_round", "auto_gptq")
 
     model = kwargs["model"]
+    multimodal = kwargs["multimodal"]
     model = model.to(torch.float16)  ##force to fp16
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-    layer_names_in_block = get_layer_names_in_block(model)
+    layer_names_in_block = get_layer_names_in_block(model, multimodal=multimodal)
 
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
@@ -279,3 +280,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

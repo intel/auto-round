@@ -1,27 +1,77 @@
 import argparse
 import sys
 
-sys.path.insert(0, '../..')
+sys.path.insert(0, '../../..')
 parser = argparse.ArgumentParser()
 import torch
 import os
 import transformers
-import subprocess
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
-
 from transformers import set_seed
 
 import re
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+import copy
+from PIL import Image
+import json
+from torch.utils.data import Dataset, DataLoader
+from llava.mm_utils import get_model_name_from_path
+from llava.train.train import preprocess, preprocess_multimodal, DataCollatorForSupervisedDataset
+from llava.model.builder import load_pretrained_model
+
+class CustomDataset(Dataset): # for llava tuning
+    # much refer to https://github.com/haotian-liu/LLaVA/blob/main/llava/train/train.py
+    def __init__(self, list_data_dict, image_folder, tokenizer, image_processor, args):
+        self.list_data_dict = list_data_dict
+        self.image_folder = image_folder
+        self.tokenizer = tokenizer
+        self.image_processor = image_processor
+        self.args = args
+        self.args.is_multimodal = args.do_multimodal
+
+    def __getitem__(self, index):
+        sources = self.list_data_dict[index]
+        # image = None
+        image_file = os.path.basename(sources["image"])
+        try:
+            image = Image.open(os.path.join(self.image_folder, image_file)).convert('RGB')
+            image = self.image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+        except Exception as error:
+            print(f"{error}, skiped by set image to None")
+            image = None
+        sources = preprocess_multimodal(
+            copy.deepcopy([sources["conversations"]]), # a list
+            self.args,
+        )
+        data_dict = preprocess(
+            sources,
+            self.tokenizer,
+            has_image=('image' in self.list_data_dict[index]),
+        )
+        if isinstance(index, int):
+            data_dict = dict(input_ids=data_dict["input_ids"][0],
+                            labels=data_dict["labels"][0])
+        # image exist in the data
+        data_dict['image'] = image
+        return data_dict
+
+    def __len__(self):
+        return len(self.list_data_dict)
+
+
+def create_data_loader(dataset, batch_size=1, data_collator=None):
+    assert batch_size == 1, "batch_size must be 1"
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=data_collator)
+    return data_loader
 
 if __name__ == '__main__':
 
     parser.add_argument(
-        "--model_name", default="facebook/opt-125m"
+        "--model_name", default="liuhaotian/llava-v1.5-7b"
     )
 
     parser.add_argument("--bits", default=4, type=int,
@@ -30,7 +80,7 @@ if __name__ == '__main__':
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--train_bs", default=8, type=int,
+    parser.add_argument("--train_bs", default=1, type=int,
                         help="train batch size")
 
     parser.add_argument("--eval_bs", default=4, type=int,
@@ -46,12 +96,6 @@ if __name__ == '__main__':
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
 
-    parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
-                        help="The dataset for quantization training. It can be a custom one.")
-
-    parser.add_argument("--enable_quanted_input", action='store_true',
-                        help="enable_quanted_input is deprecated.")
-
     parser.add_argument("--lr", default=None, type=float,
                         help="learning rate, if None, it will be set to 1.0/iters automatically")
 
@@ -61,27 +105,24 @@ if __name__ == '__main__':
     parser.add_argument("--seed", default=42, type=int,
                         help="seed")
 
-    parser.add_argument("--amp", action='store_true',
-                        help="amp is deprecated ")
+    parser.add_argument("--eval_fp16_baseline", action='store_true',
+                        help="whether to eval FP16 baseline")
 
     parser.add_argument("--adam", action='store_true',
                         help="adam")
 
-    parser.add_argument("--seqlen", default=2048, type=int,
+    parser.add_argument("--seqlen", default=512, type=int,
                         help="sequence length")
 
     parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
 
     parser.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
 
-    parser.add_argument("--nsamples", default=128, type=int,
+    parser.add_argument("--nsamples", default=512, type=int,
                         help="number of samples")
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
-                        help="lower gpu memory but 50%-100% slower")
-
-    parser.add_argument("--enable_minmax_tuning", action='store_true',
-                        help="enable_minmax_tuning is deprecated")
+                        help="low_gpu_mem_usage is deprecated")
 
     parser.add_argument("--deployment_device", default='fake', type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
@@ -89,11 +130,6 @@ if __name__ == '__main__':
 
     parser.add_argument("--scale_dtype", default='fp16',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
-
-    parser.add_argument("--tasks",
-                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                                "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
-                        help="lm-eval tasks for lm_eval version 0.4")
 
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
                         help="Where to store the final model.")
@@ -118,36 +154,48 @@ if __name__ == '__main__':
 
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
-
+    
     parser.add_argument("--act_bits", default=32, type=int,
-                        help="activation bits")
+                    help="activation bits")
+    
+    parser.add_argument("--do_multimodal", action='store_true',
+                        help="To determine whether the preprocessing should handle multimodal component.")
+    
+    # ========== Calibration Datasets ============= 
+    parser.add_argument("--mm-use-im-start-end", type=bool, default=False)
+    
+    parser.add_argument("--image_folder", default="coco", type=str,
+                        help="The dataset for quantization training. It can be a custom one.")
+    
+    parser.add_argument("--question_file", default=None, type=str,
+                            help="The dataset for quantization training. It can be a custom one.")
+    
+    # parser.add_argument("--dataset", default=None, type=str,
+    #                     help="The dataset for quantization training. It can be a custom one.")
+    
+    # ================= Evaluation Related =====================
+    parser.add_argument("--eval-question-file", type=str, default="tables/question.jsonl")
+    
+    parser.add_argument("--eval-image-folder", type=str)
+    
+    parser.add_argument('--eval-result-file', type=str)
+    
+    parser.add_argument('--eval-annotation-file', type=str)
 
     args = parser.parse_args()
 
-    if args.enable_minmax_tuning:
-        print(
-            "enable_minmax_tuning is deprecated, it has been set to the default, use disable_minmax_tuning to turn it off")
-    if args.amp:
-        print(
-            "amp is deprecated, it has been set to the default, use disable_amp to turn it off")
-    if args.enable_quanted_input:
-        print(
-            "enable_quanted_input is deprecated. It has been set to the default; use disable_quanted_input to turn it off")
+    set_seed(args.seed)
 
     if args.act_bits <= 8:
         print(
             "Warning, activation quantization is an experiment feature")
-
-    set_seed(args.seed)
-    tasks = args.tasks
-    use_eval_legacy = False
-
-    if "marlin" in args.deployment_device and args.sym is False:
-        assert False, "marlin backend only supports sym quantization, please set --sym"
-
+    
     if args.act_bits <= 8 and args.deployment_device != "fake":
         assert False, "only support fake mode for activation quantization currently"
-
+        
+    if "marlin" in args.deployment_device and args.sym == False:
+        assert False, "marlin backend only supports sym quantization, please set --sym"
+        
     model_name = args.model_name
     if model_name[-1] == "/":
         model_name = model_name[:-1]
@@ -160,37 +208,23 @@ if __name__ == '__main__':
     if "hpu" in device_str:
         torch_dtype = torch.bfloat16
     torch_device = torch.device(device_str)
-
-    is_glm = bool(re.search("chatglm", model_name.lower()))
-    if is_glm:
-        model = AutoModel.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-            trust_remote_code=not args.disable_trust_remote_code
-        )
-
+    model_path = args.model_name
+    model_name = get_model_name_from_path(model_path)
+    tokenizer, model, image_processor, _ = load_pretrained_model(model_path, model_base=None, model_name=model_name,
+            torch_dtype=torch_dtype)
+    
     from auto_round import (AutoRound,
                             AutoAdamRound)
 
     model = model.eval()
-    # align with GPTQ to eval ppl
-    if "opt" in model_name:
-        seqlen = model.config.max_position_embeddings
-        model.seqlen = model.config.max_position_embeddings
-    else:
-        seqlen = 2048
-        model.seqlen = seqlen
-    seqlen = args.seqlen
 
     if args.model_dtype != None:
         if args.model_dtype == "float16" or args.model_dtype == "fp16":
             model = model.to(torch.float16)
         if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
             model = model.to(torch.bfloat16)
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-
+            
+    seqlen = args.seqlen
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
             print(f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length",
@@ -199,17 +233,40 @@ if __name__ == '__main__':
             args.seqlen = seqlen
 
     excel_name = f"{model_name}_{args.bits}_{args.group_size}"
+    pt_dtype = torch.float16
     if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
         dtype = 'bfloat16'
+        pt_dtype = torch.bfloat16
     else:
-        if "cpu" not in device_str:
+        if str(args.device) != "cpu":
+            pt_dtype = torch.float16
             dtype = 'float16'
         else:
+            pt_dtype = torch.float32
             dtype = 'float32'
 
-    excel_name = f"{model_name}_{args.bits}_{args.group_size}"
-    if "bloom" in model_name:
-        args.low_gpu_mem_usage = False
+    if args.eval_fp16_baseline:
+        print("Evaluating baseline model")
+        model = model.half()
+        model = model.to(torch_device)
+        from mm_evaluation import TextVQAEvaluator
+        evaluator = TextVQAEvaluator(
+            model,
+            tokenizer,
+            image_processor,
+            args.eval_image_folder,
+            args.eval_question_file,
+            args.eval_annotation_file,
+            model_name = model_name
+        )
+        evaluator.run_evaluate(result_file = args.eval_result_file)
+        evaluator.calculate_accuracy(result_file = args.eval_result_file)
+        exit()
+        
+    questions = json.load(open(args.question_file, "r"))
+    dataset = CustomDataset(questions, args.image_folder, tokenizer, image_processor, args=args)
+    data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
+    dataloader = create_data_loader(dataset, args.train_bs, data_collator)
 
     round = AutoRound
     if args.adam:
@@ -250,18 +307,18 @@ if __name__ == '__main__':
               f"gpu")
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
-                      dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
+                      dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
                       amp=not args.disable_amp, nsamples=args.nsamples,
                       low_gpu_mem_usage=args.low_gpu_mem_usage,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits)
+                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits, multimodal=args.do_multimodal)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
     model.eval()
-    if "cpu" not in device_str:
+    if args.device != "cpu":
         torch.cuda.empty_cache()
 
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
@@ -303,68 +360,21 @@ if __name__ == '__main__':
         if eval_folder is None:
             eval_folder = output_dir
 
+    if not args.disable_eval and "fake" in deployment_device:  ##support autogptq real eval later
+        model = model.half()
+        model = model.to(torch_device)
+        from mm_evaluation import TextVQAEvaluator
+        evaluator = TextVQAEvaluator(
+            model,
+            tokenizer,
+            image_processor,
+            args.eval_image_folder,
+            args.eval_question_file,
+            args.eval_annotation_file,
+            model_name = model_name
+        )
+        evaluator.run_evaluate(result_file = args.eval_result_file)
+        evaluator.calculate_accuracy(result_file = args.eval_result_file)
 
-    def get_library_version(library_name):
-        try:
-            version = subprocess.check_output(['pip', 'show', library_name]).decode().split('\n')[1].split(': ')[1]
-            return version
-        except subprocess.CalledProcessError:
-            return "Library not found"
 
-
-    lm_eval_version = get_library_version("lm-eval")
-    if lm_eval_version == "0.3.0":
-        use_eval_legacy = True
-
-    if isinstance(tasks, str):
-        tasks = tasks.split(',')
-    if not use_eval_legacy:
-        from eval import eval_model
-    else:
-        from eval_legacy import eval_model
-
-        if isinstance(tasks, list):
-            if "mmlu" in tasks:
-                tmp_tasks = tasks
-                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
-            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
-                tmp_tasks = tasks
-                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-            seen = set()
-            tmp_tasks = tasks
-            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
-
-    if 'fake' in args.deployment_device and not args.disable_eval:
-        if use_eval_legacy:
-            print("Using the legacy lm_eval(0.3.0)")
-        else:
-            print(f"Using the latest {lm_eval_version}")
-
-    if not args.disable_eval and "fake" in deployment_device and lm_eval_version != "0.4.2":
-        excel_name = f"{output_dir}_result.xlsx"
-        output_dir += "/"
-        print(excel_name, flush=True)
-        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
-
-    if not args.disable_eval and lm_eval_version == "0.4.2":
-        from eval_042.evaluation import simple_evaluate
-
-        if 'gpu' in deployment_device or len(gpu_formats) > 0:
-            model_args = f"pretrained={eval_folder}"
-        elif "fake" in deployment_device:
-            model_args = f"pretrained={eval_folder}"
-        else:
-            exit()  ## does not support cpu,xpu model eval
-        user_model = None
-        if args.act_bits <= 8:
-            user_model = model.to(device_str)
-
-        res = simple_evaluate(model="hf", model_args=model_args,
-                              tasks=tasks,
-                              batch_size=args.eval_bs, user_model=user_model)
-        from lm_eval.utils import make_table
-
-        print(make_table(res))
 
