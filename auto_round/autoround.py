@@ -1311,6 +1311,7 @@ class AutoOPTRound(AutoRound):
             act_sym: bool = None,
             act_dynamic: bool = True,
             optimizer="AdamW",
+            low_cpu_mem_usage: bool = False,
             **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
@@ -1346,6 +1347,7 @@ class AutoOPTRound(AutoRound):
             act_group_size,
             act_sym,
             act_dynamic,
+            low_cpu_mem_usage,
             **kwargs,
         )
 
@@ -1471,6 +1473,7 @@ class AutoAdamRound(AutoOPTRound):
             act_sym: bool = None,
             act_dynamic: bool = True,
             optimizer="AdamW",
+            low_cpu_mem_usage: bool = False,
             **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
@@ -1507,6 +1510,7 @@ class AutoAdamRound(AutoOPTRound):
             act_sym,
             act_dynamic,
             optimizer,
+            low_cpu_mem_usage,
             **kwargs,
         )
 

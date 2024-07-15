@@ -117,7 +117,10 @@ if __name__ == '__main__':
                         help="quant_lm_head")
 
     parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
-                        help="choose low cpu memory mode, 1 for block-wise, 2 for layer-wise, others means not use low cpu memory.")
+                        help="Choose which low cpu memory mode to use. Can significantly reduse cpu memory footprint but cost more time."
+                        "1 means choose block-wise mode, load the weights from disk of each block when tuning and release the memory of the block after tuning."
+                        "2 means chosse layer-wise mode, load the weights of each layer from disk when tuning, mininum memory consumption and also slowest runing speed."
+                        "others means not use low cpu memory. Default to 0, not use low cpu memory.")
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 

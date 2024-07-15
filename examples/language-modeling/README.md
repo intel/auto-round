@@ -52,7 +52,6 @@ pip install -r requirements.txt
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128
 ```
 - **Reduced GPU Memory Usage:**
-- 
 enable low_gpu_mem_usage(more tuning cost)
 
 set "--train_bs 1 --gradient_accumulate_steps 8" (more tuning cost)
@@ -62,6 +61,12 @@ reduce the train bs to 4(potential accuracy drop)
 reduce the seqlen to 512 (potential accuracy drop)
 
 or combine them
+
+- **Reduced CPU Memory Usage:**
+set "--low_cpu_mem_mode 1" to use block-wise mode, load the weights from disk of each block when tuning and release the memory of the block after tuning. (more tuning cost)
+
+set "--low_cpu_mem_mode 2" to use layer-wise mode, load the weights of each layer from disk when tuning, mininum memory consumption and also slowest runing speed.
+
 
 - **Speedup the tuning:**
 
