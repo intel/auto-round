@@ -106,6 +106,12 @@ def is_autoround_exllamav2_available():
         res = False
     return res
 
+def is_hpu_supported():
+    try:
+        import habana_frameworks.torch.core as htcore # pylint: disable=E0401
+    except ImportError as e:
+        return False
+    return True
 
 if is_auto_round_available():
     from auto_round_extension.cuda.post_init import autoround_post_init
@@ -145,14 +151,10 @@ class AutoHfQuantizer:
                 f"Unknown quantization type, got {quant_method} - supported types are:"
                 f" {list(AUTO_QUANTIZER_MAPPING.keys())}"
             )
-        if "auto-round" in quant_method:
+        if "auto-round" in quant_method or is_hpu_supported():
             target_cls = AutoRoundQuantizer
         else:
-            from transformers.utils.import_utils import is_optimum_available
-            if (is_optimum_available() and importlib.util.find_spec('optimum.habana') is not None):
-                target_cls = AutoRoundQuantizer
-            else:
-                target_cls = AUTO_QUANTIZER_MAPPING[quant_method]
+            target_cls = AUTO_QUANTIZER_MAPPING[quant_method]
 
         return target_cls(quantization_config, **kwargs)
 
