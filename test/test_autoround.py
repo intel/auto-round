@@ -55,6 +55,21 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
+    def test_mx_fp4(self):
+        bits, group_size, sym = 4, 32, False
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            data_type="mx_fp4"
+        )
+        autoround.quantize()
+
 
     def test_default(self):
         bits, group_size, sym = 4, 128, False

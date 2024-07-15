@@ -87,8 +87,8 @@ if __name__ == '__main__':
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
-    parser.add_argument("--dtype", default='int',
-                        help="data type for tuning, 'int', 'mxfp' and etc.")
+    parser.add_argument("--data_type", default='int',
+                        help="data type for tuning, 'int', 'mx_fp' and etc.")
 
 
     parser.add_argument("--scale_dtype", default='fp16',
@@ -154,6 +154,12 @@ if __name__ == '__main__':
 
     if args.act_bits <= 8 and args.deployment_device != "fake":
         assert False, "only support fake mode for activation quantization currently"
+
+    if "mx_fp" in args.data_type and args.deployment_device != "fake":
+        assert False, "only support fake mode for mx_fp data type currently"
+
+    if "mx_fp" in args.data_type and args.group_size != 32:
+        print("warning, mx_fp should only support group_size of 32 in real deployment")
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -286,7 +292,7 @@ if __name__ == '__main__':
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
-                      low_cpu_mem_usage=low_cpu_mem_usage)
+                      low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:

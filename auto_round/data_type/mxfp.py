@@ -37,9 +37,29 @@ FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
-def quant_mx(weight, data_type, v, max_scale, **kwargs):
+def quant_mx(tensor, bits, data_type, v, max_scale, **kwargs):
+    """Quantize the given tensor tensor using the specified parameters.
+
+    This function performs quantization on the `tensor` tensor according to the
+    given bit width (`bits`), data type (`data_type`), and additional parameters.
+    The quantization process involves scaling the tensor values and adjusting
+    the exponent and mantissa to fit within the specified format.
+
+    Args:
+        tensor (torch.Tensor): The tensor containing the tensors to be quantized.
+        bits (int): The bit width to be used for quantization.
+        data_type (str): The data type for quantization (e.g., 'mx_fp4').
+        v (float): A value used for adjusting the tensors.
+        max_scale (float or torch.Tensor): The maximum scale to be applied to the tensors.
+
+    Returns:
+        tuple: A tuple containing the quantized tensors, shared exponent, and None (reserved for future use).
+
+    Raises:
+        KeyError: If `data_type` is not found in `MXFP_FORMAT_CACHE`.
+    """
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
-    shared_exp, _ = torch.max(torch.abs(weight), dim=-1, keepdim=True)
+    shared_exp, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
     if isinstance(max_scale, torch.Tensor):
         shared_exp *= (max_scale.unsqueeze(dim=-1))
     else:
@@ -51,11 +71,11 @@ def quant_mx(weight, data_type, v, max_scale, **kwargs):
     scale_emax = 2 ** (8 - 1) - 1
     shared_exp[shared_exp > scale_emax] = scale_emax  ##changed Nan
     shared_exp[shared_exp < -scale_emax] = -scale_emax
-    weight = weight / (2 ** shared_exp)
+    tensor = tensor / (2 ** shared_exp)
     multiply = 2 if data_type == "mx_fp4" else 1  ## 2 is a tricky setting
-    weight = weight + v * multiply
+    tensor = tensor + v * multiply
     if ebits != 0:
-        private_exp = floor_ste(torch.log2(torch.abs(weight) + (weight == 0).type(weight.dtype)))
+        private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
 
         # The minimum representable exponent for 8 exp bits is -126
         min_exp = -(2 ** (ebits - 1)) + 2
@@ -64,20 +84,19 @@ def quant_mx(weight, data_type, v, max_scale, **kwargs):
         private_exp = None
 
     # Scale up so appropriate number of mbits are in the integer portion of the number
-    weight = weight * (2 ** (mbits - 2)) if private_exp is None else weight / (2 ** private_exp) * (2 ** (mbits - 2))
+    tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** private_exp) * (2 ** (mbits - 2))
 
-    weight = torch.sign(weight) * round_ste(torch.abs(weight))  ##adopt round-to-floor which we found is much better
+    tensor = torch.sign(tensor) * round_ste(torch.abs(tensor))  ##adopt round-to-floor which we found is much better
     max_mantissa = 2 ** (mbits - 1) - 1
-    weight = torch.clamp(weight, -max_mantissa, max_mantissa)
+    tensor = torch.clamp(tensor, -max_mantissa, max_mantissa)
 
     # Undo scaling
-    weight = weight / (2 ** (mbits - 2)) if private_exp is None else weight / (2 ** (mbits - 2)) * (2 ** private_exp)
+    tensor = tensor / (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** (mbits - 2)) * (2 ** private_exp)
 
-    weight = torch.clamp(weight, min=-max_norm, max=max_norm)
-    weight = weight * (2 ** shared_exp)
-    return weight, shared_exp, None
+    tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
+    tensor = tensor * (2 ** shared_exp)
+    return tensor, shared_exp, None
 
 
 for key in MXFP_FORMAT_CACHE.keys():
-    QUANT_FUNC_WITH_DTYPE[key + "_asym"] = quant_mx
-    QUANT_FUNC_WITH_DTYPE[key + "_sym"] = quant_mx
+    QUANT_FUNC_WITH_DTYPE[key] = quant_mx

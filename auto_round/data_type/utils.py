@@ -31,13 +31,17 @@ def get_quant_func(dtype, bits, sym):
        Returns:
            function: The quantization function corresponding to the specified parameters.
     """
+    key = dtype
+    if key in QUANT_FUNC_WITH_DTYPE.keys():
+        return QUANT_FUNC_WITH_DTYPE[key], key
+
     if sym:
         key = dtype + "_sym"
     else:
         key = dtype + "_asym"
 
     if key in QUANT_FUNC_WITH_DTYPE.keys():
-        return QUANT_FUNC_WITH_DTYPE[key]
+        return QUANT_FUNC_WITH_DTYPE[key], key
 
     ##need to add bits
     if sym:
@@ -46,9 +50,11 @@ def get_quant_func(dtype, bits, sym):
         key = dtype + str(bits) + "_asym"
 
     if key in QUANT_FUNC_WITH_DTYPE.keys():
-        return QUANT_FUNC_WITH_DTYPE[key]
+        return QUANT_FUNC_WITH_DTYPE[key], key
 
     assert False, f"{dtype} is not supported"
+
+
 def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
 
@@ -59,6 +65,7 @@ def round_ste(x: torch.Tensor):
         torch.Tensor
     """
     return (x.round() - x).detach() + x
+
 
 def floor_ste(x: torch.Tensor):
     """Straight-Through Estimator for floor.

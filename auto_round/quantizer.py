@@ -21,6 +21,7 @@ from .utils import (
     set_module
 )
 
+
 # def quant_tensor_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dtype=torch.float16, weight_min=None,
 #                        weight_max=None, q_scale_thresh=0.0):
 #     """Quantizes and dequantizes weight symmetrically or asymmetrically .
@@ -68,8 +69,8 @@ def reshape_tensor(v, group_size=-1):
 
 
 def quant_tensor(
-        quant_func, data , num_bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-        weight_min=None, weight_max=None, q_scale_thresh=0.0,
+        quant_func, data, num_bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
+        weight_min=None, weight_max=None, q_scale_thresh=0.0, **kwargs,
 ):
     """Quantizes and dequantizes weight, handing the group size issue .
 
@@ -92,16 +93,16 @@ def quant_tensor(
         data = data.reshape(-1, orig_shape[-1])
     if group_size == -1 or data.shape[1] < group_size:
         data, scale, zp = quant_func(data, num_bits, v=v, min_scale=min_scale, max_scale=max_scale,
-                                             scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
-                                             q_scale_thresh=q_scale_thresh)
+                                     scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
+                                     q_scale_thresh=q_scale_thresh, **kwargs)
         data = data.reshape(orig_shape)
         return data, scale, zp
 
     if data.shape[1] % group_size == 0:
         data = data.reshape(-1, group_size)
         data, scale, zp = quant_func(data, num_bits, v=v, min_scale=min_scale, max_scale=max_scale,
-                                             scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
-                                             q_scale_thresh=q_scale_thresh)
+                                     scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
+                                     q_scale_thresh=q_scale_thresh, **kwargs)
         data = data.reshape(orig_shape)
         return data, scale, zp
 
@@ -111,8 +112,8 @@ def quant_tensor(
         data_new = torch.nn.functional.pad(data, (0, pad_len))
         data_new = data_new.reshape(-1, group_size)
         data_new, scale, zp = quant_func(data_new, num_bits, v=v, min_scale=min_scale,
-                                                 max_scale=max_scale, scale_dtype=scale_dtype, weight_min=weight_min,
-                                                 weight_max=weight_max, q_scale_thresh=q_scale_thresh)
+                                         max_scale=max_scale, scale_dtype=scale_dtype, weight_min=weight_min,
+                                         weight_max=weight_max, q_scale_thresh=q_scale_thresh, **kwargs)
         data_new = data_new.reshape(tmp_shape[0], -1)
         data_new = data_new[:, :-pad_len]
         data_new = data_new.reshape(orig_shape)
@@ -125,8 +126,10 @@ class WrapperWALayer(torch.nn.Module):
         self.orig_layer = orig_layer
 
     def forward(self, x):
-        x, _, _ = quant_tensor(self.orig_layer.act_quant_func, x, self.orig_layer.act_bits, self.orig_layer.group_size, self.orig_layer.sym,
-                               scale_dtype=self.orig_layer.scale_dtype, q_scale_thresh=self.orig_layer.q_scale_thresh)
+        x, _, _ = quant_tensor(self.orig_layer.act_quant_func, x, self.orig_layer.act_bits, self.orig_layer.group_size,
+                               self.orig_layer.sym,
+                               scale_dtype=self.orig_layer.scale_dtype, q_scale_thresh=self.orig_layer.q_scale_thresh,
+                               data_type=self.orig_layer.data_type)
         return self.orig_layer.forward(x)
 
 
@@ -155,15 +158,15 @@ class WrapperLinear(torch.nn.Module):
         self.group_size = self.orig_layer.group_size
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
-        data_type = self.orig_layer.data_type
-        self.weight_quant_func = get_quant_func(data_type, self.num_bits, self.sym)
+        self.data_type = self.orig_layer.data_type
+        self.weight_quant_func,self.data_type = get_quant_func(self.data_type, self.num_bits, self.sym)
         self.act_bits = self.orig_layer.act_bits
         self.act_group_size = self.orig_layer.act_group_size
         self.act_sym = self.orig_layer.act_sym
         self.act_dynamic = self.orig_layer.act_dynamic
         self.act_quant = self.act_bits <= 8
         if self.act_quant:
-            self.act_quant_func = get_quant_func(data_type, self.act_bits, self.act_sym)
+            self.act_quant_func = get_quant_func(self.data_type, self.act_bits, self.act_sym)
 
         self.q_scale_thresh = 1e-5
 
@@ -208,8 +211,9 @@ class WrapperLinear(torch.nn.Module):
 
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
-        qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.orig_layer.weight, self.num_bits, self.group_size, v,
-                                             min_scale, max_scale, self.scale_dtype, self.weight_min, self.weight_max)
+        qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.orig_layer.weight, self.num_bits,
+                                             self.group_size, v,
+                                             min_scale, max_scale, self.scale_dtype, self.weight_min, self.weight_max,data_type=self.data_type)
         scale = scale.reshape(qdq_weight.shape[0], -1)
         if zp is not None:
             zp = zp.reshape(qdq_weight.shape[0], -1)
@@ -218,6 +222,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
+        self.orig_layer.data_type = self.data_type
         if hasattr(self.orig_layer, 'update'):
             self.orig_layer.update()
             self.orig_layer.to('meta')
@@ -243,8 +248,9 @@ class WrapperLinear(torch.nn.Module):
             weight = self.orig_layer.get_weight().to(self.device)
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, 0, 1.0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, 0, 1.0))
-        weight_q, _, _ = quant_tensor(self.weight_quant_func, weight, self.num_bits, self.group_size, self.value, self.min_scale,
-                                      self.max_scale, self.scale_dtype, self.weight_min, self.weight_max)
+        weight_q, _, _ = quant_tensor(self.weight_quant_func, weight, self.num_bits, self.group_size, self.value,
+                                      self.min_scale,
+                                      self.max_scale, self.scale_dtype, self.weight_min, self.weight_max,data_type=self.data_type)
         weight_q = weight_q.to(weight.dtype)
         if self.act_quant:
             x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
@@ -291,9 +297,9 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.act_sym = self.orig_layer.act_sym
         self.act_dynamic = self.orig_layer.act_dynamic
         self.act_quant = self.act_bits <= 8
-        self.weight_quant_func = get_quant_func(self.data_type, self.num_bits, self.sym)
+        self.weight_quant_func, self.data_type = get_quant_func(self.data_type, self.num_bits, self.sym)
         if self.act_quant:
-            self.act_quant_func = get_quant_func(self.data_type, self.act_bits, self.act_sym)
+            self.act_quant_func, _ = get_quant_func(self.data_type, self.act_bits, self.act_sym)
 
         self.q_scale_thresh = 1e-5
         weight_dtype = torch.float32
@@ -338,8 +344,10 @@ class WrapperTransformerConv1d(torch.nn.Module):
         """
         min_scale.clamp_(0, 1.0)
         max_scale.clamp_(0, 1.0)
-        qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.weight_t, self.num_bits, self.group_size, v, min_scale,
-                                             max_scale, self.scale_dtype, self.weight_min, self.weight_max)
+        qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.weight_t, self.num_bits, self.group_size, v,
+                                             min_scale,
+                                             max_scale, self.scale_dtype, self.weight_min, self.weight_max,
+                                             data_type=self.data_type)
         scale = scale.reshape(qdq_weight.shape[0], -1)
         if zp is not None:
             zp = zp.reshape(qdq_weight.shape[0], -1)
@@ -350,6 +358,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu")
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
+        self.orig_layer.data_type = self.data_type
         if self.act_quant:
             self.orig_layer.act_quant_func = self.act_quant_func
             wrapper_layer = WrapperWALayer(self.orig_layer)
@@ -487,4 +496,3 @@ def unwrapper_block(block, vs, min_scales, max_scales):
                 max_scale = torch.clamp(max_scale, 0, 1.0)
             orig_layer = m.unwrapper(v, min_scale, max_scale)
             set_module(block, n, orig_layer)
-
