@@ -148,7 +148,11 @@ class AutoHfQuantizer:
         if "auto-round" in quant_method:
             target_cls = AutoRoundQuantizer
         else:
-            target_cls = AUTO_QUANTIZER_MAPPING[quant_method]
+            from transformers.utils.import_utils import is_optimum_available
+            if (is_optimum_available() and importlib.util.find_spec('optimum.habana') is not None):
+                target_cls = AutoRoundQuantizer
+            else:
+                target_cls = AUTO_QUANTIZER_MAPPING[quant_method]
 
         return target_cls(quantization_config, **kwargs)
 
@@ -303,7 +307,7 @@ class AutoRoundQuantizer(HfQuantizer):
         quantization_config = model.config.quantization_config
         bits = quantization_config.bits
         group_size = quantization_config.group_size
-        data_type = quantization_config.data_type
+        data_type = quantization_config.data_type if hasattr(quantization_config, "data_type") else "int"
         sym = quantization_config.sym
         extra_config = {}
         if hasattr(quantization_config, "extra_config"):
@@ -323,7 +327,12 @@ class AutoRoundQuantizer(HfQuantizer):
                 layer_configs[layer_name]["group_size"] = extra_config[layer_name].get("group_size", group_size)
                 layer_configs[layer_name]["data_type"] = extra_config[layer_name].get("data_type", data_type)
                 layer_configs[layer_name]["sym"] = extra_config[layer_name].get("sym", sym)
-        backend = quantization_config.backend
+        if hasattr(quantization_config, "backend"):
+            backend = quantization_config.backend
+        elif 'gptq' in quantization_config.quant_method:
+            backend = 'gptq'
+        else:
+            logger.error("Please specify quantization backend")
 
         self._replace_by_quant_layers(model, layer_configs, backend)
         return model

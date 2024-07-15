@@ -649,14 +649,23 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
         return qlinear_qbits.QuantLinear
     if "gptq" in backend:
-        try:
-            import auto_gptq  # pylint: disable=E0401
-        except Exception as e:
-            raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
-        return get_autogptq_infer_linear(backend, bits, group_size, sym)
+        if not is_optimum_habana_available():
+            try:
+                import auto_gptq  # pylint: disable=E0401
+            except Exception as e:
+                raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
+            return get_autogptq_infer_linear(backend, bits, group_size, sym)
+        else:
+            try:
+                import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
+            except Exception as e:
+                pass
+            else:
+                from auto_round_extension.hpu.qlinear_hpu import QuantLinear
+                return QuantLinear
     if bits == 4 and is_optimum_habana_available():
         try:
-            import habana_frameworks.torch.hpu  # noqa: F401
+            import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
         except Exception as e:
             pass
         else:

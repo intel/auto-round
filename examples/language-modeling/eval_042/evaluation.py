@@ -599,6 +599,9 @@ if __name__ == "__main__":
         quantization_config = config.quantization_config
         if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
             from auto_round.auto_quantizer import AutoHfQuantizer
+        elif "quant_method" in quantization_config and quantization_config["quant_method"] == "gptq":
+            if args.device == "hpu":
+                from auto_round.auto_quantizer import AutoHfQuantizer
 
     test_tasks = args.tasks
     if isinstance(test_tasks, str):
