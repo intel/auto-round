@@ -166,6 +166,15 @@ def to_device(input, device=torch.device("cpu")):
     return input
 
 def mv_module_from_gpu(module, low_cpu_mem_usage=False):
+    """Moves module from gpu to cpu or meta if low_cpu_mem_usage is true.
+
+    Args:
+    module: The module to be moved.
+    low_cpu_mem_usage: Whether to use low CPU memory. If true, move module to meta.
+
+    Returns:
+    The module on the specified device.
+    """
     if hasattr(module, "device"):
         target_device ="meta" if low_cpu_mem_usage else "cpu"
         if module.device.type == target_device:

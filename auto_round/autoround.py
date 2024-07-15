@@ -86,7 +86,7 @@ class AutoRound(object):
         lr (float): The learning rate (default is None, will be set to 1.0/iters).
         minmax_lr (float): The learning rate for min-max tuning (default is None, it will be set to lr automatically).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is True).
-        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is True).
+        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Data length of the sequence for tuning (default is 2048).
         nsamples (int): Number of samples (default is 128).
