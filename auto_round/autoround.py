@@ -86,6 +86,7 @@ class AutoRound(object):
         lr (float): The learning rate (default is None, will be set to 1.0/iters).
         minmax_lr (float): The learning rate for min-max tuning (default is None, it will be set to lr automatically).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is True).
+        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is True).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Data length of the sequence for tuning (default is 2048).
         nsamples (int): Number of samples (default is 128).
@@ -127,6 +128,7 @@ class AutoRound(object):
             lr: float = None,
             minmax_lr: float = None,
             low_gpu_mem_usage: bool = False,
+            low_cpu_mem_usage: bool = False,
             iters: int = 200,
             seqlen: int = 2048,
             nsamples: int = 128,
@@ -143,7 +145,6 @@ class AutoRound(object):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
-            low_cpu_mem_usage: bool = False,
             **kwargs,
     ):
         self.quantized = False
@@ -1253,6 +1254,7 @@ class AutoOPTRound(AutoRound):
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
+        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
@@ -1295,6 +1297,7 @@ class AutoOPTRound(AutoRound):
             lr: float = None,
             minmax_lr: float = None,
             low_gpu_mem_usage: bool = False,
+            low_cpu_mem_usage: bool = False,
             iters: int = 200,
             seqlen: int = 2048,
             nsamples: int = 128,
@@ -1311,7 +1314,6 @@ class AutoOPTRound(AutoRound):
             act_sym: bool = None,
             act_dynamic: bool = True,
             optimizer="AdamW",
-            low_cpu_mem_usage: bool = False,
             **kwargs,
     ):
         super(AutoOPTRound, self).__init__(
@@ -1332,6 +1334,7 @@ class AutoOPTRound(AutoRound):
             lr,
             minmax_lr,
             low_gpu_mem_usage,
+            low_cpu_mem_usage,
             iters,
             seqlen,
             nsamples,
@@ -1347,7 +1350,6 @@ class AutoOPTRound(AutoRound):
             act_group_size,
             act_sym,
             act_dynamic,
-            low_cpu_mem_usage,
             **kwargs,
         )
 
@@ -1416,6 +1418,7 @@ class AutoAdamRound(AutoOPTRound):
         lr (float): The learning rate (default is 0.005).
         minmax_lr (float): The learning rate for min-max tuning (default is None).
         low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
+        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
         iters (int): Number of iterations (default is 200).
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
@@ -1457,6 +1460,7 @@ class AutoAdamRound(AutoOPTRound):
             lr: float = None,
             minmax_lr: float = None,
             low_gpu_mem_usage: bool = False,
+            low_cpu_mem_usage: bool = False,
             iters: int = 200,
             seqlen: int = 2048,
             nsamples: int = 128,
@@ -1473,7 +1477,6 @@ class AutoAdamRound(AutoOPTRound):
             act_sym: bool = None,
             act_dynamic: bool = True,
             optimizer="AdamW",
-            low_cpu_mem_usage: bool = False,
             **kwargs,
     ):
         super(AutoAdamRound, self).__init__(
@@ -1494,6 +1497,7 @@ class AutoAdamRound(AutoOPTRound):
             lr,
             minmax_lr,
             low_gpu_mem_usage,
+            low_cpu_mem_usage,
             iters,
             seqlen,
             nsamples,
@@ -1510,7 +1514,6 @@ class AutoAdamRound(AutoOPTRound):
             act_sym,
             act_dynamic,
             optimizer,
-            low_cpu_mem_usage,
             **kwargs,
         )
 
