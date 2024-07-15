@@ -82,6 +82,7 @@ auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
 
 
+
 def is_optimum_habana_available():
     from transformers.utils.import_utils import is_optimum_available
 

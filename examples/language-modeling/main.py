@@ -87,6 +87,10 @@ if __name__ == '__main__':
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
+    parser.add_argument("--dtype", default='int',
+                        help="data type for tuning, 'int', 'mxfp' and etc.")
+
+
     parser.add_argument("--scale_dtype", default='fp16',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
@@ -118,6 +122,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
                         help="choose low cpu memory mode, 1 for block-wise, 2 for layer-wise, others means not use low cpu memory.")
+
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 
