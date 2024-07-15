@@ -65,7 +65,7 @@ or combine them
 - **Reduced CPU Memory Usage:**
 set "--low_cpu_mem_mode 1" to use block-wise mode, load the weights from disk of each block when tuning and release the memory of the block after tuning. (more tuning cost)
 
-set "--low_cpu_mem_mode 2" to use layer-wise mode, load the weights of each layer from disk when tuning, mininum memory consumption and also slowest runing speed.
+set "--low_cpu_mem_mode 2" to use layer-wise mode, load the weights of each layer from disk when tuning, minimum memory consumption and also slowest runing speed.
 
 
 - **Speedup the tuning:**
