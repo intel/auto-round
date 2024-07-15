@@ -128,7 +128,7 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_ro
 
 ### Tips
 
-1 Consider increasin 'iters' (e.g. 1000) to achieve better results, albeit with increased tuning time.
+1 Consider increasing 'iters' (e.g. 1000) to achieve better results, albeit with increased tuning time.
 
 2 Consider increasing 'nsamples' (e.g. 512) to achieve better results, albeit with more memory(~20G).
 

@@ -41,7 +41,7 @@ class CustomDataset(Dataset): # for llava tuning
             image = Image.open(os.path.join(self.image_folder, image_file)).convert('RGB')
             image = self.image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
         except Exception as error:
-            print(f"{error}, skiped by set image to None")
+            print(f"{error}, skipped by set image to None")
             image = None
         sources = preprocess_multimodal(
             copy.deepcopy([sources["conversations"]]), # a list
