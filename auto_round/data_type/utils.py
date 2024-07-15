@@ -52,6 +52,14 @@ def get_quant_func(dtype, bits, sym):
     if key in QUANT_FUNC_WITH_DTYPE.keys():
         return QUANT_FUNC_WITH_DTYPE[key], key
 
+    if sym:
+        key = dtype + str(bits)
+    else:
+        key = dtype + str(bits)
+
+    if key in QUANT_FUNC_WITH_DTYPE.keys():
+        return QUANT_FUNC_WITH_DTYPE[key], key
+
     assert False, f"{dtype} is not supported"
 
 

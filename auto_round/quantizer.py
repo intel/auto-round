@@ -159,7 +159,7 @@ class WrapperLinear(torch.nn.Module):
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
         self.data_type = self.orig_layer.data_type
-        self.weight_quant_func,self.data_type = get_quant_func(self.data_type, self.num_bits, self.sym)
+        self.weight_quant_func, self.data_type = get_quant_func(self.data_type, self.num_bits, self.sym)
         self.act_bits = self.orig_layer.act_bits
         self.act_group_size = self.orig_layer.act_group_size
         self.act_sym = self.orig_layer.act_sym
@@ -213,7 +213,8 @@ class WrapperLinear(torch.nn.Module):
             self.orig_layer.to(self.device)
         qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.orig_layer.weight, self.num_bits,
                                              self.group_size, v,
-                                             min_scale, max_scale, self.scale_dtype, self.weight_min, self.weight_max,data_type=self.data_type)
+                                             min_scale, max_scale, self.scale_dtype, self.weight_min, self.weight_max,
+                                             data_type=self.data_type)
         scale = scale.reshape(qdq_weight.shape[0], -1)
         if zp is not None:
             zp = zp.reshape(qdq_weight.shape[0], -1)
@@ -250,7 +251,8 @@ class WrapperLinear(torch.nn.Module):
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, 0, 1.0))
         weight_q, _, _ = quant_tensor(self.weight_quant_func, weight, self.num_bits, self.group_size, self.value,
                                       self.min_scale,
-                                      self.max_scale, self.scale_dtype, self.weight_min, self.weight_max,data_type=self.data_type)
+                                      self.max_scale, self.scale_dtype, self.weight_min, self.weight_max,
+                                      data_type=self.data_type)
         weight_q = weight_q.to(weight.dtype)
         if self.act_quant:
             x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
