@@ -108,7 +108,11 @@ def is_autoround_exllamav2_available():
 
 def is_hpu_supported():
     try:
+        import subprocess
         import habana_frameworks.torch.core as htcore # pylint: disable=E0401
+        hqt_version = subprocess.check_output(['pip', 'show', \
+            'habana_quantization_toolkit']).decode().split('\n')[1].split(': ')[1]
+        assert(hqt_version >= "1.17")
     except ImportError as e:
         return False
     return True
