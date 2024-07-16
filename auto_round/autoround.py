@@ -68,8 +68,8 @@ class AutoRound(object):
                        'sym': False
                        'act_data_type': None,
                        'act_bits': 32,
-                       'group_size': None,
-                       'sym': None,
+                       'act_group_size': None,
+                       'act_sym': None,
 
                    }
                    ...

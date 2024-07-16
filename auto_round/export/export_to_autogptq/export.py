@@ -107,6 +107,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     model = kwargs["model"]
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
+    safe_serialization = True if 'safe_serialization' not in kwargs.keys() else  kwargs["safe_serialization"]
 
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     if tokenizer is not None:
@@ -201,7 +202,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
-    save(model, output_dir)
+    save(model, output_dir, safe_serialization=safe_serialization)
 
 
 ##

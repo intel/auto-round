@@ -75,6 +75,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     enable_quanted_input = kwargs["enable_quanted_input"]
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
+    safe_serialization = True if 'safe_serialization' not in kwargs.keys() else  kwargs["safe_serialization"]
 
     compressed_model = pack_model(model, layer_config, inplace=inplace)
     if output_dir is None:
@@ -97,7 +98,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
         config.save_pretrained(output_dir)
         quantize_config.save_pretrained(output_dir)
     try:
-        compressed_model.save_pretrained(output_dir, safe_serialization=True)
+        compressed_model.save_pretrained(output_dir, safe_serialization=safe_serialization)
         if tokenizer is not None:
             tokenizer.save_pretrained(output_dir)
         logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
@@ -191,8 +192,6 @@ def pack_model(
         scale_dtype=convert_dtype_str2torch(config.scale_dtype),
         device="xpu",
     """
-    if model.device.type == 'meta':
-        model = model.to("cuda" if device == "xpu" else device)
     if inplace:
         compressed_model = model
     else:
@@ -259,3 +258,4 @@ def pack_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
     return compressed_model
+
