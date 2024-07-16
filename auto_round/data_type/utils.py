@@ -24,8 +24,8 @@ def get_quant_func(dtype, bits, sym):
        the quantization is symmetric (`sym`). If the function does not exist, it asserts False.
 
        Args:
-           dtype (str): The data type for the quantization (e.g., 'int8', 'float16').
-           bits (int): The bit width for the quantization (e.g., 8, 16).
+           dtype (str): The data type for the quantization (e.g., 'int', 'mxfp4').
+           bits (int): The bit width for the quantization (e.g., 2,4,8).
            sym (bool): A flag indicating whether the quantization is symmetric (True) or asymmetric (False).
 
        Returns:

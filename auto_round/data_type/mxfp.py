@@ -38,7 +38,7 @@ FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
 def quant_mx(tensor, bits, data_type, v, max_scale, **kwargs):
-    """Quantize the given tensor tensor using the specified parameters.
+    """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
     given bit width (`bits`), data type (`data_type`), and additional parameters.

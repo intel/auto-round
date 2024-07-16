@@ -149,6 +149,9 @@ if __name__ == '__main__':
     tasks = args.tasks
     use_eval_legacy = False
 
+    if "gpu" in args.deployment_device and args.sym is False:
+        print("warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use --deployment_device='auto_round'")
+
     if "marlin" in args.deployment_device and args.sym is False:
         assert False, "marlin backend only supports sym quantization, please set --sym"
 
