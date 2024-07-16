@@ -22,7 +22,6 @@ from .utils import (
 )
 
 
-
 def reshape_tensor(v, group_size=-1):
     """Reshapes the tensor based on the group size.
 
