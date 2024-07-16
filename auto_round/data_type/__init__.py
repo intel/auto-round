@@ -1,4 +1,4 @@
-# Copyright (c) 2023 Intel Corporation
+# Copyright (c) 2024 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Intel® auto-round: An open-source Python library
-supporting popular model weight only compression based on signround."""
 
-__version__ = "0.3.0.dev"
+import auto_round.data_type.int
+import auto_round.data_type.mxfp
+from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
+from auto_round.data_type.utils import get_quant_func
