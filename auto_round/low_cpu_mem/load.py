@@ -32,7 +32,7 @@ from torch.serialization import (
     _open_zipfile_reader,
 )
 
-from ..layer_wise import modified_pickle as pickle
+from ..low_cpu_mem import modified_pickle as pickle
 
 from .utils import torch
 

@@ -45,7 +45,7 @@ from .utils import (
     mv_module_from_gpu,
 )
 
-from .layer_wise.utils import get_layers_before_block
+from .low_cpu_mem.utils import get_layers_before_block
 
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
