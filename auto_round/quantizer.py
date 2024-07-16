@@ -102,10 +102,10 @@ class WrapperWALayer(torch.nn.Module):
 
     def forward(self, x):
         x, _, _ = quant_tensor(self.orig_layer.act_quant_func, x, self.orig_layer.act_bits,
-                                      self.orig_layer.group_size,
-                                      scale_dtype=self.orig_layer.scale_dtype,
-                                      q_scale_thresh=self.orig_layer.q_scale_thresh,
-                                      data_type=self.orig_layer.data_type)
+                               self.orig_layer.group_size,
+                               scale_dtype=self.orig_layer.scale_dtype,
+                               q_scale_thresh=self.orig_layer.q_scale_thresh,
+                               data_type=self.orig_layer.data_type)
         return self.orig_layer.forward(x)
 
 
@@ -232,7 +232,8 @@ class WrapperLinear(torch.nn.Module):
         weight_q = weight_q.to(weight.dtype)
         if self.act_quant:
             x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
-                                   scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,data_type=self.data_type)
+                                   scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
+                                   data_type=self.data_type)
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
         if bias is not None and bias.device.type == 'meta':
@@ -360,12 +361,13 @@ class WrapperTransformerConv1d(torch.nn.Module):
             self.max_scale.clamp_(0, 1.0)
         weight_q, _, _ = quant_tensor(self.weight_quant_func, self.weight_t, self.num_bits, self.group_size, self.value,
                                       self.min_scale, self.max_scale, self.scale_dtype, self.weight_min,
-                                      self.weight_max,data_type=self.data_type)
+                                      self.weight_max, data_type=self.data_type)
         weight_q = weight_q.to(self.weight_t.dtype)
         size_out = x.size()[:-1] + (self.orig_layer.nf,)
         if self.act_quant:
             x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
-                                   scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,data_type=self.data_type)
+                                   scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
+                                   data_type=self.data_type)
         x = torch.addmm(self.orig_layer.bias, x.view(-1, x.size(-1)), weight_q.t())
         x = x.view(*size_out)
         return x
