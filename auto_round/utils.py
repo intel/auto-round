@@ -661,7 +661,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
             except Exception as e:
                 pass
             else:
-                from auto_round_extension.hpu.qlinear_hpu import QuantLinear
+                from auto_round_extension.hpu.qlinear_hpu_gptq import QuantLinear
                 return QuantLinear
     if bits == 4 and is_optimum_habana_available():
         try:
