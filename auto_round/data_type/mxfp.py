@@ -64,11 +64,12 @@ def quant_mx(tensor, bits, data_type, v, max_scale, **kwargs):
         shared_exp *= (max_scale.unsqueeze(dim=-1))
     else:
         shared_exp *= max_scale
-
+    scale_emax = 2 ** (8 - 1) - 1
     shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
+    shared_exp[shared_exp == torch.inf] = scale_emax + emax
+    shared_exp[shared_exp == -torch.inf] = -scale_emax + emax
     shared_exp = (shared_exp - emax)
     shared_exp = floor_ste(shared_exp)
-    scale_emax = 2 ** (8 - 1) - 1
     shared_exp[shared_exp > scale_emax] = scale_emax  ##changed Nan
     shared_exp[shared_exp < -scale_emax] = -scale_emax
     tensor = tensor / (2 ** shared_exp)
