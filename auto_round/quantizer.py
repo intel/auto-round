@@ -166,7 +166,7 @@ class WrapperLinear(torch.nn.Module):
         self.act_dynamic = self.orig_layer.act_dynamic
         self.act_quant = self.act_bits <= 8
         if self.act_quant:
-            self.act_quant_func = get_quant_func(self.data_type, self.act_bits, self.act_sym)
+            self.act_quant_func, _ = get_quant_func(self.data_type, self.act_bits, self.act_sym)
 
         self.q_scale_thresh = 1e-5
 
