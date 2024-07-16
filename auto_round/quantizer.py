@@ -101,9 +101,11 @@ class WrapperWALayer(torch.nn.Module):
         self.act_quant_func = self.orig_layer.act_quant_func
 
     def forward(self, x):
-        x, _, _ = self.act_quant_func(self.orig_layer.act_quant_func, x, self.orig_layer.act_bits, self.orig_layer.group_size,
-                               scale_dtype=self.orig_layer.scale_dtype, q_scale_thresh=self.orig_layer.q_scale_thresh,
-                               data_type=self.orig_layer.data_type)
+        x, _, _ = self.act_quant_func(self.orig_layer.act_quant_func, x, self.orig_layer.act_bits,
+                                      self.orig_layer.group_size,
+                                      scale_dtype=self.orig_layer.scale_dtype,
+                                      q_scale_thresh=self.orig_layer.q_scale_thresh,
+                                      data_type=self.orig_layer.data_type)
         return self.orig_layer.forward(x)
 
 
