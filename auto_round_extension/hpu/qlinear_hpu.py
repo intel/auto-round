@@ -177,7 +177,8 @@ class QuantLinear(nn.Module):
             self.wf.unsqueeze(0),
         ).to(torch.int16 if self.bits == 8 else torch.int8)
 
-        # zeros = zeros + 1
+        # zeros = zeros + 1 # This line is commented for auto-round format export. \
+            # It remains unchanged for gptq format in qlinear_hpu_gptq.py
         zeros = torch.bitwise_and(
             zeros, (2**self.bits) - 1
         ).to(self.scales.dtype)  # NOTE: It appears that casting here after the `zeros = zeros + 1` is important.
