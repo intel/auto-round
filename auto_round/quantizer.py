@@ -22,31 +22,6 @@ from .utils import (
 )
 
 
-# def quant_tensor_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dtype=torch.float16, weight_min=None,
-#                        weight_max=None, q_scale_thresh=0.0):
-#     """Quantizes and dequantizes weight symmetrically or asymmetrically .
-#
-#     Args:
-#         weight: Tensor containing the weight to be quantized
-#         num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-#         sym: Sym or asym
-#         v: Rounding value perturbation
-#         min_scale: Minimum scale coefficient for weight
-#         max_scale: Maximum scale coefficient for weight
-#         weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
-#         weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
-#
-#     Returns:
-#         Quantized and dequantized weight, scale, zero-point
-#     """
-#     assert num_bits > 0, "num_bits should be larger than 0"
-#     if sym:
-#         return quant_tensor_sym(weight, num_bits, v, min_scale, max_scale, scale_dtype, weight_min, weight_max,
-#                                 q_scale_thresh)
-#     else:
-#         return quant_tensor_asym(weight, num_bits, v, min_scale, max_scale, scale_dtype, weight_min, weight_max,
-#                                  q_scale_thresh)
-
 
 def reshape_tensor(v, group_size=-1):
     """Reshapes the tensor based on the group size.
