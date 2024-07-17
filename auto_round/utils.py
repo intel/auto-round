@@ -332,7 +332,7 @@ def detect_device(device=None):
         if torch.cuda.is_available():
             device = torch.device("cuda")
             logger.info("Using GPU device")
-        elif is_optimum_habana_available():
+        elif is_optimum_habana_available(): # pragma: no cover
             device = torch.device("hpu")
             logger.info("Using HPU device")
         # Use CPU as a fallback
@@ -525,7 +525,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         total_memory = torch.cuda.get_device_properties(current_gpu_index).total_memory
         used_memory = torch.cuda.memory_allocated(current_gpu_index)
         free_space = total_memory - used_memory
-    elif "hpu" in device:
+    elif "hpu" in device: # pragma: no cover
         current_hpu_index = torch.hpu.current_device()
         free_space = torch.hpu.memory_reserved(current_hpu_index)
     else:
