@@ -106,7 +106,7 @@ def is_autoround_exllamav2_available():
         res = False
     return res
 
-def is_hpu_supported():
+def is_hpu_supported(): # pragma: no cover
     try:
         import subprocess
         import habana_frameworks.torch.core as htcore # pylint: disable=E0401
@@ -155,7 +155,7 @@ class AutoHfQuantizer:
                 f"Unknown quantization type, got {quant_method} - supported types are:"
                 f" {list(AUTO_QUANTIZER_MAPPING.keys())}"
             )
-        if "auto-round" in quant_method or is_hpu_supported():
+        if "auto-round" in quant_method or is_hpu_supported(): # pragma: no cover
             target_cls = AutoRoundQuantizer
         else:
             target_cls = AUTO_QUANTIZER_MAPPING[quant_method]
