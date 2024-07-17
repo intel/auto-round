@@ -215,6 +215,7 @@ if __name__ == '__main__':
     
     from auto_round import (AutoRound,
                             AutoAdamRound)
+    from auto_round.utils import get_multimodal_block_names
 
     model = model.eval()
 
@@ -305,6 +306,8 @@ if __name__ == '__main__':
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
+        
+    quant_block_list = get_multimodal_block_names(model, args.quant_vision)
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
@@ -313,7 +316,7 @@ if __name__ == '__main__':
                       low_gpu_mem_usage=args.low_gpu_mem_usage, scale_dtype=args.scale_dtype,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
-                      multimodal=True, quant_vision=args.quant_vision)
+                      quant_block_list=quant_block_list)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 

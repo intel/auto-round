@@ -234,13 +234,13 @@ def check_is_cpu(device):
 
 def validate_modules(module_names):
         """
-        Validate a list of modules validity.
+        Test a list of modules's validity.
         
         Args:
         modules (list of str): List of strings to be validated.
         
         Returns:
-        bool: True if all modules have equal length after splitting, otherwise False.
+        bool: True if all modules have equal length or not dependent, otherwise False.
         """
         if not bool(module_names):
             raise ValueError(f"Empty modules")
@@ -285,7 +285,7 @@ def get_block_names(model):
 
 
 def get_multimodal_block_names(model, quant_vision=False):
-    """Get the block names for transformers-like networks.
+    """Get the multimodal model block names for transformers-like networks.
 
     Args:
     model: The model.
@@ -660,7 +660,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D], multimodal=False, quant_vision=False):
+                                                     transformers.modeling_utils.Conv1D], quant_block_list=None):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -671,8 +671,8 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
         if isinstance(m, tuple(supported_types)):
             m.tmp_name = n
     layers_in_block = []
-    if multimodal:
-        all_blocks = get_multimodal_block_names(model, quant_vision)
+    if bool(quant_block_list):
+        all_blocks = quant_block_list
     else:
         all_blocks = get_block_names(model)
     for block_names in all_blocks:

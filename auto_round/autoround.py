@@ -43,7 +43,6 @@ from .utils import (
     to_dtype,
     get_layer_names_in_block,
     mv_module_from_gpu,
-    get_multimodal_block_names,
 )
 
 from .low_cpu_mem.utils import get_layers_before_block
@@ -100,12 +99,11 @@ class AutoRound(object):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
-        multimodal(bool): Enable multimodal model quantization, (default is "False").
         act_bits (int): Number of bits for activation quantization. Default is 32.
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-
+        quant_block_list (bool): A list whose elements are list of block's layer names to be quantized.
     Returns:
         The quantized model.
     """
@@ -145,8 +143,7 @@ class AutoRound(object):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
-            multimodal:bool = False,
-            quant_vision:bool = False,
+            quant_block_list: list = None,
             **kwargs,
     ):
         self.quantized = False
@@ -178,8 +175,7 @@ class AutoRound(object):
         self.dataset = dataset
 
         self.iters = iters
-        self.multimodal = multimodal
-        self.quant_vision = quant_vision
+        self.quant_block_list = quant_block_list
         if self.iters <= 0:
             logger.warning("iters must be positive, reset it to 200")
             self.iters = 200
@@ -238,8 +234,8 @@ class AutoRound(object):
         The quantized model and layer configurations.
         """
         # logger.info("cache block input")
-        if self.multimodal:
-            all_blocks = get_multimodal_block_names(self.model, self.quant_vision)
+        if self.quant_block_list:
+            all_blocks = self.quant_block_list
         else:
             all_blocks = get_block_names(self.model)
                     
@@ -372,7 +368,7 @@ class AutoRound(object):
         Returns:
         None
         """
-        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.multimodal, self.quant_vision)
+        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
         keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
                 "act_dynamic"]
         for n, m in self.model.named_modules():
@@ -1138,8 +1134,7 @@ class AutoRound(object):
             data_type=self.data_type,
             serialization_dict=serialization_dict,
             backend=backend,
-            multimodal=self.multimodal,
-            quant_vision=self.quant_vision,
+            quant_block_list=self.quant_block_list,
             **kwargs
         )
         return compressed_model
@@ -1154,7 +1149,7 @@ class AutoRound(object):
             return []
 
         layer_names = []
-        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.multimodal, self.quant_vision)
+        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
 
         for key in self.layer_config.keys():
             if key in all_layers_in_block:

@@ -108,13 +108,13 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else  kwargs["safe_serialization"]
-    multimodal = kwargs["multimodal"]
+    quant_block_list = kwargs["quant_block_list"]
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
-    if multimodal:
-        all_blocks = get_multimodal_block_names(model, quant_vision=True) # Get all layers
+    if bool(quant_block_list):
+        all_blocks = quant_block_list
     else:
         all_blocks = get_block_names(model)
     all_to_quantized = True
