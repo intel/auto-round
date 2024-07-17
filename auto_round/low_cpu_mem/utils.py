@@ -33,9 +33,9 @@ from transformers.models.auto.auto_factory import _BaseAutoModelClass
 from .load import load
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
-logger = logging.getLogger("layer_wise_tools")
+logger = logging.getLogger("low_cpu_mem_tools")
 
-LWQ_WORKSPACE = os.path.join("layer_wise_tmp")
+LWQ_WORKSPACE = os.path.join("low_cpu_mem_tmp")
 
 
 def get_module(model, key):

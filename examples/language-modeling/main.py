@@ -121,7 +121,13 @@ if __name__ == '__main__':
                         help="quant_lm_head")
 
     parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
-                        help="choose low cpu memory mode, 1 for block-wise, 2 for layer-wise, others means not use low cpu memory.")
+                        help="Choose which low cpu memory mode to use. Can significantly reduce cpu memory footprint but cost more time."
+                        "1 means choose block-wise mode, load the weights of each block from disk when tuning and release the memory of the block after tuning."
+                        "2 means choose layer-wise mode, load the weights of each layer from disk when tuning, minimum memory consumption and also slowest running speed."
+                        "others means not use low cpu memory. Default to 0, not use low cpu memory.")
+                        
+    parser.add_argument("--low_cpu_mem_tmp_dir", default=None, type=str,
+                        help="temp work space to store the temporary files when using low cpu memory mode. Will remove after tuning.")
 
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
@@ -180,25 +186,27 @@ if __name__ == '__main__':
     is_glm = bool(re.search("chatglm", model_name.lower()))
     low_cpu_mem_usage = False
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
+    if args.low_cpu_mem_tmp_dir is None:
+        args.low_cpu_mem_tmp_dir = os.path.join(args.output_dir, "low_cpu_mem_tmp")
     if args.low_cpu_mem_mode == 2:
-        from auto_round.layer_wise.utils import load_model_with_hooks
+        from auto_round.low_cpu_mem.utils import load_model_with_hooks
         model = load_model_with_hooks(
             model_name,
             model_cls,
             device=device_str,
             clean_weight=True,
-            saved_path=os.path.join(args.output_dir, "layer_wise_tmp"),
+            saved_path=args.low_cpu_mem_tmp_dir,
             torch_dtype=torch_dtype,
             trust_remote_code=not args.disable_trust_remote_code
         )
     elif args.low_cpu_mem_mode == 1:
-        from auto_round.layer_wise.utils import load_empty_model
+        from auto_round.low_cpu_mem.utils import load_empty_model
         low_cpu_mem_usage = True
         model = load_empty_model(
             model_name,
             model_cls,
             device=device_str,
-            saved_path=os.path.join(args.output_dir, "layer_wise_tmp"),
+            saved_path=args.low_cpu_mem_tmp_dir,
             torch_dtype=torch_dtype,
             trust_remote_code=not args.disable_trust_remote_code
             )
@@ -300,7 +308,7 @@ if __name__ == '__main__':
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
-        shutil.rmtree(os.path.join(args.output_dir, "layer_wise_tmp"), ignore_errors=True)
+        shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
 
     model.eval()
     if "cpu" not in device_str:
