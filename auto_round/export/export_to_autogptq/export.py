@@ -115,20 +115,20 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     all_blocks = get_block_names(model, multimodal=True)
     all_to_quantized = True
     modules_in_block_to_quantize = []
-    for block_names in all_blocks:
-        first_block = get_module(model, block_names[0])
-        for n, m in first_block.named_modules():
-            is_supported_type = False
-            for supported_type in supported_types:
-                if isinstance(m, supported_type):
-                    is_supported_type = True
-                    break
-            if not is_supported_type:
-                continue
-            if not check_to_quantized(m):
-                all_to_quantized = False
-            else:
-                modules_in_block_to_quantize.append(n)
+
+    first_block = get_module(model, all_blocks[0])
+    for n, m in first_block.named_modules():
+        is_supported_type = False
+        for supported_type in supported_types:
+            if isinstance(m, supported_type):
+                is_supported_type = True
+                break
+        if not is_supported_type:
+            continue
+        if not check_to_quantized(m):
+            all_to_quantized = False
+        else:
+            modules_in_block_to_quantize.append(n)
     modules_in_block_to_quantize = [modules_in_block_to_quantize]
     if all_to_quantized:
         modules_in_block_to_quantize = None

@@ -245,26 +245,27 @@ class AutoRound(object):
 
         layer_names = self.get_quantized_layer_names_outside_blocks()
         self.start_time = time.time()
-        all_first_block_names = [block[0] for block in all_blocks]
+        all_first_block_names = [all_blocks[0]]
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
-        for block_names in all_blocks:
-            inputs = all_inputs[block_names[0]]
-            all_inputs.pop(block_names[0])
-            self.inputs = None
-            del self.inputs
-            if "input_ids" in inputs.keys():
-                total_samples = len(inputs["input_ids"])
-                self.n_samples = total_samples
-                if total_samples < self.train_bs:
-                    self.train_bs = total_samples
-                    logger.warning(f"force the train batch size to {total_samples} ")
+        del self.inputs
+        inputs = all_inputs[all_blocks[0]]
+
+        all_inputs.pop(all_blocks[0])
+        self.inputs = None
+        del self.inputs
+        if "input_ids" in inputs.keys():
+            total_samples = len(inputs["input_ids"])
+            self.n_samples = total_samples
+            if total_samples < self.train_bs:
+                self.train_bs = total_samples
+                logger.warning(f"force the train batch size to {total_samples} ")
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         torch.cuda.empty_cache()
         self.quant_blocks(
             self.model,
             inputs,
-            block_names,
+            all_blocks,
             nblocks=self.nblocks,
             device=self.device,
         )

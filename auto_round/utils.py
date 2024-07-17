@@ -231,19 +231,23 @@ def get_block_names(model, multimodal=False):
     Returns:
     block_names: A list of block names.
     """
-    block_names = []
-    target_modules = []
-    for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__ \
-                and (multimodal or ('vision' not in n and 'visual' not in n)):
-            target_modules.append((n, m))
-            # break  ## only find the first modulelist, may be not robust
-    for i,target_m in enumerate(target_modules):
-        block_names.append([])
-        for n, m in target_m[1].named_children():
-            block_names[i].append(target_m[0] + "." + n)
-    return block_names
+    """Get the block names for transformers-like networks.
 
+    Args:
+    model: The model.
+
+    Returns:
+    block_names: A list of block names.
+    """
+    block_names = []
+    target_m = None
+    for n, m in model.named_modules():
+        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+            target_m = (n, m)
+            break  ## only find the first modulelist, may be not robust
+    for n, m in target_m[1].named_children():
+        block_names.append(target_m[0] + "." + n)
+    return block_names
 
 def collect_round_v(block):
     """Collects the round values for wrapped linear modules in the given block.
@@ -596,8 +600,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     return False, seqlen, bs
 
 
-def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D], multimodal=False):
+def get_layer_names_in_block(model, supported_types=[torch.nn.Linear, transformers.modeling_utils.Conv1D],multimodal=False):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -608,13 +611,12 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
         if isinstance(m, tuple(supported_types)):
             m.tmp_name = n
     layers_in_block = []
-    all_blocks = get_block_names(model, multimodal)
-    for block_names in all_blocks:
-        for block_name in block_names:
-            block = get_module(model, block_name)
-            for n, m in block.named_modules():
-                if hasattr(m, "tmp_name"):
-                    layers_in_block.append(m.tmp_name)
+    block_names = get_block_names(model)
+    for block_name in block_names:
+        block = get_module(model, block_name)
+        for n, m in block.named_modules():
+            if hasattr(m, "tmp_name"):
+                layers_in_block.append(m.tmp_name)
     for n, m in model.named_modules():
         if hasattr(m, "tmp_name"):
             delattr(m, "tmp_name")
