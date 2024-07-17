@@ -17,9 +17,6 @@ import torch
 share_attention_mask_tuple = ("baichuan",)
 special_states_dim_tuple = ("chatglm",)
 not_share_position_ids_tuple = ("llava", "phi3_v",)
-Vison_blocks_tuple = ("vision", "visual",)
-MoE_blocks_tuple = ("moe", "expert",)
-
 
 def check_share_attention_mask(model, hidden_states, attention_mask=None, **kwargs):
     """Checks if the attention mask states of the hidden states are shared in the model.

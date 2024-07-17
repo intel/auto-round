@@ -36,7 +36,7 @@
 # SOFTWARE.
 import torch
 
-from auto_round.utils import check_to_quantized, get_block_names, get_module, logger, get_layer_names_in_block, \
+from auto_round.utils import check_to_quantized, get_block_names, get_multimodal_block_names, get_module, logger, get_layer_names_in_block, \
     set_module
 import copy
 import json
@@ -108,12 +108,15 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else  kwargs["safe_serialization"]
-
+    multimodal = kwargs["multimodal"]
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
-    all_blocks = get_block_names(model, multimodal=True)
+    if multimodal:
+        all_blocks = get_multimodal_block_names(model, quant_vision=True) # Get all layers
+    else:
+        all_blocks = get_block_names(model)
     all_to_quantized = True
     modules_in_block_to_quantize = []
     for block_names in all_blocks:

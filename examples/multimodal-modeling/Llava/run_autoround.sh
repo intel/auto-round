@@ -17,3 +17,4 @@ python3 main.py \
 --eval-annotation-file /path/to/textvqa/TextVQA_0.5.1_val.json \
 --eval-result-file "./tmp_autoround" \
 --output_dir "./tmp_autoround"
+

@@ -23,7 +23,6 @@ import cpuinfo
 import numpy as np
 import psutil
 import torch
-from .special_model_handler import MoE_blocks_tuple, Vison_blocks_tuple
 from torch.amp import autocast
 
 from functools import lru_cache
@@ -245,6 +244,8 @@ def validate_modules(module_names):
         """
         if not bool(module_names):
             raise ValueError(f"Empty modules")
+        if len(module_names) < 2:
+            return True
         split_modules = [s.split('.') for s,_ in module_names]
         lengths = [len(parts) for parts in split_modules]
         if len(set(lengths)) == 1:
@@ -253,16 +254,15 @@ def validate_modules(module_names):
         min_length = min(lengths)
         longest_module = next(s for s in split_modules if len(s) == max_length)
         shortest_module = next(s for s in split_modules if len(s) == min_length)
-        
+        shortest_module = '.'.join(shortest_module)
+        longest_module = '.'.join(longest_module)
         # Check if the shortest name is a substring of the longest name
-        if '.'.join(shortest_module) in '.'.join(longest_module):
+        if shortest_module in longest_module:
             raise ValueError(f"Invalid modules, at least two modules detected as dependent, {shortest_module} and {longest_module}")
-        else:
-            logger.warning(f"At least two modules at different levels, please check the validity of the recognized blocks.")
         return True
     
     
-def get_block_names(model, multimodal=False):
+def get_block_names(model):
     """Get the block names for transformers-like networks.
 
     Args:
@@ -271,13 +271,34 @@ def get_block_names(model, multimodal=False):
     Returns:
     block_names: A list whose elements are list of block's layer names
     """
-        
     block_names = []
     target_modules = []
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            if multimodal and all(key not in n.lower() for key in MoE_blocks_tuple) \
-                    or (not multimodal and all(key not in n.lower() for key in (Vison_blocks_tuple + MoE_blocks_tuple))):
+                target_modules.append((n, m))
+                break   ## only find the first modulelist, may be not robust
+    for i,target_m in enumerate(target_modules):
+        block_names.append([])
+        for n, m in target_m[1].named_children():
+            block_names[i].append(target_m[0] + "." + n)
+    return block_names
+
+
+def get_multimodal_block_names(model, quant_vision=False):
+    """Get the block names for transformers-like networks.
+
+    Args:
+    model: The model.
+
+    Returns:
+    block_names: A list whose elements are list of block's layer names
+    """
+    block_names = []
+    target_modules = []
+    Vison_blocks_tuple = ("vision", "visual",)
+    for n, m in model.named_modules():
+        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+            if quant_vision or all(key not in n.lower() for key in (Vison_blocks_tuple)):
                 target_modules.append((n, m))
     validate_modules(target_modules)
     for i,target_m in enumerate(target_modules):
@@ -639,7 +660,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D], multimodal=False):
+                                                     transformers.modeling_utils.Conv1D], multimodal=False, quant_vision=False):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -650,7 +671,10 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
         if isinstance(m, tuple(supported_types)):
             m.tmp_name = n
     layers_in_block = []
-    all_blocks = get_block_names(model, multimodal)
+    if multimodal:
+        all_blocks = get_multimodal_block_names(model, quant_vision)
+    else:
+        all_blocks = get_block_names(model)
     for block_names in all_blocks:
         for block_name in block_names:
             block = get_module(model, block_name)

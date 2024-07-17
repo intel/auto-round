@@ -43,6 +43,7 @@ from .utils import (
     to_dtype,
     get_layer_names_in_block,
     mv_module_from_gpu,
+    get_multimodal_block_names,
 )
 
 from .low_cpu_mem.utils import get_layers_before_block
@@ -140,11 +141,12 @@ class AutoRound(object):
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
-            multimodal:bool = False,
             act_bits: int = 32,
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
+            multimodal:bool = False,
+            quant_vision:bool = False,
             **kwargs,
     ):
         self.quantized = False
@@ -177,6 +179,7 @@ class AutoRound(object):
 
         self.iters = iters
         self.multimodal = multimodal
+        self.quant_vision = quant_vision
         if self.iters <= 0:
             logger.warning("iters must be positive, reset it to 200")
             self.iters = 200
@@ -235,7 +238,10 @@ class AutoRound(object):
         The quantized model and layer configurations.
         """
         # logger.info("cache block input")
-        all_blocks = get_block_names(self.model, self.multimodal)
+        if self.multimodal:
+            all_blocks = get_multimodal_block_names(self.model, self.quant_vision)
+        else:
+            all_blocks = get_block_names(self.model)
                     
         if len(all_blocks) == 0:
             logger.warning("could not find blocks, exit with original model")
@@ -258,17 +264,17 @@ class AutoRound(object):
                 self.n_samples = total_samples
                 if total_samples < self.train_bs:
                     self.train_bs = total_samples
-                    logger.warning(f"force the train batch size to {total_samples} ")
+                    logger.warning(f"force the train batch size to {total_samples}")
 
-        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-        torch.cuda.empty_cache()
-        self.quant_blocks(
-            self.model,
-            inputs,
-            block_names,
-            nblocks=self.nblocks,
-            device=self.device,
-        )
+            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+            torch.cuda.empty_cache()
+            self.quant_blocks(
+                self.model,
+                inputs,
+                block_names,
+                nblocks=self.nblocks,
+                device=self.device,
+            )
 
         self.quant_layers(layer_names, all_inputs)
 
@@ -366,7 +372,7 @@ class AutoRound(object):
         Returns:
         None
         """
-        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.multimodal)
+        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.multimodal, self.quant_vision)
         keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
                 "act_dynamic"]
         for n, m in self.model.named_modules():
@@ -1133,6 +1139,7 @@ class AutoRound(object):
             serialization_dict=serialization_dict,
             backend=backend,
             multimodal=self.multimodal,
+            quant_vision=self.quant_vision,
             **kwargs
         )
         return compressed_model
@@ -1147,7 +1154,7 @@ class AutoRound(object):
             return []
 
         layer_names = []
-        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.multimodal)
+        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.multimodal, self.quant_vision)
 
         for key in self.layer_config.keys():
             if key in all_layers_in_block:

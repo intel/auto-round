@@ -290,8 +290,8 @@ if __name__ == '__main__':
     parser.add_argument("--act_bits", default=32, type=int,
                     help="activation bits")
     
-    parser.add_argument("--do_multimodal", action='store_true',
-                        help="To determine whether the preprocessing should handle multimodal component.")
+    parser.add_argument("--quant_vision", action='store_true',
+                        help="To determine whether the quantization should handle vision component.")
     
     # ========== Calibration Datasets ============= 
     parser.add_argument("--image_folder", default="coco", type=str,
@@ -442,12 +442,13 @@ if __name__ == '__main__':
     
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
-                      minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
+                      minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
                       amp=not args.disable_amp, nsamples=args.nsamples,
-                      low_gpu_mem_usage=args.low_gpu_mem_usage,
+                      low_gpu_mem_usage=args.low_gpu_mem_usage, device=device_str,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits, multimodal=args.do_multimodal)
+                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
+                      multimodal=True, quant_vision=args.quant_vision)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -519,4 +520,5 @@ if __name__ == '__main__':
                     batch_size=args.eval_bs,
                     device=str(torch_device)
                 )
+
 

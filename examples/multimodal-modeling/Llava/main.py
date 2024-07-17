@@ -31,7 +31,7 @@ class CustomDataset(Dataset): # for llava tuning
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.args = args
-        self.args.is_multimodal = args.do_multimodal
+        self.args.is_multimodal = args.is_multimodal
 
     def __getitem__(self, index):
         sources = self.list_data_dict[index]
@@ -158,8 +158,11 @@ if __name__ == '__main__':
     parser.add_argument("--act_bits", default=32, type=int,
                     help="activation bits")
     
-    parser.add_argument("--do_multimodal", action='store_true',
-                        help="To determine whether the preprocessing should handle multimodal component.")
+    parser.add_argument("--is_multimodal", type=bool, default=True,
+                        help="To determine whether the preprocessing should handle multimodal infomations.")
+    
+    parser.add_argument("--quant_vision", action='store_true',
+                        help="To determine whether the quantization should handle vision component.")
     
     # ========== Calibration Datasets ============= 
     parser.add_argument("--mm-use-im-start-end", type=bool, default=False)
@@ -169,9 +172,6 @@ if __name__ == '__main__':
     
     parser.add_argument("--question_file", default=None, type=str,
                             help="The dataset for quantization training. It can be a custom one.")
-    
-    # parser.add_argument("--dataset", default=None, type=str,
-    #                     help="The dataset for quantization training. It can be a custom one.")
     
     # ================= Evaluation Related =====================
     parser.add_argument("--eval-question-file", type=str, default="tables/question.jsonl")
@@ -309,11 +309,11 @@ if __name__ == '__main__':
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
-                      amp=not args.disable_amp, nsamples=args.nsamples,
-                      low_gpu_mem_usage=args.low_gpu_mem_usage,
+                      amp=not args.disable_amp, nsamples=args.nsamples, layer_config=layer_config,
+                      low_gpu_mem_usage=args.low_gpu_mem_usage, scale_dtype=args.scale_dtype,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, layer_config=layer_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits, multimodal=args.do_multimodal)
+                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
+                      multimodal=True, quant_vision=args.quant_vision)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -375,6 +375,7 @@ if __name__ == '__main__':
         )
         evaluator.run_evaluate(result_file = args.eval_result_file)
         evaluator.calculate_accuracy(result_file = args.eval_result_file)
+
 
 
 
