@@ -23,6 +23,7 @@ import cpuinfo
 import numpy as np
 import psutil
 import torch
+from .special_model_handler import MoE_blocks_tuple, Vison_blocks_tuple
 from torch.amp import autocast
 
 from functools import lru_cache
@@ -165,6 +166,7 @@ def to_device(input, device=torch.device("cpu")):
 
     return input
 
+
 def mv_module_from_gpu(module, low_cpu_mem_usage=False):
     """Moves module from gpu to cpu or meta if low_cpu_mem_usage is true.
 
@@ -231,6 +233,35 @@ def check_is_cpu(device):
     return device == torch.device("cpu") or device == "cpu"
 
 
+def validate_modules(module_names):
+        """
+        Validate a list of modules validity.
+        
+        Args:
+        modules (list of str): List of strings to be validated.
+        
+        Returns:
+        bool: True if all modules have equal length after splitting, otherwise False.
+        """
+        if bool(module_names):
+            raise ValueError(f"Empty modules")
+        split_modules = [s.split('.') for s,_ in module_names]
+        lengths = [len(parts) for parts in split_modules]
+        if len(set(lengths)) == 1:
+            return True
+        max_length = max(lengths)
+        min_length = min(lengths)
+        longest_module = next(s for s in split_modules if len(s) == max_length)
+        shortest_module = next(s for s in split_modules if len(s) == min_length)
+        
+        # Check if the shortest name is a substring of the longest name
+        if '.'.join(shortest_module) in '.'.join(longest_module):
+            raise ValueError(f"Invalid modules, at least two modules detected as dependent, {shortest_module} and {longest_module}")
+        else:
+            logger.warning(f"At least two modules at different levels, please check the validity of the recognized blocks.")
+        return True
+    
+    
 def get_block_names(model, multimodal=False):
     """Get the block names for transformers-like networks.
 
@@ -240,14 +271,15 @@ def get_block_names(model, multimodal=False):
     Returns:
     block_names: A list whose elements are list of block's layer names
     """
+        
     block_names = []
     target_modules = []
-    excluded_blocks_tuple = ("vision", "visual", "moe", "expert",)
     for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__ \
-                and (multimodal or all(key not in n for key in excluded_blocks_tuple)):
-            target_modules.append((n, m))
-            # break  ## only find the first modulelist, may be not robust
+        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+            if multimodal and all(key not in n.lower() for key in MoE_blocks_tuple) \
+                    or (not multimodal and all(key not in n.lower() for key in (Vison_blocks_tuple + MoE_blocks_tuple))):
+                target_modules.append((n, m))
+    validate_modules(target_modules)
     for i,target_m in enumerate(target_modules):
         block_names.append([])
         for n, m in target_m[1].named_children():

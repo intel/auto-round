@@ -204,9 +204,9 @@ def pack_model(
     else:
         q_config = layer_config
     for k, v in q_config.items():
-        logger.info(f"Packing {k}")
         if "float" in v["data_type"]:
             continue
+        logger.info(f"Packing {k}")
         dtype = v["data_type"]
         num_bits = v["bits"]
         group_size = v["group_size"]
