@@ -381,7 +381,7 @@ def detect_device(device=None):
         if torch.cuda.is_available():
             device = torch.device("cuda")
             logger.info("Using GPU device")
-        elif is_optimum_habana_available():
+        elif is_optimum_habana_available(): # pragma: no cover
             device = torch.device("hpu")
             logger.info("Using HPU device")
         # Use CPU as a fallback
@@ -574,7 +574,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         total_memory = torch.cuda.get_device_properties(current_gpu_index).total_memory
         used_memory = torch.cuda.memory_allocated(current_gpu_index)
         free_space = total_memory - used_memory
-    elif "hpu" in device:
+    elif "hpu" in device: # pragma: no cover
         current_hpu_index = torch.hpu.current_device()
         free_space = torch.hpu.memory_reserved(current_hpu_index)
     else:
@@ -691,8 +691,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
        """
     exllama2_available = is_autoround_exllamav2_available()
     ##TODO may have bug for marlin backend
-    if (
-            not torch.cuda.is_available()) or "qbits" in backend or "cpu" in backend:
+    if (not torch.cuda.is_available() and not is_optimum_habana_available()) or "qbits" in backend or "cpu" in backend:
         try:
             from intel_extension_for_transformers import qbits  # pylint: disable=E0401
         except Exception as e:
@@ -701,11 +700,28 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
         return qlinear_qbits.QuantLinear
     if "gptq" in backend:
+        if not is_optimum_habana_available():
+            try:
+                import auto_gptq  # pylint: disable=E0401
+            except Exception as e:
+                raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
+            return get_autogptq_infer_linear(backend, bits, group_size, sym)
+        else: # pragma: no cover
+            try:
+                import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
+            except Exception as e:
+                pass
+            else:
+                from auto_round_extension.hpu.qlinear_hpu_gptq import QuantLinear
+                return QuantLinear
+    if bits == 4 and is_optimum_habana_available(): # pragma: no cover
         try:
-            import auto_gptq  # pylint: disable=E0401
+            import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
         except Exception as e:
-            raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
-        return get_autogptq_infer_linear(backend, bits, group_size, sym)
+            pass
+        else:
+            from auto_round_extension.hpu.qlinear_hpu import QuantLinear
+            return QuantLinear
     if bits == 4 and exllama2_available and "exllamav2" in backend:
         from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
     elif bits == 4 and "exllamav2" in backend:

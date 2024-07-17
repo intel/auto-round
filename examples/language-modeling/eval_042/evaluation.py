@@ -580,6 +580,10 @@ if __name__ == "__main__":
         "--trust_remote_code", action='store_true',
         help="Whether to enable trust_remote_code"
     )
+    parser.add_argument(
+        "--device", default="cuda:0",
+        help="PyTorch device (e.g. cpu/cuda:0/hpu) for evaluation."
+    )
     parser.add_argument("--tasks",
                         default="lambada_openai,hellaswag,winogrande,piqa,mmlu,truthfulqa_mc1," \
                                 "openbookqa,boolq,rte,arc_easy,arc_challenge",
@@ -595,6 +599,9 @@ if __name__ == "__main__":
         quantization_config = config.quantization_config
         if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
             from auto_round.auto_quantizer import AutoHfQuantizer
+        elif "quant_method" in quantization_config and quantization_config["quant_method"] == "gptq":
+            if args.device == "hpu":
+                from auto_round.auto_quantizer import AutoHfQuantizer
 
     test_tasks = args.tasks
     if isinstance(test_tasks, str):
@@ -609,6 +616,7 @@ if __name__ == "__main__":
     result = simple_evaluate(model="hf",
                              model_args=model_args,
                              tasks=test_tasks,
+                             device=args.device,
                              batch_size=args.eval_bs)
     print(make_table(result))
 

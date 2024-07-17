@@ -106,6 +106,16 @@ def is_autoround_exllamav2_available():
         res = False
     return res
 
+def is_hpu_supported(): # pragma: no cover
+    try:
+        import subprocess
+        import habana_frameworks.torch.core as htcore # pylint: disable=E0401
+        hqt_version = subprocess.check_output(['pip', 'show', \
+            'habana_quantization_toolkit']).decode().split('\n')[1].split(': ')[1]
+        assert(hqt_version >= "1.17")
+    except ImportError as e:
+        return False
+    return True
 
 if is_auto_round_available():
     from auto_round_extension.cuda.post_init import autoround_post_init
@@ -145,7 +155,7 @@ class AutoHfQuantizer:
                 f"Unknown quantization type, got {quant_method} - supported types are:"
                 f" {list(AUTO_QUANTIZER_MAPPING.keys())}"
             )
-        if "auto-round" in quant_method:
+        if "auto-round" in quant_method or is_hpu_supported(): # pragma: no cover
             target_cls = AutoRoundQuantizer
         else:
             target_cls = AUTO_QUANTIZER_MAPPING[quant_method]
@@ -303,7 +313,8 @@ class AutoRoundQuantizer(HfQuantizer):
         quantization_config = model.config.quantization_config
         bits = quantization_config.bits
         group_size = quantization_config.group_size
-        data_type = quantization_config.data_type
+        data_type = quantization_config.data_type if hasattr(quantization_config, "data_type") \
+            else "int" # pragma: no cover
         sym = quantization_config.sym
         extra_config = {}
         if hasattr(quantization_config, "extra_config"):
@@ -323,7 +334,12 @@ class AutoRoundQuantizer(HfQuantizer):
                 layer_configs[layer_name]["group_size"] = extra_config[layer_name].get("group_size", group_size)
                 layer_configs[layer_name]["data_type"] = extra_config[layer_name].get("data_type", data_type)
                 layer_configs[layer_name]["sym"] = extra_config[layer_name].get("sym", sym)
-        backend = quantization_config.backend
+        if hasattr(quantization_config, "backend"): # pragma: no cover
+            backend = quantization_config.backend
+        elif 'gptq' in quantization_config.quant_method: # pragma: no cover
+            backend = 'gptq'
+        else: # pragma: no cover
+            logger.error("Please specify quantization backend")
 
         self._replace_by_quant_layers(model, layer_configs, backend)
         return model
