@@ -103,7 +103,7 @@ class AutoRound(object):
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        quant_block_list (bool): A list whose elements are list of block's layer names to be quantized.
+        quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
     Returns:
         The quantized model.
     """
