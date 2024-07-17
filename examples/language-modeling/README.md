@@ -128,6 +128,11 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bi
 CUDA_VISIBLE_DEVICES=1,2 python3 eval/evaluation.py --model_name /save_model_path/ --eval_bs 8 --tasks mmlu,lambada_openai,ptb --excel_path /result_excel/save_path/
 ```
 
+- User could also perform evaluation on Intel Gaudi-2 using the following script.
+```bash
+python3 eval_042/evaluation.py --model_name /saved_model_path/ --tasks mmlu --device hpu
+```
+
 You can also utilize the official lm_eval [link](https://github.com/EleutherAI/lm-evaluation-harness/tree/main?tab=readme-ov-file#basic-usage).
 
 ## 4. Known Issues

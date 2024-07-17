@@ -1,4 +1,4 @@
-# Copyright (c) 2023 Intel Corporation
+# Copyright (c) 2024 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,7 +11,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Intel® auto-round: An open-source Python library
-supporting popular model weight only compression based on signround."""
 
-__version__ = "0.3.0.dev"
+
+QUANT_FUNC_WITH_DTYPE = {}
+
+
+def register_dtype(name):
+    """Class decorator to register a EXPORT subclass to the registry.
+
+    Decorator function used before a Pattern subclass.
+
+    Args:
+        cls (class): The subclass of register.
+        name: A string. Define the export type.
+
+    Returns:
+        cls: The class of register.
+    """
+
+    def register(dtype):
+        QUANT_FUNC_WITH_DTYPE[name] = dtype
+        return dtype
+
+    return register
