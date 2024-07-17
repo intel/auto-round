@@ -27,7 +27,6 @@ from torch.amp import autocast
 
 from functools import lru_cache
 
-
 @lru_cache(None)
 def warning_once(self, msg: str):
     self.warning(msg)
@@ -239,13 +238,14 @@ def get_block_names(model, multimodal=False):
     model: The model.
 
     Returns:
-    block_names: A list of block names.
+    block_names: A list whose elements are list of block's layer names
     """
     block_names = []
     target_modules = []
+    excluded_blocks_tuple = ("vision", "visual", "moe", "expert",)
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__ \
-                and (multimodal or ('vision' not in n and 'visual' not in n)):
+                and (multimodal or all(key not in n for key in excluded_blocks_tuple)):
             target_modules.append((n, m))
             # break  ## only find the first modulelist, may be not robust
     for i,target_m in enumerate(target_modules):
@@ -740,5 +740,6 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
     else:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     return QuantLinear
+
 
 

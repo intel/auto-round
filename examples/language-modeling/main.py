@@ -396,7 +396,8 @@ if __name__ == '__main__':
         print(excel_name, flush=True)
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
+                   device=torch_device, excel_file=excel_name,
+                   trust_remote_code=not args.disable_trust_remote_code)
 
     if not args.disable_eval and lm_eval_version == "0.4.2":
         from eval_042.evaluation import simple_evaluate
@@ -407,6 +408,7 @@ if __name__ == '__main__':
             model_args = f"pretrained={eval_folder}"
         else:
             exit()  ## does not support cpu,xpu model eval
+        model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
         user_model = None
         if args.act_bits <= 8:
             user_model = model.to(device_str)
@@ -417,4 +419,5 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
+
 
