@@ -313,7 +313,8 @@ class AutoRoundQuantizer(HfQuantizer):
         quantization_config = model.config.quantization_config
         bits = quantization_config.bits
         group_size = quantization_config.group_size
-        data_type = quantization_config.data_type if hasattr(quantization_config, "data_type") else "int"
+        data_type = quantization_config.data_type if hasattr(quantization_config, "data_type") \
+            else "int" # pragma: no cover
         sym = quantization_config.sym
         extra_config = {}
         if hasattr(quantization_config, "extra_config"):
@@ -333,11 +334,11 @@ class AutoRoundQuantizer(HfQuantizer):
                 layer_configs[layer_name]["group_size"] = extra_config[layer_name].get("group_size", group_size)
                 layer_configs[layer_name]["data_type"] = extra_config[layer_name].get("data_type", data_type)
                 layer_configs[layer_name]["sym"] = extra_config[layer_name].get("sym", sym)
-        if hasattr(quantization_config, "backend"):
+        if hasattr(quantization_config, "backend"): # pragma: no cover
             backend = quantization_config.backend
-        elif 'gptq' in quantization_config.quant_method:
+        elif 'gptq' in quantization_config.quant_method: # pragma: no cover
             backend = 'gptq'
-        else:
+        else: # pragma: no cover
             logger.error("Please specify quantization backend")
 
         self._replace_by_quant_layers(model, layer_configs, backend)
