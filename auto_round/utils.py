@@ -243,7 +243,7 @@ def validate_modules(module_names):
         Returns:
         bool: True if all modules have equal length after splitting, otherwise False.
         """
-        if bool(module_names):
+        if not bool(module_names):
             raise ValueError(f"Empty modules")
         split_modules = [s.split('.') for s,_ in module_names]
         lengths = [len(parts) for parts in split_modules]
