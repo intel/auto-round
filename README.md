@@ -161,7 +161,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 ##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with auto_round format
 
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path)
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
