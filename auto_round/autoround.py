@@ -832,6 +832,7 @@ class AutoRound(object):
             best_iter = last_best_iter
         with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
+        layer = mv_module_from_gpu(layer, self.low_cpu_mem_usage)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
@@ -979,6 +980,7 @@ class AutoRound(object):
             return q_outputs, output
 
         else:
+            block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
             for i in range(len(input_ids)):
                 input_ids[i] = None
             torch.cuda.empty_cache()
@@ -1048,8 +1050,9 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
             )
-            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+
             torch.cuda.empty_cache()
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
 
         del q_input
         del input_ids
