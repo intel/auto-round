@@ -62,7 +62,7 @@ quantization in some scenarios, especially at lower bits,like 2. Please save qua
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 model_name = "facebook/opt-125m"
-model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
+model = AutoModelForCausalLM.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 from auto_round import AutoRound
@@ -146,7 +146,7 @@ from intel_extension_for_transformers.transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -177,7 +177,7 @@ from auto_round.auto_quantizer import AutoHfQuantizer
 import habana_frameworks.torch.core as htcore
 import habana_frameworks.torch.hpu as hthpu
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto").to('hpu').to(torch.float32)
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path).to('hpu').to(torch.float32)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)

@@ -135,6 +135,30 @@ def get_scale_shape(weight, group_size):
     return shape
 
 
+def unsupport_meta_device(model):
+    """Checks if the model is a valid model for auto_round.
+
+    Args:
+    model: The model to be checked.
+
+    Returns:
+    bool: True if the model is valid, False otherwise. 
+    """
+    target_device = None
+    for param in model.parameters():
+        if target_device is None:
+            target_device = param.device
+        if param.device != target_device:
+            if param.device.type == 'meta' or  target_device.type == 'meta':
+                return True
+    if target_device.type == 'meta':
+        if hasattr(model, "path"):
+            return False
+        else:
+            return True
+    return False
+
+
 def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
 

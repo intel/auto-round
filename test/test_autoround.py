@@ -226,6 +226,22 @@ class TestAutoRound(unittest.TestCase):
             act_bits=4,
         )
         autoround.quantize()
+    
+    def test_auto_device_map(self):
+        bits, group_size, sym = 4, 128, False
+        model_name = "facebook/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True, device_map='auto')
+        autoround = AutoRound(
+            model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
 
 
 
