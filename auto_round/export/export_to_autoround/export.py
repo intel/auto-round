@@ -165,11 +165,12 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         backend = backend.replace("auto_round", "auto_gptq")
 
     model = kwargs["model"]
-    multimodal = kwargs["multimodal"]
+    quant_block_list = kwargs["quant_block_list"]
+    safe_serialization = True if 'safe_serialization' not in kwargs.keys() else  kwargs["safe_serialization"]
     model = model.to(torch.float16)  ##force to fp16
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-    layer_names_in_block = get_layer_names_in_block(model, multimodal=multimodal)
+    layer_names_in_block = get_layer_names_in_block(model, quant_block_list=quant_block_list)
 
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
@@ -199,7 +200,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         quantization_config["extra_config"] = extra_config
     with tctl.threadpool_limits(limits=1):
         for name in layer_config.keys():
-
             config = kwargs["layer_config"][name]
             if config["bits"] > 8:
                 continue
@@ -251,7 +251,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     tokenizer = kwargs["tokenizer"]
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
-    save(model, output_dir)
+    save(model, output_dir, safe_serialization=safe_serialization)
 
 
 def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
@@ -280,4 +280,5 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
 

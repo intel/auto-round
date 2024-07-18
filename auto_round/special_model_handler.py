@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .utils import logger, torch
+import torch
 
 share_attention_mask_tuple = ("baichuan",)
 special_states_dim_tuple = ("chatglm",)
-not_share_position_ids_tuple = ("llava","phi3_v")
-
+not_share_position_ids_tuple = ("llava", "phi3_v",)
 
 def check_share_attention_mask(model, hidden_states, attention_mask=None, **kwargs):
     """Checks if the attention mask states of the hidden states are shared in the model.
@@ -64,4 +63,5 @@ def check_not_share_position_ids(model, **kwargs):
             is_special = True
             break
     return bool(is_special)
+
 
