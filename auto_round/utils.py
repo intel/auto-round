@@ -234,7 +234,7 @@ def check_is_cpu(device):
 
 def validate_modules(module_names):
         """
-        Test a list of modules' validity.
+        Test a list of modules's validity.
         
         Args:
         modules (list of str): List of strings to be validated.
@@ -258,7 +258,8 @@ def validate_modules(module_names):
         longest_module = '.'.join(longest_module)
         # Check if the shortest name is a substring of the longest name
         if shortest_module in longest_module:
-            raise ValueError(f"Invalid modules, at least two modules detected as dependent, {shortest_module} and {longest_module}")
+            raise ValueError(f"Invalid modules, at least two modules detected"\
+                              " as dependent, {shortest_module} and {longest_module}")
         return True
     
     
