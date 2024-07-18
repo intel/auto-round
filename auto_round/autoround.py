@@ -43,7 +43,7 @@ from .utils import (
     to_dtype,
     get_layer_names_in_block,
     mv_module_from_gpu,
-    is_valid_model,
+    is_mixed_device,
 )
 
 from .low_cpu_mem.utils import get_layers_before_block
@@ -151,8 +151,8 @@ class AutoRound(object):
         self.quantized = False
         self.model_orig_dtype = model.dtype
         self.low_cpu_mem_usage = low_cpu_mem_usage
-        assert is_valid_model(model), ("autoround not support for mixed device mapping, please put the model to cpu " 
-                "or set low_cpu_mem_usage to True if want to save memory.")
+        assert not is_mixed_device(model), ("autoround not support for mixed device mapping," 
+                "please put the model to cpu or set low_cpu_mem_usage to True if want to save memory.")
         self.model = model.eval()
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         self.amp = amp

@@ -136,7 +136,7 @@ def get_scale_shape(weight, group_size):
     return shape
 
 
-def is_valid_model(model):
+def is_mixed_device(model):
     """Checks if the model is a valid model for auto_round.
 
     Args:
@@ -151,8 +151,8 @@ def is_valid_model(model):
             target_device = param.device
         if param.device != target_device:
             if param.device.type == 'meta' or  target_device.type == 'meta':
-                return False
-    return True
+                return True
+    return False
 
 
 def to_device(input, device=torch.device("cpu")):
