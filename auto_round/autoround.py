@@ -152,7 +152,7 @@ class AutoRound(object):
         self.model_orig_dtype = model.dtype
         self.low_cpu_mem_usage = low_cpu_mem_usage
         assert not is_mixed_device(model), ("autoround not support for mixed device mapping," 
-                "please put the model to cpu or set low_cpu_mem_usage to True if want to save memory.")
+                "please put the model to cpu.")
         self.model = model.eval()
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         self.amp = amp
