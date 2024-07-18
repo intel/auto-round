@@ -234,7 +234,7 @@ def check_is_cpu(device):
 
 def validate_modules(module_names):
         """
-        Test a list of modules's validity.
+        Test a list of modules' validity.
         
         Args:
         modules (list of str): List of strings to be validated.
