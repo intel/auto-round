@@ -153,7 +153,7 @@ class AutoRound(object):
         assert not unsupport_meta_device(model),  (
             "autoround does not support for params on meta device by transformers` interfaces," 
             "please do not using device_map='auto' in model loading, "
-            "or follow examples/language-modeling/main.py to enbale low_cpu_mem_usage")
+            "or follow examples/language-modeling/main.py to enable low_cpu_mem_usage")
         self.model = model.eval()
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         self.amp = amp
