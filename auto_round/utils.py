@@ -135,7 +135,7 @@ def get_scale_shape(weight, group_size):
     return shape
 
 
-def is_mixed_device(model):
+def unsupport_meta_device(model):
     """Checks if the model is a valid model for auto_round.
 
     Args:
@@ -151,6 +151,12 @@ def is_mixed_device(model):
         if param.device != target_device:
             if param.device.type == 'meta' or  target_device.type == 'meta':
                 return True
+    breakpoint()
+    if target_device.type == 'meta':
+        if hasattr(model, "path"):
+            return False
+        else:
+            return True
     return False
 
 
