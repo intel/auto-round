@@ -27,7 +27,6 @@ from torch.amp import autocast
 
 from functools import lru_cache
 
-
 @lru_cache(None)
 def warning_once(self, msg: str):
     self.warning(msg)
@@ -166,6 +165,7 @@ def to_device(input, device=torch.device("cpu")):
 
     return input
 
+
 def mv_module_from_gpu(module, low_cpu_mem_usage=False):
     """Moves module from gpu to cpu or meta if low_cpu_mem_usage is true.
 
@@ -232,22 +232,76 @@ def check_is_cpu(device):
     return device == torch.device("cpu") or device == "cpu"
 
 
-def get_block_names(model, multimodal=False):
+def validate_modules(module_names):
+        """
+        Test a list of modules' validity.
+        
+        Args:
+        modules (list of str): List of strings to be validated.
+        
+        Returns:
+        bool: True if all modules have equal length or not dependent, otherwise False.
+        """
+        if not bool(module_names):  # pragma: no cover
+            raise ValueError(f"Empty modules")
+        if len(module_names) < 2:
+            return True
+        split_modules = [s.split('.') for s,_ in module_names]
+        lengths = [len(parts) for parts in split_modules]
+        if len(set(lengths)) == 1: # pragma: no cover
+            return True
+        max_length = max(lengths)
+        min_length = min(lengths)
+        longest_module = next(s for s in split_modules if len(s) == max_length)
+        shortest_module = next(s for s in split_modules if len(s) == min_length)
+        shortest_module = '.'.join(shortest_module)
+        longest_module = '.'.join(longest_module)
+        # Check if the shortest name is a substring of the longest name
+        if shortest_module in longest_module: # pragma: no cover
+            raise ValueError(f"Invalid modules, at least two modules detected"\
+                              " as dependent, {shortest_module} and {longest_module}")
+        return True
+    
+    
+def get_block_names(model):
     """Get the block names for transformers-like networks.
 
     Args:
     model: The model.
 
     Returns:
-    block_names: A list of block names.
+    block_names: A list whose elements are list of block's layer names
     """
     block_names = []
     target_modules = []
     for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__ \
-                and (multimodal or ('vision' not in n and 'visual' not in n)):
-            target_modules.append((n, m))
-            # break  ## only find the first modulelist, may be not robust
+        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+                target_modules.append((n, m))
+                break   ## only find the first modulelist, may be not robust
+    for i,target_m in enumerate(target_modules):
+        block_names.append([])
+        for n, m in target_m[1].named_children():
+            block_names[i].append(target_m[0] + "." + n)
+    return block_names
+
+
+def get_multimodal_block_names(model, quant_vision=False):
+    """Get the multimodal model block names for transformers-like networks.
+
+    Args:
+    model: The model.
+
+    Returns:
+    block_names: A list whose elements are list of block's layer names
+    """
+    block_names = []
+    target_modules = []
+    Vison_blocks_tuple = ("vision", "visual",)
+    for n, m in model.named_modules():
+        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+            if quant_vision or all(key not in n.lower() for key in (Vison_blocks_tuple)):
+                target_modules.append((n, m))
+    validate_modules(target_modules)
     for i,target_m in enumerate(target_modules):
         block_names.append([])
         for n, m in target_m[1].named_children():
@@ -607,7 +661,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D], multimodal=False):
+                                                     transformers.modeling_utils.Conv1D], quant_block_list=None):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -618,7 +672,10 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
         if isinstance(m, tuple(supported_types)):
             m.tmp_name = n
     layers_in_block = []
-    all_blocks = get_block_names(model, multimodal)
+    if bool(quant_block_list):
+        all_blocks = quant_block_list
+    else:
+        all_blocks = get_block_names(model)
     for block_names in all_blocks:
         for block_name in block_names:
             block = get_module(model, block_name)
@@ -740,5 +797,6 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
     else:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     return QuantLinear
+
 
 

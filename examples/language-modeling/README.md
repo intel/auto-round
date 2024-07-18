@@ -147,28 +147,32 @@ The transformers version required varies across different types of models. Here,
 
 | Model | Transformers version |
 |  :----: | :----: |
-| EleutherAI/gpt-j-6b | 4.28/4.30/4.34/4.36 |
-| huggyllama/llama-7b | 4.28/4.30/4.34/4.36 |
-| meta-llama/Llama-2-7b-hf | 4.30/4.34/4.36 |
-| facebook/opt-6.7b | 4.28/4.30/4.34/4.36 |
-| tiiuae/falcon-7b | 4.28/4.30/4.34/4.36 |
+| EleutherAI/gpt-j-6b | 4.28/4.30/4.34/4.36/4.40 |
+| huggyllama/llama-7b | 4.28/4.30/4.34/4.36/4.40 |
+| meta-llama/Llama-2-7b-hf | 4.30/4.34/4.36/4.40 |
+| facebook/opt-6.7b | 4.28/4.30/4.34/4.36/4.40 |
+| tiiuae/falcon-7b | 4.28/4.30/4.34/4.36/4.40 |
 | mosaicml/mpt-7b | 4.28/4.30/4.34/4.36 |
 | mosaicml/mpt-7b-chat | 4.34 |
-| bigscience/bloom-7b1 | 4.28/4.30/4.34/4.36 |
-| baichuan-inc/Baichuan2-7B-Chat | 4.36 |
-| Qwen/Qwen-7B | 4.28/4.30/4.34/4.36 |
-| Qwen/Qwen1.5-7B-Chat | 4.38/4.40 |
-| THUDM/chatglm3-6b | 4.34/4.36 |
-| mistralai/Mistral-7B-v0.1 | 4.34/4.36 |
-| MBZUAI/LaMini-GPT-124M | 4.34/4.36 |
-| EleutherAI/gpt-neo-125m | 4.34 |
-| databricks/dolly-v2-3b | 4.34 |
-| stabilityai/stablelm-base-alpha-3b | 4.34 |
-| Intel/neural-chat-7b-v3 | 4.34/4.36 |
-| rinna/bilingual-gpt-neox-4b | 4.36 |
-| microsoft/phi-2 | 4.36 |
+| bigscience/bloom-7b1 | 4.28/4.30/4.34/4.36/4.40 |
+| baichuan-inc/Baichuan2-7B-Chat | 4.36/4.40 |
+| Qwen/Qwen-7B | 4.28/4.30/4.34/4.36/4.40 |
+| Qwen/Qwen1.5-7B-Chat | 4.38/4.40/4.40 |
+| THUDM/chatglm3-6b | 4.34/4.36/4.40 |
+| mistralai/Mistral-7B-v0.1 | 4.34/4.36/4.40 |
+| mistralai/Mixtral-8x7B-Instruct-v0.1 | 4.40 |
+| MBZUAI/LaMini-GPT-124M | 4.34/4.36/4.40 |
+| EleutherAI/gpt-neo-125m | 4.34/4.40 |
+| databricks/dolly-v2-3b | 4.34/4.40 |
+| stabilityai/stablelm-base-alpha-3b | 4.34/4.40 |
+| Intel/neural-chat-7b-v3 | 4.34/4.36/4.40 |
+| rinna/bilingual-gpt-neox-4b | 4.36/4.40 |
+| microsoft/phi-2 | 4.36/4.40 |
 | google/gemma-7b | 4.38/4.40 |
-| Salesforce/codegen25-7b-multi | 4.33.2|
+| Salesforce/codegen25-7b-multi | 4.33.2 |
+
+
+
 
 
 ## Reference
@@ -181,6 +185,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
