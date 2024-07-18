@@ -102,7 +102,9 @@ class NestedMoEModel(nn.Module):
 class TestQuantizationBlocks(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        pass
+        self.model_name = "MBZUAI/LaMini-GPT-124M"
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        self.llm_dataloader = LLMDataLoader()
 
     @classmethod
     def tearDownClass(self):
@@ -125,7 +127,7 @@ class TestQuantizationBlocks(unittest.TestCase):
         except:
             pass
         assert len(llm_block_names) != len(all_block_names)
-
+        
 
     def test_multimodal_quant(self):
         num_text_encoders = 1
@@ -140,6 +142,31 @@ class TestQuantizationBlocks(unittest.TestCase):
         block_names_with_vision = get_multimodal_block_names(self.model, quant_vision=True)
         assert block_names_wo_vision == llm_block_names
         assert len(block_names_wo_vision) != (block_names_with_vision)
+        
+    
+    def test_block_name_quant(self):
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        from auto_round.utils import get_block_names
+        llm_block_names = get_block_names(self.model)
+        bits, group_size, sym = 4, 128, False
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            quant_block_list=llm_block_names
+        )
+        autoround.quantize()
+        try:
+            import auto_gptq
+        except:
+            return
+        autoround.save_quantized("./saved")
+        
         
 
 if __name__ == "__main__":
