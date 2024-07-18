@@ -234,7 +234,7 @@ class AutoRound(object):
         The quantized model and layer configurations.
         """
         # logger.info("cache block input")
-        if self.quant_block_list:
+        if bool(self.quant_block_list):
             all_blocks = self.quant_block_list
         else:
             all_blocks = get_block_names(self.model)
@@ -250,6 +250,7 @@ class AutoRound(object):
         self.start_time = time.time()
         all_first_block_names = [block[0] for block in all_blocks]
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
@@ -262,7 +263,6 @@ class AutoRound(object):
                     self.train_bs = total_samples
                     logger.warning(f"force the train batch size to {total_samples}")
 
-            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             torch.cuda.empty_cache()
             self.quant_blocks(
                 self.model,

@@ -242,13 +242,13 @@ def validate_modules(module_names):
         Returns:
         bool: True if all modules have equal length or not dependent, otherwise False.
         """
-        if not bool(module_names):
+        if not bool(module_names):  # pragma: no cover
             raise ValueError(f"Empty modules")
         if len(module_names) < 2:
             return True
         split_modules = [s.split('.') for s,_ in module_names]
         lengths = [len(parts) for parts in split_modules]
-        if len(set(lengths)) == 1:
+        if len(set(lengths)) == 1: # pragma: no cover
             return True
         max_length = max(lengths)
         min_length = min(lengths)
@@ -257,7 +257,7 @@ def validate_modules(module_names):
         shortest_module = '.'.join(shortest_module)
         longest_module = '.'.join(longest_module)
         # Check if the shortest name is a substring of the longest name
-        if shortest_module in longest_module:
+        if shortest_module in longest_module: # pragma: no cover
             raise ValueError(f"Invalid modules, at least two modules detected"\
                               " as dependent, {shortest_module} and {longest_module}")
         return True

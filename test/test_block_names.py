@@ -2,6 +2,7 @@ import copy
 import shutil
 import sys
 import unittest
+sys.path.insert(0, ".")
 sys.path.insert(0, "..")
 import torch
 import torch.nn as nn
@@ -146,9 +147,10 @@ class TestQuantizationBlocks(unittest.TestCase):
     
     def test_block_name_quant(self):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        from auto_round.utils import get_block_names
+        from auto_round.utils import get_block_names, validate_modules
         llm_block_names = get_block_names(self.model)
-        bits, group_size, sym = 4, 128, False
+        validate_modules(llm_block_names)
+        bits, group_size, sym, train_bs = 4, 128, False, 20
         autoround = AutoRound(
             self.model,
             self.tokenizer,
@@ -157,6 +159,7 @@ class TestQuantizationBlocks(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
+            train_bs=train_bs,
             dataset=self.llm_dataloader,
             quant_block_list=llm_block_names
         )
@@ -165,7 +168,9 @@ class TestQuantizationBlocks(unittest.TestCase):
             import auto_gptq
         except:
             return
-        autoround.save_quantized("./saved")
+        autoround.save_quantized("./saved", inplace=False, safe_serialization=False)
+        autoround.save_quantized(output_dir="./saved", inplace=False, format="auto_round")
+        
         
         
 
