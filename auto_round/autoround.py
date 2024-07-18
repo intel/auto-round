@@ -956,22 +956,26 @@ class AutoRound(object):
         logger.info(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
-        with torch.no_grad():
-            unwrapper_block(block, best_v, best_min_scale, best_max_scale)
+
         if self.enable_quanted_input:
             block = block.to(device)
             q_outputs = self.get_block_outputs(
                 block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
                 cache_device=self.cache_device
             )
+            with torch.no_grad():
+                unwrapper_block(block, best_v, best_min_scale, best_max_scale)
             block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
             for i in range(len(input_ids)):
                 input_ids[i] = None
             torch.cuda.empty_cache()
 
+
             return q_outputs, output
 
         else:
+            with torch.no_grad():
+                unwrapper_block(block, best_v, best_min_scale, best_max_scale)
             for i in range(len(input_ids)):
                 input_ids[i] = None
             torch.cuda.empty_cache()
@@ -1069,7 +1073,7 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
-        if format == "fake" or format == "qdq" or self.act_bits <= 8:  ##TODO fix act quantizaiton later
+        if format == "fake" or format == "qdq":  ##TODO fix act quantizaiton later
             self.model = self.model.to("cpu")
             self.model.save_pretrained(output_dir)
             if self.tokenizer is not None:

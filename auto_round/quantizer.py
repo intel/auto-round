@@ -334,9 +334,9 @@ class WrapperLinear(torch.nn.Module):
         if hasattr(self.orig_layer, 'update'):
             self.orig_layer.update()
             self.orig_layer.to('meta')
-        if self.act_quant:
-            wrapper_layer = WrapperWALayer(self.orig_layer)
-            return wrapper_layer
+        # if self.act_quant:
+        #     wrapper_layer = WrapperWALayer(self.orig_layer)
+        #     return wrapper_layer
         return self.orig_layer
 
     def forward(self, x):
