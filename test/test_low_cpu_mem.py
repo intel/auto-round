@@ -100,6 +100,7 @@ class TestLowCPUMem(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
+            low_cpu_mem_usage=True
         )
         autoround.quantize()
 
