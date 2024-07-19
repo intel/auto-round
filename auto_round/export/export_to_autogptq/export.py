@@ -136,6 +136,8 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
 
+    model = model.to(torch.float16)
+
     layer_config = kwargs["layer_config"]
 
     with tctl.threadpool_limits(limits=1):
