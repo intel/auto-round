@@ -388,10 +388,6 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
         elif len(module._modules) == 0:
             # skip method type
             if len(module._parameters) == 0 or module.weight.device.type != 'meta':
-                if hasattr(module, "scale"):
-                    module.scale = module.scale.to(device_or_dtype)
-                if hasattr(module, "zp"):
-                    module.zp = module.zp.to(device_or_dtype)
                 return module.ori_to(device_or_dtype)
             else:
                 for n, _ in module.named_parameters():

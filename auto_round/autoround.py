@@ -967,7 +967,8 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.enable_quanted_input:
-            block = block.to(device)
+            if self.low_cpu_mem_usage:
+                block = block.to(device)
             q_outputs = self.get_block_outputs(
                 block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
                 cache_device=self.cache_device
@@ -1041,7 +1042,8 @@ class AutoRound(object):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
-            m = m.to(device)
+            if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
+                m = m.to(device)
 
             q_input, input_ids = self.quant_block(
                 m,
