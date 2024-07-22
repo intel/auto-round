@@ -138,11 +138,6 @@ def quant_tensor_sym(weight, num_bits=4, v=0, min_scale=1.0, max_scale=1.0, scal
     q = torch.clamp(int_w + zp, 0, maxq)
     return scale * (q - zp), scale, zp
 
-def round_code_book(x, code_p):
-    x  = round_ste(x)
-    x[x==0] += code_p[0]
-    x[x==1] += code_p[1]
-
 
 def quant_tensor_actor(weight, num_bits, sym, v, min_scale, max_scale, scale_dtype=torch.float16, weight_min=None,
                        weight_max=None, q_scale_thresh=0.0):
