@@ -118,7 +118,6 @@ if __name__ == '__main__':
 
     parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
                         help="choose low cpu memory mode, 1 for block-wise, 2 for layer-wise, others means not use low cpu memory.")
-
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 
@@ -148,8 +147,8 @@ if __name__ == '__main__':
     if "marlin" in args.deployment_device and args.sym is False:
         assert False, "marlin backend only supports sym quantization, please set --sym"
 
-    # if args.act_bits <= 8 and args.deployment_device != "fake":
-    #     assert False, "only support fake mode for activation quantization currently"
+    if args.act_bits <= 8 and args.deployment_device != "fake":
+        assert False, "only support fake mode for activation quantization currently"
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -318,7 +317,7 @@ if __name__ == '__main__':
         elif "gptq" in gpu_format:
             eval_folder = f'{export_dir}-gpu'
             autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-    eval_folder = f'{export_dir}-round'
+
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
