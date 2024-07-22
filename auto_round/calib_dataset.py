@@ -487,8 +487,7 @@ class Dataset():
 
     def load_processed_dataset(self):
         if not os.path.isfile(self.dataset_path):
-            log.warn(
-                "Processed pickle file {} not found. Please check that the path is correct".format(self.dataset_path))
+            assert False, f"Processed pickle file {self.dataset_path} not found. Please check that the path is correct"
 
         processed_data = pd.read_pickle(self.dataset_path)
         input_tokens = processed_data['tok_input']

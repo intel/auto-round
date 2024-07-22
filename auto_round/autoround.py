@@ -16,7 +16,7 @@
 import copy
 import time
 from typing import Optional, Union
-
+from tqdm import tqdm
 import torch
 import transformers
 from torch import autocast
@@ -46,6 +46,7 @@ from .utils import (
 )
 
 from .layer_wise.utils import get_layers_before_block
+
 
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
@@ -138,7 +139,7 @@ class AutoRound(object):
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
-            multimodal:bool = False,
+            multimodal: bool = False,
             act_bits: int = 32,
             act_group_size: int = None,
             act_sym: bool = None,
@@ -215,7 +216,7 @@ class AutoRound(object):
         assert self.bits > 0, "bits must be positive"
         assert self.act_bits > 0, "bits must be positive"
         assert self.group_size == -1 or self.group_size >= 1, "only supports positive group_size or -1(per channel)"
-        assert self.act_group_size == -1 or self.act_group_size >= 1,\
+        assert self.act_group_size == -1 or self.act_group_size >= 1, \
             "only supports positive group_size or -1(per channel)"
         assert self.train_bs > 0, "batch size must be positive"
         assert self.iters > 0, "iters must be positive"
@@ -235,7 +236,7 @@ class AutoRound(object):
         """
         # logger.info("cache block input")
         all_blocks = get_block_names(self.model, self.multimodal)
-                    
+
         if len(all_blocks) == 0:
             logger.warning("could not find blocks, exit with original model")
             return self.model, self.layer_config
@@ -391,7 +392,6 @@ class AutoRound(object):
             for key in keys:
                 setattr(m, key, layer_config[n][key])
 
-
     @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
         """Compute the output of a given block of the model for a given input.
@@ -464,7 +464,7 @@ class AutoRound(object):
             embed_layers = get_layers_before_block(self.model)
             for n, m in embed_layers:
                 m = m.to(self.device)
-        
+
         for data in self.dataloader:
             if data is None:
                 continue
@@ -481,8 +481,8 @@ class AutoRound(object):
                     data_new[key] = data[key].to(self.device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
-                    data_new = data
-                    input_ids = data_new[0]
+                data_new = data
+                input_ids = data_new[0]
             else:
                 data_new = {}
                 for key in data.keys():
@@ -492,7 +492,7 @@ class AutoRound(object):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            
+
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
@@ -518,7 +518,7 @@ class AutoRound(object):
                 f"Insufficient number of samples collected may affect the quantification. "
                 f"Valid samples size:{total_cnt}, Target sample size:{nsamples}"
             )
-        
+
         # clean embed weight to save memory
         if self.low_cpu_mem_usage:
             for n, m in embed_layers:
@@ -662,8 +662,8 @@ class AutoRound(object):
                     elif "position_ids" in key:
                         if key not in self.inputs[name].keys():
                             self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
-                                                    if self.not_share_position_ids_flag \
-                                                    else to_device(kwargs[key], device=torch.device("cpu"))
+                                if self.not_share_position_ids_flag \
+                                else to_device(kwargs[key], device=torch.device("cpu"))
                         elif kwargs[key] is not None and self.not_share_position_ids_flag:
                             self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif key not in self.inputs[name].keys():
@@ -953,9 +953,9 @@ class AutoRound(object):
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
-        logger.info(dump_info)
-        if len(unquantized_layer_names) != 0:
-            logger.info(f"{unquantized_layer_names} have not been quantized")
+        # logger.info(dump_info)
+        # if len(unquantized_layer_names) != 0:
+        #     logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.enable_quanted_input:
@@ -1021,10 +1021,12 @@ class AutoRound(object):
                 for i in range(len(input_others[key])):
                     input_others[key][i].to(tmp_dtype)
 
-        for i in range(0, len(block_names), nblocks):
+        pbar = tqdm(range(0, len(block_names), nblocks))
+
+        for i in pbar:
             if nblocks == 1:
                 n = block_names[i]
-                logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
+                pbar.set_description(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i: i + nblocks]
@@ -1510,5 +1512,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
-
