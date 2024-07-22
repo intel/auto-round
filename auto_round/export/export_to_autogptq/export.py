@@ -133,10 +133,10 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
+    model = model.to(torch.float16)
+
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-
-    model = model.to(torch.float16)
 
     layer_config = kwargs["layer_config"]
 

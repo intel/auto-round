@@ -166,10 +166,10 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     model = kwargs["model"]
     multimodal = kwargs["multimodal"]
-
+    model = model.to(torch.float16)
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-    model = model.to(torch.float16)
+
     layer_names_in_block = get_layer_names_in_block(model, multimodal=multimodal)
 
     layer_config = kwargs["layer_config"]
