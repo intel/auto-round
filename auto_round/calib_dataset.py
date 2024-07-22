@@ -291,8 +291,8 @@ def get_dataloader(
     Returns:
         DataLoader: The DataLoader for the calibrated dataset.
     """
-    data = Dataset(model_name="/models/Mixtral-8x7B-Instruct-v0.1",
-                   dataset_path="/data6/xinhe/auto-round/mixtral_15k_calibration_v4.pkl", pad_inputs=True)
+    data = Dataset(tokenizer,
+                   dataset_path=dataset_name, pad_inputs=True)
     return data
 
     dataset_names = dataset_name.split(",")
@@ -462,26 +462,28 @@ log = logging.getLogger("MoE-Dataset")
 
 
 class Dataset():
-    def __init__(self, model_name=None, total_sample_count=15000, perf_count_override=None, dataset_path=None,
+    def __init__(self, tokenizer, total_sample_count=15000, perf_count_override=None, dataset_path=None,
                  device="cpu", pad_inputs=False):
-        self.model_name = model_name or "mixtral/Mixtral-8x7B-Instruct-v0.1"
+        # self.model_name = model_name or "mixtral/Mixtral-8x7B-Instruct-v0.1"
         self.dataset_path = dataset_path
         self.max_length = 2048
         self.device = device
         self.pad_inputs = pad_inputs
+        self.tokenizer = tokenizer
+        self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.load_tokenizer()
+        # self.load_tokenizer()
         self.load_processed_dataset()
         self.total_sample_count = min(len(self.input_ids), total_sample_count)
         self.perf_count = perf_count_override or self.total_sample_count
 
-    def load_tokenizer(self):
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name,
-            model_max_length=self.max_length,
-            padding_side="right",
-            use_fast=False, )
-        self.tokenizer.pad_token = self.tokenizer.eos_token
+    # def load_tokenizer(self):
+    #     self.tokenizer = AutoTokenizer.from_pretrained(
+    #         self.model_name,
+    #         model_max_length=self.max_length,
+    #         padding_side="right",
+    #         use_fast=False, )
+    #     self.tokenizer.pad_token = self.tokenizer.eos_token
 
     def load_processed_dataset(self):
         if not os.path.isfile(self.dataset_path):
