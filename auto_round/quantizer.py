@@ -39,6 +39,7 @@ def reshape_tensor(v, group_size=-1):
     else:
         pad_len = (v.shape[1] + group_size - 1) // group_size * group_size - v.shape[1]
         v = torch.nn.functional.pad(v, (0, pad_len))
+        v = v.reshape(-1, group_size)
     return v
 
 
