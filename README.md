@@ -81,7 +81,7 @@ GPU: [GPTQModel](https://ModelCloud/GPTQModel)
 
 from datasets import load_dataset
 from transformers import AutoTokenizer
-from gptmodel import GPTQModel
+from gptqmodel import GPTQModel
 from gptqmodel.quantization import FORMAT
 from gptqmodel.quantization.config import AutoRoundQuantizeConfig
 
