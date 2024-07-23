@@ -74,6 +74,37 @@ output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_round")
 ```
 
+GPU: [GPTQModel](https://ModelCloud/GPTQModel)
+```python
+## git clone https://github.com/ModelCloud/GPTQModel && cd GPTQModel
+## pip install -v . --no-build-isolation
+
+from datasets import load_dataset
+from transformers import AutoTokenizer
+from gptmodel import GPTQModel
+from gptqmodel.quantization import FORMAT
+from gptqmodel.quantization.config import AutoRoundQuantizeConfig
+
+model_name = "facebook/opt-125m"
+quantize_config = AutoRoundQuantizeConfig(
+    bits=4,
+    group_size=128,
+    sym=True,
+    format=FORMAT.GPTQ,  # if sym=False, use FORMAT.GPTQ_V2
+)
+
+output_dir = "./tmp_autoround"
+
+model = GPTQModel.from_pretrained(model_name, quantize_config=quantize_config)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+traindata = load_dataset("wikitext", "wikitext-2-raw-v1", split="train").filter(lambda x: len(x['text']) >= 512)
+calibration_dataset = [tokenizer(example["text"]) for example in traindata.select(range(512))]
+
+model.quantize(calibration_dataset, batch_size=16)
+model.save_quantized(output_dir)
+```
+
 <details>
   <summary>Detailed Hyperparameters</summary>
 
@@ -152,17 +183,35 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
-
-### GPU
+### GPU: [GPTQModel](https://github.com/ModelCloud/GPTQModel)
 
 ```python
-##pip install auto-gptq
+## git clone https://github.com/ModelCloud/GPTQModel && cd GPTQModel
+## pip install -v . --no-build-isolation
+
+from transformers import AutoTokenizer
+from gptqmodel import GTPQModel
+
+quantized_model_path = "./tmp_autoround"
+model = GTPQModel.from_quantized(quantized_model_path)
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+```
+
+### GPU: AutoGPTQ
+
+```python
+## pip install auto-gptq
 from transformers import AutoModelForCausalLM, AutoTokenizer
 ##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with auto_round format
 
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
@@ -176,9 +225,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round.auto_quantizer import AutoHfQuantizer
 import habana_frameworks.torch.core as htcore
 import habana_frameworks.torch.hpu as hthpu
+
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path).to('hpu').to(torch.float32)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
