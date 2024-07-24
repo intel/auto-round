@@ -812,7 +812,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         else:
             from auto_round_extension.hpu.qlinear_hpu import QuantLinear
             return QuantLinear
-    if "awq" in backend:
+    if "awq" in backend: # pragma: no cover
         try:
             from awq.modules.linear import WQLinear_GEMM # pylint: disable=E0401
         except:
