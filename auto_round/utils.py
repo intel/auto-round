@@ -558,7 +558,11 @@ def is_local_path(path):
     Returns:
         bool: True if the path exists locally, False otherwise.
     """
-    return os.path.exists(path)
+    format_list = ("json", "txt",)
+    flag = None
+    for x in format_list:
+        flag = True if x in path else False
+    return flag and os.path.exists(path)
 
 
 def convert_dtype_str2torch(str_dtype):
