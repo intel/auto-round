@@ -33,9 +33,9 @@ from transformers.models.auto.auto_factory import _BaseAutoModelClass
 from .load import load
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
-logger = logging.getLogger("layer_wise_tools")
+logger = logging.getLogger("low_cpu_mem_tools")
 
-LWQ_WORKSPACE = os.path.join("layer_wise_tmp")
+LWQ_WORKSPACE = os.path.join("low_cpu_mem_tmp")
 
 
 def get_module(model, key):
@@ -388,10 +388,6 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
         elif len(module._modules) == 0:
             # skip method type
             if len(module._parameters) == 0 or module.weight.device.type != 'meta':
-                if hasattr(module, "scale"):
-                    module.scale = module.scale.to(device_or_dtype)
-                if hasattr(module, "zp"):
-                    module.zp = module.zp.to(device_or_dtype)
                 return module.ori_to(device_or_dtype)
             else:
                 for n, _ in module.named_parameters():

@@ -172,11 +172,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         backend = backend.replace("auto_round", "auto_gptq")
 
     model = kwargs["model"]
-    multimodal = kwargs["multimodal"]
-    model = model.to(torch.float16)  ##force to fp16
+    quant_block_list = kwargs["quant_block_list"]
+    safe_serialization = True if 'safe_serialization' not in kwargs.keys() else  kwargs["safe_serialization"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-    layer_names_in_block = get_layer_names_in_block(model, multimodal=multimodal)
+    layer_names_in_block = get_layer_names_in_block(model, quant_block_list=quant_block_list)
 
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
@@ -208,7 +208,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     with tctl.threadpool_limits(limits=1):
         modules_to_not_convert = []
         for name in layer_config.keys():
-
             config = kwargs["layer_config"][name]
             if config["bits"] > 8:
                 if "awq" in backend:
@@ -282,7 +281,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     if "awq" not in backend:
-        save(model, output_dir)
+        save(model, output_dir, safe_serialization=safe_serialization)
     else:
         save_awq(model, output_dir, modules_to_not_convert=modules_to_not_convert)
 
@@ -353,3 +352,4 @@ def save_awq(
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(quantization_config, f, indent=2)
           
+

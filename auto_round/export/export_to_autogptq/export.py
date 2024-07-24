@@ -36,8 +36,8 @@
 # SOFTWARE.
 import torch
 
-from auto_round.utils import check_to_quantized, get_block_names, get_module, logger, get_layer_names_in_block, \
-    set_module
+from auto_round.utils import check_to_quantized, get_block_names,\
+        get_module, logger, get_layer_names_in_block, set_module
 import copy
 import json
 import os
@@ -107,12 +107,16 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     model = kwargs["model"]
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
-
+    safe_serialization = True if 'safe_serialization' not in kwargs.keys() else  kwargs["safe_serialization"]
+    quant_block_list = kwargs["quant_block_list"]
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
-    all_blocks = get_block_names(model, multimodal=True)
+    if bool(quant_block_list):
+        all_blocks = quant_block_list
+    else:
+        all_blocks = get_block_names(model)
     all_to_quantized = True
     modules_in_block_to_quantize = []
     for block_names in all_blocks:
@@ -133,7 +137,6 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
-    model = model.to(torch.float16)  ##force to fp16
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
 
@@ -201,7 +204,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
-    save(model, output_dir)
+    save(model, output_dir, safe_serialization=safe_serialization)
 
 
 ##
@@ -232,4 +235,6 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
+
 
