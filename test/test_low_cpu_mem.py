@@ -6,7 +6,7 @@ sys.path.insert(0, "..")
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round.layer_wise.utils import (
+from auto_round.low_cpu_mem.utils import (
     load_model_with_hooks,
     load_empty_model,
     get_layers_before_block,
@@ -100,6 +100,7 @@ class TestLowCPUMem(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
+            low_cpu_mem_usage=True
         )
         autoround.quantize()
 

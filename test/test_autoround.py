@@ -34,12 +34,12 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_remove_whole_block(self):
-        layer_config={"model.decoder.layers.0.self_attn.k_proj":{"data_type":"float"},
-                       "model.decoder.layers.0.self_attn.v_proj": {"data_type": "float"},
-                       "model.decoder.layers.0.self_attn.q_proj": {"data_type": "float"},
-                       "model.decoder.layers.0.self_attn.out_proj": {"data_type": "float"},
-                       "model.decoder.layers.0.fc1": {"data_type": "float"},
-                       "model.decoder.layers.0.fc2": {"data_type": "float"},
+        layer_config={"model.decoder.layers.0.self_attn.k_proj":{"bits":32},
+                       "model.decoder.layers.0.self_attn.v_proj": {"bits": 32},
+                       "model.decoder.layers.0.self_attn.q_proj": {"bits": 32},
+                       "model.decoder.layers.0.self_attn.out_proj": {"bits": 32},
+                       "model.decoder.layers.0.fc1": {"bits": 32},
+                       "model.decoder.layers.0.fc2": {"bits": 32},
                        }
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
@@ -52,6 +52,21 @@ class TestAutoRound(unittest.TestCase):
             seqlen=2,
             dataset=self.llm_dataloader,
             layer_config=layer_config
+        )
+        autoround.quantize()
+
+    def test_mx_fp4(self):
+        bits, group_size, sym = 4, 32, False
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            data_type="mx_fp4"
         )
         autoround.quantize()
 
@@ -209,6 +224,22 @@ class TestAutoRound(unittest.TestCase):
             seqlen=2,
             dataset=self.llm_dataloader,
             act_bits=4,
+        )
+        autoround.quantize()
+    
+    def test_auto_device_map(self):
+        bits, group_size, sym = 4, 128, False
+        model_name = "facebook/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True, device_map='auto')
+        autoround = AutoRound(
+            model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
 
