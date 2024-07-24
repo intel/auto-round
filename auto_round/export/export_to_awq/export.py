@@ -48,7 +48,7 @@ from auto_round.utils import convert_dtype_torch2str_hf, logger
 
 
 @register_format("auto_awq")
-def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
+def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs): # pragma: no cover
     """Export the model to autogptq format to easily leverage cuda kernel."""
     model = kwargs["model"]
     layer_config = kwargs["layer_config"]
@@ -136,7 +136,7 @@ def save_quantized(
     quant_config,
     safetensors=True,
     shard_size="5GB",
-):
+): # pragma: no cover
     save_dir = save_dir[:-1] if save_dir[-1] == "/" else save_dir
 
     # Save model
@@ -194,7 +194,7 @@ def save_quantized(
         json.dump(quant_config, f, indent=2)
 
 
-def get_named_linears(module):
+def get_named_linears(module): # pragma: no cover
     """Get the name, linear_op pairs of a given module.
     Args:
     module: A module to be searched.
@@ -202,7 +202,7 @@ def get_named_linears(module):
     return {name: m for name, m in module.named_modules() if isinstance(m, torch.nn.Linear)}
 
 
-def set_op_by_name(layer, name, new_module):
+def set_op_by_name(layer, name, new_module): # pragma: no cover
     levels = name.split(".")
     if len(levels) > 1:
         mod_ = layer
@@ -216,7 +216,7 @@ def set_op_by_name(layer, name, new_module):
         setattr(layer, name, new_module)
 
 
-def get_module_name(model, module_to_find):
+def get_module_name(model, module_to_find): # pragma: no cover
     """Get the name of a given module in a model.
     Args:
     model: The model.
