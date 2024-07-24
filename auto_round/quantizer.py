@@ -149,7 +149,7 @@ class WrapperLinear(torch.nn.Module):
 
         weight_dtype = torch.float32
         orig_layer_weight = self.orig_layer.weight if not hasattr(self.orig_layer, 'get_weight') \
-            else self.orig_layer.get_weight()
+            else self.orig_layer.get_weight().to(device)
         self.value = torch.nn.Parameter(
             reshape_tensor(
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
@@ -285,7 +285,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         weight_dtype = torch.float32
         self.device = device
         if hasattr(self.orig_layer, 'get_weight'):
-            self.weight_t = self.orig_layer.get_weight().t()
+            self.weight_t = self.orig_layer.get_weight().t().to(self.device)
         else:
             self.weight_t = self.orig_layer.weight.t()
         self.weight_t = self.weight_t.to(self.device)
