@@ -667,7 +667,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
 
 
 import numba
-class Pakcer:
+class Packer:
     @staticmethod
     def pack_2d_tensor(
         raw_tensor: torch.Tensor, n_pack: int, bits: int, compression_dtype: torch.dtype = torch.int32
@@ -774,7 +774,7 @@ class Pakcer:
         assert orig_arr.ndim == 2, f"orig_arr must be a 2D array, but got {orig_arr.ndim}D"
         assert bits in [2, 4], f"bits must be 2 or 4, but got {bits}"
         assert n_pack * bits == 32, f"n_pack * bits must be 32, but got {n_pack} * {bits} = {n_pack * bits}"
-        return Pakcer._pack_tensor_with_numpy_opt_np_numba(orig_arr, n_pack, bits)
+        return Packer._pack_tensor_with_numpy_opt_np_numba(orig_arr, n_pack, bits)
 
 
     @staticmethod

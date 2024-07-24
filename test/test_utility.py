@@ -6,9 +6,9 @@ import torch
 
 import auto_round.utils as auto_round_utils
 import os
-ref_fn = auto_round_utils.Pakcer.pack_2d_tensor
-fn1 = auto_round_utils.Pakcer.pack_tensor_with_numpy_opt_np_numba
-fn2 = auto_round_utils.Pakcer.pack_tensor_with_numpy_opt_np_numba_v2
+ref_fn = auto_round_utils.Packer.pack_2d_tensor
+fn1 = auto_round_utils.Packer.pack_tensor_with_numpy_opt_np_numba
+fn2 = auto_round_utils.Packer.pack_tensor_with_numpy_opt_np_numba_v2
 
 
 @pytest.mark.parametrize("bits", [2, 4])
