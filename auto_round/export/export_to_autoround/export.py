@@ -89,6 +89,7 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
         disable_exllamav2 = True
         disable_exllamav1 = True
 
+
     from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
     QuantLinear = dynamically_import_QuantLinear(
         use_triton=use_triton,
@@ -180,6 +181,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "intel/auto-round"
+    if "awq" not in backend:
+        quantization_config["backend"] = backend
     extra_config = {}
     for layer_name in layer_config:
         if layer_name not in layer_names_in_block and layer_config[layer_name]["bits"] <= 8:  ##lm head
@@ -349,4 +352,4 @@ def save_awq(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(quantization_config, f, indent=2)
-            
+          
