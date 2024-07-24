@@ -52,7 +52,6 @@ pip install -r requirements.txt
 CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m  --bits 4 --group_size 128
 ```
 - **Reduced GPU Memory Usage:**
-- 
 enable low_gpu_mem_usage(more tuning cost)
 
 set "--train_bs 1 --gradient_accumulate_steps 8" (more tuning cost)
@@ -62,6 +61,12 @@ reduce the train bs to 4(potential accuracy drop)
 reduce the seqlen to 512 (potential accuracy drop)
 
 or combine them
+
+- **Reduced CPU Memory Usage:**
+set "--low_cpu_mem_mode 1" to use block-wise mode, load the weights from disk of each block when tuning and release the memory of the block after tuning. (more tuning cost)
+
+set "--low_cpu_mem_mode 2" to use layer-wise mode, load the weights of each layer from disk when tuning, minimum memory consumption and also slowest running speed.
+
 
 - **Speedup the tuning:**
 
@@ -123,6 +128,11 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bi
 CUDA_VISIBLE_DEVICES=1,2 python3 eval/evaluation.py --model_name /save_model_path/ --eval_bs 8 --tasks mmlu,lambada_openai,ptb --excel_path /result_excel/save_path/
 ```
 
+- User could also perform evaluation on Intel Gaudi-2 using the following script.
+```bash
+python3 eval_042/evaluation.py --model_name /saved_model_path/ --tasks mmlu --device hpu
+```
+
 You can also utilize the official lm_eval [link](https://github.com/EleutherAI/lm-evaluation-harness/tree/main?tab=readme-ov-file#basic-usage).
 
 ## 4. Known Issues
@@ -137,28 +147,32 @@ The transformers version required varies across different types of models. Here,
 
 | Model | Transformers version |
 |  :----: | :----: |
-| EleutherAI/gpt-j-6b | 4.28/4.30/4.34/4.36 |
-| huggyllama/llama-7b | 4.28/4.30/4.34/4.36 |
-| meta-llama/Llama-2-7b-hf | 4.30/4.34/4.36 |
-| facebook/opt-6.7b | 4.28/4.30/4.34/4.36 |
-| tiiuae/falcon-7b | 4.28/4.30/4.34/4.36 |
+| EleutherAI/gpt-j-6b | 4.28/4.30/4.34/4.36/4.40 |
+| huggyllama/llama-7b | 4.28/4.30/4.34/4.36/4.40 |
+| meta-llama/Llama-2-7b-hf | 4.30/4.34/4.36/4.40 |
+| facebook/opt-6.7b | 4.28/4.30/4.34/4.36/4.40 |
+| tiiuae/falcon-7b | 4.28/4.30/4.34/4.36/4.40 |
 | mosaicml/mpt-7b | 4.28/4.30/4.34/4.36 |
 | mosaicml/mpt-7b-chat | 4.34 |
-| bigscience/bloom-7b1 | 4.28/4.30/4.34/4.36 |
-| baichuan-inc/Baichuan2-7B-Chat | 4.36 |
-| Qwen/Qwen-7B | 4.28/4.30/4.34/4.36 |
-| Qwen/Qwen1.5-7B-Chat | 4.38/4.40 |
-| THUDM/chatglm3-6b | 4.34/4.36 |
-| mistralai/Mistral-7B-v0.1 | 4.34/4.36 |
-| MBZUAI/LaMini-GPT-124M | 4.34/4.36 |
-| EleutherAI/gpt-neo-125m | 4.34 |
-| databricks/dolly-v2-3b | 4.34 |
-| stabilityai/stablelm-base-alpha-3b | 4.34 |
-| Intel/neural-chat-7b-v3 | 4.34/4.36 |
-| rinna/bilingual-gpt-neox-4b | 4.36 |
-| microsoft/phi-2 | 4.36 |
+| bigscience/bloom-7b1 | 4.28/4.30/4.34/4.36/4.40 |
+| baichuan-inc/Baichuan2-7B-Chat | 4.36/4.40 |
+| Qwen/Qwen-7B | 4.28/4.30/4.34/4.36/4.40 |
+| Qwen/Qwen1.5-7B-Chat | 4.38/4.40/4.40 |
+| THUDM/chatglm3-6b | 4.34/4.36/4.40 |
+| mistralai/Mistral-7B-v0.1 | 4.34/4.36/4.40 |
+| mistralai/Mixtral-8x7B-Instruct-v0.1 | 4.40 |
+| MBZUAI/LaMini-GPT-124M | 4.34/4.36/4.40 |
+| EleutherAI/gpt-neo-125m | 4.34/4.40 |
+| databricks/dolly-v2-3b | 4.34/4.40 |
+| stabilityai/stablelm-base-alpha-3b | 4.34/4.40 |
+| Intel/neural-chat-7b-v3 | 4.34/4.36/4.40 |
+| rinna/bilingual-gpt-neox-4b | 4.36/4.40 |
+| microsoft/phi-2 | 4.36/4.40 |
 | google/gemma-7b | 4.38/4.40 |
-| Salesforce/codegen25-7b-multi | 4.33.2|
+| Salesforce/codegen25-7b-multi | 4.33.2 |
+
+
+
 
 
 ## Reference
@@ -171,6 +185,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 

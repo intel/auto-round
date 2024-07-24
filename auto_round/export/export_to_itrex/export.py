@@ -192,6 +192,8 @@ def pack_model(
         scale_dtype=convert_dtype_str2torch(config.scale_dtype),
         device="xpu",
     """
+    if model.device.type == 'meta':
+        model = model.to("cuda" if device == "xpu" else device)
     if inplace:
         compressed_model = model
     else:
@@ -202,9 +204,9 @@ def pack_model(
     else:
         q_config = layer_config
     for k, v in q_config.items():
-        logger.info(f"Packing {k}")
         if "float" in v["data_type"]:
             continue
+        logger.info(f"Packing {k}")
         dtype = v["data_type"]
         num_bits = v["bits"]
         group_size = v["group_size"]

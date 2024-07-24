@@ -87,6 +87,10 @@ if __name__ == '__main__':
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
+    parser.add_argument("--data_type", default='int',
+                        help="data type for tuning, 'int', 'mx_fp' and etc.")
+
+
     parser.add_argument("--scale_dtype", default='fp16',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
@@ -117,7 +121,14 @@ if __name__ == '__main__':
                         help="quant_lm_head")
 
     parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
-                        help="choose low cpu memory mode, 1 for block-wise, 2 for layer-wise, others means not use low cpu memory.")
+                        help="Choose which low cpu memory mode to use. Can significantly reduce cpu memory footprint but cost more time."
+                        "1 means choose block-wise mode, load the weights of each block from disk when tuning and release the memory of the block after tuning."
+                        "2 means choose layer-wise mode, load the weights of each layer from disk when tuning, minimum memory consumption and also slowest running speed."
+                        "others means not use low cpu memory. Default to 0, not use low cpu memory.")
+                        
+    parser.add_argument("--low_cpu_mem_tmp_dir", default=None, type=str,
+                        help="temp work space to store the temporary files when using low cpu memory mode. Will remove after tuning.")
+
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 
@@ -144,11 +155,20 @@ if __name__ == '__main__':
     tasks = args.tasks
     use_eval_legacy = False
 
+    if "gpu" in args.deployment_device and args.sym is False:
+        print("warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use --deployment_device='auto_round'")
+
     if "marlin" in args.deployment_device and args.sym is False:
         assert False, "marlin backend only supports sym quantization, please set --sym"
 
     if args.act_bits <= 8 and args.deployment_device != "fake":
         assert False, "only support fake mode for activation quantization currently"
+
+    if "mx_fp" in args.data_type and args.deployment_device != "fake":
+        assert False, "only support fake mode for mx_fp data type currently"
+
+    if "mx_fp" in args.data_type and args.group_size != 32:
+        print("warning, mx_fp should only support group_size of 32 in real deployment")
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -166,25 +186,27 @@ if __name__ == '__main__':
     is_glm = bool(re.search("chatglm", model_name.lower()))
     low_cpu_mem_usage = False
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
+    if args.low_cpu_mem_tmp_dir is None:
+        args.low_cpu_mem_tmp_dir = os.path.join(args.output_dir, "low_cpu_mem_tmp")
     if args.low_cpu_mem_mode == 2:
-        from auto_round.layer_wise.utils import load_model_with_hooks
+        from auto_round.low_cpu_mem.utils import load_model_with_hooks
         model = load_model_with_hooks(
             model_name,
             model_cls,
             device=device_str,
             clean_weight=True,
-            saved_path=os.path.join(args.output_dir, "layer_wise_tmp"),
+            saved_path=args.low_cpu_mem_tmp_dir,
             torch_dtype=torch_dtype,
             trust_remote_code=not args.disable_trust_remote_code
         )
     elif args.low_cpu_mem_mode == 1:
-        from auto_round.layer_wise.utils import load_empty_model
+        from auto_round.low_cpu_mem.utils import load_empty_model
         low_cpu_mem_usage = True
         model = load_empty_model(
             model_name,
             model_cls,
             device=device_str,
-            saved_path=os.path.join(args.output_dir, "layer_wise_tmp"),
+            saved_path=args.low_cpu_mem_tmp_dir,
             torch_dtype=torch_dtype,
             trust_remote_code=not args.disable_trust_remote_code
             )
@@ -281,12 +303,12 @@ if __name__ == '__main__':
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
-                      low_cpu_mem_usage=low_cpu_mem_usage)
+                      low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
-        shutil.rmtree(os.path.join(args.output_dir, "layer_wise_tmp"), ignore_errors=True)
+        shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
 
     model.eval()
     if "cpu" not in device_str:
@@ -374,7 +396,8 @@ if __name__ == '__main__':
         print(excel_name, flush=True)
         eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
                    eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name)
+                   device=torch_device, excel_file=excel_name,
+                   trust_remote_code=not args.disable_trust_remote_code)
 
     if not args.disable_eval and lm_eval_version == "0.4.2":
         from eval_042.evaluation import simple_evaluate
@@ -385,6 +408,7 @@ if __name__ == '__main__':
             model_args = f"pretrained={eval_folder}"
         else:
             exit()  ## does not support cpu,xpu model eval
+        model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
         user_model = None
         if args.act_bits <= 8:
             user_model = model.to(device_str)
@@ -395,4 +419,5 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
+
 

@@ -27,7 +27,6 @@ from torch.amp import autocast
 
 from functools import lru_cache
 
-
 @lru_cache(None)
 def warning_once(self, msg: str):
     self.warning(msg)
@@ -80,6 +79,7 @@ class LazyImport(object):
 
 auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
+
 
 
 def is_optimum_habana_available():
@@ -135,6 +135,30 @@ def get_scale_shape(weight, group_size):
     return shape
 
 
+def unsupport_meta_device(model):
+    """Checks if the model is a valid model for auto_round.
+
+    Args:
+    model: The model to be checked.
+
+    Returns:
+    bool: True if the model is valid, False otherwise. 
+    """
+    target_device = None
+    for param in model.parameters():
+        if target_device is None:
+            target_device = param.device
+        if param.device != target_device:
+            if param.device.type == 'meta' or  target_device.type == 'meta':
+                return True
+    if target_device.type == 'meta':
+        if hasattr(model, "path"):
+            return False
+        else:
+            return True
+    return False
+
+
 def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
 
@@ -165,7 +189,17 @@ def to_device(input, device=torch.device("cpu")):
 
     return input
 
+
 def mv_module_from_gpu(module, low_cpu_mem_usage=False):
+    """Moves module from gpu to cpu or meta if low_cpu_mem_usage is true.
+
+    Args:
+    module: The module to be moved.
+    low_cpu_mem_usage: Whether to use low CPU memory. If true, move module to meta.
+
+    Returns:
+    The module on the specified device.
+    """
     if hasattr(module, "device"):
         target_device ="meta" if low_cpu_mem_usage else "cpu"
         if module.device.type == target_device:
@@ -222,22 +256,76 @@ def check_is_cpu(device):
     return device == torch.device("cpu") or device == "cpu"
 
 
-def get_block_names(model, multimodal=False):
+def validate_modules(module_names):
+        """
+        Test a list of modules' validity.
+        
+        Args:
+        modules (list of str): List of strings to be validated.
+        
+        Returns:
+        bool: True if all modules have equal length or not dependent, otherwise False.
+        """
+        if not bool(module_names):  # pragma: no cover
+            raise ValueError(f"Empty modules")
+        if len(module_names) < 2:
+            return True
+        split_modules = [s.split('.') for s,_ in module_names]
+        lengths = [len(parts) for parts in split_modules]
+        if len(set(lengths)) == 1: # pragma: no cover
+            return True
+        max_length = max(lengths)
+        min_length = min(lengths)
+        longest_module = next(s for s in split_modules if len(s) == max_length)
+        shortest_module = next(s for s in split_modules if len(s) == min_length)
+        shortest_module = '.'.join(shortest_module)
+        longest_module = '.'.join(longest_module)
+        # Check if the shortest name is a substring of the longest name
+        if shortest_module in longest_module: # pragma: no cover
+            raise ValueError(f"Invalid modules, at least two modules detected"\
+                              " as dependent, {shortest_module} and {longest_module}")
+        return True
+    
+    
+def get_block_names(model):
     """Get the block names for transformers-like networks.
 
     Args:
     model: The model.
 
     Returns:
-    block_names: A list of block names.
+    block_names: A list whose elements are list of block's layer names
     """
     block_names = []
     target_modules = []
     for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__ \
-                and (multimodal or ('vision' not in n and 'visual' not in n)):
-            target_modules.append((n, m))
-            # break  ## only find the first modulelist, may be not robust
+        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+                target_modules.append((n, m))
+                break   ## only find the first modulelist, may be not robust
+    for i,target_m in enumerate(target_modules):
+        block_names.append([])
+        for n, m in target_m[1].named_children():
+            block_names[i].append(target_m[0] + "." + n)
+    return block_names
+
+
+def get_multimodal_block_names(model, quant_vision=False):
+    """Get the multimodal model block names for transformers-like networks.
+
+    Args:
+    model: The model.
+
+    Returns:
+    block_names: A list whose elements are list of block's layer names
+    """
+    block_names = []
+    target_modules = []
+    Vison_blocks_tuple = ("vision", "visual",)
+    for n, m in model.named_modules():
+        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+            if quant_vision or all(key not in n.lower() for key in (Vison_blocks_tuple)):
+                target_modules.append((n, m))
+    validate_modules(target_modules)
     for i,target_m in enumerate(target_modules):
         block_names.append([])
         for n, m in target_m[1].named_children():
@@ -380,7 +468,7 @@ def detect_device(device=None):
         if torch.cuda.is_available():
             device = torch.device("cuda")
             logger.info("Using GPU device")
-        elif is_optimum_habana_available():
+        elif is_optimum_habana_available(): # pragma: no cover
             device = torch.device("hpu")
             logger.info("Using HPU device")
         # Use CPU as a fallback
@@ -573,7 +661,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         total_memory = torch.cuda.get_device_properties(current_gpu_index).total_memory
         used_memory = torch.cuda.memory_allocated(current_gpu_index)
         free_space = total_memory - used_memory
-    elif "hpu" in device:
+    elif "hpu" in device: # pragma: no cover
         current_hpu_index = torch.hpu.current_device()
         free_space = torch.hpu.memory_reserved(current_hpu_index)
     else:
@@ -597,7 +685,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D], multimodal=False):
+                                                     transformers.modeling_utils.Conv1D], quant_block_list=None):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -608,7 +696,10 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
         if isinstance(m, tuple(supported_types)):
             m.tmp_name = n
     layers_in_block = []
-    all_blocks = get_block_names(model, multimodal)
+    if bool(quant_block_list):
+        all_blocks = quant_block_list
+    else:
+        all_blocks = get_block_names(model)
     for block_names in all_blocks:
         for block_name in block_names:
             block = get_module(model, block_name)
@@ -690,8 +781,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
        """
     exllama2_available = is_autoround_exllamav2_available()
     ##TODO may have bug for marlin backend
-    if (
-            not torch.cuda.is_available()) or "qbits" in backend or "cpu" in backend:
+    if (not torch.cuda.is_available() and not is_optimum_habana_available()) or "qbits" in backend or "cpu" in backend:
         try:
             from intel_extension_for_transformers import qbits  # pylint: disable=E0401
         except Exception as e:
@@ -700,11 +790,28 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
         return qlinear_qbits.QuantLinear
     if "gptq" in backend:
+        if not is_optimum_habana_available():
+            try:
+                import auto_gptq  # pylint: disable=E0401
+            except Exception as e:
+                raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
+            return get_autogptq_infer_linear(backend, bits, group_size, sym)
+        else: # pragma: no cover
+            try:
+                import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
+            except Exception as e:
+                pass
+            else:
+                from auto_round_extension.hpu.qlinear_hpu_gptq import QuantLinear
+                return QuantLinear
+    if bits == 4 and is_optimum_habana_available(): # pragma: no cover
         try:
-            import auto_gptq  # pylint: disable=E0401
+            import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
         except Exception as e:
-            raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
-        return get_autogptq_infer_linear(backend, bits, group_size, sym)
+            pass
+        else:
+            from auto_round_extension.hpu.qlinear_hpu import QuantLinear
+            return QuantLinear
     if bits == 4 and exllama2_available and "exllamav2" in backend:
         from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
     elif bits == 4 and "exllamav2" in backend:
@@ -714,5 +821,6 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
     else:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     return QuantLinear
+
 
 
