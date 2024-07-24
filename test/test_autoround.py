@@ -32,6 +32,33 @@ class TestAutoRound(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+        
+    def test_block(self):
+        
+        def feak_input():
+            input_ids = torch.randn((2, 10, 768))
+            positional_inputs = []
+            attention_mask = torch.randn((2, 1, 10, 10))
+            input_others = {"positional_inputs":positional_inputs, "attention_mask": attention_mask}
+            return input_ids, input_others
+
+        block = self.model.model.decoder.layers[0]
+        block.dtype = next(block.parameters()).dtype
+        bits, group_size, sym = 4, 128, False
+        autoround = AutoRound(
+            block,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            dataloader=self.llm_dataloader,
+            use_quant_input=False, # disable it for now
+            n_samples=2, # double-check it
+            amp=False,
+        )
+        input_ids, input_others = feak_input()
+        _, output = autoround.quant_block(block, input_ids=input_ids, input_others=input_others)
 
     def test_default(self):
         bits, group_size, sym = 4, 128, False

@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+
+
+
 import copy
 import logging
 import subprocess
@@ -29,6 +33,18 @@ fh = logging.StreamHandler()
 fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
 fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
+
+
+def inspect_input_type(input, name=""):
+    if isinstance(input, dict) or isinstance(input, UserDict):
+        logger.info("Input is a dictionary")
+    elif isinstance(input, list) or isinstance(input, tuple):
+        logger.info("Input is a list or tuple")
+        for i in input:
+            inspect_input_type(i)
+        logger.info("------------++----------------")
+    elif isinstance(input, torch.Tensor):
+        logger.info("Input is a tensor")
 
 
 def is_optimum_habana_available():

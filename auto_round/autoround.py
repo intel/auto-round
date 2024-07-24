@@ -17,7 +17,7 @@ import copy
 import time
 
 import torch
-
+from typing import Optional
 from .utils import (
     CpuInfo,
     block_forward,
@@ -333,7 +333,7 @@ def unwrapper_block(block, vs, min_scales, max_scales):
             orig_layer = m.unwrapper(v, min_scale, max_scale)
             set_module(block, n, orig_layer)
 
-
+import auto_round.utils as ar_utils
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
      please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
