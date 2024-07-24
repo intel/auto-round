@@ -234,7 +234,7 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
                 data = [line for line in f]
             return data
         else:
-            logger.error("invalid local file type, for now only support json/txt format data file.")
+            logger.error("invalid local file type, for now only support json format data file.")
 
     samples = []
     dataset = load_local_data(dataset_name)
@@ -447,3 +447,4 @@ def get_dataloader(
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
+

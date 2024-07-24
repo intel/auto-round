@@ -561,7 +561,7 @@ def is_local_path(path):
     format_list = ("json", "txt",)
     flag = None
     for x in format_list:
-        flag = True if x in path else False
+        flag = True if x in path else flag
     return flag and os.path.exists(path)
 
 

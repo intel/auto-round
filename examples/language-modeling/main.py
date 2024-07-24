@@ -46,9 +46,8 @@ if __name__ == '__main__':
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
 
-    parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
-                        help="The dataset for quantization training. It can be a custom one."
-                             "Pile-10k local files are also provided for the backup(calib_data/pile-10k)")
+    parser.add_argument("--dataset", default="calib_data/pile-10k", type=str,
+                        help="The dataset for quantization training. It can be a custom one.")
 
     parser.add_argument("--enable_quanted_input", action='store_true',
                         help="enable_quanted_input is deprecated.")
