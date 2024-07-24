@@ -312,7 +312,7 @@ if __name__ == '__main__':
     deployment_device = args.deployment_device.split(',')
     gpu_formats = []
     for item in deployment_device:
-        if "gpu" in item or "auto_gptq" in item or "auto_round" in item:
+        if "gpu" in item or "auto_gptq" in item or "auto_round" in item or "auto_awq" in item:
             gpu_formats.append(item)
 
     if 'gpu' in deployment_device:
@@ -331,6 +331,9 @@ if __name__ == '__main__':
         elif "gptq" in gpu_format:
             eval_folder = f'{export_dir}-gpu'
             autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+        elif "auto_awq" in gpu_format:
+            eval_folder = f'{export_dir}-awq'
+            autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
 
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
