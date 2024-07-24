@@ -247,10 +247,10 @@ if __name__ == '__main__':
     parser.add_argument("--act_bits", default=32, type=int,
                     help="activation bits")
     
-    parser.add_argument("--do_multimodal", action='store_true',
-                        help="To determine whether the preprocessing should handle multimodal component.")
+    parser.add_argument("--quant_vision", action='store_true',
+                        help="To determine whether the quantization should handle vision component.")
     
-    parser.add_argument("--disable_safe_serialization", action='store_true',
+    parser.add_argument("--enable_safe_serialization", action='store_true',
                         help="To determine whether the save_pretrained process should use safe_serialization.")
     
     # ========== Calibration Datasets ============= 
@@ -261,8 +261,8 @@ if __name__ == '__main__':
                             help="The dataset for quantization training. It can be a custom one.")
     
     # ================= Evaluation Related =====================
-    parser.add_argument("--tasks",
-                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
+    parser.add_argument("--tasks", #wikitext
+                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,truthfulqa_mc1," \
                                 "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
                         help="lm-eval tasks for lm_eval version 0.4")
     
@@ -335,6 +335,7 @@ if __name__ == '__main__':
     
     from auto_round import (AutoRound,
                             AutoAdamRound)
+    from auto_round.utils import get_multimodal_block_names
 
     round = AutoRound
     if args.adam:
@@ -373,14 +374,17 @@ if __name__ == '__main__':
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
+        
+    quant_block_list = get_multimodal_block_names(model, args.quant_vision)
+    
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
-                      minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
-                      amp=not args.disable_amp, nsamples=args.nsamples,
-                      low_gpu_mem_usage=args.low_gpu_mem_usage, device=device_str,
+                      minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
+                      amp=not args.disable_amp, nsamples=args.nsamples, layer_config=layer_config,
+                      low_gpu_mem_usage=args.low_gpu_mem_usage, scale_dtype=args.scale_dtype,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, layer_config=layer_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, multimodal=args.do_multimodal)
+                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
+                      quant_block_list=quant_block_list)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 
@@ -404,28 +408,28 @@ if __name__ == '__main__':
             gpu_formats.append("auto_gptq")
     gpu_formats = list(set(gpu_formats))
 
-    inplace = True if len(deployment_device) < 2 else False
+    inplace = True if len(deployment_device) < 2 and args.disable_eval else False
     eval_folder = None
     for gpu_format in gpu_formats:
         if "round" in gpu_format:
             eval_folder = f'{export_dir}-round'
             autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace,
-                                     safe_serialization=not args.disable_safe_serialization)
+                                     safe_serialization=args.enable_safe_serialization)
         elif "gptq" in gpu_format:
             eval_folder = f'{export_dir}-gpu'
             autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace,
-                                     safe_serialization=not args.disable_safe_serialization)
+                                     safe_serialization=args.enable_safe_serialization)
 
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
-                                 device="xpu", safe_serialization=not args.disable_safe_serialization)
+                                 device="xpu", safe_serialization=args.enable_safe_serialization)
     if "cpu" in deployment_device:
         autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace,
-                                 safe_serialization=not args.disable_safe_serialization)
+                                 safe_serialization=args.enable_safe_serialization)
     if "fake" in deployment_device:
         model = model.to("cpu")
-        model.save_pretrained(output_dir, safe_serialization=not args.disable_safe_serialization)
+        model.save_pretrained(output_dir, safe_serialization=args.enable_safe_serialization)
         tokenizer.save_pretrained(output_dir)
         if eval_folder is None:
             eval_folder = output_dir
@@ -445,13 +449,14 @@ if __name__ == '__main__':
         else:
             exit()  ## does not support cpu,xpu model eval
         model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
-        user_model = None
-        model = model.to("cpu")
+        user_model = model
+        # model = model.to("cpu")
         if args.act_bits <= 8:
             user_model = model.to(device_str)
 
         res = simple_evaluate(model="hf", model_args=model_args,
                               tasks=tasks,
+                              limit=5,
                               batch_size=args.eval_bs, user_model=user_model)
         from lm_eval.utils import make_table
 

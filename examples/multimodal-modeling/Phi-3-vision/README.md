@@ -51,11 +51,7 @@ bash run_autoround_on_gaudi.sh
 ```
 
 
-<!-- ## 4. Known Issues
-* huggingface format model is not support yet, e.g. llava-1.5-7b-hf -->
-
-
-## 4. Environment
+## 3. Environment
 
 PyTorch 1.8 or higher version is needed
 
@@ -70,6 +66,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
