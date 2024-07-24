@@ -24,8 +24,8 @@ def test_correctness(bits, in_features, out_features):
     assert np.array_equal(ref.numpy(), res), f"ref:{ref}, res:{res}"
 
 
-PROFILE_PACK = os.environ.get("PROFILE_PACK", "0") == "1"
-@pytest.mark.skipif(not PROFILE_PACK, reason="skip profiling, set `PROFILE_PACK=1` to enable it.")
+BENCH_PACKER = os.environ.get("BENCH_PACKER", "0") == "1"
+@pytest.mark.skipif(not BENCH_PACKER, reason="skip profiling, set `BENCH_PACKER=1` to enable it.")
 @pytest.mark.parametrize("bits", [2, 4])
 @pytest.mark.parametrize("out_features", [128, 1024, 5120, 13824])
 @pytest.mark.parametrize("in_features", [1024, 13824])
