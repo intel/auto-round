@@ -41,16 +41,12 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     Returns:
         list: A list of strings indicating which configuration parameters do not match.
     """
-    res = []
-    if data_type != config["data_type"]:
-        res.append("data_type")
-    if bits != config["bits"]:
-        res.append("bits")
-    if group_size != config["group_size"]:
-        res.append("group_size")
-    if sym != config["sym"]:
-        res.append("sym")
-    return res
+    expected_config = {"data_type": data_type, 
+        "bits": bits, 
+        "group_size": group_size,
+        "sym": sym
+    }
+    return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
 
 
 def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
