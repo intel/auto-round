@@ -490,6 +490,8 @@ class Dataset():
             assert False, f"Processed pickle file {self.dataset_path} not found. Please check that the path is correct"
 
         processed_data = pd.read_pickle(self.dataset_path)
+        # input_strs = list(processed_data['input'])
+        gt_output = processed_data['tok_ref_output']
         input_tokens = processed_data['tok_input']
 
         log.info("mlperf seq 2048,right padding")
@@ -500,6 +502,8 @@ class Dataset():
         self.dataset = []
         for i, ids in enumerate(input_tokens):
             input_ids = torch.tensor(ids, dtype=torch.int32).view(1, -1).to(self.device)
+            output_ids = torch.tensor(gt_output[i], dtype=torch.int32).view(1, -1).to(self.device)
+            input_ids = torch.cat([input_ids, output_ids], dim=1)
             input_len = input_ids.shape[-1]
             if input_len > self.max_length:
                 input_ids = input_ids[:, :self.max_length]

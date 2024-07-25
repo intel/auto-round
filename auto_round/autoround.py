@@ -201,6 +201,7 @@ class AutoRound(object):
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
         logger.info(f"using {self.model.dtype} for quantization tuning")
+        self.attention_masks = []
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
@@ -499,6 +500,7 @@ class AutoRound(object):
                 elif isinstance(data_new, tuple) or isinstance(data_new, list):
                     self.model(*data_new)
                 else:
+                    self.attention_masks.append(data_new["attention_mask"])
                     self.model(**data_new)
             except NotImplementedError:
                 pass
@@ -908,19 +910,21 @@ class AutoRound(object):
                 )
 
                 current_output = [output[i] for i in indices]
+
                 current_output = torch.cat(current_output, dim=self.input_dim)
 
                 current_output = to_device(current_output, device)
-
+                attention_masks = torch.cat([self.attention_masks[i] for i in indices], dim=self.input_dim)
+                attention_masks = attention_masks.unsqueeze(dim=-1).to(device)
                 output_q = block_forward(
                     block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
                 )
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
+                        loss = mse_loss(output_q*attention_masks, current_output*attention_masks)  # pylint: disable=not-callable
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable
-                        output_q.to(torch.float32), current_output.to(torch.float32)
+                        output_q.to(torch.float32)*attention_masks, current_output.to(torch.float32)
                     )
 
                 total_loss += loss.item() / self.gradient_accumulate_steps
@@ -953,9 +957,9 @@ class AutoRound(object):
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
-        # logger.info(dump_info)
-        # if len(unquantized_layer_names) != 0:
-        #     logger.info(f"{unquantized_layer_names} have not been quantized")
+        logger.info(dump_info)
+        if len(unquantized_layer_names) != 0:
+            logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         if self.enable_quanted_input:
@@ -1021,12 +1025,12 @@ class AutoRound(object):
                 for i in range(len(input_others[key])):
                     input_others[key][i].to(tmp_dtype)
 
-        pbar = tqdm(range(0, len(block_names), nblocks))
+        pbar = range(0, len(block_names), nblocks)
 
         for i in pbar:
             if nblocks == 1:
                 n = block_names[i]
-                pbar.set_description(f"quantizing {i + 1}/{len(block_names)}, {n}")
+                logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i: i + nblocks]
