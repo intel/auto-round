@@ -48,6 +48,27 @@ from .utils import (
 
 from .low_cpu_mem.utils import get_layers_before_block
 
+def get_block_outputs(block, block_inputs):
+    block_outputs = []
+    for (args, kwargs) in block_inputs:
+        block_outputs.append(block(*args, **kwargs))
+    return block_outputs
+
+def _use_first_output(outputs):
+    first_outputs = []
+    for output in outputs:
+        if isinstance(output, tuple):
+            first_outputs.append(output[0])
+        elif isinstance(output, list):
+            first_outputs.append(output[0])
+        else:
+            raise ValueError("output should be tuple or list")
+    return torch.cat(first_outputs, dim=0)
+
+def freeze_mod_(mod):
+    for param in mod.parameters():
+        param.requires_grad = False
+
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
      please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
@@ -835,6 +856,89 @@ class AutoRound(object):
         layer = mv_module_from_gpu(layer, self.low_cpu_mem_usage)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
+
+
+    def quant_block_(self, block, block_inputs, block_outputs=None):
+        # TODO: unable to support self.use_quant_input by now.
+        # TODO: enable amp
+        device = "cuda"
+        block = block.to(device)
+        freeze_mod_(block)
+        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
+        block_outputs = torch.cat(block_outputs, dim=0)
+
+        round_params = []
+        minmax_params = []
+        for n, m in block.named_modules():
+            if hasattr(m, "orig_layer"):
+                round_params.append(m.value)
+                minmax_params.append(m.min_scale)
+                minmax_params.append(m.max_scale)
+
+        if self.enable_minmax_tuning:
+            optimizer = self.optimizer(
+                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+            )
+        else:
+            optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+
+        lr_schedule = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+        )
+
+        last_best_iter = 0
+        best_loss = torch.finfo(torch.float).max
+
+        scaler = self.get_scaler()  # pylint: disable=assignment-from-none
+        init_loss = None
+        for i in range(self.iters):
+            total_loss = 0
+            mse_loss = torch.nn.MSELoss().to(device)
+
+            qdq_block_outputs = get_block_outputs(block, block_inputs)
+
+            qdq_block_outputs = _use_first_output(qdq_block_outputs)
+            loss = mse_loss(qdq_block_outputs, block_outputs)
+
+            scale_loss = loss * 1000
+
+            scale_loss.backward()
+            self.step(scaler, optimizer, lr_schedule)
+
+            total_loss += loss.detach().item() / self.gradient_accumulate_steps
+            if i == 0:
+                init_loss = total_loss
+
+            if total_loss < best_loss:
+                best_loss = total_loss
+                if not self.not_use_best_mse:
+                    best_v = collect_round_v(block)
+                    best_min_scale, best_max_scale = collect_minmax_scale(block)
+                    last_best_iter = i
+            if self.not_use_best_mse and i == self.iters - 1:
+                best_v = collect_round_v(block)
+                best_min_scale, best_max_scale = collect_minmax_scale(block)
+
+            if not self.not_use_best_mse:
+                if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+                    break
+
+        last_loss = total_loss
+        best_iter = self.iters
+        if not self.not_use_best_mse:
+            last_loss = best_loss
+            best_iter = last_best_iter
+        dump_info = (
+            f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+            f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+        )
+        logger.info(dump_info)
+        if len(unquantized_layer_names) != 0:
+            logger.info(f"{unquantized_layer_names} have not been quantized")
+
+        unwrapper_block(block, best_v, best_min_scale, best_max_scale)
+        return None, block_outputs
+
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
