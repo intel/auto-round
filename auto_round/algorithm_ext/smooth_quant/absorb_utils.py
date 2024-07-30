@@ -29,6 +29,7 @@ SUPPORTED_TORCH_MODULE = [
     "LlamaRMSNorm",
     "T5LayerNorm",
     "LPLayerNorm",
+    "RMSNorm",
 ]
 
 GET_ABSORB_LAYERS = {}
@@ -303,6 +304,7 @@ def get_phi3_absorb_layers(model):
 
 @register_get_func('qwen')
 def get_qwen_absorb_layers(model):
+    breakpoint()
     model_layer_name = "transformer.h"
     absorb_to_layer = {}
     for idx in range(len(model.transformer.h)):
