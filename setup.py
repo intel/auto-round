@@ -170,7 +170,8 @@ if __name__ == "__main__":
         packages=find_packages(),
         include_dirs=include_dirs,
         ##include_package_data=False,
-        install_requires=fetch_requirements("requirements.txt"),
+        # install_requires=fetch_requirements("requirements.txt"),
+        install_requires=[], # no dependencies
         python_requires=">=3.7.0",
         classifiers=[
             "Intended Audience :: Science/Research",
