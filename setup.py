@@ -16,7 +16,7 @@ except Exception as error:
 version = __version__
 
 
-BUILD_CUDA_EXT = int(os.environ.get('BUILD_CUDA_EXT', '1')) == 1
+BUILD_CUDA_EXT = int(os.environ.get('BUILD_CUDA_EXT', '0')) == 1
 PYPI_RELEASE = os.environ.get('PYPI_RELEASE', None)
 
 
@@ -115,8 +115,9 @@ if BUILD_CUDA_EXT:
             version += f"+cu{CUDA_VERSION}"
 
 additional_setup_kwargs = {}
-include_dirs = ["autoround_cuda"]
+include_dirs = []
 if BUILD_CUDA_EXT:
+    include_dirs = ["autoround_cuda"]
     from torch.utils import cpp_extension
 
     if not ROCM_VERSION:
