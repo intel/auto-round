@@ -18,7 +18,8 @@ from auto_round.data_type import get_quant_func
 from .utils import (
     check_to_quantized,
     get_scale_shape,
-    set_module
+    set_module,
+    logger,
 )
 
 
@@ -409,9 +410,9 @@ def wrapper_block(block, enable_minmax_tuning, device='cpu'):
     unquantized_layers = []
     for n, m in block.named_modules():
         if isinstance(m, torch.nn.Linear):
-            if not check_to_quantized(m):
-                unquantized_layers.append(n)
-                continue
+            # if not check_to_quantized(m):
+            #     unquantized_layers.append(n)
+            #     continue
             new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning, device=device)
             set_module(block, n, new_m)
             quantized_layers.append(n)

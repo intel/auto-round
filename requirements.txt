@@ -1,9 +1,10 @@
-accelerate
-datasets
-py-cpuinfo
-sentencepiece
-torch
-transformers
-triton
-numpy < 2.0
-threadpoolctl
+# torch is the only dependency if user provide the model and calibration data.
+# accelerate
+# datasets
+# py-cpuinfo
+# sentencepiece
+# torch
+# transformers
+# triton
+# numpy < 2.0
+# threadpoolctl

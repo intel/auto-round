@@ -51,15 +51,16 @@ from .low_cpu_mem.utils import get_layers_before_block
 def get_block_outputs(block, block_inputs):
     block_outputs = []
     for (args, kwargs) in block_inputs:
-        block_outputs.append(block(*args, **kwargs))
+        outputs = block(*args, **kwargs)
+        block_outputs.append(outputs)
     return block_outputs
 
 def _use_first_output(outputs):
     first_outputs = []
     for output in outputs:
-        if isinstance(output, tuple):
-            first_outputs.append(output[0])
-        elif isinstance(output, list):
+        if isinstance(output, torch.Tensor):
+            first_outputs.append(output)
+        elif isinstance(output, (list, tuple)):
             first_outputs.append(output[0])
         else:
             raise ValueError("output should be tuple or list")
@@ -166,9 +167,12 @@ class AutoRound(object):
             act_sym: bool = None,
             act_dynamic: bool = True,
             quant_block_list: list = None,
+            model_dtype: torch.dtype = torch.float32,
             **kwargs,
     ):
         self.quantized = False
+        if not hasattr(model, "dtype"):
+            model.dtype = model_dtype
         self.model_orig_dtype = model.dtype
         self.low_cpu_mem_usage = low_cpu_mem_usage
         assert not unsupport_meta_device(model),  (
@@ -413,12 +417,11 @@ class AutoRound(object):
                 layer_config[n] = {}
                 for key in keys:
                     layer_config[n][key] = getattr(self, key)
-                layer_config[n]["bits"] = 32
+                layer_config[n]["bits"] = self.bits
                 layer_config[n]["act_bits"] = 32
-
+            
             for key in keys:
                 setattr(m, key, layer_config[n][key])
-
 
     @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
@@ -858,13 +861,13 @@ class AutoRound(object):
         logger.info(dump_info)
 
 
-    def quant_block_(self, block, block_inputs, block_outputs=None):
+    def quant_block_(self, block, block_inputs, block_outputs):
         # TODO: unable to support self.use_quant_input by now.
         # TODO: enable amp
         device = "cuda"
         block = block.to(device)
         freeze_mod_(block)
-        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning)
+        quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning, device)
         block_outputs = torch.cat(block_outputs, dim=0)
 
         round_params = []
@@ -891,6 +894,7 @@ class AutoRound(object):
 
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
+        best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
         for i in range(self.iters):
             total_loss = 0
             mse_loss = torch.nn.MSELoss().to(device)
@@ -915,9 +919,11 @@ class AutoRound(object):
                     best_v = collect_round_v(block)
                     best_min_scale, best_max_scale = collect_minmax_scale(block)
                     last_best_iter = i
+                    logger.info(f"Update best loss: {best_loss:.6f} at iter {last_best_iter}")
             if self.not_use_best_mse and i == self.iters - 1:
                 best_v = collect_round_v(block)
                 best_min_scale, best_max_scale = collect_minmax_scale(block)
+                logger.info(f"Update best loss: {best_loss:.6f} at iter {last_best_iter}")
 
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
@@ -953,6 +959,7 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+        breakpoint()
 
         output = self.get_block_outputs(block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
                                         self.cache_device)
