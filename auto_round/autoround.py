@@ -25,7 +25,7 @@ from .calib_dataset import get_dataloader
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from .special_model_handler import check_hidden_state_dim, check_share_attention_mask, check_not_share_position_ids
 from .utils import (
-    CpuInfo,
+    # CpuInfo,
     block_forward,
     check_is_cpu,
     check_to_quantized,
@@ -46,7 +46,8 @@ from .utils import (
     unsupport_meta_device,
 )
 
-from .low_cpu_mem.utils import get_layers_before_block
+# disable lwq to remove the dependency on accelerator
+# from .low_cpu_mem.utils import get_layers_before_block
 
 def get_block_outputs(block, block_inputs):
     block_outputs = []
@@ -1290,7 +1291,8 @@ class AutoRound(object):
         if self.device == "cpu" or "hpu" in self.device:
             self.amp_dtype = torch.bfloat16
         if self.amp:
-            if self.device == "cpu" and not CpuInfo().bf16:
+            # Disable bf16 to remove the dependency on cpuinfo and psutil
+            if self.device == "cpu": # and not CpuInfo().bf16:
                 self.amp = False
                 self.amp_dtype = torch.float32
                 self.model = self.model.to(torch.float32)

@@ -19,9 +19,9 @@ import subprocess
 from collections import UserDict
 
 # for cpu usage
-import cpuinfo
+# import cpuinfo
 import numpy as np
-import psutil
+# import psutil
 import torch
 from torch.amp import autocast
 

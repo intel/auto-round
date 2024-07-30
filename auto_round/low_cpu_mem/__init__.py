@@ -15,4 +15,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Torch layer-wise quantization module."""
-from .utils import *
+# from .utils import *
+# disable lwq to remove the dependency on accelerator
