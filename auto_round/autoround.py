@@ -19,6 +19,7 @@ from typing import Optional, Union
 
 import torch
 import transformers
+from transformers import set_seed
 from torch import autocast
 
 from .calib_dataset import get_dataloader
@@ -169,6 +170,7 @@ class AutoRound(object):
         self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
         self.layer_config = layer_config
         self.seed = seed
+        set_seed(self.seed)
         self.tokenizer = tokenizer
         self.seqlen = seqlen
         self.train_bs = batch_size
@@ -771,7 +773,6 @@ class AutoRound(object):
         gradient_accumulate_steps = self.train_bs  ##Force to low gpu
         train_bs = 1  ##Force to low gpu
         pick_samples = train_bs * gradient_accumulate_steps
-
         if self.sampler != "rand":
             whole_indices = torch.randperm(nsamples)[:pick_samples]
         for i in range(self.iters):
@@ -1528,6 +1529,7 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
 
 
 
