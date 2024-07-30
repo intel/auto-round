@@ -11,14 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-
-import copy
-import json
-import os
-from os.path import isdir, isfile, join
-from typing import Dict, List, Optional, Union
-
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -26,29 +18,31 @@ from typing import Dict, List, Optional, Union
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-import torch
-import torch.nn as nn
-
-from auto_round.export.register import register_format
-from auto_round.utils import convert_dtype_torch2str_hf, logger
-
 # MIT License
-
 # Copyright (c) 2023 MIT HAN Lab
-
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
 # in the Software without restriction, including without limitation the rights
 # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
-
 # The above copyright notice and this permission notice shall be included in all
 # copies or substantial portions of the Software.
 
 
+import os
+from os.path import isdir, isfile, join
+import torch
+import torch.nn as nn
+from auto_round.export.register import register_format
+from auto_round.utils import convert_dtype_torch2str_hf, logger
+import copy
+import json
+from typing import Dict, List, Optional, Union
+
+
 @register_format("auto_awq")
-def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs): # pragma: no cover
+def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
     model = kwargs["model"]
     layer_config = kwargs["layer_config"]
@@ -73,9 +67,12 @@ def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs): #
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
 
-    from awq import AutoAWQForCausalLM  # pylint: disable=E0401
-    from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
-    from awq.utils.utils import clear_memory  # pylint: disable=E0401
+    try:
+        from awq import AutoAWQForCausalLM  # pylint: disable=E0401
+        from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
+        from awq.utils.utils import clear_memory  # pylint: disable=E0401
+    except:
+        logger.error("autoawq is required. Please install it by 'pip install autoawq' to support auto_awq format.")
 
     q_linear_module = WQLinear_GEMM
     awq_model = AutoAWQForCausalLM.from_pretrained(model_path)
@@ -136,7 +133,7 @@ def save_quantized(
     quant_config,
     safetensors=True,
     shard_size="5GB",
-): # pragma: no cover
+):
     save_dir = save_dir[:-1] if save_dir[-1] == "/" else save_dir
 
     # Save model
@@ -194,7 +191,7 @@ def save_quantized(
         json.dump(quant_config, f, indent=2)
 
 
-def get_named_linears(module): # pragma: no cover
+def get_named_linears(module):
     """Get the name, linear_op pairs of a given module.
     Args:
     module: A module to be searched.
@@ -202,7 +199,7 @@ def get_named_linears(module): # pragma: no cover
     return {name: m for name, m in module.named_modules() if isinstance(m, torch.nn.Linear)}
 
 
-def set_op_by_name(layer, name, new_module): # pragma: no cover
+def set_op_by_name(layer, name, new_module):
     levels = name.split(".")
     if len(levels) > 1:
         mod_ = layer
@@ -216,7 +213,7 @@ def set_op_by_name(layer, name, new_module): # pragma: no cover
         setattr(layer, name, new_module)
 
 
-def get_module_name(model, module_to_find): # pragma: no cover
+def get_module_name(model, module_to_find):
     """Get the name of a given module in a model.
     Args:
     model: The model.

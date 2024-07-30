@@ -123,7 +123,7 @@ def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
             return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
         from auto_round_extension.cuda.qliner_triton import QuantLinear
         return QuantLinear
-    elif "awq" in backend: # pragma: no cover
+    elif "awq" in backend:
         try:
             from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
             return WQLinear_GEMM
@@ -163,7 +163,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         backend = "autoround:exllamav2"
     backend = backend.replace("autoround", "auto_round")
     backend = backend.replace("auto-round", "auto_round")
-    if not ("triton" in backend or "exllamav2" in backend or "awq" in backend): # pragma: no cover
+    if not ("triton" in backend or "exllamav2" in backend or "awq" in backend):
         logger.info(f"autoround format does not support {backend}, try to pack with autogptq")
         backend = backend.replace("auto_round", "auto_gptq")
 
@@ -177,7 +177,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "intel/auto-round"
-    if "awq" not in backend: # pragma: no cover
+    if "awq" not in backend:
         quantization_config["backend"] = backend
     extra_config = {}
     for layer_name in layer_config:
@@ -202,11 +202,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     with tctl.threadpool_limits(limits=1):
-        modules_to_not_convert = [] # pragma: no cover
+        modules_to_not_convert = []
         for name in layer_config.keys():
             config = kwargs["layer_config"][name]
             if config["bits"] > 8:
-                if "awq" in backend: # pragma: no cover
+                if "awq" in backend:
                     modules_to_not_convert.append(name)
                 continue
             logger.info(f"packing {name}")
@@ -251,7 +251,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
                 else:
                     qlayer.pack(layer, scale, zero, None)
                 qlayer.to(device)
-            else: # pragma: no cover
+            else:
                 from awq.utils.utils import clear_memory # pylint: disable=E0401
                 scale, zp = layer_config[name]["scale"].to(torch.float32), layer_config[name]["zp"].to(torch.float32)
                 scale = scale.t().contiguous()
@@ -278,7 +278,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         tokenizer.save_pretrained(output_dir)
     if "awq" not in backend:
         save(model, output_dir, safe_serialization=safe_serialization)
-    else: # pragma: no cover
+    else:
         save_awq(model, output_dir, modules_to_not_convert=modules_to_not_convert)
 
 
@@ -317,7 +317,7 @@ def save_awq(
         max_shard_size: str = "5GB", 
         safe_serialization: bool = True, 
         modules_to_not_convert: list = [], 
-): # pragma: no cover
+):
     """Save model state dict and configs.
 
     Args:
