@@ -12,8 +12,6 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
-from transformers import set_seed
-
 import re
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -151,7 +149,6 @@ if __name__ == '__main__':
         print(
             "Warning, activation quantization is an experiment feature")
 
-    set_seed(args.seed)
     tasks = args.tasks
     use_eval_legacy = False
 
@@ -419,5 +416,6 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
+
 
 
