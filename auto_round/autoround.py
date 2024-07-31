@@ -863,6 +863,20 @@ class AutoRound(object):
 
 
     def quant_block_(self, block, block_inputs, block_outputs):
+        """Fine-tune the up and down rounding parameters of a given block.
+        
+        # More details: Section 3 at https://arxiv.org/pdf/2309.05516
+        pseudocode
+        wrapper_block = replace_linear_with_qdq_linear(model)
+        best_tunable_params = {}
+        for i in range(iters):
+            qdq_output = wrapper_block(block_inputs)
+            loss = mse_loss(qdq_output, block_outputs)
+            loss.backward()
+            optimizer.step()
+            update_best_tunable_params(wrapper_block,loss)
+        unwrapper_block = replace_qdq_linear_with_new_linear_using_qdq_weight_and_scale_zp(wrapper_block, best_tunable_params)
+        """
         # TODO: unable to support self.use_quant_input by now.
         # TODO: enable amp
         device = "cuda"
