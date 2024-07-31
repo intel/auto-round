@@ -934,11 +934,11 @@ class AutoRound(object):
                     best_v = collect_round_v(block)
                     best_min_scale, best_max_scale = collect_minmax_scale(block)
                     last_best_iter = i
-                    logger.info(f"Update best loss: {best_loss:.6f} at iter {last_best_iter}")
+                    logger.debug(f"Update best loss: {best_loss:.6f} at iter {last_best_iter}")
             if self.not_use_best_mse and i == self.iters - 1:
                 best_v = collect_round_v(block)
                 best_min_scale, best_max_scale = collect_minmax_scale(block)
-                logger.info(f"Update best loss: {best_loss:.6f} at iter {last_best_iter}")
+                logger.debug(f"Update best loss: {best_loss:.6f} at iter {last_best_iter}")
 
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:

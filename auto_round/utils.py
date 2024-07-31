@@ -31,13 +31,15 @@ from functools import lru_cache
 def warning_once(self, msg: str):
     self.warning(msg)
 
-
+import os
 logging.Logger.warning_once = warning_once
 logger = logging.getLogger("autoround")
-logger.setLevel(logging.INFO)
+level = os.environ.get("LOG_LEVEL", "INFO")
+logger.setLevel(level)
 logger.propagate = False
 fh = logging.StreamHandler()
-fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
+# fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
+fh_formatter = logging.Formatter("%(asctime)s [%(levelname)s][%(filename)s:%(lineno)d] %(message)s", "%Y-%m-%d %H:%M:%S")
 fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
 
