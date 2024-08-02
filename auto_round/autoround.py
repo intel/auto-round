@@ -862,7 +862,7 @@ class AutoRound(object):
         logger.info(dump_info)
 
 
-    def quant_block_(self, block, block_inputs, block_outputs):
+    def quant_block_(self, block, block_inputs, block_outputs, device="cuda"):
         """Fine-tune the up and down rounding parameters of a given block.
         
         # More details: Section 3 at https://arxiv.org/pdf/2309.05516
@@ -879,7 +879,6 @@ class AutoRound(object):
         """
         # TODO: unable to support self.use_quant_input by now.
         # TODO: enable amp
-        device = "cuda"
         block = block.to(device)
         freeze_mod_(block)
         quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning, device)
@@ -934,11 +933,11 @@ class AutoRound(object):
                     best_v = collect_round_v(block)
                     best_min_scale, best_max_scale = collect_minmax_scale(block)
                     last_best_iter = i
-                    logger.debug(f"Update best loss: {best_loss:.6f} at iter {last_best_iter}")
+                    logger.info(f"Update best loss: {best_loss:.6f} at iter {last_best_iter}")
             if self.not_use_best_mse and i == self.iters - 1:
                 best_v = collect_round_v(block)
                 best_min_scale, best_max_scale = collect_minmax_scale(block)
-                logger.debug(f"Update best loss: {best_loss:.6f} at iter {last_best_iter}")
+                logger.info(f"Update best loss: {best_loss:.6f} at iter {last_best_iter}")
 
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:

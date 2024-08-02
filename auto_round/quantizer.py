@@ -198,7 +198,7 @@ class WrapperLinear(torch.nn.Module):
             zp = zp.reshape(qdq_weight.shape[0], -1)
         self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
-        self.orig_layer.scale = scale.to("cpu")
+        self.orig_layer.scale = torch.nn.Parameter(scale.to("cpu"), requires_grad=False)
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.data_type = self.data_type

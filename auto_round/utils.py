@@ -34,7 +34,7 @@ def warning_once(self, msg: str):
 import os
 logging.Logger.warning_once = warning_once
 logger = logging.getLogger("autoround")
-level = os.environ.get("LOG_LEVEL", "INFO")
+level = os.environ.get("LOGLEVEL", "INFO")
 logger.setLevel(level)
 logger.propagate = False
 fh = logging.StreamHandler()
