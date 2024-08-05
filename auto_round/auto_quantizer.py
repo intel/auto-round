@@ -331,7 +331,7 @@ class AutoRoundQuantizer(HfQuantizer):
             backend = quantization_config.backend
             if "hpu" in backend and model.dtype != torch.bfloat16:
                 logger.info("We suggest you to set `torch_dtype=torch.bfloat16` for better efficiency with AutoRound.")
-                model = model.to("hpu").to(torch.bfloat16)
+                model = model.to(torch.bfloat16)
             elif model.dtype != torch.float16:
                 logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
                 model = model.to(torch.float16)
