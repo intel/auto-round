@@ -19,6 +19,7 @@ from typing import Optional, Union
 
 import torch
 import transformers
+from transformers import set_seed
 from torch import autocast
 
 from .calib_dataset import get_dataloader
@@ -169,6 +170,7 @@ class AutoRound(object):
         self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
         self.layer_config = layer_config
         self.seed = seed
+        set_seed(self.seed)
         self.tokenizer = tokenizer
         self.seqlen = seqlen
         self.train_bs = batch_size
