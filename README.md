@@ -154,7 +154,7 @@ from auto_round import AutoHfQuantizer
 
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path)
-# model = AutoModelForCausalLM.from_pretrained(quantized_model_path).to('hpu').to(torch.bfloat16) ##uncomment it for hpu
+# model = model.to('hpu').to(torch.bfloat16) ##uncomment it for hpu
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
