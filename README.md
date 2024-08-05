@@ -55,9 +55,6 @@ pip install auto-round
 
 ### Gaudi2/ CPU/ GPU
 
-We found a significant accuracy discrepancy with the qdq model using the AutoGPTQ GPU backend with asymmetric
-quantization in some scenarios, especially at lower bits,like 2. Please save quantized model to AuoRound format to fix this issue.
-
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -71,7 +68,7 @@ bits, group_size, sym = 4, 128, False
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
 autoround.quantize()
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_round")
+autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_gptq)
 ```
 
 <details>
@@ -135,49 +132,29 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_ro
 3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
 ## Model inference
+Please run the quantization code first
 
-Please run the quantization code first.
+### Setup env for AutoRound format
 
-### CPU
+
+2 Set up the environment
+
+**cuda**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation -e .
+
+cpu: pip install intel-extension-for-transformers
+
+hpu: docker image with Gaudi Software Stack is recommended, please refer to following script for environment setup. More details can be found in Gaudi Guide.
+
+
+### Gaudi2/ CPU/ GPU
 
 ```python
-##pip install intel-extension-for-transformers
-from intel_extension_for_transformers.transformers import AutoModelForCausalLM
-from transformers import AutoTokenizer
+from transformers import AutoModelForCausalLM,AutoTokenizer
+from auto_round import AutoHfQuantizer
 
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path)
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-text = "There is a girl who likes adventure,"
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-```
-
-### GPU
-
-```python
-##pip install auto-gptq
-from transformers import AutoModelForCausalLM, AutoTokenizer
-##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with auto_round format
-
-quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-text = "There is a girl who likes adventure,"
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-```
-
-### Intel Gaudi-2
-
-```python
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round.auto_quantizer import AutoHfQuantizer
-import habana_frameworks.torch.core as htcore
-import habana_frameworks.torch.hpu as hthpu
-quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path).to('hpu').to(torch.float32)
+# model = AutoModelForCausalLM.from_pretrained(quantized_model_path).to('hpu').to(torch.bfloat16) ##uncomment it for hpu
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)

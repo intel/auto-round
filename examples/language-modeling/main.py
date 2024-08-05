@@ -81,13 +81,12 @@ if __name__ == '__main__':
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="enable_minmax_tuning is deprecated")
 
-    parser.add_argument("--deployment_device", default='fake', type=str,
+    parser.add_argument("--deployment_device", default=None, type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
     parser.add_argument("--data_type", default='int',
                         help="data type for tuning, 'int', 'mx_fp' and etc.")
-
 
     parser.add_argument("--scale_dtype", default='fp16',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
@@ -120,10 +119,10 @@ if __name__ == '__main__':
 
     parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
                         help="Choose which low cpu memory mode to use. Can significantly reduce cpu memory footprint but cost more time."
-                        "1 means choose block-wise mode, load the weights of each block from disk when tuning and release the memory of the block after tuning."
-                        "2 means choose layer-wise mode, load the weights of each layer from disk when tuning, minimum memory consumption and also slowest running speed."
-                        "others means not use low cpu memory. Default to 0, not use low cpu memory.")
-                        
+                             "1 means choose block-wise mode, load the weights of each block from disk when tuning and release the memory of the block after tuning."
+                             "2 means choose layer-wise mode, load the weights of each layer from disk when tuning, minimum memory consumption and also slowest running speed."
+                             "others means not use low cpu memory. Default to 0, not use low cpu memory.")
+
     parser.add_argument("--low_cpu_mem_tmp_dir", default=None, type=str,
                         help="temp work space to store the temporary files when using low cpu memory mode. Will remove after tuning.")
 
@@ -151,9 +150,12 @@ if __name__ == '__main__':
 
     tasks = args.tasks
     use_eval_legacy = False
+    if args.deployment_device is None:
+        args.deployment_device = "auto_round"
 
     if "gpu" in args.deployment_device and args.sym is False:
-        print("warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use --deployment_device='auto_round'")
+        print(
+            "warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use --deployment_device='auto_round'")
 
     if "marlin" in args.deployment_device and args.sym is False:
         assert False, "marlin backend only supports sym quantization, please set --sym"
@@ -187,6 +189,7 @@ if __name__ == '__main__':
         args.low_cpu_mem_tmp_dir = os.path.join(args.output_dir, "low_cpu_mem_tmp")
     if args.low_cpu_mem_mode == 2:
         from auto_round.low_cpu_mem.utils import load_model_with_hooks
+
         model = load_model_with_hooks(
             model_name,
             model_cls,
@@ -198,6 +201,7 @@ if __name__ == '__main__':
         )
     elif args.low_cpu_mem_mode == 1:
         from auto_round.low_cpu_mem.utils import load_empty_model
+
         low_cpu_mem_usage = True
         model = load_empty_model(
             model_name,
@@ -206,7 +210,7 @@ if __name__ == '__main__':
             saved_path=args.low_cpu_mem_tmp_dir,
             torch_dtype=torch_dtype,
             trust_remote_code=not args.disable_trust_remote_code
-            )
+        )
     else:
         model = model_cls.from_pretrained(
             model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
@@ -305,6 +309,7 @@ if __name__ == '__main__':
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
+
         shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
 
     model.eval()
@@ -336,7 +341,7 @@ if __name__ == '__main__':
         elif "gptq" in gpu_format:
             eval_folder = f'{export_dir}-gpu'
             autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-        elif "auto_awq" in gpu_format: # pragma: no cover
+        elif "auto_awq" in gpu_format:  # pragma: no cover
             eval_folder = f'{export_dir}-awq'
             autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
 
@@ -419,6 +424,3 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
-
-
-

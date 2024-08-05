@@ -12,4 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .autoround import AutoRound, AutoAdamRound, AutoOPTRound
+from .auto_quantizer import AutoHfQuantizer,AutoRoundConfig
 from .version import __version__
