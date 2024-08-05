@@ -193,7 +193,8 @@ class AutoHfQuantizer:
             else:
                 quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
 
-        if isinstance(quantization_config, (GPTQConfig, AwqConfig, AutoRoundConfig)) and quantization_config_from_args is not None:
+        if isinstance(quantization_config,
+                      (GPTQConfig, AwqConfig, AutoRoundConfig)) and quantization_config_from_args is not None:
             # special case for GPTQ / AWQ config collision
             loading_attr_dict = quantization_config_from_args.get_loading_attributes()
             for attr, val in loading_attr_dict.items():
@@ -261,8 +262,6 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.quant_method = AutoRoundQuantizationMethod.AutoRound
         self.post_init()
 
-    def get_loading_attributes(self):
-        return {}
 
     def post_init(self):
         r"""Safety checker that arguments are correct."""
