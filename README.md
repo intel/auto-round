@@ -150,7 +150,7 @@ hpu: docker image with Gaudi Software Stack is recommended, please refer to foll
 
 ```python
 from transformers import AutoModelForCausalLM,AutoTokenizer
-from auto_round import AutoHfQuantizer,AutoRoundConfig
+from auto_round import AutoRoundConfig
 device = "auto" ##cpu, hpu, cuda
 quantization_config = AutoRoundConfig(
    backend=device
