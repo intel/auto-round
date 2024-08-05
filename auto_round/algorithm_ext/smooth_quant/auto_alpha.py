@@ -98,7 +98,7 @@ class AutoAlpha:
             scale_memo_use += 4 * input_max.shape[0] * len(self.absorb_to_layer[key])
         alpha_space_len = (self.alpha_max - self.alpha_min) / self.alpha_step + 1
         scale_memo_use *= alpha_space_len
-        self._save_scale = enough_memo_store_scale(self.device, scale_memo_use)
+        self._save_scale = not enough_memo_store_scale(self.device, scale_memo_use)
 
         if self.loss_type == "blockwise":
             self.block_names = self.get_blocks()
@@ -250,13 +250,13 @@ class AutoAlpha:
             absorb_scales_info[key] = 1.0 / scale
             absorb_scales_info[key][scale == 0] = 0
             layer_names = absorb_to_layer[key]
+            if self._save_scale:
+                if key not in self.weight_scale_dict:
+                    self.weight_scale_dict[key] = {}
+                self.weight_scale_dict[key][alpha_tmp] = scale
             for layer_name in layer_names:
                 ##self._scale_layer_weight(layer_name, scale)
                 weight_scales_info[layer_name] = scale
-                if self._save_scale:
-                    if layer_name not in self.weight_scale_dict:
-                        self.weight_scale_dict[layer_name] = {}
-                    self.weight_scale_dict[layer_name][alpha_tmp] = scale
         return absorb_scales_info, weight_scales_info
 
     def _get_auto_loss(self, output, output_q, loss_type="abs", loss_alpha=1.0):

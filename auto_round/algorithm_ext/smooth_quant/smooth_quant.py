@@ -416,7 +416,6 @@ class TorchSmoothQuant:
         self.absorb_to_layer = self._parse_absorb_to_layers(
             op_types, folding
         )  ##need to forward to check modules not used in forward
-        breakpoint()
         if len(self.input_mins) != 0:  ##this is from _parse_absorb_to_layers, ugly code to support q_func
             input_maxes_abs = {}
             for key in self.input_mins.keys():
@@ -553,12 +552,12 @@ class TorchSmoothQuant:
         no_absorb_layers: A list saving the layers which could not find the absorb layer
         """
 
-        tg = GraphTrace()
-        self._get_example_input()
+        # tg = GraphTrace()
+        # self._get_example_input()
         # absorb_to_layer, no_absorb_layers = tg.get_absorb_to_layer(
         #     self.traced_model,
         #     self.example_inputs,
-        #     op_types,, auto_alpha_args=auto_alpha_args)
+        #     op_types,
         #     skip_unsupported_layers=skip_unsupported_layers,
         # )
         absorb_to_layer, no_absorb_layers = get_absorb_layers(self.traced_model, skip_unsupported_layers)
