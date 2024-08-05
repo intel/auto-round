@@ -193,7 +193,7 @@ class AutoHfQuantizer:
             else:
                 quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
 
-        if isinstance(quantization_config, (GPTQConfig, AwqConfig)) and quantization_config_from_args is not None:
+        if isinstance(quantization_config, (GPTQConfig, AwqConfig, AutoRoundConfig)) and quantization_config_from_args is not None:
             # special case for GPTQ / AWQ config collision
             loading_attr_dict = quantization_config_from_args.get_loading_attributes()
             for attr, val in loading_attr_dict.items():
@@ -312,7 +312,7 @@ class AutoRoundQuantizer(HfQuantizer):
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:
             torch_dtype = torch.float16
-        elif torch_dtype != torch.float16:
+        elif torch_dtype != torch.float16 and not is_hpu_supported():
             logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
         return torch_dtype
 
@@ -327,6 +327,14 @@ class AutoRoundQuantizer(HfQuantizer):
 
         layer_names = get_layer_names_in_block(model)
         quantization_config = model.config.quantization_config
+        if hasattr(quantization_config, "backend"):  # pragma: no cover
+            backend = quantization_config.backend
+            if "hpu" in backend and model.dtype != torch.bfloat16:
+                logger.info("We suggest you to set `torch_dtype=torch.bfloat16` for better efficiency with AutoRound.")
+                model = model.to("hpu").to(torch.bfloat16)
+            elif model.dtype != torch.float16:
+                logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
+                model = model.to(torch.float16)
         bits = quantization_config.bits
         group_size = quantization_config.group_size
         data_type = quantization_config.data_type if hasattr(quantization_config, "data_type") \
