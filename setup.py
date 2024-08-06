@@ -19,13 +19,28 @@ version = __version__
 BUILD_CUDA_EXT = int(os.environ.get('BUILD_CUDA_EXT', '1')) == 1
 PYPI_RELEASE = os.environ.get('PYPI_RELEASE', None)
 
+def is_cpu_env():
+    try:
+        import torch
+    except Exception as e:
+        print(
+            f"Building extension requires PyTorch being installed, please install PyTorch first: {e}.\n NOTE: This issue may be raised due to pip build isolation system (ignoring local packages). Please use `--no-build-isolation` when installing with pip, and refer to https://github.com/intel/auto-round for more details.")
+        sys.exit(1)
+    if torch.cuda.is_available():
+        return False
+    try:
+        import habana_frameworks.torch.core as htcore 
+        return False
+    except:
+        return True
+
 
 def fetch_requirements(path):
     requirements = []
     with open(path, "r") as fd:
         requirements = [r.strip() for r in fd.readlines()]
-    if not BUILD_CUDA_EXT:
-        requirements.append("intel-extension-for-transformers") # for leverage QBits woq_linear capability.
+    if is_cpu_env():
+        requirements.append("intel-extension-for-transformers")
     return requirements
 
 def detect_local_sm_architectures():
@@ -62,7 +77,7 @@ if BUILD_CUDA_EXT:
         import torch
     except Exception as e:
         print(
-            f"Building PyTorch CUDA extension requires PyTorch being installed, please install PyTorch first: {e}.\n NOTE: This issue may be raised due to pip build isolation system (ignoring local packages). Please use `--no-build-isolation` when installing with pip, and refer to https://github.com/AutoRound/AutoRound/pull/620 for more details.")
+            f"Building PyTorch CUDA extension requires PyTorch being installed, please install PyTorch first: {e}.\n NOTE: This issue may be raised due to pip build isolation system (ignoring local packages). Please use `--no-build-isolation` when installing with pip, and refer to https://github.com/intel/auto-round for more details.")
         sys.exit(1)
     if not torch.cuda.is_available():
         print(
