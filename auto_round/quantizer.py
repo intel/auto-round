@@ -18,7 +18,8 @@ from auto_round.data_type import get_quant_func
 from .utils import (
     check_to_quantized,
     get_scale_shape,
-    set_module
+    set_module,
+    logger
 )
 
 
@@ -44,14 +45,14 @@ def reshape_tensor(v, group_size=-1):
 
 
 def quant_tensor(
-        quant_func, data, num_bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
+        quant_func, data, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
         weight_min=None, weight_max=None, q_scale_thresh=0.0, **kwargs,
 ):
     """Quantizes and dequantizes weight, handing the group size issue .
 
     Args:
         data: Tensor containing the weight to be quantized
-        num_bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
         group_size: The number of elements shares scale and zero point
         sym: Sym or asym
         v: Rounding value perturbation
@@ -67,7 +68,7 @@ def quant_tensor(
     if len(data.shape) > 2:
         data = data.reshape(-1, orig_shape[-1])
     if group_size == -1 or data.shape[1] < group_size:
-        data, scale, zp = quant_func(data, num_bits, v=v, min_scale=min_scale, max_scale=max_scale,
+        data, scale, zp = quant_func(data, bits, v=v, min_scale=min_scale, max_scale=max_scale,
                                      scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
                                      q_scale_thresh=q_scale_thresh, **kwargs)
         data = data.reshape(orig_shape)
@@ -75,7 +76,7 @@ def quant_tensor(
 
     if data.shape[1] % group_size == 0:
         data = data.reshape(-1, group_size)
-        data, scale, zp = quant_func(data, num_bits, v=v, min_scale=min_scale, max_scale=max_scale,
+        data, scale, zp = quant_func(data, bits, v=v, min_scale=min_scale, max_scale=max_scale,
                                      scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
                                      q_scale_thresh=q_scale_thresh, **kwargs)
         data = data.reshape(orig_shape)
@@ -86,7 +87,7 @@ def quant_tensor(
         pad_len = (data.shape[1] + group_size - 1) // group_size * group_size - data.shape[1]
         data_new = torch.nn.functional.pad(data, (0, pad_len))
         data_new = data_new.reshape(-1, group_size)
-        data_new, scale, zp = quant_func(data_new, num_bits, v=v, min_scale=min_scale,
+        data_new, scale, zp = quant_func(data_new, bits, v=v, min_scale=min_scale,
                                          max_scale=max_scale, scale_dtype=scale_dtype, weight_min=weight_min,
                                          weight_max=weight_max, q_scale_thresh=q_scale_thresh, **kwargs)
         data_new = data_new.reshape(tmp_shape[0], -1)
@@ -110,8 +111,160 @@ class WrapperWALayer(torch.nn.Module):
         return self.orig_layer.forward(x)
 
 
+# class LlamaRMSNorm(nn.Module):
+#     def __init__(self, hidden_size, eps=1e-6):
+#         """
+#         LlamaRMSNorm is equivalent to T5LayerNorm
+#         """
+#         super().__init__()
+#         self.weight = nn.Parameter(torch.ones(hidden_size))
+#         self.variance_epsilon = eps
+#
+#     def forward(self, hidden_states):
+#         input_dtype = hidden_states.dtype
+#         hidden_states = hidden_states.to(torch.float32)
+#         variance = hidden_states.pow(2).mean(-1, keepdim=True)
+#         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+#         return self.weight * hidden_states.to(input_dtype)
+#
+#     def extra_repr(self):
+#         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
+#
+# class Qwen2RMSNorm(nn.Module):
+#     def __init__(self, hidden_size, eps=1e-6):
+#         """
+#         Qwen2RMSNorm is equivalent to T5LayerNorm
+#         """
+#         super().__init__()
+#         self.weight = nn.Parameter(torch.ones(hidden_size))
+#         self.variance_epsilon = eps
+#
+#     def forward(self, hidden_states):
+#         input_dtype = hidden_states.dtype
+#         hidden_states = hidden_states.to(torch.float32)
+#         variance = hidden_states.pow(2).mean(-1, keepdim=True)
+#         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+#         return self.weight * hidden_states.to(input_dtype)
+#
+#     def extra_repr(self):
+#         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
+#
+# class Phi3RMSNorm(nn.Module):
+#     def __init__(self, hidden_size, eps=1e-6):
+#         """
+#         Phi3RMSNorm is equivalent to T5LayerNorm
+#         """
+#         super().__init__()
+#         self.weight = nn.Parameter(torch.ones(hidden_size))
+#         self.variance_epsilon = eps
+#
+#     def forward(self, hidden_states):
+#         input_dtype = hidden_states.dtype
+#         hidden_states = hidden_states.to(torch.float32)
+#         variance = hidden_states.pow(2).mean(-1, keepdim=True)
+#         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+#         return self.weight * hidden_states.to(input_dtype)
+#
+#     def extra_repr(self):
+#         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}
+# class MistralRMSNorm(nn.Module):
+#     def __init__(self, hidden_size, eps=1e-6):
+#         """
+#         MistralRMSNorm is equivalent to T5LayerNorm
+#         """
+#         super().__init__()
+#         self.weight = nn.Parameter(torch.ones(hidden_size))
+#         self.variance_epsilon = eps
+#
+#     def forward(self, hidden_states):
+#         input_dtype = hidden_states.dtype
+#         hidden_states = hidden_states.to(torch.float32)
+#         variance = hidden_states.pow(2).mean(-1, keepdim=True)
+#         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+#         return self.weight * hidden_states.to(input_dtype)
+#
+#     def extra_repr(self):
+#         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
+
+
+class WrapperLayerNorm(torch.nn.Module):
+    def __init__(self, orig_layer, bit=4, group_size=-1, device="cpu"):
+        super(WrapperLayerNorm, self).__init__()
+        self.orig_layer = orig_layer
+        self.bits = bit
+        self.group_size = group_size
+        self.device = device
+        weight_dtype = torch.float32
+        self.v = torch.nn.Parameter(
+            reshape_tensor(
+                torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
+                self.group_size),
+            requires_grad=True)
+        self.params = {}
+        self.params["v"] = self.v
+        from auto_round.data_type.int import quant_tensor_asym_wo_round
+        self.quant_func = quant_tensor_asym_wo_round
+
+    def unwrapper(self, best_params):
+        if best_params is None:
+            return self.orig_layer
+        v = best_params['v']
+        weight_q, _, _ = quant_tensor(self.quant_func, self.orig_layer.weight, self.bits, self.group_size,
+                                      v)
+        self.orig_layer.weight.data.copy_(weight_q)
+        return self.orig_layer
+
+    def forward(self, input):
+        weight_q, _, _ = quant_tensor(self.quant_func, self.orig_layer.weight, self.bits, self.group_size,
+                                      self.v)
+        import torch.nn.functional as F
+        return F.layer_norm(
+            input, self.orig_layer.normalized_shape, weight_q, self.orig_layer.bias, self.orig_layer.eps)
+
+
+class WrapperLlamaNorm(torch.nn.Module):
+    def __init__(self, orig_layer, bit=4, group_size=-1, device="cpu"):
+        super(WrapperLlamaNorm, self).__init__()
+        self.orig_layer = orig_layer
+        self.bits = bit
+        self.group_size = group_size
+        self.device = device
+        weight_dtype = torch.float32
+        self.v = torch.nn.Parameter(
+            reshape_tensor(
+                torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
+                self.group_size),
+            requires_grad=True)
+        self.params = {}
+        self.params["v"] = self.v
+        from auto_round.data_type.int import quant_tensor_asym_wo_round
+        self.quant_func = quant_tensor_asym_wo_round
+
+    def unwrapper(self, best_params):
+        if self.best_params is None:
+            return self.orig_layer
+        v = best_params['v']
+        weight_q, _, _ = quant_tensor(self.quant_func, self.orig_layer.weight, self.bits, self.group_size,
+                                      v)
+        self.orig_layer.weight.data.copy_(weight_q)
+        return self.orig_layer
+
+    def forward(self, hidden_states):
+        weight_q, _, _ = quant_tensor(self.quant_func, self.orig_layer.weight, self.bits, self.group_size,
+                                      self.v)
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.orig_layer.variance_epsilon)
+        return weight_q * hidden_states.to(input_dtype)
+
+
+norm_mapping = {}
+norm_mapping["LayerNorm"] = WrapperLayerNorm
+
+
 class WrapperLinear(torch.nn.Module):
-    def __init__(self, orig_layer, enable_minmax_tuning=True, device='cpu'):
+    def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu'):
         """A wrapper module for linear layers that enables quantization and min-max tuning of weights.
 
         Args:
@@ -120,7 +273,7 @@ class WrapperLinear(torch.nn.Module):
 
         Attributes:
         - orig_layer (torch.nn.Module): The original linear layer being wrapped.
-        - num_bits (int): The number of bits for quantization.
+        - bits (int): The number of bits for quantization.
         - group_size (int): The size of the groups for quantization.
         - sym (bool): Whether the symmetric quantization is to be used.
         - value (torch.nn.Parameter): The learnable parameter for quantization.
@@ -131,17 +284,19 @@ class WrapperLinear(torch.nn.Module):
         super(WrapperLinear, self).__init__()
         self.orig_layer = orig_layer
         self.device = device
-        self.num_bits = self.orig_layer.bits
+        self.bits = self.orig_layer.bits
         self.group_size = self.orig_layer.group_size
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
         self.data_type = self.orig_layer.data_type
-        self.weight_quant_func, self.data_type = get_quant_func(self.data_type, self.num_bits, self.sym)
+        self.weight_quant_func, self.data_type = get_quant_func(self.data_type, self.bits, self.sym)
         self.act_bits = self.orig_layer.act_bits
         self.act_group_size = self.orig_layer.act_group_size
         self.act_sym = self.orig_layer.act_sym
         self.act_dynamic = self.orig_layer.act_dynamic
         self.act_quant = self.act_bits <= 8
+        self.params = {}
+
         if self.act_quant:
             self.act_quant_func, _ = get_quant_func(self.data_type, self.act_bits, self.act_sym)
 
@@ -155,6 +310,7 @@ class WrapperLinear(torch.nn.Module):
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
                 self.group_size),
             requires_grad=True)
+        self.params["v"] = self.value
         weight_reshape = reshape_tensor(orig_layer_weight.data, self.group_size)
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
         self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
@@ -168,11 +324,25 @@ class WrapperLinear(torch.nn.Module):
             self.max_scale = torch.nn.Parameter(
                 torch.ones(shape, device=self.device, dtype=weight_dtype), requires_grad=True
             )
+            self.params["min_scale"] = self.min_scale
+            self.params["max_scale"] = self.max_scale
         else:
             self.min_scale = torch.tensor(1.0, device=self.device, dtype=weight_dtype)
             self.max_scale = torch.tensor(1.0, device=self.device, dtype=weight_dtype)
 
-    def unwrapper(self, v, min_scale, max_scale):
+        if enable_norm_bias_tuning and self.orig_layer.bias is not None:
+            self.bias_bits = 4  ## hard code
+            self.bias_group_size = -1
+            self.bias_v = torch.nn.Parameter(
+                reshape_tensor(
+                    torch.zeros(self.orig_layer.bias.shape, device=self.device, dtype=weight_dtype),
+                    self.bias_group_size),
+                requires_grad=True)
+            from auto_round.data_type.int import quant_tensor_asym_wo_round
+            self.bias_quant_func = quant_tensor_asym_wo_round
+            self.params["bias_v"] = self.bias_v
+
+    def unwrapper(self, best_params):
         """Unwrapper the layer to the original layer.
 
         Args:
@@ -183,31 +353,52 @@ class WrapperLinear(torch.nn.Module):
         Returns:
         - torch.nn.Module: The original linear layer with updated weights after quantization and dequantization.
         """
+        min_scale = torch.tensor(1.0)
+        max_scale = torch.tensor(1.0)
+        v = torch.tensor(0.0)
+        if best_params is not None:
+            min_scale = best_params.get('min_scale', min_scale)
+            max_scale = best_params.get('max_scale', max_scale)
+            v = best_params.get('v', v)
+
         min_scale.clamp_(0, 1.0)
         max_scale.clamp_(0, 1.0)
+        v = v.to(self.device)
+        min_scale = min_scale.to(self.device)
+        max_scale = max_scale.to(self.device)
 
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
-        qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.orig_layer.weight, self.num_bits,
+        qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.orig_layer.weight, self.bits,
                                              self.group_size, v,
                                              min_scale, max_scale, self.scale_dtype, self.weight_min, self.weight_max,
                                              data_type=self.data_type)
         scale = scale.reshape(qdq_weight.shape[0], -1)
         if zp is not None:
             zp = zp.reshape(qdq_weight.shape[0], -1)
+
         self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+        if self.bias_bits <= 8 and best_params is not None and "bias_v" in best_params.keys():  ##fake quant
+            bias_v = best_params["bias_v"]
+            bias, _, _ = quant_tensor(self.bias_quant_func, self.orig_layer.bias, self.bias_bits, self.bias_group_size,
+                                      bias_v)
+            self.orig_layer.bias.grad = None
+            self.orig_layer.bias.data.copy_(bias)
+
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.data_type = self.data_type
-        if hasattr(self.orig_layer, 'update'):
-            self.orig_layer.update()
-            self.orig_layer.to('meta')
         if self.act_quant:
             self.orig_layer.act_quant_func = self.act_quant_func
             wrapper_layer = WrapperWALayer(self.orig_layer)
             return wrapper_layer
+
+        if hasattr(self.orig_layer, 'update'):
+            self.orig_layer.update()
+            self.orig_layer.to('meta')
+
         return self.orig_layer
 
     def forward(self, x):
@@ -226,7 +417,7 @@ class WrapperLinear(torch.nn.Module):
             weight = self.orig_layer.get_weight().to(self.device)
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, 0, 1.0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, 0, 1.0))
-        weight_q, _, _ = quant_tensor(self.weight_quant_func, weight, self.num_bits, self.group_size, self.value,
+        weight_q, _, _ = quant_tensor(self.weight_quant_func, weight, self.bits, self.group_size, self.value,
                                       self.min_scale,
                                       self.max_scale, self.scale_dtype, self.weight_min, self.weight_max,
                                       data_type=self.data_type)
@@ -239,6 +430,9 @@ class WrapperLinear(torch.nn.Module):
         bias = self.orig_layer.bias
         if bias is not None and bias.device.type == 'meta':
             bias = self.orig_layer.get_bias().to(self.device)
+        if self.bias_bits <= 8 and self.orig_layer.bias is not None:  ##fake quant
+            bias, _, _ = quant_tensor(self.bias_quant_func, bias, self.bias_bits, self.bias_group_size, self.bias_v)
+
         return F.linear(x, weight_q, bias)
 
 
@@ -249,14 +443,14 @@ class WrapperTransformerConv1d(torch.nn.Module):
 
         Args:
         - orig_layer (torch.nn.Module): The original 1D convolutional layer to be wrapped.
-        - num_bits (int): The number of bits for quantization.
+        - bits (int): The number of bits for quantization.
         - group_size (int): The size of the groups for quantization.
         - sym (bool): Whether symmetric quantization is to be used.
         - enable_minmax_tuning (bool): Whether to enable min-max scaling tuning. Default is True.
 
         Attributes:
         - orig_layer (torch.nn.Module): The original 1D convolutional layer being wrapped.
-        - num_bits (int): The number of bits for quantization.
+        - bits (int): The number of bits for quantization.
         - group_size (int): The size of the groups for quantization.
         - sym (bool): Whether symmetric quantization is to be used.
         - weight_t (torch.Tensor): Transposed weight tensor of the original layer.
@@ -267,7 +461,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         """
         super(WrapperTransformerConv1d, self).__init__()
         self.orig_layer = orig_layer
-        self.num_bits = self.orig_layer.bits
+        self.bits = self.orig_layer.bits
         self.group_size = self.orig_layer.group_size
         self.sym = self.orig_layer.sym
         self.scale_dtype = self.orig_layer.scale_dtype
@@ -277,7 +471,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.act_sym = self.orig_layer.act_sym
         self.act_dynamic = self.orig_layer.act_dynamic
         self.act_quant = self.act_bits <= 8
-        self.weight_quant_func, self.data_type = get_quant_func(self.data_type, self.num_bits, self.sym)
+        self.weight_quant_func, self.data_type = get_quant_func(self.data_type, self.bits, self.sym)
         if self.act_quant:
             self.act_quant_func, _ = get_quant_func(self.data_type, self.act_bits, self.act_sym)
 
@@ -324,7 +518,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         """
         min_scale.clamp_(0, 1.0)
         max_scale.clamp_(0, 1.0)
-        qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.weight_t, self.num_bits, self.group_size, v,
+        qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.weight_t, self.bits, self.group_size, v,
                                              min_scale,
                                              max_scale, self.scale_dtype, self.weight_min, self.weight_max,
                                              data_type=self.data_type)
@@ -360,7 +554,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         with torch.no_grad():
             self.min_scale.clamp_(0, 1.0)
             self.max_scale.clamp_(0, 1.0)
-        weight_q, _, _ = quant_tensor(self.weight_quant_func, self.weight_t, self.num_bits, self.group_size, self.value,
+        weight_q, _, _ = quant_tensor(self.weight_quant_func, self.weight_t, self.bits, self.group_size, self.value,
                                       self.min_scale, self.max_scale, self.scale_dtype, self.weight_min,
                                       self.weight_max, data_type=self.data_type)
         weight_q = weight_q.to(self.weight_t.dtype)
@@ -395,7 +589,7 @@ class WrapperMultiblock(torch.nn.Module):
         return hidden_states
 
 
-def wrapper_block(block, enable_minmax_tuning, device='cpu'):
+def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='cpu'):
     """Wraps the layers in the given block with a custom Wrapper module.
 
     Args:
@@ -412,7 +606,8 @@ def wrapper_block(block, enable_minmax_tuning, device='cpu'):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning, device=device)
+            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning,
+                                  enable_norm_bias_tuning=enable_norm_bias_tuning, device=device)
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
@@ -424,11 +619,20 @@ def wrapper_block(block, enable_minmax_tuning, device='cpu'):
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
+        if enable_norm_bias_tuning:
+            if "norm" in m.__class__.__name__.lower():
+                if m.__class__.__name__ in norm_mapping.keys():
+                    wrapper_layer_class = norm_mapping[m.__class__.__name__]
+                    new_m = wrapper_layer_class(m,device=device)
+                    setattr(block, n, new_m)
+                else:
+                    logger.warning_once(f"{m.__class__.__name__} is not supported")
+
     return quantized_layers, unquantized_layers
 
 
 @torch.no_grad()
-def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
+def unwrapper_layer(model, layer, layer_name, best_params):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
     Args:
@@ -439,21 +643,13 @@ def unwrapper_layer(model, layer, layer_name, v=0, min_scale=0, max_scale=0):
     """
 
     if hasattr(layer, "orig_layer"):
-
-        if isinstance(min_scale, torch.Tensor):
-            min_scale = torch.clamp(min_scale, 0, 1.0)
-            max_scale = torch.clamp(max_scale, 0, 1.0)
-
-        else:
-            min_scale = torch.tensor(1.0)
-            max_scale = torch.tensor(1.0)
-        orig_layer = layer.unwrapper(v, min_scale, max_scale)
+        orig_layer = layer.unwrapper(best_params)
         orig_layer = orig_layer.to("cpu")
         set_module(model, layer_name, orig_layer)
 
 
 @torch.no_grad()
-def unwrapper_block(block, vs, min_scales, max_scales):
+def unwrapper_block(block, best_params):
     """Unwraps the WrapperLinear and WrapperTransformerConv1d modules in the given block.
 
     Args:
@@ -464,16 +660,9 @@ def unwrapper_block(block, vs, min_scales, max_scales):
     """
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
-            v = 0
-            min_scale = torch.tensor(1.0)
-            max_scale = torch.tensor(1.0)
-            if isinstance(vs, dict):
-                v = vs[n]
-            if isinstance(min_scales, dict):
-                min_scale = min_scales[n]
-                min_scale = torch.clamp(min_scale, 0, 1.0)
-            if isinstance(max_scales, dict):
-                max_scale = max_scales[n]
-                max_scale = torch.clamp(max_scale, 0, 1.0)
-            orig_layer = m.unwrapper(v, min_scale, max_scale)
+            if n in best_params.keys():
+                best_param = best_params[n]
+            else:
+                best_param = None
+            orig_layer = m.unwrapper(best_param)
             set_module(block, n, orig_layer)

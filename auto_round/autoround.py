@@ -30,8 +30,7 @@ from .utils import (
     block_forward,
     check_is_cpu,
     check_to_quantized,
-    collect_minmax_scale,
-    collect_round_v,
+    collect_best_params,
     convert_dtype_str2torch,
     detect_device,
     get_block_names,
@@ -147,6 +146,7 @@ class AutoRound(object):
             act_sym: bool = None,
             act_dynamic: bool = True,
             quant_block_list: list = None,
+            enable_norm_bias_tuning: bool = None,
             **kwargs,
     ):
         self.quantized = False
@@ -164,6 +164,12 @@ class AutoRound(object):
         self.nsamples = nsamples
         self.nblocks = nblocks
         self.bits = bits
+        self.enable_norm_bias_tuning = enable_norm_bias_tuning
+        if self.enable_norm_bias_tuning is None:
+            if self.bits == 2:
+                self.enable_norm_bias_tuning = True
+            else:
+                self.enable_norm_bias_tuning = False
         self.group_size = group_size
         self.sym = sym
         self.low_gpu_mem_usage = low_gpu_mem_usage
@@ -769,7 +775,7 @@ class AutoRound(object):
         mse_loss = torch.nn.MSELoss().to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
-        best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
+        # best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
         gradient_accumulate_steps = self.train_bs  ##Force to low gpu
         train_bs = 1  ##Force to low gpu
         pick_samples = train_bs * gradient_accumulate_steps
@@ -811,15 +817,10 @@ class AutoRound(object):
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
-                    best_v = copy.deepcopy(wrapper_linear.value.data)
-                    best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, 0, 1.0))
-                    best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, 0, 1.0))
-
+                    best_params = collect_best_params(wrapper_linear)
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
-                best_v = copy.deepcopy(wrapper_linear.value.data)
-                best_min_scale = copy.deepcopy(torch.clamp(wrapper_linear.min_scale.data, 0, 1.0))
-                best_max_scale = copy.deepcopy(torch.clamp(wrapper_linear.max_scale.data, 0, 1.0))
+                best_params = collect_best_params(wrapper_linear)
 
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
@@ -832,7 +833,7 @@ class AutoRound(object):
             last_loss = best_loss
             best_iter = last_best_iter
         with torch.no_grad():
-            unwrapper_layer(self.model, wrapper_linear, layer_name, best_v, best_min_scale, best_max_scale)
+            unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
         layer = mv_module_from_gpu(layer, self.low_cpu_mem_usage)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
@@ -858,15 +859,19 @@ class AutoRound(object):
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
-            block, self.enable_minmax_tuning, device=self.device)
+            block, self.enable_minmax_tuning,self.enable_norm_bias_tuning, device=self.device)
 
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():
             if hasattr(m, "orig_layer"):
-                round_params.append(m.value)
-                minmax_params.append(m.min_scale)
-                minmax_params.append(m.max_scale)
+                if "v" in m.params.keys():
+                    round_params.append(m.params['v'])
+                if "max_scale" in m.params.keys():
+                    minmax_params.append(m.params["min_scale"])
+                    minmax_params.append(m.params["max_scale"])
+                if "bias_v" in m.params.keys():
+                    round_params.append(m.params["bias_v"])
 
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
@@ -899,7 +904,7 @@ class AutoRound(object):
         mse_loss = torch.nn.MSELoss().to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
-        best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
+        best_params = {}
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
@@ -940,13 +945,12 @@ class AutoRound(object):
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
+                    best_params = collect_best_params(block)
                     # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
-                    best_v = collect_round_v(block)
-                    best_min_scale, best_max_scale = collect_minmax_scale(block)
+
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
-                best_v = collect_round_v(block)
-                best_min_scale, best_max_scale = collect_minmax_scale(block)
+                best_params = collect_best_params(block)
 
             if not self.not_use_best_mse:
                 if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
@@ -966,7 +970,7 @@ class AutoRound(object):
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
-            unwrapper_block(block, best_v, best_min_scale, best_max_scale)
+            unwrapper_block(block, best_params)
         if self.enable_quanted_input:
             if self.low_cpu_mem_usage:
                 block = block.to(device)

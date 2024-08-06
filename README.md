@@ -68,7 +68,7 @@ bits, group_size, sym = 4, 128, False
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
 autoround.quantize()
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_gptq)
+autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_gptq")
 ```
 
 <details>
