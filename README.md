@@ -137,9 +137,7 @@ Please run the quantization code first
 ### Setup env for AutoRound format
 
 
-2 Set up the environment
-
-**cuda**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation -e .
+**cuda/cpu**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation -e .
 
 cpu: pip install intel-extension-for-transformers
 
