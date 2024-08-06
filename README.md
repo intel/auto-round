@@ -139,9 +139,9 @@ Please run the quantization code first
 
 **cuda/cpu**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation -e .
 
-cpu: pip install intel-extension-for-transformers
+**cpu**: pip install intel-extension-for-transformers
 
-hpu: docker image with Gaudi Software Stack is recommended, please refer to following script for environment setup. More details can be found in Gaudi Guide.
+**hpu**: docker image with Gaudi Software Stack is recommended, please refer to following script for environment setup. More details can be found in Gaudi Guide.
 
 
 ### Gaudi2/ CPU/ GPU
