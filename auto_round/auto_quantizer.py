@@ -44,6 +44,7 @@ from transformers.utils.quantization_config import AwqConfig, GPTQConfig, Quanti
 from auto_round.utils import get_module, set_module, dynamic_import_inference_linear
 import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
 from enum import Enum
+import copy
 
 logger = getLogger(__name__)
 import sys
@@ -106,16 +107,18 @@ def is_autoround_exllamav2_available():
         res = False
     return res
 
-def is_hpu_supported(): # pragma: no cover
+
+def is_hpu_supported():  # pragma: no cover
     try:
         import subprocess
-        import habana_frameworks.torch.core as htcore # pylint: disable=E0401
+        import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
         hqt_version = subprocess.check_output(['pip', 'show', \
-            'habana_quantization_toolkit']).decode().split('\n')[1].split(': ')[1]
-        assert(hqt_version >= "1.17")
+                                               'habana_quantization_toolkit']).decode().split('\n')[1].split(': ')[1]
+        assert (hqt_version >= "1.17")
     except ImportError as e:
         return False
     return True
+
 
 if is_auto_round_available():
     from auto_round_extension.cuda.post_init import autoround_post_init
@@ -155,7 +158,7 @@ class AutoHfQuantizer:
                 f"Unknown quantization type, got {quant_method} - supported types are:"
                 f" {list(AUTO_QUANTIZER_MAPPING.keys())}"
             )
-        if "auto-round" in quant_method or is_hpu_supported(): # pragma: no cover
+        if "auto-round" in quant_method or is_hpu_supported():  # pragma: no cover
             target_cls = AutoRoundQuantizer
         else:
             target_cls = AUTO_QUANTIZER_MAPPING[quant_method]
@@ -190,7 +193,8 @@ class AutoHfQuantizer:
             else:
                 quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
 
-        if isinstance(quantization_config, (GPTQConfig, AwqConfig)) and quantization_config_from_args is not None:
+        if isinstance(quantization_config,
+                      (GPTQConfig, AwqConfig, AutoRoundConfig)) and quantization_config_from_args is not None:
             # special case for GPTQ / AWQ config collision
             loading_attr_dict = quantization_config_from_args.get_loading_attributes()
             for attr, val in loading_attr_dict.items():
@@ -228,12 +232,12 @@ class AutoRoundConfig(QuantizationConfigMixin):
 
     def __init__(
             self,
-            bits: int,
+            bits: int = 4,
             tokenizer: Any = None,
             dataset: str = None,
             group_size: int = 128,
             sym: bool = False,
-            backend="auto_round:exllamav2",
+            backend="auto",
             layer_config: dict = None,
             **kwargs,
     ):
@@ -243,6 +247,13 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.dataset = dataset
         self.group_size = group_size
         self.sym = sym
+        if "auto" == backend:
+            if torch.cuda.is_available():
+                backend = "auto_round:exllamav2"
+            elif is_hpu_supported():
+                backend = "hpu"
+            else:
+                backend = "cpu"
         self.backend = backend
         self.layer_config = layer_config
         if kwargs is not None:
@@ -251,8 +262,6 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.quant_method = AutoRoundQuantizationMethod.AutoRound
         self.post_init()
 
-    def get_loading_attributes(self):
-        return {}
 
     def post_init(self):
         r"""Safety checker that arguments are correct."""
@@ -261,6 +270,12 @@ class AutoRoundConfig(QuantizationConfigMixin):
         if self.group_size != -1 and self.group_size <= 0:
             raise ValueError("group_size must be greater than 0 or equal to -1")
         ##TODO add more check
+
+    def get_loading_attributes(self):
+        attributes_dict = copy.deepcopy(self.__dict__)
+        loading_attributes = ["backend"]
+        loading_attibutes_dict = {i: j for i, j in attributes_dict.items() if i in loading_attributes}
+        return loading_attibutes_dict
 
     def to_dict(self):
         config_dict = super().to_dict()
@@ -296,7 +311,7 @@ class AutoRoundQuantizer(HfQuantizer):
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:
             torch_dtype = torch.float16
-        elif torch_dtype != torch.float16:
+        elif torch_dtype != torch.float16 and not is_hpu_supported():
             logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
         return torch_dtype
 
@@ -311,10 +326,18 @@ class AutoRoundQuantizer(HfQuantizer):
 
         layer_names = get_layer_names_in_block(model)
         quantization_config = model.config.quantization_config
+        if hasattr(quantization_config, "backend"):  # pragma: no cover
+            backend = quantization_config.backend
+            if "hpu" in backend and model.dtype != torch.bfloat16:
+                logger.info("We suggest you to set `torch_dtype=torch.bfloat16` for better efficiency with AutoRound.")
+                model = model.to(torch.bfloat16)
+            elif model.dtype != torch.float16:
+                logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
+                model = model.to(torch.float16)
         bits = quantization_config.bits
         group_size = quantization_config.group_size
         data_type = quantization_config.data_type if hasattr(quantization_config, "data_type") \
-            else "int" # pragma: no cover
+            else "int"  # pragma: no cover
         sym = quantization_config.sym
         extra_config = {}
         if hasattr(quantization_config, "extra_config"):
@@ -334,11 +357,11 @@ class AutoRoundQuantizer(HfQuantizer):
                 layer_configs[layer_name]["group_size"] = extra_config[layer_name].get("group_size", group_size)
                 layer_configs[layer_name]["data_type"] = extra_config[layer_name].get("data_type", data_type)
                 layer_configs[layer_name]["sym"] = extra_config[layer_name].get("sym", sym)
-        if hasattr(quantization_config, "backend"): # pragma: no cover
+        if hasattr(quantization_config, "backend"):  # pragma: no cover
             backend = quantization_config.backend
-        elif 'gptq' in quantization_config.quant_method: # pragma: no cover
+        elif 'gptq' in quantization_config.quant_method:  # pragma: no cover
             backend = 'gptq'
-        else: # pragma: no cover
+        else:  # pragma: no cover
             logger.error("Please specify quantization backend")
 
         self._replace_by_quant_layers(model, layer_configs, backend)

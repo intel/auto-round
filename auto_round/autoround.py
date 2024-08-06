@@ -49,6 +49,7 @@ from .utils import (
 
 from .low_cpu_mem.utils import get_layers_before_block
 
+
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
      please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
@@ -151,8 +152,8 @@ class AutoRound(object):
         self.quantized = False
         self.model_orig_dtype = model.dtype
         self.low_cpu_mem_usage = low_cpu_mem_usage
-        assert not unsupport_meta_device(model),  (
-            "autoround does not support for params on meta device by transformers` interfaces," 
+        assert not unsupport_meta_device(model), (
+            "autoround does not support for params on meta device by transformers` interfaces,"
             "please do not using device_map='auto' in model loading, "
             "or follow examples/language-modeling/main.py to enable low_cpu_mem_usage")
         self.model = model.eval()
@@ -222,7 +223,7 @@ class AutoRound(object):
         assert self.bits > 0, "bits must be positive"
         assert self.act_bits > 0, "bits must be positive"
         assert self.group_size == -1 or self.group_size >= 1, "only supports positive group_size or -1(per channel)"
-        assert self.act_group_size == -1 or self.act_group_size >= 1,\
+        assert self.act_group_size == -1 or self.act_group_size >= 1, \
             "only supports positive group_size or -1(per channel)"
         assert self.train_bs > 0, "batch size must be positive"
         assert self.iters > 0, "iters must be positive"
@@ -245,7 +246,7 @@ class AutoRound(object):
             all_blocks = self.quant_block_list
         else:
             all_blocks = get_block_names(self.model)
-                    
+
         if len(all_blocks) == 0:
             logger.warning("could not find blocks, exit with original model")
             return self.model, self.layer_config
@@ -400,7 +401,6 @@ class AutoRound(object):
             for key in keys:
                 setattr(m, key, layer_config[n][key])
 
-
     @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
         """Compute the output of a given block of the model for a given input.
@@ -473,7 +473,7 @@ class AutoRound(object):
             embed_layers = get_layers_before_block(self.model)
             for n, m in embed_layers:
                 m = m.to(self.device)
-        
+
         for data in self.dataloader:
             if data is None:
                 continue
@@ -490,8 +490,8 @@ class AutoRound(object):
                     data_new[key] = data[key].to(self.device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
-                    data_new = data
-                    input_ids = data_new[0]
+                data_new = data
+                input_ids = data_new[0]
             else:
                 data_new = {}
                 for key in data.keys():
@@ -501,7 +501,7 @@ class AutoRound(object):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            
+
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
@@ -527,7 +527,7 @@ class AutoRound(object):
                 f"Insufficient number of samples collected may affect the quantification. "
                 f"Valid samples size:{total_cnt}, Target sample size:{nsamples}"
             )
-        
+
         # clean embed weight to save memory
         if self.low_cpu_mem_usage:
             for n, m in embed_layers:
@@ -671,8 +671,8 @@ class AutoRound(object):
                     elif "position_ids" in key:
                         if key not in self.inputs[name].keys():
                             self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
-                                                    if self.not_share_position_ids_flag \
-                                                    else to_device(kwargs[key], device=torch.device("cpu"))
+                                if self.not_share_position_ids_flag \
+                                else to_device(kwargs[key], device=torch.device("cpu"))
                         elif kwargs[key] is not None and self.not_share_position_ids_flag:
                             self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif key not in self.inputs[name].keys():
@@ -1064,7 +1064,7 @@ class AutoRound(object):
 
         torch.cuda.empty_cache()
 
-    def save_quantized(self, output_dir=None, format="auto_gptq", inplace=True, **kwargs):
+    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.
 
         Args:
@@ -1529,7 +1529,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
-
-
-

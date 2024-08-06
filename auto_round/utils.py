@@ -804,7 +804,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
             else:
                 from auto_round_extension.hpu.qlinear_hpu_gptq import QuantLinear
                 return QuantLinear
-    if bits == 4 and is_optimum_habana_available(): # pragma: no cover
+    if (bits == 4 and is_optimum_habana_available()) or "hpu" in backend: # pragma: no cover
         try:
             import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
         except Exception as e:
