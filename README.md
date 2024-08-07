@@ -143,7 +143,7 @@ Please run the quantization code first
 * option 1: pip install auto-round && pip install intel-extension-for-transformers
 * option 2: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation -e .
 
-**hpu**: docker image with Gaudi Software Stack is recommended, please refer to following script for environment setup. More details can be found in [Gaudi Guide](https://docs.habana.ai/en/latest/).
+**hpu**: docker image with Gaudi Software Stack is recommended. More details can be found in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
 
 ### Gaudi2/ CPU/ GPU
