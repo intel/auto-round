@@ -24,7 +24,7 @@ Since Adam adapts the step size with each iteration, it is difficult to control 
 **An overview of our method**
 <div align="center">
 
-![](docs/imgs/norm_bias_overview.png)
+![](../docs/imgs/norm_bias_overview.png)
 
 <div align="left">
 
@@ -35,7 +35,7 @@ W' = s*clip(W/s+zp,N,M)
 $$
 where 𝑠 is the quantization scale, predefined by 𝑊 and hyperparameters such as bits.
 
-To tune the W', following Signround, we add a trainable parameter V in the range [-0.5, 0.5], which can be easily tuning by SignSGD.
+To tune the W', following Signround, we add a trainable parameter V in the range [-0.5, 0.5], which can be easily tuned by SignSGD.
 
 $$
 W' = s*clip(W/s+zp+v,N,M)
