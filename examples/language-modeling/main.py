@@ -346,9 +346,7 @@ if __name__ == '__main__':
             autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
 
     if 'xpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
-                                 compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
-                                 device="xpu")
+        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
     if "cpu" in deployment_device:
         autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
     if "fake" in deployment_device:
