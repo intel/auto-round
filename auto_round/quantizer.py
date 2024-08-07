@@ -111,81 +111,6 @@ class WrapperWALayer(torch.nn.Module):
         return self.orig_layer.forward(x)
 
 
-# class LlamaRMSNorm(nn.Module):
-#     def __init__(self, hidden_size, eps=1e-6):
-#         """
-#         LlamaRMSNorm is equivalent to T5LayerNorm
-#         """
-#         super().__init__()
-#         self.weight = nn.Parameter(torch.ones(hidden_size))
-#         self.variance_epsilon = eps
-#
-#     def forward(self, hidden_states):
-#         input_dtype = hidden_states.dtype
-#         hidden_states = hidden_states.to(torch.float32)
-#         variance = hidden_states.pow(2).mean(-1, keepdim=True)
-#         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-#         return self.weight * hidden_states.to(input_dtype)
-#
-#     def extra_repr(self):
-#         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
-#
-# class Qwen2RMSNorm(nn.Module):
-#     def __init__(self, hidden_size, eps=1e-6):
-#         """
-#         Qwen2RMSNorm is equivalent to T5LayerNorm
-#         """
-#         super().__init__()
-#         self.weight = nn.Parameter(torch.ones(hidden_size))
-#         self.variance_epsilon = eps
-#
-#     def forward(self, hidden_states):
-#         input_dtype = hidden_states.dtype
-#         hidden_states = hidden_states.to(torch.float32)
-#         variance = hidden_states.pow(2).mean(-1, keepdim=True)
-#         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-#         return self.weight * hidden_states.to(input_dtype)
-#
-#     def extra_repr(self):
-#         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
-#
-# class Phi3RMSNorm(nn.Module):
-#     def __init__(self, hidden_size, eps=1e-6):
-#         """
-#         Phi3RMSNorm is equivalent to T5LayerNorm
-#         """
-#         super().__init__()
-#         self.weight = nn.Parameter(torch.ones(hidden_size))
-#         self.variance_epsilon = eps
-#
-#     def forward(self, hidden_states):
-#         input_dtype = hidden_states.dtype
-#         hidden_states = hidden_states.to(torch.float32)
-#         variance = hidden_states.pow(2).mean(-1, keepdim=True)
-#         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-#         return self.weight * hidden_states.to(input_dtype)
-#
-#     def extra_repr(self):
-#         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}
-# class MistralRMSNorm(nn.Module):
-#     def __init__(self, hidden_size, eps=1e-6):
-#         """
-#         MistralRMSNorm is equivalent to T5LayerNorm
-#         """
-#         super().__init__()
-#         self.weight = nn.Parameter(torch.ones(hidden_size))
-#         self.variance_epsilon = eps
-#
-#     def forward(self, hidden_states):
-#         input_dtype = hidden_states.dtype
-#         hidden_states = hidden_states.to(torch.float32)
-#         variance = hidden_states.pow(2).mean(-1, keepdim=True)
-#         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-#         return self.weight * hidden_states.to(input_dtype)
-#
-#     def extra_repr(self):
-#         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
-
 
 class WrapperLayerNorm(torch.nn.Module):
     def __init__(self, orig_layer, bit=4, group_size=-1, device="cpu"):
@@ -241,7 +166,7 @@ class WrapperLlamaNorm(torch.nn.Module):
         self.quant_func = quant_tensor_asym_wo_round
 
     def unwrapper(self, best_params):
-        if self.best_params is None:
+        if best_params is None:
             return self.orig_layer
         v = best_params['v']
         weight_q, _, _ = quant_tensor(self.quant_func, self.orig_layer.weight, self.bits, self.group_size,
@@ -261,7 +186,10 @@ class WrapperLlamaNorm(torch.nn.Module):
 
 norm_mapping = {}
 norm_mapping["LayerNorm"] = WrapperLayerNorm
-
+norm_mapping["LlamaRMSNorm"] = WrapperLlamaNorm
+norm_mapping["Qwen2RMSNorm"] = WrapperLlamaNorm
+norm_mapping["Phi3RMSNorm"] = WrapperLlamaNorm
+norm_mapping["MistralRMSNorm"] = WrapperLlamaNorm
 
 class WrapperLinear(torch.nn.Module):
     def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu'):
@@ -329,8 +257,9 @@ class WrapperLinear(torch.nn.Module):
         else:
             self.min_scale = torch.tensor(1.0, device=self.device, dtype=weight_dtype)
             self.max_scale = torch.tensor(1.0, device=self.device, dtype=weight_dtype)
-
+        self.enable_minmax_tuning = False
         if enable_norm_bias_tuning and self.orig_layer.bias is not None:
+            self.enable_minmax_tuning = True
             self.bias_bits = 4  ## hard code
             self.bias_group_size = -1
             self.bias_v = torch.nn.Parameter(
@@ -381,7 +310,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.weight.grad = None
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
-        if self.bias_bits <= 8 and best_params is not None and "bias_v" in best_params.keys():  ##fake quant
+        if self.enable_minmax_tuning and "bias_v" in best_params.keys():  ##fake quant
             bias_v = best_params["bias_v"]
             bias, _, _ = quant_tensor(self.bias_quant_func, self.orig_layer.bias, self.bias_bits, self.bias_group_size,
                                       bias_v)
@@ -430,7 +359,7 @@ class WrapperLinear(torch.nn.Module):
         bias = self.orig_layer.bias
         if bias is not None and bias.device.type == 'meta':
             bias = self.orig_layer.get_bias().to(self.device)
-        if self.bias_bits <= 8 and self.orig_layer.bias is not None:  ##fake quant
+        if self.enable_minmax_tuning:
             bias, _, _ = quant_tensor(self.bias_quant_func, bias, self.bias_bits, self.bias_group_size, self.bias_v)
 
         return F.linear(x, weight_q, bias)
