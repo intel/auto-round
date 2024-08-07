@@ -206,7 +206,7 @@ average accuracies of 11 zero-shot tasks.
 
 ## Reference
 
-If you find SignRound useful for your research, please cite our paper:
+If you find AutoRound useful for your research, please cite our paper:
 
 ```bash
 @article{cheng2023optimize,
