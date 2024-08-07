@@ -44,7 +44,7 @@ if __name__ == '__main__':
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
 
-    parser.add_argument("--dataset", default="calib_data/pile-10k", type=str,
+    parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
                         help="The dataset for quantization training. It can be a custom one.")
 
     parser.add_argument("--enable_quanted_input", action='store_true',
