@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Union
 import torch
 import transformers
 from auto_round.export.register import register_format
-from auto_round.utils import get_module, logger, set_module
+from auto_round.utils import get_module, logger, set_module, detect_device
 
 from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear
@@ -109,7 +109,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
 
 @register_format("itrex_xpu")
 def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
-    """Save configure file and weights for CPU backend inference."""
+    """Save configure file and weights for XPU backend inference."""
     model = kwargs["model"]
     layer_config = kwargs["layer_config"]
     sym = kwargs["sym"]
@@ -185,15 +185,11 @@ def pack_model(
             5. zeros is always needed even for sym.
         inplace (bool, optional): Compress the model in place, or copy the model and compress it.
 
-    xpu args:
-        compression_dtype=torch.int8,
-        compression_dim=0,
-        use_optimum_format=False,
-        scale_dtype=convert_dtype_str2torch(config.scale_dtype),
-        device="xpu",
     """
+    # Due to XPU doesn't support tuning yet
+    device = detect_device() if device == "xpu" else device
     if model.device.type == 'meta':
-        model = model.to("cuda" if device == "xpu" else device)
+        model = model.to(device)
     if inplace:
         compressed_model = model
     else:
@@ -203,6 +199,7 @@ def pack_model(
             q_config = json.load(f)
     else:
         q_config = layer_config
+    
     for k, v in q_config.items():
         if "float" in v["data_type"]:
             continue
@@ -219,17 +216,10 @@ def pack_model(
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor(scale, dtype=convert_dtype)
             zp = torch.tensor(zp, dtype=torch.int32)
-            if device == "xpu":
-                scale = torch.tensor(v["scale"], dtype=torch.float32)
-                zp = None if sym else torch.tensor(v["zp"], dtype=torch.int32)
         else:
             if not inplace:
                 scale = scale.clone()
                 zp = zp.clone()
-            if device == "xpu":
-                # Please note that for XPU, the scale data type is forcibly set to fp32
-                scale = scale.to(dtype=torch.float32)
-                zp = None if sym else zp.to(dtype=torch.int32)
             else:
                 scale = scale.to(dtype=convert_dtype)
                 zp = zp.to(dtype=torch.int32)
@@ -252,7 +242,7 @@ def pack_model(
             scale_dtype=scale_dtype,
             zp=zp is not None,
             bias=m.bias is not None,
-            device="cuda" if device == "xpu" else device,
+            device=device,
             compression_dtype=compression_dtype,
             compression_dim=compression_dim,
             use_optimum_format=use_optimum_format,  # xpu is False
@@ -260,4 +250,5 @@ def pack_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
     return compressed_model
+
 
