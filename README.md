@@ -203,13 +203,6 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | databricks/dolly-v2-3b               | [example](./examples/language-modeling/)                                                                                                                                                                                                                                                                            |
 | stabilityai/stablelm-base-alpha-3b   | [example](./examples/language-modeling/)                                                                                                                                                                                                                                                                            
 
-## Comparison with other methods
-
-We provide a [comprehensive analysis](docs/acc.md) with other methods in our accuracy data section. In summary, our
-approach achieved superior performance compared to GPTQ, scoring 30/32, AWQ with 27/32, HQQ with 15/16, and OmniQuant
-with a perfect score of 16/16 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, and W2G128, based on the
-average accuracies of 11 zero-shot tasks.
-
 ## Reference
 
 If you find AutoRound useful for your research, please cite our paper:
