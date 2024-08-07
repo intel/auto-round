@@ -146,7 +146,7 @@ class AutoRound(object):
             act_sym: bool = None,
             act_dynamic: bool = True,
             quant_block_list: list = None,
-            enable_norm_bias_tuning: bool = None,
+            enable_norm_bias_tuning: bool = False,
             **kwargs,
     ):
         self.quantized = False
@@ -1330,6 +1330,7 @@ class AutoOPTRound(AutoRound):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
+            enable_norm_bias_tuning: bool = False,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1367,6 +1368,7 @@ class AutoOPTRound(AutoRound):
             act_group_size,
             act_sym,
             act_dynamic,
+            enable_norm_bias_tuning,
             **kwargs,
         )
 
@@ -1493,6 +1495,7 @@ class AutoAdamRound(AutoOPTRound):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
+            enable_norm_bias_tuning: bool = False,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1530,6 +1533,7 @@ class AutoAdamRound(AutoOPTRound):
             act_group_size,
             act_sym,
             act_dynamic,
+            enable_norm_bias_tuning,
             optimizer,
             **kwargs,
         )
