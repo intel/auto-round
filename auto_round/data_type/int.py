@@ -59,6 +59,8 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
     wmax[tmp] = +1
     scale = ((wmax - wmin) / maxq).to(scale_dtype)
     scale = torch.clamp(scale, min=q_scale_thresh)
+    if (scale == 0.).any():
+        scale = torch.clamp(scale, min=1e-5)
     zp = round_ste(-wmin / scale)  # pylint: disable=E1130
     scale = scale.unsqueeze(dim=-1)
     zp = zp.unsqueeze(dim=-1)
@@ -115,6 +117,8 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
     wmax_new[tmp] = +1
     scale = ((wmax_new - wmin_new) / maxq).to(scale_dtype)
     scale = torch.clamp(scale, min=q_scale_thresh)
+    if (scale == 0.).any():
+        scale = torch.clamp(scale, min=1e-5)
     scale = scale.unsqueeze(dim=-1)
     zp = torch.full_like(scale, (maxq + 1) / 2)
 
@@ -123,7 +127,6 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
     return scale * (q - zp), scale, zp
 
 
-@register_dtype("int_fake")
 def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
                                weight_min=None, weight_max=None, q_scale_thresh=0.0, **kwargs):
     """Quantizes and dequantizes weight asymmetrically without rounding, this is mainly for tuning bias, norm.
@@ -171,3 +174,4 @@ def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0
     int_w = weight / scale + v
     q = torch.clamp(int_w + zp, 0, maxq)
     return scale * (q - zp), scale, zp
+
