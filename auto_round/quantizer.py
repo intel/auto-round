@@ -160,6 +160,7 @@ class WrapperLlamaNorm(torch.nn.Module):
        to its weights. The quantization is parameterized by the number of bits and
        an optional group size.
     """
+
     def __init__(self, orig_layer, bit=4, group_size=-1, device="cpu"):
         super(WrapperLlamaNorm, self).__init__()
         self.orig_layer = orig_layer
@@ -172,8 +173,7 @@ class WrapperLlamaNorm(torch.nn.Module):
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
                 self.group_size),
             requires_grad=True)
-        self.params = {}
-        self.params["v"] = self.v
+        self.params = {"v": self.v}
         from auto_round.data_type.int import quant_tensor_asym_wo_round
         self.quant_func = quant_tensor_asym_wo_round
 
