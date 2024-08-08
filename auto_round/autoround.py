@@ -23,7 +23,8 @@ from transformers import set_seed
 from torch import autocast
 
 from .calib_dataset import get_dataloader
-from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
+from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
+    WrapperTransformerConv1d
 from .special_model_handler import check_hidden_state_dim, check_share_attention_mask, check_not_share_position_ids
 from .utils import (
     CpuInfo,
@@ -750,7 +751,12 @@ class AutoRound(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        wrapper_linear = WrapperLinear(layer, self.enable_minmax_tuning, device).to(device)
+        if isinstance(layer, torch.nn.Linear):
+            wrapper_linear = WrapperLinear(layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device).to(
+                device)
+        else:
+            wrapper_linear = WrapperTransformerConv1d(layer, enable_minmax_tuning=self.enable_minmax_tuning,
+                                                      device=device).to(device)
         round_params = []
         minmax_params = []
         round_params.append(wrapper_linear.value)
