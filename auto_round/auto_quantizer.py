@@ -254,6 +254,8 @@ class AutoRoundConfig(QuantizationConfigMixin):
                 backend = "hpu"
             else:
                 backend = "cpu"
+        elif "cuda" == backend:
+            backend = "auto_round:exllamav2"
         self.backend = backend
         self.layer_config = layer_config
         if kwargs is not None:
