@@ -859,7 +859,7 @@ class AutoRound(object):
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
-            block, self.enable_minmax_tuning,self.enable_norm_bias_tuning, device=self.device)
+            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device)
 
         round_params = []
         minmax_params = []
@@ -1118,6 +1118,7 @@ class AutoRound(object):
             "amp",
             "nsamples",
             "low_gpu_mem_usage",
+            "enable_norm_bias_tuning"
         ]
         if isinstance(self.dataset, str):
             serialization_keys.append("dataset")
