@@ -16,7 +16,7 @@
 import copy
 import time
 from typing import Optional, Union
-
+import logging
 import torch
 import transformers
 from torch import autocast
@@ -452,8 +452,8 @@ class AutoRound(object):
                 indices,
                 self.seqlen,
                 self.share_attention_mask_flag,
-                self.not_share_position_ids_flag,
-                self.input_dim
+                # self.not_share_position_ids_flag,
+                # self.input_dim
             )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
@@ -880,6 +880,8 @@ class AutoRound(object):
         # TODO: unable to support self.use_quant_input by now.
         # TODO: enable amp
         block = block.to(device)
+        block_inputs = to_device(block_inputs, device)
+        block_outputs = to_device(block_outputs, device)
         freeze_mod_(block)
         quantized_layer_names, unquantized_layer_names = wrapper_block(block, self.enable_minmax_tuning, device)
         block_outputs = torch.cat(block_outputs, dim=0)
@@ -958,9 +960,7 @@ class AutoRound(object):
 
         unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         return None, block_outputs
-
-
-    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
+    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu"), output=None):
         """Quantize the weights of a given block of the model.
 
         Args:
@@ -973,9 +973,12 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+        block = block.to(device)
+        self.device = device
+        if output is None:
 
-        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
-                                        self.cache_device)
+            output = self.get_block_outputs(block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
+                                            self.cache_device)
 
         if q_input is not None:
             input_ids = q_input
@@ -1014,20 +1017,24 @@ class AutoRound(object):
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
         pick_samples = self.train_bs * self.gradient_accumulate_steps
+        pick_batches = self.gradient_accumulate_steps
         nsamples = len(input_ids)
         if self.sampler != "rand":
             whole_indices = torch.randperm(nsamples)[:pick_samples]
+            pick_batch_indices = torch.randperm(nsamples)[:pick_batches]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         mse_loss = torch.nn.MSELoss().to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
+
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
-            for tmp_step in range(self.gradient_accumulate_steps):
+                pick_batch_indices = torch.randperm(nsamples)[:pick_batches]
+            for i, tmp_step in enumerate(range(self.gradient_accumulate_steps)):
                 indices = whole_indices[tmp_step * self.train_bs: (tmp_step + 1) * self.train_bs]
                 current_input_ids, current_input_others = sampling_inputs(
                     input_ids,
@@ -1035,18 +1042,24 @@ class AutoRound(object):
                     indices,
                     seqlen=self.seqlen,
                     share_attention_mask_flag=self.share_attention_mask_flag,
-                    not_share_position_ids_flag=self.not_share_position_ids_flag,
-                    input_dim=self.input_dim,
+                    # not_share_position_ids_flag=self.not_share_position_ids_flag,
+                    # input_dim=self.input_dim,
                 )
+                
+                input_dim = 0
 
-                current_output = [output[i] for i in indices]
-                current_output = torch.cat(current_output, dim=self.input_dim)
+                current_output = [output[i:i+1] for i in indices]
+                current_output = torch.cat(current_output, dim=input_dim)
 
                 current_output = to_device(current_output, device)
-
-                output_q = block_forward(
-                    block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
-                )
+                current_input_ids = to_device(current_input_ids, device)
+                current_input_others = to_device(current_input_others, device)
+                # output_q = block_forward(
+                #     block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
+                # )
+                breakpoint()
+                output_q = block(current_input_ids, **current_input_others)
+                output_q = _use_first_output(output_q)
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
@@ -1090,7 +1103,12 @@ class AutoRound(object):
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
-        if self.enable_quanted_input:
+        block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
+        del input_ids
+        del input_others
+
+        torch.cuda.empty_cache()
+        if 0 and self.enable_quanted_input:
             if self.low_cpu_mem_usage:
                 block = block.to(device)
             q_outputs = self.get_block_outputs(
@@ -1106,10 +1124,162 @@ class AutoRound(object):
 
         else:
             block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
-            for i in range(len(input_ids)):
-                input_ids[i] = None
-            torch.cuda.empty_cache()
+            # for i in range(len(input_ids)):
+            #     input_ids[i] = None
+            # torch.cuda.empty_cache()
             return None, output
+        
+
+
+    def quant_block_v2_(self, block, inputs, outputs, device=torch.device("cpu")):
+        """Fine-tune the up and down rounding parameters of a given block.
+        
+        # More details: Section 3 at https://arxiv.org/pdf/2309.05516
+        pseudocode
+        wrapper_block = replace_linear_with_qdq_linear(model)
+        best_tunable_params = {}
+        for i in range(iters):
+            qdq_output = wrapper_block(block_inputs)
+            loss = mse_loss(qdq_output, block_outputs)
+            loss.backward()
+            optimizer.step()
+            update_best_tunable_params(wrapper_block,loss)
+        unwrapper_block = replace_qdq_linear_with_new_linear_using_qdq_weight_and_scale_zp(wrapper_block, best_tunable_params)
+        """
+        # TODO: unable to support self.use_quant_input by now.
+        # TODO: enable amp
+        block = block.to(device)
+        self.device = device
+
+        if isinstance(block, torch.nn.Linear):
+            # TODO: WA for Linear, refactor later
+            class FakeBlock(torch.nn.Module):
+                def __init__(self, block):
+                    super(FakeBlock, self).__init__()
+                    self.block = block
+                def forward(self, x):
+                    return self.block(x)
+            block = FakeBlock(block)
+        for n, p, in block.named_parameters():
+            p.requires_grad = False
+
+
+        quantized_layer_names, unquantized_layer_names = wrapper_block(
+            block, self.enable_minmax_tuning, device=self.device)
+        
+        
+
+        round_params = []
+        minmax_params = []
+        for n, m in block.named_modules():
+            if hasattr(m, "orig_layer"):
+                round_params.append(m.value)
+                minmax_params.append(m.min_scale)
+                minmax_params.append(m.max_scale)
+
+        if self.enable_minmax_tuning:
+            optimizer = self.optimizer(
+                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+            )
+        else:
+            optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
+
+        if len(round_params) + len(minmax_params) <= 0:
+            dump_info = (
+                f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+                f"layers in the block"
+            )
+            logger.info(dump_info)
+            return outputs, outputs
+
+        if self.lr_scheduler is None:
+            lr_schedule = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+            )
+        else:
+            lr_schedule = copy.deepcopy(self.lr_scheduler)
+
+        pick_samples = self.train_bs * self.gradient_accumulate_steps
+        pick_batches = self.gradient_accumulate_steps
+        nsamples = len(inputs)
+        if self.sampler != "rand":
+            whole_indices = torch.randperm(nsamples)[:pick_samples]
+            pick_batch_indices = torch.randperm(nsamples)[:pick_batches]
+        last_best_iter = 0
+        best_loss = torch.finfo(torch.float).max
+        mse_loss = torch.nn.MSELoss().to(device)
+        scaler = self.get_scaler()  # pylint: disable=assignment-from-none
+        init_loss = None
+        best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
+
+        for i in range(self.iters):
+            total_loss = 0
+            if self.sampler == "rand":
+                whole_indices = torch.randperm(nsamples)[:pick_samples]
+                pick_batch_indices = torch.randperm(nsamples)[:pick_batches]
+            # For each step, we pick a batch of samples to train
+            for index, tmp_step in enumerate(range(self.gradient_accumulate_steps)):
+                tmp_indices = pick_batch_indices[index]
+                cur_inputs = inputs[tmp_indices]
+                cur_inputs = to_device(cur_inputs, device)
+                cur_args, cur_kwargs = cur_inputs
+                cur_kwargs.pop("idx", None)
+                output_q = block(*cur_args, **cur_kwargs)
+                
+                # Use the hidden_states to calculate the loss
+                q_hidden_states = output_q[0] if isinstance(output_q, tuple) else output_q
+                cur_outputs = outputs[tmp_indices]
+                orig_hidden_states = cur_outputs[0] if isinstance(cur_outputs, tuple) else cur_outputs
+                orig_hidden_states = to_device(orig_hidden_states, device)
+                if self.amp:
+                    with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                        loss = mse_loss(q_hidden_states, orig_hidden_states)  # pylint: disable=not-callable
+                else:
+                    loss = mse_loss(  # pylint: disable=not-callable
+                        q_hidden_states.to(torch.float32), orig_hidden_states.to(torch.float32)
+                    )
+
+                total_loss += loss.item() / self.gradient_accumulate_steps
+                self.scale_loss_and_backward(scaler, loss)
+            if i == 0:
+                init_loss = total_loss
+
+            if total_loss < best_loss:
+                best_loss = total_loss
+                if not self.not_use_best_mse:
+                    # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
+                    best_v = collect_round_v(block)
+                    best_min_scale, best_max_scale = collect_minmax_scale(block)
+                    last_best_iter = i
+                logging.info(f"Got better result at iter {i}, the loss is {total_loss}")
+            if self.not_use_best_mse and i == self.iters - 1:
+                best_v = collect_round_v(block)
+                best_min_scale, best_max_scale = collect_minmax_scale(block)
+                logging.info(f"Got better result at iter {i}, the loss is {total_loss}")
+
+            if not self.not_use_best_mse:
+                if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+                    break
+            self.step(scaler, optimizer, lr_schedule)
+
+        last_loss = total_loss
+        best_iter = self.iters
+        if not self.not_use_best_mse:
+            last_loss = best_loss
+            best_iter = last_best_iter
+        dump_info = (
+            f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+            f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+        )
+        logger.info(dump_info)
+        if len(unquantized_layer_names) != 0:
+            logger.info(f"{unquantized_layer_names} have not been quantized")
+        with torch.no_grad():
+            unwrapper_block(block, best_v, best_min_scale, best_max_scale)
+        block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
+        del inputs
+
+
 
     def quant_blocks(
             self,

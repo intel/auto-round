@@ -32,16 +32,19 @@ def warning_once(self, msg: str):
     self.warning(msg)
 
 import os
-logging.Logger.warning_once = warning_once
-logger = logging.getLogger("autoround")
+# logging.Logger.warning_once = warning_once
+logging.basicConfig(level = logging.INFO)
+logger = logging.getLogger(__name__)
 level = os.environ.get("LOGLEVEL", "INFO")
 logger.setLevel(level)
+if not logger.handlers:
+    logger.addHandler(logging.StreamHandler())
 logger.propagate = False
-fh = logging.StreamHandler()
-# fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
-fh_formatter = logging.Formatter("%(asctime)s [%(levelname)s][%(filename)s:%(lineno)d] %(message)s", "%Y-%m-%d %H:%M:%S")
-fh.setFormatter(fh_formatter)
-logger.addHandler(fh)
+# fh = logging.StreamHandler()
+# # # fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
+# fh_formatter = logging.Formatter("%(asctime)s [%(levelname)s][%(filename)s:%(lineno)d] %(message)s", "%Y-%m-%d %H:%M:%S")
+# fh.setFormatter(fh_formatter)
+# logger.addHandler(fh)
 
 import importlib
 import transformers
@@ -386,16 +389,19 @@ def sampling_inputs(input_ids, input_others, indices, seqlen,
     current_input_ids: The sampled input IDs.
     current_input_others: The sampled other input data.
     """
-    current_input_ids = [input_ids[i] for i in indices]
+    current_input_ids = [input_ids[i:i+1] for i in indices]
+    # breakpoint()
     current_input_ids = torch.cat(current_input_ids, dim=input_dim)
-
-    current_input_others = {"positional_inputs": input_others["positional_inputs"]}
+    if "positional_inputs" in input_others.keys():
+        current_input_others = {"positional_inputs": input_others["positional_inputs"]}
+    current_input_others = {}
     for key in input_others.keys():
         if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key) \
                 or (not_share_position_ids_flag and "position_ids" in key):
             current_input_others[key] = None
+            breakpoint()
             if input_others[key] is not None:
-                current_input_others[key] = [input_others[key][i] for i in indices]
+                current_input_others[key] = [input_others[key][i:i+1] for i in indices]
                 current_input_others[key] = torch.cat(current_input_others[key], dim=0)
         else:
             current_input_others[key] = input_others[key]
