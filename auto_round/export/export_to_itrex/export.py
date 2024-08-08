@@ -187,7 +187,7 @@ def pack_model(
 
     """
     # Due to XPU doesn't support tuning yet
-    device = detect_device() if device == "xpu" else device
+    device = "cpu" if device == "xpu" else device
     if model.device.type == 'meta':
         model = model.to(device)
     if inplace:
