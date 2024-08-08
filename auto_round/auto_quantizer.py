@@ -329,11 +329,11 @@ class AutoRoundQuantizer(HfQuantizer):
         if hasattr(quantization_config, "backend"):  # pragma: no cover
             backend = quantization_config.backend
             if "hpu" in backend and model.dtype != torch.bfloat16:
-                logger.info("We suggest you to set `torch_dtype=torch.bfloat16` for better efficiency with AutoRound.")
+                logger.info("change the dtype to `bfloat16` as HPU does not support float16")
                 model = model.to(torch.bfloat16)
-            elif model.dtype != torch.float16:
-                logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
-                model = model.to(torch.float16)
+            # elif model.dtype != torch.float16:
+            #     logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
+            #     model = model.to(torch.float16)
         bits = quantization_config.bits
         group_size = quantization_config.group_size
         data_type = quantization_config.data_type if hasattr(quantization_config, "data_type") \

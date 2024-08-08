@@ -218,6 +218,7 @@ class QuantLinear(nn.Module):
         self.q_handle = ext_make_q_matrix(self.q_tensors, temp_dq)
 
     def forward(self, x, force_cuda=False):
+        orig_dtype = x.dtype
         if x.dtype != torch.float16:
             logger.warning_once(
                 f"The exllama v2 kernel for GPTQ requires a float16 input activation, while {x.dtype} was passed. "
@@ -229,7 +230,8 @@ class QuantLinear(nn.Module):
             x = x.half()
 
         output = ext_gemm_half_q_half(x, self.q_handle, self.outfeatures, force_cuda)
-
+        if orig_dtype!=torch.float16:
+            output = output.to(orig_dtype)
         if self.bias is not None:
             output.add_(self.bias)
         return output
