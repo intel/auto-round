@@ -131,6 +131,9 @@ if __name__ == '__main__':
 
     parser.add_argument("--act_bits", default=32, type=int,
                         help="activation bits")
+    
+    parser.add_argument("--layer_blacklist", default="", type=str,
+                        help="black list of quantization.")
 
     args = parser.parse_args()
 
@@ -269,6 +272,15 @@ if __name__ == '__main__':
                 layer_config[n] = {"bits": 32}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
+    layer_blacklist = args.layer_blacklist.split(",")
+    if bool(layer_blacklist):
+        for n, m in model.named_modules():
+            if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
+                name = n.split('.')[-1]
+                if name in layer_blacklist:
+                    layer_config[n] = {"bits": 32}
+                    print(
+                        f"{n} will not be quantized.")
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():
         lm_head_layer_name = n
