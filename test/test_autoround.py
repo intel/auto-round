@@ -149,7 +149,7 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
-    def test_disable_enable_quanted_input(self):
+    def test_disable_quanted_input(self):
         bits, group_size, sym = 4, -1, True
         autoround = AutoRound(
             self.model,
@@ -160,6 +160,22 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=10,
             enable_quanted_input=False,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+
+    def test_enable_norm_bias_tuning(self):
+        bits, group_size, sym = 4, -1, True
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=10,
+            enable_quanted_input=False,
+            enable_norm_bias_tuning=True,
             dataset=self.llm_dataloader,
         )
         autoround.quantize()

@@ -27,6 +27,7 @@ from torch.amp import autocast
 
 from functools import lru_cache
 
+
 @lru_cache(None)
 def warning_once(self, msg: str):
     self.warning(msg)
@@ -79,7 +80,6 @@ class LazyImport(object):
 
 auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
-
 
 
 def is_optimum_habana_available():
@@ -149,7 +149,7 @@ def unsupport_meta_device(model):
         if target_device is None:
             target_device = param.device
         if param.device != target_device:
-            if param.device.type == 'meta' or  target_device.type == 'meta':
+            if param.device.type == 'meta' or target_device.type == 'meta':
                 return True
     if target_device.type == 'meta':
         if hasattr(model, "path"):
@@ -201,7 +201,7 @@ def mv_module_from_gpu(module, low_cpu_mem_usage=False):
     The module on the specified device.
     """
     if hasattr(module, "device"):
-        target_device ="meta" if low_cpu_mem_usage else "cpu"
+        target_device = "meta" if low_cpu_mem_usage else "cpu"
         if module.device.type == target_device:
             return module
         else:
@@ -257,36 +257,36 @@ def check_is_cpu(device):
 
 
 def validate_modules(module_names):
-        """
-        Test a list of modules' validity.
-        
-        Args:
-        modules (list of str): List of strings to be validated.
-        
-        Returns:
-        bool: True if all modules have equal length or not dependent, otherwise False.
-        """
-        if not bool(module_names):  # pragma: no cover
-            raise ValueError(f"Empty modules")
-        if len(module_names) < 2:
-            return True
-        split_modules = [s.split('.') for s,_ in module_names]
-        lengths = [len(parts) for parts in split_modules]
-        if len(set(lengths)) == 1: # pragma: no cover
-            return True
-        max_length = max(lengths)
-        min_length = min(lengths)
-        longest_module = next(s for s in split_modules if len(s) == max_length)
-        shortest_module = next(s for s in split_modules if len(s) == min_length)
-        shortest_module = '.'.join(shortest_module)
-        longest_module = '.'.join(longest_module)
-        # Check if the shortest name is a substring of the longest name
-        if shortest_module in longest_module: # pragma: no cover
-            raise ValueError(f"Invalid modules, at least two modules detected"\
-                              " as dependent, {shortest_module} and {longest_module}")
+    """
+    Test a list of modules' validity.
+
+    Args:
+    modules (list of str): List of strings to be validated.
+
+    Returns:
+    bool: True if all modules have equal length or not dependent, otherwise False.
+    """
+    if not bool(module_names):  # pragma: no cover
+        raise ValueError(f"Empty modules")
+    if len(module_names) < 2:
         return True
-    
-    
+    split_modules = [s.split('.') for s, _ in module_names]
+    lengths = [len(parts) for parts in split_modules]
+    if len(set(lengths)) == 1:  # pragma: no cover
+        return True
+    max_length = max(lengths)
+    min_length = min(lengths)
+    longest_module = next(s for s in split_modules if len(s) == max_length)
+    shortest_module = next(s for s in split_modules if len(s) == min_length)
+    shortest_module = '.'.join(shortest_module)
+    longest_module = '.'.join(longest_module)
+    # Check if the shortest name is a substring of the longest name
+    if shortest_module in longest_module:  # pragma: no cover
+        raise ValueError(f"Invalid modules, at least two modules detected" \
+                         " as dependent, {shortest_module} and {longest_module}")
+    return True
+
+
 def get_block_names(model):
     """Get the block names for transformers-like networks.
 
@@ -300,9 +300,9 @@ def get_block_names(model):
     target_modules = []
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-                target_modules.append((n, m))
-                break   ## only find the first modulelist, may be not robust
-    for i,target_m in enumerate(target_modules):
+            target_modules.append((n, m))
+            break  ## only find the first modulelist, may be not robust
+    for i, target_m in enumerate(target_modules):
         block_names.append([])
         for n, m in target_m[1].named_children():
             block_names[i].append(target_m[0] + "." + n)
@@ -326,47 +326,57 @@ def get_multimodal_block_names(model, quant_vision=False):
             if quant_vision or all(key not in n.lower() for key in (Vison_blocks_tuple)):
                 target_modules.append((n, m))
     validate_modules(target_modules)
-    for i,target_m in enumerate(target_modules):
+    for i, target_m in enumerate(target_modules):
         block_names.append([])
         for n, m in target_m[1].named_children():
             block_names[i].append(target_m[0] + "." + n)
     return block_names
 
 
-def collect_round_v(block):
-    """Collects the round values for wrapped linear modules in the given block.
-
-    Args:
-    block: The input block.
-
-    Returns:
-    vs: A dictionary of round values for the wrapped linear modules.
-    """
-    vs = {}
+def collect_best_params(block):
+    params = {}
     for n, m in block.named_modules():
         if hasattr(m, "orig_layer"):
-            v = m.value.data
-            vs[n] = copy.deepcopy(v)
-    return vs
+            params[n] = {}
+            for key in m.params.keys():
+                params[n][key]=copy.deepcopy(m.params[key].data)
+    return params
 
 
-def collect_minmax_scale(block):
-    """Collects the min-max scaling values for wrapped linear modules in the given block.
-
-    Args:
-    block: The input block.
-
-    Returns:
-    min_scales: A dictionary of minimum scaling values.
-    max_scales: A dictionary of maximum scaling values.
-    """
-    min_scales = {}
-    max_scales = {}
-    for n, m in block.named_modules():
-        if hasattr(m, "orig_layer"):
-            min_scales[n] = copy.deepcopy(torch.clamp(m.min_scale.data, 0, 1.0))
-            max_scales[n] = copy.deepcopy(torch.clamp(m.max_scale.data, 0, 1.0))
-    return min_scales, max_scales
+# def collect_round_v(block):
+#     """Collects the round values for wrapped linear modules in the given block.
+#
+#     Args:
+#     block: The input block.
+#
+#     Returns:
+#     vs: A dictionary of round values for the wrapped linear modules.
+#     """
+#     vs = {}
+#     for n, m in block.named_modules():
+#         if hasattr(m, "orig_layer"):
+#             v = m.value.data
+#             vs[n] = copy.deepcopy(v)
+#     return vs
+#
+#
+# def collect_minmax_scale(block):
+#     """Collects the min-max scaling values for wrapped linear modules in the given block.
+#
+#     Args:
+#     block: The input block.
+#
+#     Returns:
+#     min_scales: A dictionary of minimum scaling values.
+#     max_scales: A dictionary of maximum scaling values.
+#     """
+#     min_scales = {}
+#     max_scales = {}
+#     for n, m in block.named_modules():
+#         if hasattr(m, "orig_layer"):
+#             min_scales[n] = copy.deepcopy(torch.clamp(m.min_scale.data, 0, 1.0))
+#             max_scales[n] = copy.deepcopy(torch.clamp(m.max_scale.data, 0, 1.0))
+#     return min_scales, max_scales
 
 
 @torch.no_grad()
@@ -468,7 +478,7 @@ def detect_device(device=None):
         if torch.cuda.is_available():
             device = torch.device("cuda")
             logger.info("Using GPU device")
-        elif is_optimum_habana_available(): # pragma: no cover
+        elif is_optimum_habana_available():  # pragma: no cover
             device = torch.device("hpu")
             logger.info("Using HPU device")
         # Use CPU as a fallback
@@ -665,7 +675,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
         total_memory = torch.cuda.get_device_properties(current_gpu_index).total_memory
         used_memory = torch.cuda.memory_allocated(current_gpu_index)
         free_space = total_memory - used_memory
-    elif "hpu" in device: # pragma: no cover
+    elif "hpu" in device:  # pragma: no cover
         current_hpu_index = torch.hpu.current_device()
         free_space = torch.hpu.memory_reserved(current_hpu_index)
     else:
@@ -800,7 +810,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
             except Exception as e:
                 raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
             return get_autogptq_infer_linear(backend, bits, group_size, sym)
-        else: # pragma: no cover
+        else:  # pragma: no cover
             try:
                 import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
             except Exception as e:
@@ -808,7 +818,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
             else:
                 from auto_round_extension.hpu.qlinear_hpu_gptq import QuantLinear
                 return QuantLinear
-    if (bits == 4 and is_optimum_habana_available()) or "hpu" in backend: # pragma: no cover
+    if (bits == 4 and is_optimum_habana_available()) or "hpu" in backend:  # pragma: no cover
         try:
             import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
         except Exception as e:
@@ -816,9 +826,9 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         else:
             from auto_round_extension.hpu.qlinear_hpu import QuantLinear
             return QuantLinear
-    if "awq" in backend: # pragma: no cover
+    if "awq" in backend:  # pragma: no cover
         try:
-            from awq.modules.linear import WQLinear_GEMM # pylint: disable=E0401
+            from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
         except:
             raise ImportError("autoawq is required. Please install it by 'pip install autoawq' to \
                 support auto_awq format.")
@@ -832,6 +842,3 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
     else:
         from auto_round_extension.cuda.qliner_triton import QuantLinear
     return QuantLinear
-
-
-
