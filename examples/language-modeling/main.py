@@ -134,6 +134,9 @@ if __name__ == '__main__':
 
     parser.add_argument("--act_bits", default=32, type=int,
                         help="activation bits")
+    
+    parser.add_argument("--fp_layers_list", default="", type=str,
+                        help="List of Layers to maintain original data type")
 
     args = parser.parse_args()
 
@@ -272,6 +275,15 @@ if __name__ == '__main__':
                 layer_config[n] = {"bits": 32}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
+    fp_layers_list = args.fp_layers_list.split(",")
+    if bool(fp_layers_list):
+        for n, m in model.named_modules():
+            if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
+                name = n.split('.')[-1]
+                if n in fp_layers_list or name in fp_layers_list:
+                    layer_config[n] = {"bits": 32}
+                    print(
+                        f"{n} will not be quantized.")
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():
         lm_head_layer_name = n
@@ -349,9 +361,7 @@ if __name__ == '__main__':
             autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
 
     if 'xpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
-                                 compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
-                                 device="xpu")
+        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
     if "cpu" in deployment_device:
         autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
     if "fake" in deployment_device:

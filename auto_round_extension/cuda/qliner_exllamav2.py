@@ -40,7 +40,6 @@ from logging import getLogger
 import torch
 import torch.nn as nn
 
-
 logger = getLogger(__name__)
 
 try:
@@ -48,11 +47,13 @@ try:
 except ImportError as e:
     exllama_v2_import_exception = e
 
+
     def error_raiser_exllama(*args, **kwargs):
         raise ValueError(
             f"Trying to use the exllama v2 backend, but could not import the C++/CUDA dependencies with the following "
             f"error: {exllama_v2_import_exception}"
         )
+
 
     make_q_matrix = error_raiser_exllama
     gemm_half_q_half = error_raiser_exllama
@@ -167,7 +168,7 @@ class QuantLinear(nn.Module):
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
         self.trainable = trainable
-        self.maxq = 2**self.bits - 1
+        self.maxq = 2 ** self.bits - 1
 
         assert infeatures % 32 == 0
         assert infeatures % self.group_size == 0
@@ -204,6 +205,7 @@ class QuantLinear(nn.Module):
             self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
         else:
             self.bias = None
+        self.clip = kwargs.get("clip", False)
 
     def post_init(self, temp_dq):
         assert self.qweight.device.type == "cuda"
@@ -218,6 +220,7 @@ class QuantLinear(nn.Module):
         self.q_handle = ext_make_q_matrix(self.q_tensors, temp_dq)
 
     def forward(self, x, force_cuda=False):
+        orig_dtype = x.dtype
         if x.dtype != torch.float16:
             logger.warning_once(
                 f"The exllama v2 kernel for GPTQ requires a float16 input activation, while {x.dtype} was passed. "
@@ -229,9 +232,12 @@ class QuantLinear(nn.Module):
             x = x.half()
 
         output = ext_gemm_half_q_half(x, self.q_handle, self.outfeatures, force_cuda)
-
+        if orig_dtype != torch.float16:
+            output = output.to(orig_dtype)
         if self.bias is not None:
             output.add_(self.bias)
+        if self.clip:
+            output = torch.clip(output, -65504, 65504)
         return output
 
     def temp_dq_size(self):

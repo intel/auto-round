@@ -254,6 +254,8 @@ class AutoRoundConfig(QuantizationConfigMixin):
                 backend = "hpu"
             else:
                 backend = "cpu"
+        elif "cuda" == backend:
+            backend = "auto_round:exllamav2"
         self.backend = backend
         self.layer_config = layer_config
         if kwargs is not None:
@@ -261,7 +263,6 @@ class AutoRoundConfig(QuantizationConfigMixin):
                 setattr(self, key, kwargs[key])
         self.quant_method = AutoRoundQuantizationMethod.AutoRound
         self.post_init()
-
 
     def post_init(self):
         r"""Safety checker that arguments are correct."""
@@ -329,11 +330,8 @@ class AutoRoundQuantizer(HfQuantizer):
         if hasattr(quantization_config, "backend"):  # pragma: no cover
             backend = quantization_config.backend
             if "hpu" in backend and model.dtype != torch.bfloat16:
-                logger.info("We suggest you to set `torch_dtype=torch.bfloat16` for better efficiency with AutoRound.")
+                logger.info("change the dtype to `bfloat16` as HPU does not support float16")
                 model = model.to(torch.bfloat16)
-            elif model.dtype != torch.float16:
-                logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
-                model = model.to(torch.float16)
         bits = quantization_config.bits
         group_size = quantization_config.group_size
         data_type = quantization_config.data_type if hasattr(quantization_config, "data_type") \
@@ -352,11 +350,13 @@ class AutoRoundQuantizer(HfQuantizer):
                 layer_configs[layer_name]["group_size"] = group_size
                 layer_configs[layer_name]["data_type"] = data_type
                 layer_configs[layer_name]["sym"] = sym
+                layer_configs[layer_name]["clip"] = False
             else:
                 layer_configs[layer_name]["bits"] = extra_config[layer_name].get("bits", bits)
                 layer_configs[layer_name]["group_size"] = extra_config[layer_name].get("group_size", group_size)
                 layer_configs[layer_name]["data_type"] = extra_config[layer_name].get("data_type", data_type)
                 layer_configs[layer_name]["sym"] = extra_config[layer_name].get("sym", sym)
+                layer_configs[layer_name]["clip"] = extra_config[layer_name].get("clip", False)
         if hasattr(quantization_config, "backend"):  # pragma: no cover
             backend = quantization_config.backend
         elif 'gptq' in quantization_config.quant_method:  # pragma: no cover
@@ -384,6 +384,7 @@ class AutoRoundQuantizer(HfQuantizer):
             group_size = config["group_size"]
             data_type = config["data_type"]
             sym = config["sym"]
+            clip = config["clip"]
             if not (bits <= 8):
                 continue
 
@@ -400,14 +401,25 @@ class AutoRoundQuantizer(HfQuantizer):
                 in_features = layer.weight.shape[0]
                 out_features = layer.weight.shape[1]
             bias = layer.bias is not None
-            new_layer = QuantLinear(  # pylint: disable=E1123
-                bits,
-                group_size,
-                in_features,
-                out_features,
-                bias,
-                weight_dtype=layer.weight.dtype,
-            )
+            try:
+                new_layer = QuantLinear(  # pylint: disable=E1123
+                    bits,
+                    group_size,
+                    in_features,
+                    out_features,
+                    bias,
+                    weight_dtype=layer.weight.dtype,
+                    clip = clip
+                )
+            except:
+                new_layer = QuantLinear(  # pylint: disable=E1123
+                    bits,
+                    group_size,
+                    in_features,
+                    out_features,
+                    bias,
+                    weight_dtype=layer.weight.dtype,
+                )
 
             new_layer.device = device
             set_module(module, layer_name, new_layer)

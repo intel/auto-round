@@ -24,10 +24,9 @@ image presents an overview of AutoRound. Check out our updated paper on [arxiv](
 
 ## What's New
 
-* [2024/07] Important change: the default value of nsamples has been changed from 512 to 128 to reduce the memory
-  usages, which may cause a slight accuracy drop in some scenarios
-* [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant
-  performance drop issue with the asymmetric kernel
+* [2024/08] Enabled the export and inference of the quantized model to the AutoRound format on Intel Gaudi2 devices, please refer to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
+* [2024/07] Important change: the default value of nsamples has been changed from 512 to 128 to reduce the  memory usages, which may cause a slight accuracy drop in some scenarios
+* [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant performance drop issue with the asymmetric kernel
 * [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
 * [2024/05] AutoRound performs well
   in [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)
@@ -176,6 +175,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 | Model                                | Supported                                                                                                                                                                                                                                                                                                           |
 |--------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Qwen/Qwen2-7B            | [HF-int4-model](https://huggingface.co/Intel/Qwen2-7B-int4-inc)    
+| Qwen/Qwen2-57B-A14B-Instruct            | [HF-int4-model](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc)   
 | Intel/neural-chat-7b-v3-3            | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc), [accuracy](./docs/neural-chat-7b-v3-3-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-3.sh), [example](./examples/language-modeling/)                                                                          |
 | Intel/neural-chat-7b-v3-1            | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc), [accuracy](./docs/neural-chat-7b-v3-1-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-1.sh), [example](./examples/language-modeling/)                                                                          |
 | mistralai/Mistral-7B-v0.1            | [HF-int4-model-lmhead](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc-lmhead),[HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc), [accuracy](./docs/Mistral-7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-v0.1.sh), [example](./examples/language-modeling/) |
