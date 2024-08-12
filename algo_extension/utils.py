@@ -1,4 +1,5 @@
 import torch
+import transformers
 
 
 @torch.no_grad()
@@ -106,8 +107,6 @@ def calib(model, tokenizer):
             hook_handels.append(hook_handel)
     calib_forward(model, tokenizer)
     return hook_handels
-
-
 
 
 def get_llama_layers_for_scaling(module):
@@ -283,3 +282,99 @@ def get_qwen2_layers_for_scaling(module):
     )
 
     return layers
+
+
+def fuse_norm(model):
+    model = model.eval()
+    if isinstance(model, transformers.models.llama.LlamaForCausalLM):
+        func = get_llama_layers_for_scaling
+    elif isinstance(model, transformers.models.mistral.MistralForCausalLM):
+        func = get_mistral_layers_for_scaling
+    elif isinstance(model, transformers.models.phi3.Phi3ForCausalLM):
+        func = get_phi3_layers_for_scaling
+    elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
+        func = get_qwen2_layers_for_scaling
+    elif "Phi3ForCausalLM" in model.__class__.__name__:
+        func = get_phi3_layers_for_scaling
+    else:
+        assert False, "not supported architecture"
+
+    from auto_round.utils import get_block_names
+    from auto_round.utils import get_module
+    block_names = get_block_names(model)[0]
+    for block_name in block_names:
+        module = get_module(model, block_name)
+        abosrb_pairs = func(module)
+        for pair in abosrb_pairs:
+            prev_layer = pair['prev_op']
+            layers = pair["layers"]
+            if "norm" in prev_layer.__class__.__name__ or "Norm" in prev_layer.__class__.__name__ or "NORM" in prev_layer.__class__.__name__:
+                scale = prev_layer.weight
+                for layer in layers:
+                    layer.weight.data.copy_(layer.weight.data * scale.view(1, -1))
+                prev_layer.weight.data.copy_(
+                    torch.ones(prev_layer.weight.shape, dtype=prev_layer.weight.dtype, device=prev_layer.weight.device))
+
+
+def convert_sq_model(model, tokenizer, ratio=0.05):
+    model = model.to("cuda")
+    model = model.eval()
+    if isinstance(model, transformers.models.llama.LlamaForCausalLM):
+        func = get_llama_layers_for_scaling
+    elif isinstance(model, transformers.models.mistral.MistralForCausalLM):
+        func = get_mistral_layers_for_scaling
+    elif isinstance(model, transformers.models.phi3.Phi3ForCausalLM):
+        func = get_phi3_layers_for_scaling
+    elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
+        func = get_qwen2_layers_for_scaling
+    elif "Phi3ForCausalLM" in model.__class__.__name__:
+        func = get_phi3_layers_for_scaling
+    else:
+        assert False, "not supported architecture"
+
+    hook_handles = calib(model, tokenizer)
+    for handle in hook_handles:
+        handle.remove()
+
+    from auto_round.utils import get_block_names
+    from auto_round.utils import get_module
+    block_names = get_block_names(model)[0]
+    for block_name in block_names:
+        module = get_module(model, block_name)
+        absorb_pairs = func(module)
+        for pair in absorb_pairs:
+            prev_layer = pair['prev_op']
+            layers = pair["layers"]
+            abs_max = torch.max(torch.abs(layers[0].act_min), torch.abs(layers[0].act_max))
+            abs_max_group = abs_max.reshape(-1, 32)
+            mean_value = torch.mean(abs_max_group, dim=1, keepdim=True)
+            mean_value = torch.repeat_interleave(mean_value, 32, dim=1)
+            mean_value = mean_value.reshape(-1)
+            abs_max[abs_max == 0] = 1e-5
+            scale = 1.0 / torch.sqrt(abs_max / mean_value)
+            # import numpy
+            # abs_max_np = abs_max.to(torch.float32).cpu().numpy()
+            # abs_max_np
+            # t = numpy.percentile(abs_max_np, ratio)
+            # if t == 0:
+            #     t = 1e-5
+            # conf = (t / abs_max).to(torch.float32).to("cuda")
+            # scale = scale.to("cuda")
+            # scale[abs_max > t] = conf[abs_max > t]
+            if (
+                    "norm" in prev_layer.__class__.__name__ or "Norm" in prev_layer.__class__.__name__ or "NORM" in prev_layer.__class__.__name__):
+                prev_layer.weight.data.copy_(
+                    prev_layer.weight.data * scale)
+            else:
+                prev_layer.weight.data.copy_(prev_layer.weight.data * scale.view(-1, 1))
+
+            for layer in layers:
+                layer.weight.data.copy_(layer.weight.data / scale.view(1, -1))
+
+    for n, m in model.named_modules():
+        if hasattr(m, "act_min"):
+            delattr(m, "act_min")
+        if hasattr(m, "act_max"):
+            delattr(m, "act_max")
+
+    model = model.to("cpu")
