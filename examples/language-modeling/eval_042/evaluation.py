@@ -588,6 +588,10 @@ if __name__ == "__main__":
                         default="lambada_openai,hellaswag,winogrande,piqa,mmlu,truthfulqa_mc1," \
                                 "openbookqa,boolq,rte,arc_easy,arc_challenge",
                         help="lm-eval tasks for lm_eval version 0.4.2")
+    
+    parser.add_argument("--parallelize", action='store_true',
+        help="Whether to enable parallelize."
+    )
 
     args = parser.parse_args()
     s = time.time()
@@ -613,6 +617,8 @@ if __name__ == "__main__":
     model_args += ",dtype=float16"
     if args.trust_remote_code:
         model_args += f",trust_remote_code=True"
+    if args.parallelize:
+        model_args += f",parallelize=True"
     result = simple_evaluate(model="hf",
                              model_args=model_args,
                              tasks=test_tasks,
@@ -621,4 +627,5 @@ if __name__ == "__main__":
     print(make_table(result))
 
     print("cost time: ", time.time() - s)
+
 
