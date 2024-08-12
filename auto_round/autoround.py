@@ -1114,6 +1114,7 @@ class AutoRound(object):
             "amp",
             "nsamples",
             "low_gpu_mem_usage",
+            "quant_block_list",
         ]
         if isinstance(self.dataset, str):
             serialization_keys.append("dataset")
@@ -1529,3 +1530,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+

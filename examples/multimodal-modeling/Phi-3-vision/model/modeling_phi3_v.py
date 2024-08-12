@@ -25,7 +25,8 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-
+from .image_embedding_phi3_v import Phi3ImageEmbedding
+import transformers
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
@@ -40,23 +41,22 @@ from transformers.utils import (
     add_code_sample_docstrings,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
+    is_flash_attn_2_available,
     is_flash_attn_greater_or_equal_2_10,
     logging,
     replace_return_docstrings,
 )
 from .configuration_phi3_v import Phi3VConfig
-from .image_embedding_phi3_v import Phi3ImageEmbedding
 
 
-try:
+
+logger = logging.get_logger(__name__)
+
+if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
 
     _flash_supports_window_size = "window_size" in list(inspect.signature(flash_attn_func).parameters)
-except ImportError:
-    pass
-
-logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "microsoft/Phi-3-vision-128k-instruct"
 _CONFIG_FOR_DOC = "Phi3VConfig"
@@ -426,7 +426,7 @@ class Phi3FlashAttention2(Phi3Attention):
         super().__init__(*args, **kwargs)
 
         # TODO: Should be removed once Flash Attention for RoCm is bumped to 2.1.
-        # flash_attn<2.1 generates top-left aligned causal mask, while what is needed here is bottom-right alignment, that was made default for flash_attn>=2.1. This attribute is used to handle this difference. Reference: https://github.com/Dao-AILab/flash-attention/releases/tag/v2.1.0.
+        # flash_attn<2.1 generates top-left aligned causal mask, while what is needed here is bottom-right alignement, that was made default for flash_attn>=2.1. This attribute is used to handle this difference. Reference: https://github.com/Dao-AILab/flash-attention/releases/tag/v2.1.0.
         # Beware that with flash_attn<2.1, using q_seqlen != k_seqlen (except for the case q_seqlen == 1) produces a wrong mask (top-left).
         self._flash_attn_uses_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
 
@@ -1001,8 +1001,8 @@ PHI3V_INPUTS_DOCSTRING = r"""
             is useful if you want more control over how to convert `input_ids` indices into associated vectors than the
             model's internal embedding lookup matrix.
         pixel_values (`torch.FloatTensor` of shape `(batch_size, num_channels, image_size, image_size)):
-            The tensors corresponding to the input images. Pixel values can be obtained using [`AutoImageProcessor`].
-            See [`Phi3ImageProcessor.__call__`] for details.
+            The tensors corresponding to the input images. Pixel values can be obtained using [`AutoImageProcessor`]. 
+            See [`Phi3ImageProcessor.__call__`] for details. 
         image_sizes (`torch.LongTensor` of shape `(batch_size, 2)`, *optional*):
             The sizes of the images in the batch, being (height, width) for each image.
         use_cache (`bool`, *optional*):
@@ -1047,7 +1047,7 @@ class Phi3VModel(Phi3VPreTrainedModel):
                 **config.embd_layer
             }
             self.vision_embed_tokens = Phi3ImageEmbedding(config, wte=self.embed_tokens, **embedding_config)
-            # # set wte the same for vision embedding
+            # # set wte the same for vision embedding 
             # self.vision_embed_tokens.wte.weight = self.embed_tokens.weight
 
         self.layers = nn.ModuleList(
@@ -1164,7 +1164,7 @@ class Phi3VModel(Phi3VPreTrainedModel):
                 all_hidden_states += (hidden_states,)
 
             if self.gradient_checkpointing and self.training:
-                layer_outputs = self._gradient_checkpointing_func(
+                layer_outputs = torch.utils.checkpoint.checkpoint(
                     decoder_layer.__call__,
                     hidden_states,
                     attention_mask,
@@ -1172,6 +1172,7 @@ class Phi3VModel(Phi3VPreTrainedModel):
                     past_key_values,
                     output_attentions,
                     use_cache,
+                    use_reentrant=False
                 )
             else:
                 layer_outputs = decoder_layer(

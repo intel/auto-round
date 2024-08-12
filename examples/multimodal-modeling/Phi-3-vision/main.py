@@ -1,6 +1,7 @@
 import argparse
 import sys
 sys.path.insert(0, '../../..')
+sys.path.insert(0, './')
 parser = argparse.ArgumentParser()
 import torch
 import os
@@ -13,11 +14,12 @@ import json
 from torch.utils.data import Dataset, DataLoader
 import torch
 from typing import Dict, Optional, List, Union, Sequence
+import transformers
 from model.processing_phi3_v import Phi3VProcessor
 from dataclasses import dataclass, field
-import transformers
-from transformers import set_seed, AutoModelForCausalLM, AutoConfig
+from transformers import AutoModelForCausalLM, AutoConfig
 from transformers.trainer_pt_utils import LabelSmoother
+
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 import subprocess
 LLaVA_IMAGE_TOKEN = "<image>"
@@ -210,8 +212,8 @@ if __name__ == '__main__':
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
                         help="low_gpu_mem_usage is deprecated")
 
-    parser.add_argument("--deployment_device", default='fake', type=str,
-                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
+    parser.add_argument("--deployment_device", default=None, type=str,
+                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' 'xpu' and 'auto_round'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
     parser.add_argument("--scale_dtype", default='fp16',
@@ -270,9 +272,11 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    set_seed(args.seed)
     tasks = args.tasks
     
+    if args.deployment_device is None:
+        args.deployment_device = "auto_round"
+        
     if args.act_bits <= 8:
         print(
             "Warning, activation quantization is an experiment feature")
@@ -461,4 +465,3 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
-

@@ -36,9 +36,9 @@ or combine them
 
 - **Enable quantized lm-head:**
 
-Currently only support in Intel xpu and AutoRound format,however, we found the fake tuning could improve the accuracy is some scenarios. --disable_low_gpu_mem_usage is strongly recommended if the whole model could be loaded to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing nsamples,e.g. 128, to alleviate the issue.
+Currently only support in Intel xpu and AutoRound format, however, we found the fake tuning could improve the accuracy is some scenarios. Disable --low_gpu_mem_usage is strongly recommended if the whole model could be loaded to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing nsamples,e.g. 128, to alleviate the issue.
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name microsoft/Phi-3-vision-128k-instruct  --bits 4 --group_size 128 --quant_lm_head --disable_low_gpu_mem_usage
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name microsoft/Phi-3-vision-128k-instruct  --bits 4 --group_size 128 --quant_lm_head
 ```
 
 - **Utilizing the AdamW Optimizer:**
@@ -66,7 +66,6 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
-
 
 
 

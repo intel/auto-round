@@ -22,7 +22,6 @@ import re
 from typing import List, Optional, Union
 
 import torch
-
 from .image_processing_phi3_v import Phi3VImageProcessor
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.image_utils import ImageInput
