@@ -24,7 +24,7 @@ image presents an overview of AutoRound. Check out our paper on [arxiv](https://
 
 ## What's New
 
-* [2024/08] AutoRound format supports Intel Gaudi2 devices. For an example, please refer to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc) for example.
+* [2024/08] AutoRound format supports Intel Gaudi2 devices. For an example, please refer to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
 * [2024/08] AutoRound includes several experimental features, e.g., activation quantization, mx_fp data type, and fast tuning of norm/bias parameters.
 * [2024/07] Important change: the default value of nsamples has been changed from 512 to 128 to reduce the  memory usages, which may cause a slight accuracy drop in some scenarios
 * [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant performance drop issue with the asymmetric kernel
