@@ -205,7 +205,7 @@ def pack_model(
             continue
         logger.info(f"Packing {k}")
         dtype = v["data_type"]
-        num_bits = v["bits"]
+        bits = v["bits"]
         group_size = v["group_size"]
         sym = v["sym"]
         scale_dtype = v["scale_dtype"]
@@ -236,7 +236,7 @@ def pack_model(
         new_module = WeightOnlyLinear(
             in_features,
             out_features,
-            num_bits,
+            bits,
             group_size,
             dtype=dtype,
             scale_dtype=scale_dtype,

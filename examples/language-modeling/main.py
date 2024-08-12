@@ -106,7 +106,10 @@ if __name__ == '__main__':
                         help="disable amp")
 
     parser.add_argument("--disable_minmax_tuning", action='store_true',
-                        help="whether disable  enable weight minmax tuning")
+                        help="whether disable enable weight minmax tuning")
+
+    parser.add_argument("--enable_norm_bias_tuning", action='store_true',
+                        help="whether enable norm bias tuning")
 
     parser.add_argument("--disable_trust_remote_code", action='store_true',
                         help="Whether to disable trust_remote_code")
@@ -316,7 +319,7 @@ if __name__ == '__main__':
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
-                      low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type)
+                      low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type, enable_norm_bias_tuning=args.enable_norm_bias_tuning)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
