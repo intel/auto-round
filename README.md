@@ -11,9 +11,10 @@ AutoRound
 <div align="left">
 
 AutoRound is an advanced quantization algorithm for low-bits LLM inference. It's tailored for a wide range
-of models. Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200 steps,
+of models. Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200
+steps,
 which competes impressively against recent methods without introducing any additional inference overhead. The below
-image presents an overview of AutoRound.  Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
+image presents an overview of AutoRound. Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
 
 <div align="center">
 
@@ -22,7 +23,8 @@ image presents an overview of AutoRound.  Check out our updated paper on [arxiv]
 <div align="left">
 
 ## What's New
-* [2024/08] Enabled the export and inference of the quantized model to the AutoRound format on HPU devices, please refer to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc) and [Intel/Qwen2-57B-A14B-Instruct-int4-inc](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc).
+
+* [2024/08] Enabled the export and inference of the quantized model to the AutoRound format on Intel Gaudi2 devices, please refer to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
 * [2024/07] Important change: the default value of nsamples has been changed from 512 to 128 to reduce the  memory usages, which may cause a slight accuracy drop in some scenarios
 * [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant performance drop issue with the asymmetric kernel
 * [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
@@ -69,7 +71,7 @@ bits, group_size, sym = 4, 128, False
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
 autoround.quantize()
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_gptq)
+autoround.save_quantized(output_dir)  ##save_quantized(output_dir,format="auto_gptq")
 ```
 
 <details>
@@ -133,37 +135,41 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_gp
 3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
 ## Model inference
+
 Please run the quantization code first
 
 ### Setup env for AutoRound format
 
+**cuda**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation
+-e .
 
-**cuda**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation -e .
+**cpu**:
 
-**cpu**: 
 * option 1: pip install auto-round && pip install intel-extension-for-transformers
-* option 2: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation -e .
+* option 2: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation
+  -e .
 
-**hpu**: docker image with Gaudi Software Stack is recommended. More details can be found in [Gaudi Guide](https://docs.habana.ai/en/latest/).
-
+**hpu**: docker image with Gaudi Software Stack is recommended. More details can be found
+in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
 ### Gaudi2/ CPU/ GPU
 
 ```python
-from transformers import AutoModelForCausalLM,AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRoundConfig
-device = "auto" ##cpu, hpu, cuda
+
+device = "auto"  ##cpu, hpu, cuda
 quantization_config = AutoRoundConfig(
-   backend=device
+    backend=device
 )
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device,quantization_config=quantization_config)
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+                                             device_map=device, quantization_config=quantization_config)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
-
 
 ## Support List
 
@@ -181,7 +187,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | mistralai/Mixtral-8x7B-Instruct-v0.1 | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-Instruct-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh),  [example](./examples/language-modeling/)                                     |
 | mistralai/Mixtral-8x7B-v0.1          | [HF-int4-model](https://huggingface.co/Intel/Mixtral-8x7B-v0.1-int4-inc) (under review), [accuracy](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh), [example](./examples/language-modeling/)                                                                 |
 | meta-llama/Meta-Llama-3-8B-Instruct  | [accuracy](./docs/Meta-Llama-3-8B-Instruct-acc.md), [recipe](./examples/language-modeling/scripts/Meta-Llama-3-8B-Instruct.sh), [example](./examples/language-modeling/)                                                                                                                                            |
-| google/gemma-7b                      | [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                                                                           |
+| google/gemma-7b                      | [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh),  [example](./examples/language-modeling/)                                                                                                                                                                           |
 | meta-llama/Llama-2-7b-chat-hf        | [accuracy](./docs/Llama-2-7b-chat-hf-acc.md), [recipe](./examples/language-modeling/scripts/Llama-2-7b-chat-hf.sh), [example](./examples/language-modeling/)                                                                                                                                                        |
 | Qwen/Qwen1.5-7B-Chat                 | [accuracy](./docs/Qwen1.5-7B-Chat-acc.md), [sym recipe](./examples/language-modeling/scripts/Qwen1.5-7B-Chat-sym.sh), [asym recipe ](./examples/language-modeling/scripts/Qwen1.5-7B-Chat-asym.sh), [example](./examples/language-modeling/)                                                                        |
 | baichuan-inc/Baichuan2-7B-Chat       | [accuracy](./docs/baichuan2-7b-chat-acc.md), [recipe](./examples/language-modeling/scripts/baichuan2-7b-chat.sh), [example](./examples/language-modeling/)                                                                                                                                                          |
@@ -197,15 +203,6 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 | EleutherAI/gpt-neo-125m              | [example](./examples/language-modeling/)                                                                                                                                                                                                                                                                            |
 | databricks/dolly-v2-3b               | [example](./examples/language-modeling/)                                                                                                                                                                                                                                                                            |
 | stabilityai/stablelm-base-alpha-3b   | [example](./examples/language-modeling/)                                                                                                                                                                                                                                                                            
-
-## Comparison with other methods
-
-We provide a [comprehensive analysis](docs/acc.md) with other methods in our accuracy data section. In summary, our
-approach achieved superior performance compared to GPTQ, scoring 30/32, AWQ with 27/32, HQQ with 15/16, and OmniQuant
-with a perfect score of 16/16 across llamv1/llamav2/mistral-7b on W4G-1, W4G128, W3G128, and W2G128, based on the
-average accuracies of 11 zero-shot tasks.
-
-
 
 ## Reference
 
