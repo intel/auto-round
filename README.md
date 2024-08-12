@@ -13,8 +13,8 @@ AutoRound
 AutoRound is an advanced quantization algorithm for low-bits LLM inference. It's tailored for a wide range
 of models. Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200
 steps,
-which competes impressively against recent methods without introducing any additional inference overhead. The below
-image presents an overview of AutoRound. Check out our updated paper on [arxiv](https://arxiv.org/pdf/2309.05516v4)
+which competes impressively against recent methods without introducing any additional inference overhead and keeping low tuning cost. The below
+image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516v4) for more details and visit [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for more accuracy data across various models.
 
 <div align="center">
 
@@ -24,12 +24,12 @@ image presents an overview of AutoRound. Check out our updated paper on [arxiv](
 
 ## What's New
 
-* [2024/08] Enabled the export and inference of the quantized model to the AutoRound format on Intel Gaudi2 devices, please refer to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
+* [2024/08] AutoRound format supports Intel Gaudi2 devices. For an example, please refer to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
+* [2024/08] AutoRound includes several experimental features, e.g., activation quantization, mx_fp data type, and fast tuning of norm/bias parameters.
 * [2024/07] Important change: the default value of nsamples has been changed from 512 to 128 to reduce the  memory usages, which may cause a slight accuracy drop in some scenarios
 * [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant performance drop issue with the asymmetric kernel
 * [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
-* [2024/05] AutoRound performs well
-  in [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)
+
 
 ## Prerequisites
 
@@ -138,7 +138,7 @@ autoround.save_quantized(output_dir)  ##save_quantized(output_dir,format="auto_g
 
 Please run the quantization code first
 
-### Setup env for AutoRound format
+### AutoRound format
 
 **cuda**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation
 -e .
@@ -152,7 +152,7 @@ Please run the quantization code first
 **hpu**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
-### Gaudi2/ CPU/ GPU
+#### Gaudi2/ CPU/ GPU
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -170,6 +170,13 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
+
+### AutoGPTQ/AutoAWQ format
+
+1 Please save the quantized model by modifying the code as follows： `autoround.save_quantized(output_dir, format="auto_gptq")` or `autoround.save_quantized(output_dir, format="auto_awq")`.
+
+2 Refer to their repositories to infer the model.
+
 
 ## Support List
 
