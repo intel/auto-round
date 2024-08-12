@@ -234,7 +234,7 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
                 data = [line for line in f]
             return data
         else:
-            logger.error("invalid local file type,for now only support json ")
+            logger.error("invalid local file type, for now only support json format data file.")
 
     samples = []
     dataset = load_local_data(dataset_name)
@@ -368,7 +368,14 @@ def get_dataloader(
         if is_local_path(name):
             get_dataset = CALIB_DATASETS.get("local")
         else:
-            get_dataset = CALIB_DATASETS.get(name)
+            calib_name = name
+            if name not in CALIB_DATASETS.keys():
+                calib_name = name.split('/')[-1]
+                for key in CALIB_DATASETS.keys():
+                    if calib_name in key:
+                        calib_name = key
+                        break
+            get_dataset = CALIB_DATASETS.get(calib_name)
         dataset = get_dataset(
             tokenizer,
             seqlen,
@@ -440,3 +447,4 @@ def get_dataloader(
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
+

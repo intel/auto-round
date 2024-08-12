@@ -16,5 +16,5 @@ from .register import EXPORT_FORMAT
 from auto_round.export.export_to_autogptq.export import save_quantized_as_autogptq
 from .export_to_itrex import save_quantized_as_itrex, QuantConfig
 from .export_to_autoround.export import save_quantized_as_autoround
-
+from .export_to_awq.export import save_quantized_as_autoawq
 

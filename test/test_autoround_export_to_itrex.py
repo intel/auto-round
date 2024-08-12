@@ -90,7 +90,28 @@ class TestAutoroundExport(unittest.TestCase):
         self.assertEqual(config.desc_act, loaded_config.desc_act)
         self.assertEqual(config.bits, loaded_config.bits)
         self.assertEqual(config.sym, loaded_config.sym)
+        
+    def test_xpu_export(self):
+        model = copy.deepcopy(self.gptj)
+        out1 = model(self.lm_input)
+        round = AutoRound
+        optq_1 = round(model, self.tokenizer, nsamples=20, amp=False, seqlen=10, iters=10)
+        q_model, layer_config1 = optq_1.quantize()
+        from auto_round.export.export_to_itrex import pack_model
+
+        compressed_model_xpu = pack_model(model=q_model, layer_config=layer_config1, device="xpu", inplace=False)
+        compressed_model_cpu = pack_model(model=q_model, layer_config=layer_config1, inplace=False)
+        out2 = model(self.lm_input)
+        out3 = q_model(self.lm_input)
+        out4 = compressed_model_xpu(self.lm_input)
+        out5 = compressed_model_cpu(self.lm_input)
+        self.assertTrue(torch.all(torch.isclose(out1[0], out2[0], atol=1e-1)))
+        self.assertFalse(torch.all(out1[0] == out2[0]))
+        self.assertTrue(torch.all(out2[0] == out3[0]))
+        self.assertTrue(torch.all(torch.isclose(out3[0], out4[0], atol=1e-3)))
+        self.assertTrue(torch.all(torch.isclose(out4[0], out5[0], atol=1e-5)))
 
 
 if __name__ == "__main__":
     unittest.main()
+

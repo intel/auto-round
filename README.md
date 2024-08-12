@@ -22,6 +22,7 @@ image presents an overview of AutoRound.  Check out our updated paper on [arxiv]
 <div align="left">
 
 ## What's New
+* [2024/08] Enabled the export and inference of the quantized model to the AutoRound format on HPU devices, please refer to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc) and [Intel/Qwen2-57B-A14B-Instruct-int4-inc](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc).
 * [2024/07] Important change: the default value of nsamples has been changed from 512 to 128 to reduce the  memory usages, which may cause a slight accuracy drop in some scenarios
 * [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant performance drop issue with the asymmetric kernel
 * [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
@@ -55,9 +56,6 @@ pip install auto-round
 
 ### Gaudi2/ CPU/ GPU
 
-We found a significant accuracy discrepancy with the qdq model using the AutoGPTQ GPU backend with asymmetric
-quantization in some scenarios, especially at lower bits,like 2. Please save quantized model to AuoRound format to fix this issue.
-
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -71,7 +69,7 @@ bits, group_size, sym = 4, 128, False
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
 autoround.quantize()
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_round")
+autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_gptq)
 ```
 
 <details>
@@ -135,49 +133,31 @@ autoround.save_quantized(output_dir) ##save_quantized(output_dir,format="auto_ro
 3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
 ## Model inference
+Please run the quantization code first
 
-Please run the quantization code first.
+### Setup env for AutoRound format
 
-### CPU
 
-```python
-##pip install intel-extension-for-transformers
-from intel_extension_for_transformers.transformers import AutoModelForCausalLM
-from transformers import AutoTokenizer
+**cuda**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation -e .
 
-quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path)
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-text = "There is a girl who likes adventure,"
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-```
+**cpu**: 
+* option 1: pip install auto-round && pip install intel-extension-for-transformers
+* option 2: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation -e .
 
-### GPU
+**hpu**: docker image with Gaudi Software Stack is recommended. More details can be found in [Gaudi Guide](https://docs.habana.ai/en/latest/).
+
+
+### Gaudi2/ CPU/ GPU
 
 ```python
-##pip install auto-gptq
-from transformers import AutoModelForCausalLM, AutoTokenizer
-##from auto_round.auto_quantizer import AutoHfQuantizer ## uncomment it for models with auto_round format
-
+from transformers import AutoModelForCausalLM,AutoTokenizer
+from auto_round import AutoRoundConfig
+device = "auto" ##cpu, hpu, cuda
+quantization_config = AutoRoundConfig(
+   backend=device
+)
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-text = "There is a girl who likes adventure,"
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-```
-
-### Intel Gaudi-2
-
-```python
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round.auto_quantizer import AutoHfQuantizer
-import habana_frameworks.torch.core as htcore
-import habana_frameworks.torch.hpu as hthpu
-quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path).to('hpu').to(torch.float32)
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device,quantization_config=quantization_config)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -189,6 +169,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 | Model                                | Supported                                                                                                                                                                                                                                                                                                           |
 |--------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Qwen/Qwen2-7B            | [HF-int4-model](https://huggingface.co/Intel/Qwen2-7B-int4-inc)    
+| Qwen/Qwen2-57B-A14B-Instruct            | [HF-int4-model](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc)   
 | Intel/neural-chat-7b-v3-3            | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc), [accuracy](./docs/neural-chat-7b-v3-3-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-3.sh), [example](./examples/language-modeling/)                                                                          |
 | Intel/neural-chat-7b-v3-1            | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc), [accuracy](./docs/neural-chat-7b-v3-1-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-1.sh), [example](./examples/language-modeling/)                                                                          |
 | mistralai/Mistral-7B-v0.1            | [HF-int4-model-lmhead](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc-lmhead),[HF-int4-model](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc), [accuracy](./docs/Mistral-7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-v0.1.sh), [example](./examples/language-modeling/) |
@@ -227,7 +209,7 @@ average accuracies of 11 zero-shot tasks.
 
 ## Reference
 
-If you find SignRound useful for your research, please cite our paper:
+If you find AutoRound useful for your research, please cite our paper:
 
 ```bash
 @article{cheng2023optimize,

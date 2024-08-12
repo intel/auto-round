@@ -558,7 +558,11 @@ def is_local_path(path):
     Returns:
         bool: True if the path exists locally, False otherwise.
     """
-    return os.path.exists(path)
+    format_list = ("json", "txt",)
+    flag = None
+    for x in format_list:
+        flag = True if x in path else flag
+    return flag and os.path.exists(path)
 
 
 def convert_dtype_str2torch(str_dtype):
@@ -804,7 +808,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
             else:
                 from auto_round_extension.hpu.qlinear_hpu_gptq import QuantLinear
                 return QuantLinear
-    if bits == 4 and is_optimum_habana_available(): # pragma: no cover
+    if (bits == 4 and is_optimum_habana_available()) or "hpu" in backend: # pragma: no cover
         try:
             import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
         except Exception as e:
@@ -812,6 +816,13 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         else:
             from auto_round_extension.hpu.qlinear_hpu import QuantLinear
             return QuantLinear
+    if "awq" in backend: # pragma: no cover
+        try:
+            from awq.modules.linear import WQLinear_GEMM # pylint: disable=E0401
+        except:
+            raise ImportError("autoawq is required. Please install it by 'pip install autoawq' to \
+                support auto_awq format.")
+        return WQLinear_GEMM
     if bits == 4 and exllama2_available and "exllamav2" in backend:
         from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
     elif bits == 4 and "exllamav2" in backend:
