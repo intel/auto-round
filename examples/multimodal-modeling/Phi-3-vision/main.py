@@ -1,7 +1,6 @@
 import argparse
 import sys
 sys.path.insert(0, '../../..')
-sys.path.insert(0, './')
 parser = argparse.ArgumentParser()
 import torch
 import os
