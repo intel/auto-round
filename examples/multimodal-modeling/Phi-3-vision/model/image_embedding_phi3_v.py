@@ -245,7 +245,7 @@ class Phi3ImageEmbedding(nn.Module):
                 for _output_img in output_imgs:
                     img_feature_proj = self.img_projection(_output_img.to(target_device).to(target_dtype))
                     img_set_tensor.append(img_feature_proj)
-                logger.info(f'img_embeds size: {img_embeds.size()}, image sizes: {img_sizes} loading time {datetime.now() - start_time}')
+                # logger.info(f'img_embeds size: {img_embeds.size()}, image sizes: {img_sizes} loading time {datetime.now() - start_time}')
             elif img_embeds.ndim == 4:
                 selected_g_values = g_values[::self.num_img_tokens]
                 assert len(img_embeds) == len(selected_g_values), f'img_embeds size: {img_embeds.size()}, selected_g_values size: {len(selected_g_values)}, selected_g_value {selected_g_values}'
@@ -256,7 +256,7 @@ class Phi3ImageEmbedding(nn.Module):
                     .to(target_dtype)
                     .reshape(-1, self.image_dim_out)
                 )
-                logger.info(f'img_embeds size: {img_embeds.size()}, loading time {datetime.now() - start_time}')
+                # logger.info(f'img_embeds size: {img_embeds.size()}, loading time {datetime.now() - start_time}')
                 img_set_tensor = self.img_projection(tt)  # adapted visual features.
             elif img_embeds.ndim == 3:
                 selected_g_values = g_values[::self.num_img_tokens]
