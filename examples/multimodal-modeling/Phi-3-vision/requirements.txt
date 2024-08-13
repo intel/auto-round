@@ -15,4 +15,4 @@ py-cpuinfo
 Pillow
 torchvision
 lm-eval==0.4.2
-setuptools==69.5.1
+setuptools==70.0.0
