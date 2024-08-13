@@ -957,9 +957,12 @@ class AutoRound(object):
         logger.info(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
-
+        if self.amp:
+            block = block.to(torch.float32)
         unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         return None, block_outputs
+    
+    
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu"), output=None):
         """Quantize the weights of a given block of the model.
 
@@ -1148,7 +1151,9 @@ class AutoRound(object):
         """
         # TODO: unable to support self.use_quant_input by now.
         # TODO: enable amp
+        amp_dtype = next(block.parameters()).dtype
         block = block.to(device)
+        self.amp_dtype = amp_dtype
         self.device = device
 
         if isinstance(block, torch.nn.Linear):
@@ -1160,14 +1165,13 @@ class AutoRound(object):
                 def forward(self, x):
                     return self.block(x)
             block = FakeBlock(block)
+
         for n, p, in block.named_parameters():
             p.requires_grad = False
 
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
             block, self.enable_minmax_tuning, device=self.device)
-        
-        
 
         round_params = []
         minmax_params = []
@@ -1222,9 +1226,9 @@ class AutoRound(object):
                 tmp_indices = pick_batch_indices[index]
                 cur_inputs = inputs[tmp_indices]
                 cur_inputs = to_device(cur_inputs, device)
+                cur_inputs = to_device(cur_inputs, amp_dtype)
                 cur_args, cur_kwargs = cur_inputs
-                cur_kwargs.pop("idx", None)
-                output_q = block(*cur_args, **cur_kwargs)
+                output_q = block.forward(*cur_args, **cur_kwargs)
                 
                 # Use the hidden_states to calculate the loss
                 q_hidden_states = output_q[0] if isinstance(output_q, tuple) else output_q
@@ -1277,7 +1281,9 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
+        
         del inputs
+        return block
 
 
 
