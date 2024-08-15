@@ -565,7 +565,7 @@ if __name__ == "__main__":
 
     import sys
 
-    sys.path.insert(0, '../../')
+    sys.path.insert(0, '../../../')
     import time
     import argparse
 
@@ -580,52 +580,37 @@ if __name__ == "__main__":
         "--trust_remote_code", action='store_true',
         help="Whether to enable trust_remote_code"
     )
-    parser.add_argument(
-        "--device", default="cuda:0",
-        help="PyTorch device (e.g. cpu/cuda:0/hpu) for evaluation."
-    )
     parser.add_argument("--tasks",
                         default="lambada_openai,hellaswag,winogrande,piqa,mmlu,truthfulqa_mc1," \
                                 "openbookqa,boolq,rte,arc_easy,arc_challenge",
                         help="lm-eval tasks for lm_eval version 0.4.2")
-    
-    parser.add_argument("--parallelize", action='store_true',
-        help="Whether to enable parallelize."
-    )
 
     args = parser.parse_args()
     s = time.time()
     from transformers import AutoConfig
 
     config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=args.trust_remote_code)
-
+    model_args = f"pretrained={args.model_name}"
     if hasattr(config, "quantization_config"):
         quantization_config = config.quantization_config
         if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
             from auto_round.auto_quantizer import AutoHfQuantizer
-        elif "quant_method" in quantization_config and quantization_config["quant_method"] == "gptq":
-            if args.device == "hpu":
-                from auto_round.auto_quantizer import AutoHfQuantizer
-
+        else:
+            from phi3_v import Phi3VGPTQForCausalLM
+            model_args += f",autogptq=True,gptq_use_triton=True"
+    if args.trust_remote_code:
+        model_args += f",trust_remote_code=True"
+        
     test_tasks = args.tasks
     if isinstance(test_tasks, str):
         test_tasks = test_tasks.split(',')
     model_name = args.model_name.rstrip('/')
     from lm_eval.utils import make_table
-
-    model_args = f"pretrained={args.model_name}"
-    model_args += ",dtype=float16"
-    if args.trust_remote_code:
-        model_args += f",trust_remote_code=True"
-    if args.parallelize:
-        model_args += f",parallelize=True"
     result = simple_evaluate(model="hf",
                              model_args=model_args,
                              tasks=test_tasks,
-                             device=args.device,
                              batch_size=args.eval_bs)
     print(make_table(result))
 
     print("cost time: ", time.time() - s)
-
 

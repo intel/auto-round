@@ -1124,6 +1124,7 @@ class AutoRound(object):
             "amp",
             "nsamples",
             "low_gpu_mem_usage",
+            "quant_block_list",
             "enable_norm_bias_tuning"
         ]
         if isinstance(self.dataset, str):
@@ -1544,3 +1545,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+

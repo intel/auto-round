@@ -168,12 +168,23 @@ class TestQuantizationBlocks(unittest.TestCase):
             import auto_gptq
         except:
             return
-        autoround.save_quantized("./saved", inplace=False, safe_serialization=False)
-        autoround.save_quantized(output_dir="./saved", inplace=False, format="auto_round")
+        quantized_model_path = "./saved"
+        autoround.save_quantized(quantized_model_path, inplace=False, safe_serialization=False, format="auto_round")
+        
+        from auto_round.auto_quantizer import AutoHfQuantizer
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+        shutil.rmtree("./saved", ignore_errors=True)
+        quant_config = model.config.quantization_config
+        assert quant_config.quant_block_list is not None
         
         
         
 
 if __name__ == "__main__":
     unittest.main()
+
 
