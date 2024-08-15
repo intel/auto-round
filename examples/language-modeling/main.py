@@ -310,69 +310,82 @@ if __name__ == '__main__':
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
+    #
 
-    from algo_extension.utils import fuse_norm
-    fuse_norm(model) ## TODO revert back
+    from algo_extension.hadamard.hadamard import rotate_model
+    rotate_model(model,device="cuda:0")
+    from eval_042.evaluation import simple_evaluate
 
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
-                      dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
-                      minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
-                      amp=not args.disable_amp, nsamples=args.nsamples,
-                      low_gpu_mem_usage=args.low_gpu_mem_usage,
-                      seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, layer_config=layer_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
-                      low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type, enable_norm_bias_tuning=args.enable_norm_bias_tuning)
-    model, _ = autoround.quantize()
-    model_name = args.model_name.rstrip("/")
-    if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
-        import shutil
+    model.to("cuda:0")
+    model_args = f'pretrained={model_name}' + f",trust_remote_code={not args.disable_trust_remote_code}"
+    res = simple_evaluate(model="hf", model_args=model_args,
+                          tasks=tasks,
+                          batch_size=args.eval_bs, user_model=model)
+    from lm_eval.utils import make_table
 
-        shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
+    print(make_table(res))
+    exit()
 
-    model.eval()
-    if "cpu" not in device_str:
-        torch.cuda.empty_cache()
 
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
-    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
-
-    deployment_device = args.deployment_device.split(',')
-    gpu_formats = []
-    for item in deployment_device:
-        if "gpu" in item or "auto_gptq" in item or "auto_round" in item or "auto_awq" in item:
-            gpu_formats.append(item)
-
-    if 'gpu' in deployment_device:
-        if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
-            gpu_formats.append("auto_round")
-        else:
-            gpu_formats.append("auto_gptq")
-    gpu_formats = list(set(gpu_formats))
-
-    inplace = True if len(deployment_device) < 2 else False
-    eval_folder = None
-    for gpu_format in gpu_formats:
-        if "round" in gpu_format:
-            eval_folder = f'{export_dir}-round'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-        elif "gptq" in gpu_format:
-            eval_folder = f'{export_dir}-gpu'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-        elif "auto_awq" in gpu_format:  # pragma: no cover
-            eval_folder = f'{export_dir}-awq'
-            autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
-
-    if 'xpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
-    if "cpu" in deployment_device:
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
-    if "fake" in deployment_device:
-        model = model.to("cpu")
-        model.save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
-        if eval_folder is None:
-            eval_folder = output_dir
+    # autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
+    #                   dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
+    #                   minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
+    #                   amp=not args.disable_amp, nsamples=args.nsamples,
+    #                   low_gpu_mem_usage=args.low_gpu_mem_usage,
+    #                   seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
+    #                   scale_dtype=args.scale_dtype, layer_config=layer_config,
+    #                   enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
+    #                   low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type, enable_norm_bias_tuning=args.enable_norm_bias_tuning)
+    # model, _ = autoround.quantize()
+    # model_name = args.model_name.rstrip("/")
+    # if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
+    #     import shutil
+    #
+    #     shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
+    #
+    # model.eval()
+    # if "cpu" not in device_str:
+    #     torch.cuda.empty_cache()
+    #
+    # export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
+    # output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
+    #
+    # deployment_device = args.deployment_device.split(',')
+    # gpu_formats = []
+    # for item in deployment_device:
+    #     if "gpu" in item or "auto_gptq" in item or "auto_round" in item or "auto_awq" in item:
+    #         gpu_formats.append(item)
+    #
+    # if 'gpu' in deployment_device:
+    #     if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
+    #         gpu_formats.append("auto_round")
+    #     else:
+    #         gpu_formats.append("auto_gptq")
+    # gpu_formats = list(set(gpu_formats))
+    #
+    # inplace = True if len(deployment_device) < 2 else False
+    # eval_folder = None
+    # for gpu_format in gpu_formats:
+    #     if "round" in gpu_format:
+    #         eval_folder = f'{export_dir}-round'
+    #         autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+    #     elif "gptq" in gpu_format:
+    #         eval_folder = f'{export_dir}-gpu'
+    #         autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+    #     elif "auto_awq" in gpu_format:  # pragma: no cover
+    #         eval_folder = f'{export_dir}-awq'
+    #         autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
+    #
+    # if 'xpu' in deployment_device:
+    #     autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
+    # if "cpu" in deployment_device:
+    #     autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
+    # if "fake" in deployment_device:
+    #     model = model.to("cpu")
+    #     model.save_pretrained(output_dir)
+    #     tokenizer.save_pretrained(output_dir)
+    #     if eval_folder is None:
+    #         eval_folder = output_dir
 
 
     def get_library_version(library_name):

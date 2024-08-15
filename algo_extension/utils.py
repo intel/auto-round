@@ -32,7 +32,6 @@ def calib_forward(model, tokenizer, nsamples=512):
             data_new = input_ids
 
         elif isinstance(data, str):
-
             data = tokenizer(data, truncation=True, max_length=seqlen, return_tensors="pt").data
             data_new = {}
             for key in data.keys():
@@ -109,6 +108,10 @@ def calib(model, tokenizer):
     return hook_handels
 
 
+def get_llama_head_for_scaling(model):
+    lm_head = dict(prev_op=model.model.norm, layers=[model.lm_head])
+    return lm_head
+
 def get_llama_layers_for_scaling(module):
     layers = []
 
@@ -150,6 +153,7 @@ def get_llama_layers_for_scaling(module):
             layers=[module.mlp.down_proj],
         )
     )
+
 
     return layers
 
@@ -288,14 +292,15 @@ def fuse_norm(model):
     model = model.eval()
     if isinstance(model, transformers.models.llama.LlamaForCausalLM):
         func = get_llama_layers_for_scaling
-    elif isinstance(model, transformers.models.mistral.MistralForCausalLM):
-        func = get_mistral_layers_for_scaling
-    elif isinstance(model, transformers.models.phi3.Phi3ForCausalLM):
-        func = get_phi3_layers_for_scaling
-    elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
-        func = get_qwen2_layers_for_scaling
-    elif "Phi3ForCausalLM" in model.__class__.__name__:
-        func = get_phi3_layers_for_scaling
+        lm_head_func = get_llama_head_for_scaling
+    # elif isinstance(model, transformers.models.mistral.MistralForCausalLM):
+    #     absorb_dict = get_mistral_layers_for_scaling
+    # elif isinstance(model, transformers.models.phi3.Phi3ForCausalLM):
+    #     absorb_dict = get_phi3_layers_for_scaling
+    # elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
+    #     absorb_dict = get_qwen2_layers_for_scaling
+    # elif "Phi3ForCausalLM" in model.__class__.__name__:
+    #     absorb_dict = get_phi3_layers_for_scaling
     else:
         assert False, "not supported architecture"
 
@@ -314,6 +319,17 @@ def fuse_norm(model):
                     layer.weight.data.copy_(layer.weight.data * scale.view(1, -1))
                 prev_layer.weight.data.copy_(
                     torch.ones(prev_layer.weight.shape, dtype=prev_layer.weight.dtype, device=prev_layer.weight.device))
+    lm_head_paris = lm_head_func(model)
+    layers = lm_head_paris["layers"]
+    prev_layer = lm_head_paris['prev_op']
+    if "norm" in prev_layer.__class__.__name__ or "Norm" in prev_layer.__class__.__name__ or "NORM" in prev_layer.__class__.__name__:
+        scale = prev_layer.weight
+        for layer in layers:
+            layer.weight.data.copy_(layer.weight.data * scale.view(1, -1))
+        prev_layer.weight.data.copy_(
+            torch.ones(prev_layer.weight.shape, dtype=prev_layer.weight.dtype, device=prev_layer.weight.device))
+
+
 
 
 def convert_sq_model(model, tokenizer, ratio=0.05):
