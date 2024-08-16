@@ -241,6 +241,9 @@ def get_phi3_layers_for_scaling(module):
 
     return layers
 
+def get_qwen2_head_for_scaling(model):
+    lm_head = dict(prev_op=model.model.norm, layers=[model.lm_head])
+    return lm_head
 
 @staticmethod
 def get_qwen2_layers_for_scaling(module):
@@ -293,12 +296,13 @@ def fuse_norm(model):
     if isinstance(model, transformers.models.llama.LlamaForCausalLM):
         func = get_llama_layers_for_scaling
         lm_head_func = get_llama_head_for_scaling
-    # elif isinstance(model, transformers.models.mistral.MistralForCausalLM):
-    #     absorb_dict = get_mistral_layers_for_scaling
+    elif isinstance(model, transformers.models.mistral.MistralForCausalLM):
+        func = get_mistral_layers_for_scaling
     # elif isinstance(model, transformers.models.phi3.Phi3ForCausalLM):
-    #     absorb_dict = get_phi3_layers_for_scaling
-    # elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
-    #     absorb_dict = get_qwen2_layers_for_scaling
+    #     func = get_phi3_layers_for_scaling
+    elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
+        func = get_qwen2_layers_for_scaling
+        lm_head_func = get_qwen2_head_for_scaling
     # elif "Phi3ForCausalLM" in model.__class__.__name__:
     #     absorb_dict = get_phi3_layers_for_scaling
     else:

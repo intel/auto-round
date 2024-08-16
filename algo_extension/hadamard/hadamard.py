@@ -10,6 +10,8 @@ from auto_round.utils import get_module
 def get_embeddings(model) -> list[torch.nn.Module]:
     if isinstance(model, transformers.models.llama.LlamaForCausalLM):
         return [model.model.embed_tokens]
+    elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
+        return [model.model.embed_tokens]
     # elif model_type == OPT_MODEL:
     #     return [model.model.decoder.embed_tokens, model.model.decoder.embed_positions]
     else:
@@ -18,6 +20,8 @@ def get_embeddings(model) -> list[torch.nn.Module]:
 
 def get_lm_head(model) -> list[torch.nn.Module]:
     if isinstance(model, transformers.models.llama.LlamaForCausalLM):
+        name = "lm_head"
+    elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
         name = "lm_head"
     # elif model_type == OPT_MODEL:
     #     return [model.model.decoder.embed_tokens, model.model.decoder.embed_positions]
@@ -73,10 +77,16 @@ def get_orthogonal_matrix(size, mode, device="cpu"):
 
 def rotate_attention_inputs(model, layer, Q, device="cpu") -> None:
     # Rotate the WQ, WK and WV matrices of the self-attention layer.
-    for W in [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj]:
-        dtype = W.weight.dtype
-        W_ = W.weight.to(device=device, dtype=torch.float64)
-        W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
+    if isinstance(model, transformers.models.llama.LlamaForCausalLM):
+        for W in [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj]:
+            dtype = W.weight.dtype
+            W_ = W.weight.to(device=device, dtype=torch.float64)
+            W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
+    elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
+        for W in [layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj]:
+            dtype = W.weight.dtype
+            W_ = W.weight.to(device=device, dtype=torch.float64)
+            W.weight.data = torch.matmul(W_, Q).to(device="cpu", dtype=dtype)
 
 
 
@@ -84,11 +94,12 @@ def rotate_attention_output(model,layer, Q, device="cpu") -> None:
     # Rotate output matrix of the self-attention layer.
     if isinstance(model, transformers.models.llama.LlamaForCausalLM):
         W = layer.self_attn.o_proj
+    elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
+        W = layer.self_attn.o_proj
     # elif model_type == model_utils.OPT_MODEL:
     #     W = layer.self_attn.out_proj
     # else:
     #     raise ValueError(f'Unknown model type {model_type}')
-
     dtype = W.weight.data.dtype
     W_ = W.weight.data.to(device=device, dtype=torch.float64)
     W.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
@@ -99,11 +110,14 @@ def rotate_attention_output(model,layer, Q, device="cpu") -> None:
 def rotate_mlp_input(model, layer, Q, device="cpu") -> None:
     # Rotate the MLP input weights.
     ##if model_type == model_utils.LLAMA_MODEL:
-    mlp_inputs = [layer.mlp.up_proj, layer.mlp.gate_proj]
+    if isinstance(model, transformers.models.llama.LlamaForCausalLM):
+        mlp_inputs = [layer.mlp.up_proj, layer.mlp.gate_proj]
+    elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
+        mlp_inputs = [layer.mlp.up_proj, layer.mlp.gate_proj]
     # elif model_type == model_utils.OPT_MODEL:
     #     mlp_inputs = [layer.fc1]
-    # else:
-    #     raise ValueError(f'Unknown model type {model_type}')
+    else:
+        raise ValueError(f'Unknown model type')
     for W in mlp_inputs:
         dtype = W.weight.dtype
         W_ = W.weight.data.to(device=device, dtype=torch.float64)
@@ -112,12 +126,14 @@ def rotate_mlp_input(model, layer, Q, device="cpu") -> None:
 
 def rotate_mlp_output(model, layer, Q, device="cpu"):
     # Rotate the MLP output weights and bias.
-    # if model_type == model_utils.LLAMA_MODEL:
-    W = layer.mlp.down_proj
+    if isinstance(model, transformers.models.llama.LlamaForCausalLM):
+        W = layer.mlp.down_proj
+    elif isinstance(model, transformers.models.qwen2.Qwen2ForCausalLM):
+        W = layer.mlp.down_proj
     # elif model_type == model_utils.OPT_MODEL:
     #     W = layer.fc2
-    # else:
-    #     raise ValueError(f'Unknown model type {model_type}')
+    else:
+        raise ValueError(f'Unknown model type')
     dtype = W.weight.data.dtype
     W_ = W.weight.data.to(device=device, dtype=torch.float64)
     W.weight.data = torch.matmul(Q.T, W_).to(device="cpu", dtype=dtype)
@@ -129,9 +145,9 @@ def rotate_mlp_output(model, layer, Q, device="cpu"):
         W.bias.data = torch.matmul(Q.T, b).to(device="cpu", dtype=dtype)
 
 def rotate_model(model, rotate_mode="hadamard", device="cpu") -> None:
-
+    ## could not support phi3, since lm-head is _tied_weights_keys  and no norm, need to manually change the model
     from algo_extension.utils import fuse_norm
-    fuse_norm(model)##must fuse,including lm-head
+    fuse_norm(model) ##must fuse, including lm-head
 
     Q = get_orthogonal_matrix(model.config.hidden_size,
                               rotate_mode)
@@ -153,23 +169,6 @@ def rotate_model(model, rotate_mode="hadamard", device="cpu") -> None:
         rotate_attention_output(model,block,Q,device)
         rotate_mlp_input(model, block, Q, device)
         rotate_mlp_output(model, block, Q, device)
-    #
-    # block_name = block_names[0]
-    # block = get_module(model, block_name)
-    # rotate_mlp_output(model, block, Q, device)
-    # block_name = block_names[1]
-    # block = get_module(model, block_name)
-    # rotate_attention_inputs(model, block, Q, device)
-    #rotate_head(model, Q, device)
-
-    # layers = model_utils.get_transformer_layers(model,
-    #                                             model_type=model_type)
-    # for idx, layer in enumerate(tqdm.tqdm(layers, unit="layer", desc="Rotating")):
-    #     rotate_attention_inputs(layers[idx], Q, model_type)
-    #     rotate_attention_output(layers[idx], Q, model_type)
-    #     rotate_mlp_input(layers[idx], Q, model_type)
-    #     rotate_mlp_output(layers[idx], Q, model_type)
-    #     rotate_ov_proj(layers[idx], model_type, num_heads, head_dim)
 
 
 
