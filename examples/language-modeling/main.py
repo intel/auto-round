@@ -310,6 +310,21 @@ if __name__ == '__main__':
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
+    #
+
+    from algo_extension.hadamard.hadamard import rotate_model
+    rotate_model(model,device="cuda:0")
+    # from eval_042.evaluation import simple_evaluate
+    #
+    # model.to("cuda:0")
+    # model_args = f'pretrained={model_name}' + f",trust_remote_code={not args.disable_trust_remote_code}"
+    # res = simple_evaluate(model="hf", model_args=model_args,
+    #                       tasks=tasks,
+    #                       batch_size=args.eval_bs, user_model=model)
+    # from lm_eval.utils import make_table
+    #
+    # print(make_table(res))
+    # exit()
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
@@ -437,3 +452,7 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
+
+
+
+
