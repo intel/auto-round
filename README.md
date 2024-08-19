@@ -182,6 +182,10 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 | Model                                | Supported                                                                                                                                                                                                                                                                                                           |
 |--------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| microsoft/Phi-3-vision-128k-instruct  |  [accuracy](./examples/multimodal-modeling/Phi-3-vision/README.md), [recipe](./examples/multimodal-modeling/Phi-3-vision/run_autoround.sh)
+| Qwen/Qwen-VL  |  [accuracy](./examples/multimodal-modeling/Qwen-VL/README.md), [recipe](./examples/multimodal-modeling/Qwen-VL/run_autoround.sh)
+| liuhaotian/llava-v1.5-7b  |  [accuracy](./examples/multimodal-modeling/Llava/README.md), [recipe](./examples/multimodal-modeling/Llava/run_autoround.sh)
+| microsoft/Phi-3-vision-128k-instruct  |  [accuracy](./examples/multimodal-modeling/README.md), [recipe](./examples/multimodal-modeling/run_autoround.sh)
 | Qwen/Qwen2-7B            | [HF-int4-model](https://huggingface.co/Intel/Qwen2-7B-int4-inc)    
 | Qwen/Qwen2-57B-A14B-Instruct            | [HF-int4-model](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc)   
 | Intel/neural-chat-7b-v3-3            | [HF-int4-model](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc), [accuracy](./docs/neural-chat-7b-v3-3-acc.md), [recipe](./examples/language-modeling/scripts/neural-chat-7b-v3-3.sh), [example](./examples/language-modeling/)                                                                          |
@@ -223,3 +227,4 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
