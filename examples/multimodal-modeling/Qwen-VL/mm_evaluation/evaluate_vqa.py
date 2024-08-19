@@ -10,8 +10,8 @@ from typing import Optional
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
-from .vqa import VQA
-from .vqa_eval import VQAEval
+from vqa import VQA
+from vqa_eval import VQAEval
 
 # This code is much refer to https://github.com/cognitedata/Qwen-VL-finetune/blob/master/eval_mm/evaluate_vqa.py
 
@@ -460,4 +460,5 @@ if __name__ == "__main__":
         trust_remote_code=args.trust_remote_code
     )
     print("cost time: ", time.time() - s)
+
 

@@ -6,6 +6,9 @@ CUDA_VISIBLE_DEVICES=$device \
 python3 main.py \
 --model_name=$model_name \
 --deployment_device 'auto_round' \
+--nsamples 512 \
+--model_dtype bf16 \
 --image_folder /PATH/TO/coco/images/train2017 \
 --question_file /PATH/TO/llava_v1_5_mix665k.json \
 --output_dir "./tmp_autoround"
+

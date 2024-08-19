@@ -162,8 +162,8 @@ class VQA:
         for ann in anns:
             quesId = ann['question_id']
             print('Question: %s' % (self.qqa[quesId]['question']))
-            for and in ann['answers']:
-                print('Answer %d: %s' % (and['answer_id'], and['answer']))
+            for ann in ann['answers']:
+                print('Answer %d: %s' % (ann['answer_id'], ann['answer']))
 
     def loadRes(self, resFile, quesFile):
         """Load result file and return a result object.
