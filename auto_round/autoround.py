@@ -1280,7 +1280,7 @@ class AutoRound(object):
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
-        block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
+        # block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
         
         del inputs
         return block
