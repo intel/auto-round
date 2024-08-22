@@ -46,7 +46,7 @@ def reshape_tensor(v, group_size=-1):
 
 def quant_tensor(
         quant_func, data, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-        weight_min=None, weight_max=None, q_scale_thresh=0.0, **kwargs,
+        weight_min=None, weight_max=None, q_scale_thresh=1e-5, **kwargs,
 ):
     """Quantizes and dequantizes weight, handing the group size issue .
 
