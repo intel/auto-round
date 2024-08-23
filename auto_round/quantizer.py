@@ -126,6 +126,7 @@ class WrapperLayerNorm(torch.nn.Module):
         self.group_size = group_size
         self.device = device
         weight_dtype = torch.float32
+        self.q_scale_thresh = 1e-5
         self.v = torch.nn.Parameter(
             reshape_tensor(
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
@@ -141,13 +142,14 @@ class WrapperLayerNorm(torch.nn.Module):
             return self.orig_layer
         v = best_params['v']
         weight_q, _, _ = quant_tensor(self.quant_func, self.orig_layer.weight, self.bits, self.group_size,
-                                      v)
+                                      v, q_scale_thresh=self.q_scale_thresh)
+        self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.weight.data.copy_(weight_q)
         return self.orig_layer
 
     def forward(self, input):
         weight_q, _, _ = quant_tensor(self.quant_func, self.orig_layer.weight, self.bits, self.group_size,
-                                      self.v)
+                                      self.v, q_scale_thresh=self.q_scale_thresh)
         import torch.nn.functional as F
         return F.layer_norm(
             input, self.orig_layer.normalized_shape, weight_q, self.orig_layer.bias, self.orig_layer.eps)
@@ -168,6 +170,7 @@ class WrapperLlamaNorm(torch.nn.Module):
         self.group_size = group_size
         self.device = device
         weight_dtype = torch.float32
+        self.q_scale_thresh = 1e-5
         self.v = torch.nn.Parameter(
             reshape_tensor(
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
@@ -182,13 +185,14 @@ class WrapperLlamaNorm(torch.nn.Module):
             return self.orig_layer
         v = best_params['v']
         weight_q, _, _ = quant_tensor(self.quant_func, self.orig_layer.weight, self.bits, self.group_size,
-                                      v)
+                                      v, q_scale_thresh=self.q_scale_thresh)
+        self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.weight.data.copy_(weight_q)
         return self.orig_layer
 
     def forward(self, hidden_states):
         weight_q, _, _ = quant_tensor(self.quant_func, self.orig_layer.weight, self.bits, self.group_size,
-                                      self.v)
+                                      self.v, q_scale_thresh=self.q_scale_thresh)
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
@@ -314,7 +318,7 @@ class WrapperLinear(torch.nn.Module):
         qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.orig_layer.weight, self.bits,
                                              self.group_size, v,
                                              min_scale, max_scale, self.scale_dtype, self.weight_min, self.weight_max,
-                                             data_type=self.data_type)
+                                             data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
         scale = scale.reshape(qdq_weight.shape[0], -1)
         if zp is not None:
             zp = zp.reshape(qdq_weight.shape[0], -1)
@@ -326,7 +330,7 @@ class WrapperLinear(torch.nn.Module):
         if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
             bias_v = best_params["bias_v"]
             bias, _, _ = quant_tensor(self.bias_quant_func, self.orig_layer.bias, self.bias_bits, self.bias_group_size,
-                                      bias_v)
+                                      bias_v, q_scale_thresh=self.q_scale_thresh)
             self.orig_layer.bias.grad = None
             self.orig_layer.bias.data.copy_(bias)
 
@@ -495,7 +499,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.weight_t, self.bits, self.group_size, v,
                                              min_scale,
                                              max_scale, self.scale_dtype, self.weight_min, self.weight_max,
-                                             data_type=self.data_type)
+                                             data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
         scale = scale.reshape(qdq_weight.shape[0], -1)
         if zp is not None:
             zp = zp.reshape(qdq_weight.shape[0], -1)
@@ -507,7 +511,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
             bias_v = best_params["bias_v"]
             bias, _, _ = quant_tensor(self.bias_quant_func, self.orig_layer.bias, self.bias_bits, self.bias_group_size,
-                                      bias_v)
+                                      bias_v, q_scale_thresh=self.q_scale_thresh)
             self.orig_layer.bias.grad = None
             self.orig_layer.bias.data.copy_(bias)
 
