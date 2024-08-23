@@ -362,7 +362,7 @@ class WrapperLinear(torch.nn.Module):
         weight_q, _, _ = quant_tensor(self.weight_quant_func, weight, self.bits, self.group_size, self.value,
                                       self.min_scale,
                                       self.max_scale, self.scale_dtype, self.weight_min, self.weight_max,
-                                      data_type=self.data_type)
+                                      data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
         weight_q = weight_q.to(weight.dtype)
         if self.act_quant:
             x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
@@ -373,7 +373,8 @@ class WrapperLinear(torch.nn.Module):
         if bias is not None and bias.device.type == 'meta':
             bias = self.orig_layer.get_bias().to(self.device)
         if self.enable_norm_bias_tuning:
-            bias, _, _ = quant_tensor(self.bias_quant_func, bias, self.bias_bits, self.bias_group_size, self.bias_v)
+            bias, _, _ = quant_tensor(self.bias_quant_func, bias, self.bias_bits, self.bias_group_size, self.bias_v,
+                                       q_scale_thresh=self.q_scale_thresh)
 
         return F.linear(x, weight_q, bias)
 
@@ -537,7 +538,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
             self.max_scale.clamp_(0, 1.0)
         weight_q, _, _ = quant_tensor(self.weight_quant_func, self.weight_t, self.bits, self.group_size, self.value,
                                       self.min_scale, self.max_scale, self.scale_dtype, self.weight_min,
-                                      self.weight_max, data_type=self.data_type)
+                                      self.weight_max, data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
         weight_q = weight_q.to(self.weight_t.dtype)
         size_out = x.size()[:-1] + (self.orig_layer.nf,)
         if self.act_quant:
@@ -546,7 +547,8 @@ class WrapperTransformerConv1d(torch.nn.Module):
                                    data_type=self.data_type)
         bias = self.orig_layer.bias
         if self.enable_norm_bias_tuning:
-            bias, _, _ = quant_tensor(self.bias_quant_func, bias, self.bias_bits, self.bias_group_size, self.bias_v)
+            bias, _, _ = quant_tensor(self.bias_quant_func, bias, self.bias_bits, self.bias_group_size, self.bias_v,
+                                       q_scale_thresh=self.q_scale_thresh)
         x = torch.addmm(bias, x.view(-1, x.size(-1)), weight_q.t())
         x = x.view(*size_out)
         return x
@@ -650,3 +652,4 @@ def unwrapper_block(block, best_params):
                 best_param = None
             orig_layer = m.unwrapper(best_param)
             set_module(block, n, orig_layer)
+
