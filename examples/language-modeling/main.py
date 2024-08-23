@@ -81,9 +81,9 @@ if __name__ == '__main__':
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="enable_minmax_tuning is deprecated")
 
-    parser.add_argument("--deployment_device", default=None, type=str,
-                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
-                             "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
+    parser.add_argument("--deployment_device", default='auto_round', type=str,
+                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'xpu', 'gpu(auto_gptq)' and 'auto_round'."
+                             "default to 'auto_round', 'fake' indicating that it only performs fake quantization and won't be exported to any device.")
 
     parser.add_argument("--data_type", default='int',
                         help="data type for tuning, 'int', 'mx_fp' and etc.")
@@ -156,8 +156,6 @@ if __name__ == '__main__':
 
     tasks = args.tasks
     use_eval_legacy = False
-    if args.deployment_device is None:
-        args.deployment_device = "auto_round"
 
     if "gpu" in args.deployment_device and args.sym is False:
         print(
@@ -437,3 +435,4 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
+
