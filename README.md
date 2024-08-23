@@ -180,7 +180,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 ## Support List
 
-AutoRound supports basically all the major large language models
+AutoRound supports basically all the major large language models.
+
 Two main model export formats are provided: 'autoround' and 'autogptq'. The AutoRound format supports a wider range of devices, while the autogptq format is highly compatible and enjoys strong support within the community but may have accuracy issue for asym configuration. 
 Please note that an asterisk (*) indicates third-party quantized models, which may lack accuracy data and use a different recipe. We greatly appreciate their efforts and encourage more users to share their models, as we cannot release most of the models ourselves.
 
