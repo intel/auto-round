@@ -201,6 +201,7 @@ class AutoRound(object):
         self.nblocks = nblocks
         self.device = detect_device(device)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
+        self._original_dtype = next(self.model.parameters()).dtype
         self.set_amp_dtype()
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
         self.dataset = dataset
@@ -1232,7 +1233,8 @@ class AutoRound(object):
                 
                 # Use the hidden_states to calculate the loss
                 q_hidden_states = output_q[0] if isinstance(output_q, tuple) else output_q
-                cur_outputs = outputs[tmp_indices]
+                # outputs[tmp_indices] ((tensor,), {})
+                cur_outputs = outputs[tmp_indices][0][0]
                 orig_hidden_states = cur_outputs[0] if isinstance(cur_outputs, tuple) else cur_outputs
                 orig_hidden_states = to_device(orig_hidden_states, device)
                 if self.amp:
@@ -1281,7 +1283,7 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_v, best_min_scale, best_max_scale)
         # block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
-        
+        block = block.to(self._original_dtype)
         del inputs
         return block
 
