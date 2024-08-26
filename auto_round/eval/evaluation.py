@@ -22,10 +22,10 @@ from typing import TYPE_CHECKING, List, Optional, Union
 import numpy as np
 import torch
 
-import lm_eval.api.metrics
-import lm_eval.api.registry
-import lm_eval.models
-from lm_eval.caching.cache import delete_cache
+import lm_eval.api.metrics # pylint: disable=E0401
+import lm_eval.api.registry # pylint: disable=E0401
+import lm_eval.models # pylint: disable=E0401
+from lm_eval.caching.cache import delete_cache # pylint: disable=E0401
 from lm_eval.evaluator_utils import (
     consolidate_results,
     get_sample_size,
@@ -33,9 +33,9 @@ from lm_eval.evaluator_utils import (
     prepare_print_tasks,
     print_writeout,
     run_task_tests,
-)
-from lm_eval.loggers.utils import add_env_info, get_git_commit_hash
-from lm_eval.tasks import TaskManager, get_task_dict
+) # pylint: disable=E0401
+from lm_eval.loggers.utils import add_env_info, get_git_commit_hash # pylint: disable=E0401
+from lm_eval.tasks import TaskManager, get_task_dict # pylint: disable=E0401
 from lm_eval.utils import eval_logger, positional_deprecated, simple_parse_args_string # pylint: disable=E0401
 
 if TYPE_CHECKING:
@@ -235,7 +235,8 @@ def simple_evaluate(
         if num_fewshot is not None:
             if (default_num_fewshot := task_obj.get_config("num_fewshot")) == 0:
                 eval_logger.info(
-                    f"num_fewshot has been set to 0 for {task_name} in its config. Manual configuration will be ignored."
+                    f"num_fewshot has been set to 0 for {task_name} in its config."
+                    " Manual configuration will be ignored."
                 )
             else:
                 eval_logger.warning(
@@ -339,7 +340,7 @@ def evaluate(
         ):
             raise ValueError("log_samples must be True for 'bypass' metric-only tasks")
     for task_output in eval_tasks:
-        task: Task = task_output.task
+        task: Task = task_output.task  # pylint: disable=E0601
         limit = get_sample_size(task, limit)
         task.build_all_requests(
             limit=limit,
@@ -531,9 +532,6 @@ def evaluate(
                         results[group][
                             stderr
                         ] = lm_eval.api.metrics.pooled_sample_stderr(stderrs, sizes)
-                        # TODO: allow GroupConfigs to choose which variance formula is used, for back-compatibility
-                        # To use the old (likely incorrect) variance formula, comment out the above and uncomment this line:
-                        # results[group][stderr] = lm_eval.api.metrics.combined_sample_stderr(stderrs, sizes, metrics=metrics)
 
                     results[group]["samples"] = sum(sizes)
 
@@ -575,73 +573,3 @@ def evaluate(
 
     else:
         return None
-
-
-if __name__ == "__main__":
-
-    import sys
-
-    sys.path.insert(0, '../../')
-    import time
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--model_name", default="/models/opt-125m/"
-    )
-    parser.add_argument(
-        "--eval_bs", default=1,
-    )
-    parser.add_argument(
-        "--trust_remote_code", action='store_true',
-        help="Whether to enable trust_remote_code"
-    )
-    parser.add_argument(
-        "--device", default="cuda:0",
-        help="PyTorch device (e.g. cpu/cuda:0/hpu) for evaluation."
-    )
-    parser.add_argument("--tasks",
-                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,truthfulqa_mc1," \
-                                "openbookqa,boolq,rte,arc_easy,arc_challenge",
-                        help="lm-eval tasks for lm_eval version 0.4.2")
-    
-    parser.add_argument("--parallelize", action='store_true',
-        help="Whether to enable parallelize."
-    )
-
-    args = parser.parse_args()
-    s = time.time()
-    from transformers import AutoConfig
-
-    config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=args.trust_remote_code)
-
-    if hasattr(config, "quantization_config"):
-        quantization_config = config.quantization_config
-        if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
-            from auto_round.auto_quantizer import AutoHfQuantizer
-        elif "quant_method" in quantization_config and quantization_config["quant_method"] == "gptq":
-            if args.device == "hpu":
-                from auto_round.auto_quantizer import AutoHfQuantizer
-
-    test_tasks = args.tasks
-    if isinstance(test_tasks, str):
-        test_tasks = test_tasks.split(',')
-    model_name = args.model_name.rstrip('/')
-    from lm_eval.utils import make_table
-
-    model_args = f"pretrained={args.model_name}"
-    model_args += ",dtype=float16"
-    if args.trust_remote_code:
-        model_args += f",trust_remote_code=True"
-    if args.parallelize:
-        model_args += f",parallelize=True"
-    result = simple_evaluate(model="hf",
-                             model_args=model_args,
-                             tasks=test_tasks,
-                             device=args.device,
-                             batch_size=args.eval_bs)
-    print(make_table(result))
-
-    print("cost time: ", time.time() - s)
-
-

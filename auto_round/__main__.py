@@ -413,7 +413,7 @@ def run():
         print(f"Using the latest {lm_eval_version}")
 
     if not args.disable_eval:
-        from eval.evaluation import simple_evaluate
+        from auto_round.eval.evaluation import simple_evaluate
 
         if 'gpu' in deployment_device or len(gpu_formats) > 0:
             model_args = f"pretrained={eval_folder}"
