@@ -93,7 +93,8 @@ def setup_parser():
 
     parser.add_argument("--deployment_device", default=None, type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
-                             "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
+                             "default to 'fake', indicating that it only performs"
+                             " fake quantization and won't be exported to any device.")
 
     parser.add_argument("--data_type", default='int',
                         help="data type for tuning, 'int', 'mx_fp' and etc.")
@@ -132,8 +133,10 @@ def setup_parser():
 
     parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
                         help="Choose which low cpu memory mode to use. Can significantly reduce cpu memory footprint but cost more time."
-                             "1 means choose block-wise mode, load the weights of each block from disk when tuning and release the memory of the block after tuning."
-                             "2 means choose layer-wise mode, load the weights of each layer from disk when tuning, minimum memory consumption and also slowest running speed."
+                             "1 means choose block-wise mode, load the weights of each block"
+                             " from disk when tuning and release the memory of the block after tuning."
+                             "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
+                             " minimum memory consumption and also slowest running speed."
                              "others means not use low cpu memory. Default to 0, not use low cpu memory.")
 
     parser.add_argument("--low_cpu_mem_tmp_dir", default=None, type=str,
@@ -156,13 +159,15 @@ def run():
 
     if args.enable_minmax_tuning:
         print(
-            "enable_minmax_tuning is deprecated, it has been set to the default, use disable_minmax_tuning to turn it off")
+            "enable_minmax_tuning is deprecated, it has been set to the default,"
+            " use disable_minmax_tuning to turn it off")
     if args.amp:
         print(
             "amp is deprecated, it has been set to the default, use disable_amp to turn it off")
     if args.enable_quanted_input:
         print(
-            "enable_quanted_input is deprecated. It has been set to the default; use disable_quanted_input to turn it off")
+            "enable_quanted_input is deprecated. It has been set to the default;"
+            " use disable_quanted_input to turn it off")
 
     if args.act_bits <= 8:
         print(
@@ -175,7 +180,8 @@ def run():
 
     if "gpu" in args.deployment_device and args.sym is False:
         print(
-            "warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use --deployment_device='auto_round'")
+            "warning: The auto_gptq kernel has issues with asymmetric quantization."
+            " It is recommended to use --deployment_device='auto_round'")
 
     if "marlin" in args.deployment_device and args.sym is False:
         assert False, "marlin backend only supports sym quantization, please set --sym"
@@ -333,7 +339,8 @@ def run():
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
-                      low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type, enable_norm_bias_tuning=args.enable_norm_bias_tuning)
+                      low_cpu_mem_usage=low_cpu_mem_usage, 
+                      data_type=args.data_type, enable_norm_bias_tuning=args.enable_norm_bias_tuning)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
@@ -395,44 +402,15 @@ def run():
 
 
     lm_eval_version = get_library_version("lm-eval")
-    if lm_eval_version == "0.3.0":
-        use_eval_legacy = True
 
     if isinstance(tasks, str):
         tasks = tasks.split(',')
-    if not use_eval_legacy:
-        from eval_tools.eval import eval_model
-    else:
-        from eval_tools.eval_legacy import eval_model
-
-        if isinstance(tasks, list):
-            if "mmlu" in tasks:
-                tmp_tasks = tasks
-                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
-            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
-                tmp_tasks = tasks
-                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-            seen = set()
-            tmp_tasks = tasks
-            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
 
     if 'fake' in args.deployment_device and not args.disable_eval:
-        if use_eval_legacy:
-            print("Using the legacy lm_eval(0.3.0)")
-        else:
-            print(f"Using the latest {lm_eval_version}")
+        print(f"Using the latest {lm_eval_version}")
 
-    if not args.disable_eval and "fake" in deployment_device and lm_eval_version != "0.4.2":
-        excel_name = f"{output_dir}_result.xlsx"
-        output_dir += "/"
-        print(excel_name, flush=True)
-        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name,
-                   trust_remote_code=not args.disable_trust_remote_code)
-
-    if not args.disable_eval and lm_eval_version == "0.4.2":
-        from eval_tools.eval_042.evaluation import simple_evaluate
+    if not args.disable_eval:
+        from eval.evaluation import simple_evaluate
 
         if 'gpu' in deployment_device or len(gpu_formats) > 0:
             model_args = f"pretrained={eval_folder}"
