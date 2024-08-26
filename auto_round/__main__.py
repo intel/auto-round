@@ -132,7 +132,8 @@ def setup_parser():
                         help="quant_lm_head")
 
     parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
-                        help="Choose which low cpu memory mode to use. Can significantly reduce cpu memory footprint but cost more time."
+                        help="Choose which low cpu memory mode to use. "
+                        "Can significantly reduce cpu memory footprint but cost more time."
                              "1 means choose block-wise mode, load the weights of each block"
                              " from disk when tuning and release the memory of the block after tuning."
                              "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
@@ -140,7 +141,8 @@ def setup_parser():
                              "others means not use low cpu memory. Default to 0, not use low cpu memory.")
 
     parser.add_argument("--low_cpu_mem_tmp_dir", default=None, type=str,
-                        help="temp work space to store the temporary files when using low cpu memory mode. Will remove after tuning.")
+                        help="temp work space to store the temporary files "
+                        "when using low cpu memory mode. Will remove after tuning.")
 
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
@@ -294,7 +296,8 @@ def run():
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                 layer_config[n] = {"bits": 32}
                 print(
-                    f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
+                    f"{n} will not be quantized due to its shape not being divisible by 32,"
+                    " resulting in an exporting issue to autogptq")
     fp_layers_list = args.fp_layers_list.split(",")
     if bool(fp_layers_list):
         for n, m in model.named_modules():
@@ -426,7 +429,7 @@ def run():
         res = simple_evaluate(model="hf", model_args=model_args,
                               tasks=tasks,
                               batch_size=args.eval_bs, user_model=user_model)
-        from lm_eval.utils import make_table
+        from lm_eval.utils import make_table  # pylint: disable=E0401
 
         print(make_table(res))
 
