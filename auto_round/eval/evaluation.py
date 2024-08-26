@@ -26,7 +26,7 @@ import lm_eval.api.metrics # pylint: disable=E0401
 import lm_eval.api.registry # pylint: disable=E0401
 import lm_eval.models # pylint: disable=E0401
 from lm_eval.caching.cache import delete_cache # pylint: disable=E0401
-from lm_eval.evaluator_utils import (
+from lm_eval.evaluator_utils import (  # pylint: disable=E0401
     consolidate_results,
     get_sample_size,
     get_task_list,
