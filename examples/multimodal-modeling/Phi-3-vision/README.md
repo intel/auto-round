@@ -58,10 +58,10 @@ bash run_autoround.sh
 ```python
 from PIL import Image
 import requests
+import io
 from transformers import AutoModelForCausalLM
 from transformers import AutoProcessor
 from auto_round.auto_quantizer import AutoHfQuantizer
-
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True, torch_dtype="auto", _attn_implementation='flash_attention_2') # use _attn_implementation='eager' to disable flash attention
 
@@ -73,17 +73,18 @@ messages = [ \
     {"role": "user", "content": "Provide insightful questions to spark discussion."}]
 
 url = "https://assets-c4akfrf5b4d3f4b7.z01.azurefd.net/assets/2024/04/BMDataViz_661fb89f3845e.png" 
-image = Image.open(requests.get(url, stream=True).raw)
+# image = Image.open(requests.get(url, stream=True).raw)
+image = Image.open(io.BytesIO(requests.get(url, stream=True).content))
 
 prompt = processor.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 inputs = processor(prompt, [image], return_tensors="pt").to("cuda:0")
 
 generation_args = {
-    "max_new_tokens": 500, 
-    "temperature": 0.0, 
-    "do_sample": False, 
-} 
+    "max_new_tokens": 50,
+    "temperature": 0.0,
+    "do_sample": False,
+}
 
 generate_ids = model.generate(**inputs, eos_token_id=processor.tokenizer.eos_token_id, **generation_args) 
 
@@ -92,9 +93,11 @@ generate_ids = generate_ids[:, inputs['input_ids'].shape[1]:]
 response = processor.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0] 
 
 print(response)
-
+# 1. How does the level of agreement on each statement reflect the overall preparedness of respondents for meetings?
+# 2. What are the most and least agreed-upon statements, and why might that be the case?
+# 3.
 ```
-
+<!-- 
 
 ## 4. Results
 Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K) datasets for quantization calibration, and lm_eval dataset for evaluation. please follow the [recipe](./run_autoround.sh) and [evaluate script](./run_eval.sh). The results for Phi-3-vision-128k-instruct are as follows:
@@ -113,7 +116,7 @@ Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://hu
 | arc_challenge  | 0.5572 | 0.5469 |
 | cmmlu          | 0.4074 | 0.3950 |
 | ceval          | 0.4027 | 0.4012 |
-| gsm8k          | 0.7157 | 0.6755 |
+| gsm8k          | 0.7157 | 0.6755 | -->
 
 
 
