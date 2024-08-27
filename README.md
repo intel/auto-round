@@ -191,13 +191,13 @@ Model                                | Supported                                
 | microsoft/Phi-3-vision-128k-instruct  |  [recipe](./examples/multimodal-modeling/Phi-3-vision/run_autoround.sh)
 | Qwen/Qwen-VL                          |  [accuracy](./examples/multimodal-modeling/Qwen-VL/README.md), [recipe](./examples/multimodal-modeling/Qwen-VL/run_autoround.sh)
 | liuhaotian/llava-v1.5-7b              |  [accuracy](./examples/multimodal-modeling/Llava/README.md), [recipe](./examples/multimodal-modeling/Llava/run_autoround.sh)
-| meta-llama/Meta-Llama-3.1-70B-Instruct       | [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-70B-Instruct-int4-inc)                       |
+| meta-llama/Meta-Llama-3.1-70B-Instruct       | [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-70B-Instruct-int4-inc)    |
 | meta-llama/Meta-Llama-3.1-8B-Instruct        | [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-asym), [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-sym), [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-8B-Instruct-int4-inc)           |
 | meta-llama/Meta-Llama-3.1-8B                 | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-autoround-gptq-4bit-sym)     |
 | Qwen/Qwen2-7B                                | [model-autoround-int4](https://huggingface.co/Intel/Qwen2-7B-int4-inc)        |
 | Qwen/Qwen2-57B-A14B-Instruct                 | [model-autoround-int4](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc)     |
 | microsoft/Phi-3.5-mini-instruct              | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Phi-3.5-Mini-instruct-AutoRound-4bit) |
-| TinyLlama-1.1B-intermediate   | [model-LnL-AI-autogptq-int4*](LnL-AI/TinyLlama-1.1B-intermediate-step-1341k-3T-autoround-lm_head-symFalse)     |
+| TinyLlama-1.1B-intermediate   | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/TinyLlama-1.1B-intermediate-step-1341k-3T-autoround-lm_head-symFalse)     |
 | Intel/neural-chat-7b-v3-3            | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc)          |
 | Intel/neural-chat-7b-v3-1            | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc)          |
 | mistralai/Mistral-7B-v0.1            | [model-autogptq-lmhead-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc-lmhead), [model-autogptq-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc)                            |
