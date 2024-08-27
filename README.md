@@ -198,7 +198,7 @@ Model                                | Supported                                
 | 01-ai/Yi-1.5-9B-Chat                 | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/Yi-1.5-9B-Chat-4bit-gptq-autoround)   |
 | Intel/neural-chat-7b-v3-3            | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc)          |
 | Intel/neural-chat-7b-v3-1            | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc)          |
-| TinyLlama-1.1B-intermediate   | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/TinyLlama-1.1B-intermediate-step-1341k-3T-autoround-lm_head-symFalse)     |
+| TinyLlama-1.1B-intermediate-step-1431k-3T   | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/TinyLlama-1.1B-intermediate-step-1341k-3T-autoround-lm_head-symFalse)     |
 | mistralai/Mistral-7B-v0.1            | [model-autogptq-lmhead-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc-lmhead), [model-autogptq-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc)                            |
 | google/gemma-2b                      | [model-autogptq-int4](https://huggingface.co/Intel/gemma-2b-int4-inc)                     |
 | tiiuae/falcon-7b                     | [model-autogptq-int4-G64](https://huggingface.co/Intel/falcon-7b-int4-inc)                    |
