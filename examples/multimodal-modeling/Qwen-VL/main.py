@@ -353,10 +353,10 @@ if __name__ == '__main__':
             torch_dtype = torch.float16
         if args.model_dtype == "bfloat16" or args.model_dtype == "bf16":
             torch_dtype = torch.bfloat16
-    dtype_abd = convert_dtype_torch2str(torch_dtype)
-    if dtype_abd == "bf16":
+    dtype_str = convert_dtype_torch2str(torch_dtype)
+    if dtype_str == "bf16":
         model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, trust_remote_code=not args.disable_trust_remote_code, bf16=True).eval()
-    elif dtype_abd == "fp16":
+    elif dtype_str == "fp16":
         model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, trust_remote_code=not args.disable_trust_remote_code, fp16=True).eval()
     else:
         model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, trust_remote_code=not args.disable_trust_remote_code).eval()

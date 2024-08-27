@@ -571,7 +571,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--model_name", default="/models/opt-125m/"
+        "--model_name", default="Qwen/Qwen-VL"
     )
     parser.add_argument(
         "--eval_bs", default=1,
@@ -611,7 +611,6 @@ if __name__ == "__main__":
     from lm_eval.utils import make_table
 
     model_args = f"pretrained={args.model_name}"
-    model_args += ",dtype=bfloat16"
     if args.trust_remote_code:
         model_args += f",trust_remote_code=True"
     with torch.cuda.amp.autocast():
