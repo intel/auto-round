@@ -190,7 +190,6 @@ Model                                | Supported                                
 |--------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | microsoft/Phi-3-vision-128k-instruct  |  [recipe](./examples/multimodal-modeling/Phi-3-vision/run_autoround.sh)
 | Qwen/Qwen-VL                          |  [accuracy](./examples/multimodal-modeling/Qwen-VL/README.md), [recipe](./examples/multimodal-modeling/Qwen-VL/run_autoround.sh)
-| liuhaotian/llava-v1.5-7b              |  [accuracy](./examples/multimodal-modeling/Llava/README.md), [recipe](./examples/multimodal-modeling/Llava/run_autoround.sh)
 | meta-llama/Meta-Llama-3.1-70B-Instruct       | [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-70B-Instruct-int4-inc)    |
 | meta-llama/Meta-Llama-3.1-8B-Instruct        | [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-asym), [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-sym), [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-8B-Instruct-int4-inc)           |
 | meta-llama/Meta-Llama-3.1-8B                 | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-autoround-gptq-4bit-sym)     |

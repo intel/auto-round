@@ -77,6 +77,7 @@ Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://hu
 ## 5. Known Issues
 * huggingface format model is not support yet, e.g. llava-1.5-7b-hf
 * Setting seqlen to 2048 is not working yet.
+* Currently, llava quantization is an experiemtal feature, and does not yet support inference on various devices after export.
 
 
 ## 6. Environment
@@ -94,12 +95,5 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
-
-
-
-
-
-
-
 
 
