@@ -234,9 +234,6 @@ if __name__ == '__main__':
     parser.add_argument("--seed", default=42, type=int,
                         help="seed")
 
-    parser.add_argument("--eval_fp16_baseline", action='store_true',
-                        help="whether to eval FP16 baseline")
-
     parser.add_argument("--adam", action='store_true',
                         help="adam")
 
@@ -354,12 +351,12 @@ if __name__ == '__main__':
     if args.model_dtype != None:
         if args.model_dtype == "float16" or args.model_dtype == "fp16":
             torch_dtype = torch.float16
-        if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
+        if args.model_dtype == "bfloat16" or args.model_dtype == "bf16":
             torch_dtype = torch.bfloat16
-    dtype_abd = convert_dtype_torch2str(torch_dtype)
-    if dtype_abd == "bf16":
+    dtype_str = convert_dtype_torch2str(torch_dtype)
+    if dtype_str == "bf16":
         model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, trust_remote_code=not args.disable_trust_remote_code, bf16=True).eval()
-    elif dtype_abd == "fp16":
+    elif dtype_str == "fp16":
         model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, trust_remote_code=not args.disable_trust_remote_code, fp16=True).eval()
     else:
         model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, trust_remote_code=not args.disable_trust_remote_code).eval()
@@ -373,35 +370,8 @@ if __name__ == '__main__':
                             AutoAdamRound)
     from auto_round.utils import get_multimodal_block_names
 
-    # model = model.eval()
+    model = model.eval()
     seqlen = args.seqlen
-
-    if args.eval_fp16_baseline:
-        model = model.half()
-        model = model.to(torch_device)
-        datasets=args.eval_dataset.split(',')
-        for dataset in datasets:
-            if 'vqa' in dataset:
-                from mm_evaluation.evaluate_vqa import textVQA_evaluation
-                evaluator = textVQA_evaluation(
-                    model,
-                    dataset_name=dataset,
-                    # dataset_path=args.eval_path,
-                    tokenizer=tokenizer,
-                    batch_size=args.eval_bs,
-                    device=str(torch_device)
-                )
-            elif 'scienceqa' in dataset:
-                from mm_evaluation.evaluate_multiple_choice import scienceQA_evaluation
-                evaluator = scienceQA_evaluation(
-                    model,
-                    dataset_name=dataset,
-                    # dataset_path=args.eval_path,
-                    tokenizer=tokenizer,
-                    batch_size=args.eval_bs,
-                    device=str(torch_device)
-                )
-        exit()
 
     round = AutoRound
     if args.adam:
@@ -523,5 +493,6 @@ if __name__ == '__main__':
                     batch_size=args.eval_bs,
                     device=str(torch_device)
                 )
+
 
 

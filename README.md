@@ -188,22 +188,24 @@ Please note that an asterisk (*) indicates third-party quantized models, which m
 
 Model                                | Supported                                                           |
 |--------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| meta-llama/Meta-Llama-3.1-70B-Instruct       | [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-70B-Instruct-int4-inc)    |
+| meta-llama/Meta-Llama-3.1-70B-Instruct       | [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-70B-Instruct-int4-inc)                       |
 | meta-llama/Meta-Llama-3.1-8B-Instruct        | [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-asym), [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-sym), [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-8B-Instruct-int4-inc)           |
 | meta-llama/Meta-Llama-3.1-8B                 | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-autoround-gptq-4bit-sym)     |
+| Qwen/Qwen-VL                          |  [accuracy](./examples/multimodal-modeling/Qwen-VL/README.md), [recipe](./examples/multimodal-modeling/Qwen-VL/run_autoround.sh)
 | Qwen/Qwen2-7B                                | [model-autoround-int4](https://huggingface.co/Intel/Qwen2-7B-int4-inc)        |
 | Qwen/Qwen2-57B-A14B-Instruct                 | [model-autoround-int4](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc)     |
-| microsoft/Phi-3.5-mini-instruct              | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Phi-3.5-Mini-instruct-AutoRound-4bit) |
-| TinyLlama-1.1B-intermediate   | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/TinyLlama-1.1B-intermediate-step-1341k-3T-autoround-lm_head-symFalse)     |
-| Intel/neural-chat-7b-v3-3            | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc)          |
-| Intel/neural-chat-7b-v3-1            | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc)          |
-| mistralai/Mistral-7B-v0.1            | [model-autogptq-lmhead-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc-lmhead), [model-autogptq-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc)                            |
-| microsoft/phi-2                      | [model-autogptq-sym-int4](https://huggingface.co/Intel/phi-2-int4-inc)                        |
-| google/gemma-2b                      | [model-autogptq-int4](https://huggingface.co/Intel/gemma-2b-int4-inc)                     |
-| tiiuae/falcon-7b                     | [model-autogptq-int4-G64](https://huggingface.co/Intel/falcon-7b-int4-inc)                    |
 | 01-ai/Yi-1.5-9B                      | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/Yi-1.5-9B-4bit-gptq-autoround)         |
 | 01-ai/Yi-1.5-9B-Chat                 | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/Yi-1.5-9B-Chat-4bit-gptq-autoround)   |
+| Intel/neural-chat-7b-v3-3            | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc)          |
+| Intel/neural-chat-7b-v3-1            | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc)          |
+| TinyLlama-1.1B-intermediate   | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/TinyLlama-1.1B-intermediate-step-1341k-3T-autoround-lm_head-symFalse)     |
+| mistralai/Mistral-7B-v0.1            | [model-autogptq-lmhead-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc-lmhead), [model-autogptq-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc)                            |
+| google/gemma-2b                      | [model-autogptq-int4](https://huggingface.co/Intel/gemma-2b-int4-inc)                     |
+| tiiuae/falcon-7b                     | [model-autogptq-int4-G64](https://huggingface.co/Intel/falcon-7b-int4-inc)                    |
 | sapienzanlp/modello-italia-9b   | [model-fbaldassarri-autogptq-int4*](https://huggingface.co/fbaldassarri/modello-italia-9b-autoround-w4g128-cpu)   |
+| microsoft/phi-2                      | [model-autogptq-sym-int4](https://huggingface.co/Intel/phi-2-int4-inc)                        |
+| microsoft/Phi-3.5-mini-instruct              | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Phi-3.5-Mini-instruct-AutoRound-4bit) |
+| microsoft/Phi-3-vision-128k-instruct  |  [recipe](./examples/multimodal-modeling/Phi-3-vision/run_autoround.sh)
 | mistralai/Mistral-7B-Instruct-v0.2   | [accuracy](./docs/Mistral-7B-Instruct-v0.2-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-Instruct-v0.2.sh),  [example](./examples/language-modeling/)                    |
 | mistralai/Mixtral-8x7B-Instruct-v0.1 | [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh),  [example](./examples/language-modeling/)                                     |
 | mistralai/Mixtral-8x7B-v0.1          | [accuracy](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh), [example](./examples/language-modeling/)        |

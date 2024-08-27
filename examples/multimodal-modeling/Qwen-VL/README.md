@@ -100,17 +100,68 @@ Include the flag `--adam`. Note that AdamW is less effective than sign gradient 
 
 - **Running on Intel Gaudi2**
 ```bash
-bash run_autoround_on_gaudi.sh
+bash run_autoround.sh
+```
+
+## 3. run inference
+
+```python
+  from transformers import AutoModelForCausalLM, AutoTokenizer
+  from transformers.generation import GenerationConfig
+  import torch
+  from transformers import set_seed
+  set_seed(1234)
+  from auto_round.auto_quantizer import AutoHfQuantizer
+  quantized_model_path = "./tmp_autoround"
+  tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, trust_remote_code=True)
+  # use bf16
+  model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True, bf16=True).eval()
+  # use fp16
+  # model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True, fp16=True).eval()
+  # use cpu only
+  # model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu", trust_remote_code=True).eval()
+  # use cuda device
+  # model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda", trust_remote_code=True).eval()
+  query = tokenizer.from_list_format([{'image': 'https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg'}, \
+      {'text': 'Generate the caption in English with grounding:'}, \
+  ])
+  inputs = tokenizer(query, return_tensors='pt')
+  inputs = inputs.to(model.device)
+  with torch.cuda.amp.autocast(): 
+      pred = model.generate(**inputs)
+  response = tokenizer.decode(pred.cpu()[0], skip_special_tokens=False)
+  print(response)
+  # <img>https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg</img>Generate the caption in English with grounding:<ref> Woman</ref><box>(451,379),(731,806)</box> and<ref> her dog</ref><box>(219,424),(576,896)</box> playing on the beach<|endoftext|>
+  image = tokenizer.draw_bbox_on_latest_picture(response)
+  if image:
+    image.save('2.jpg')
+  else:
+    print("no box")
+
 ```
 
 
 ## 4. Results
-Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K) datasets for quantization calibration, and TextVQA dataset for evaluation. It is able to achieve accuracy loss within 1% Whether or not the visual component is quantified. The results for Qwen-VL are as follows:
-| Model | Config | Precision | Hyperparameter | Accuracy% | Relative drop |
-|  :----: | :----: | :----: | :----: | :----: | :----: |
-| Qwen/Qwen-VL | - | FP16 | - | 63.94 | - |
-| Qwen/Qwen-VL | W4G128 | FP16 | with vision | 63.68 | -0.41% |
-| Qwen/Qwen-VL | W4G128 | FP16 | w/o vision | 63.73 | -0.33% |
+Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K) datasets for quantization calibration, and TextVQA dataset for evaluation. please follow the [recipe](./run_autoround.sh) and [evaluate script](./run_eval.sh). The results for Qwen-VL are as follows:
+| Metric         | bf16   | INT4   |
+|:----------------|:--------|:--------|
+| avg            | 0.5628 | 0.5589 |
+| paper-avg      | 0.5603 | 0.5611 |
+| mmlu           | 0.4828 | 0.4639 |
+| lambada_openai | 0.6782 | 0.6664 |
+| hellaswag      | 0.5593 | 0.5487 |
+| winogrande     | 0.6827 | 0.6875 |
+| piqa           | 0.7786 | 0.7748 |
+| truthfulqa_mc1 | 0.2876 | 0.2901 |
+| openbookqa     | 0.2880 | 0.2940 |
+| boolq          | 0.7012 | 0.7318 |
+| arc_easy       | 0.7201 | 0.7327 |
+| arc_challenge  | 0.4249 | 0.4206 |
+| cmmlu          | 0.4798 | 0.4618 |
+| ceval          | 0.4814 | 0.4569 |
+| textVQA        | 0.6402 | 0.6379 |
+| scienceVQA     | 0.6748 | 0.6574 |
+
 
 
 ## 5. Environment
@@ -128,6 +179,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
