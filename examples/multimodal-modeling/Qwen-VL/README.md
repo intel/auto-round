@@ -144,7 +144,7 @@ bash run_autoround.sh
 ## 4. Results
 Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K) datasets for quantization calibration, and TextVQA dataset for evaluation. please follow the [recipe](./run_autoround.sh) and [evaluate script](./run_eval.sh). The results for Qwen-VL are as follows:
 | Metric         | bf16   | INT4   |
-|----------------|--------|--------|
+|:----------------|:--------|:--------|
 | avg            | 0.5628 | 0.5589 |
 | paper-avg      | 0.5603 | 0.5611 |
 | mmlu           | 0.4828 | 0.4639 |
