@@ -69,10 +69,19 @@ from auto_round import AutoRound
 
 bits, group_size, sym = 4, 128, False
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
+
+# best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+#autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
+
+## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
+#autoround = AutoRound(model, tokenizer, nsamples=128, iters=200, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym)
+
 autoround.quantize()
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir)  ##save_quantized(output_dir,format="auto_gptq")
+##format= 'auto_round'(default in version>0.3.0), 'auto_gptq'(default in version<=0.3.0), 'auto_awq'
+autoround.save_quantized(output_dir, format='auto_round', inplace=True) 
 ```
+
 
 <details>
   <summary>Detailed Hyperparameters</summary>
@@ -126,17 +135,21 @@ autoround.save_quantized(output_dir)  ##save_quantized(output_dir,format="auto_g
 
 </details>
 
-### Tips
+#### Formats
+**AutoRound format**：This format is well-suited for CPU and HPU devices, as well as mixed-precision inference. It resolves the asymmetric quantization kernel issues found in the AutoGPTQ format and supports both LM-head quantization and mixed precision. However, it has not yet gained widespread community adoption. For CUDA support, you will need to install from the source.
 
-1 Consider increasing 'iters' (e.g. 1000) to achieve better results, albeit with increased tuning time.
+**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the community. It also benefits from the Marlin kernel, which can boost inference performance notably. However, the asymmetric kernel has issues that can cause considerable accuracy drops, particularly at 2-bit quantization. Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
-2 Consider increasing 'nsamples' (e.g. 512) to achieve better results, albeit with more memory(~20G).
+**AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted within the community. Asymmetric quantization typically improves accuracy but may reduce inference speed. It features specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization and is not compatible with some models, such as Phi. Additionally, we have not extensively tested exporting to this format, so there may be potential bugs or issues with the export process.
 
-3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
 ## Model inference
 
 Please run the quantization code first
+
+### AutoGPTQ/AutoAWQ format
+Refer to their repositories to inference the model.
+
 
 ### AutoRound format
 
@@ -152,7 +165,7 @@ Please run the quantization code first
 **hpu**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
-#### Gaudi2/ CPU/ GPU
+#### Gaudi2/ CPU/ GPU on 0.3.0+
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -171,11 +184,22 @@ inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
-### AutoGPTQ/AutoAWQ format
+#### Gaudi2/ CPU/ GPU on 0.3.0
 
-1 Please save the quantized model by modifying the code as follows： `autoround.save_quantized(output_dir, format="auto_gptq")` or `autoround.save_quantized(output_dir, format="auto_awq")`.
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round.auto_quantizer import AutoHfQuantizer ## must import
 
-2 Refer to their repositories to infer the model.
+quantized_model_path = "./tmp_autoround"
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+                                             device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+```
+
+
 
 
 ## Support List
