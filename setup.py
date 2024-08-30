@@ -39,8 +39,6 @@ def fetch_requirements(path):
     requirements = []
     with open(path, "r") as fd:
         requirements = [r.strip() for r in fd.readlines()]
-    if is_cpu_env():
-        requirements.append("intel-extension-for-transformers")
     return requirements
 
 def detect_local_sm_architectures():

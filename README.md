@@ -5,7 +5,7 @@ AutoRound
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.8%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.2-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.3-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-blue)](https://github.com/intel/auto-round/blob/main/LICENSE)
 ---
 <div align="left">
@@ -27,13 +27,6 @@ image presents an overview of AutoRound. Check out our paper on [arxiv](https://
 * [2024/08] AutoRound format supports Intel Gaudi2 devices. For an example, please refer to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
 * [2024/08] AutoRound includes several experimental features, e.g., activation quantization, mx_fp data type, and fast tuning of norm/bias parameters.
 * [2024/07] Important change: the default value of nsamples has been changed from 512 to 128 to reduce the  memory usages, which may cause a slight accuracy drop in some scenarios
-* [2024/06] AutoRound format supports mixed bit-widths and group sizes for inference, resolving the significant performance drop issue with the asymmetric kernel
-* [2024/05] AutoRound supports lm-head quantization, saving 0.7G for LLaMA3-8B at W4G128.
-
-
-## Prerequisites
-
-- Python 3.9 or higher
 
 ## Installation
 
@@ -41,11 +34,6 @@ image presents an overview of AutoRound. Check out our paper on [arxiv](https://
 
 ```bash
 pip install -vvv --no-build-isolation -e .
-or
-pip install -r requirements.txt
-python setup.py install
-
-
 ```
 
 ### Install from pypi
@@ -70,7 +58,7 @@ from auto_round import AutoRound
 bits, group_size, sym = 4, 128, False
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
 
-# best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
 #autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
 
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
@@ -140,7 +128,7 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the community. It also benefits from the Marlin kernel, which can boost inference performance notably. However, the asymmetric kernel has issues that can cause considerable accuracy drops, particularly at 2-bit quantization. Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
-**AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted within the community. Asymmetric quantization typically improves accuracy but may reduce inference speed. It features specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization and is not compatible with some models, such as Phi. Additionally, we have not extensively tested exporting to this format, so there may be potential bugs or issues with the export process.
+**AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted within the community. Asymmetric quantization typically improves accuracy but may reduce inference speed. It features specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization and is not compatible with some models, such as Phi.
 
 
 ## Model inference
@@ -156,11 +144,7 @@ Refer to their repositories to inference the model.
 **cuda**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation
 -e .
 
-**cpu**:
-
-* option 1: pip install auto-round && pip install intel-extension-for-transformers
-* option 2: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation
-  -e .
+**cpu**: no extra operations
 
 **hpu**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
@@ -205,8 +189,6 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ## Support List
 
 AutoRound supports basically all the major large language models.
-
-Two main model export formats are provided: 'autoround' and 'autogptq'. The AutoRound format supports a wider range of devices, while the autogptq format is highly compatible and enjoys strong support within the community but may have accuracy issue for asym configuration. 
 
 Please note that an asterisk (*) indicates third-party quantized models, which may lack accuracy data and use a different recipe. We greatly appreciate their efforts and encourage more users to share their models, as we cannot release most of the models ourselves.
 
