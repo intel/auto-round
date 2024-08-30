@@ -69,10 +69,17 @@ from auto_round import AutoRound
 
 bits, group_size, sym = 4, 128, False
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
+
+# best accuracy, low_gpu_mem_usage could save ~20G but ~30% slow
+#autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
+
+## fast and low memory hypeparamters
+#autoround = AutoRound(model, tokenizer, nsamples=128, iters=200, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym)
+
 autoround.quantize()
 output_dir = "./tmp_autoround"
 ##format= 'auto_round'(default in version>0.3.0), 'auto_gptq'(default in version<=0.3.0), 'auto_awq'
-autoround.save_quantized(output_dir, format='auto_round') 
+autoround.save_quantized(output_dir, format='auto_round', inplace=True) 
 ```
 
 
@@ -136,21 +143,12 @@ autoround.save_quantized(output_dir, format='auto_round')
 **AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted within the community. Asymmetric quantization typically improves accuracy but may reduce inference speed. It features specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization and is not compatible with some models, such as Phi. Additionally, we have not extensively tested exporting to this format, so there may be potential bugs or issues with the export process.
 
 
-#### Tips
-
-1 Consider increasing 'iters' (e.g. 1000) to achieve better results, albeit with increased tuning time.
-
-2 Consider increasing 'nsamples' (e.g. 512) to achieve better results, albeit with more memory(~20G).
-
-3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
-
-4 Set 'low_gpu_mem_usage' to True to save GPU memory, albeit with increased tuning time.
 ## Model inference
 
 Please run the quantization code first
 
 ### AutoGPTQ/AutoAWQ format
-Refer to their repositories to infer the model.
+Refer to their repositories to inference the model.
 
 
 ### AutoRound format
