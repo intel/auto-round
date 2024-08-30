@@ -129,7 +129,7 @@ autoround.save_quantized(output_dir, format='auto_round')
 </details>
 
 #### Formats
-**AutoRound format**： This format is  well-suited for CPU and HPU devices and mixed precision inference. It addresses the asymmetric quantization kernel issues present in the AutoGPTQ format. Besides, lm-head quantization and mixed precision is supported. However, it is not yet widely adopted by the community. For CUDA support, installing from the source is required.
+**AutoRound format**：This format is  well-suited for CPU and HPU devices and mixed precision inference. It addresses the asymmetric quantization kernel issues present in the AutoGPTQ format. Besides, lm-head quantization and mixed precision is supported. However, it is not yet widely adopted by the community. For CUDA support, installing from the source is required.
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the community. It also benefits from the Marlin kernel, which can boost inference performance notably. However, the asymmetric kernel has issues that can cause considerable accuracy drops, particularly at 2-bit quantization. Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
