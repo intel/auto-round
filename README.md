@@ -56,7 +56,6 @@ pip install auto-round
 
 ## Model quantization
 
-0.3.0+
 ### Gaudi2/ CPU/ GPU
 
 ```python
