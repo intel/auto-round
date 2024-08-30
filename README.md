@@ -133,7 +133,7 @@ autoround.save_quantized(output_dir, format='auto_round')
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the community. It also benefits from the Marlin kernel, which can boost inference performance notably. However, the asymmetric kernel has issues that can cause considerable accuracy drops, particularly at 2-bit quantization. Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
-**AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted within the community. It features specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization and is not compatible with some models, such as Phi. Additionally, we have not extensively tested exporting to this format, so there may be potential bugs or issues with the export process.
+**AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted within the community. Asymmetric quantization typically improves accuracy but may reduce inference speed. It features specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization and is not compatible with some models, such as Phi. Additionally, we have not extensively tested exporting to this format, so there may be potential bugs or issues with the export process.
 
 
 #### Tips
