@@ -6,7 +6,7 @@ This document presents step-by-step instructions for auto-round.
 
 In this example, we introduce an straight-forward way to execute quantization on some popular multimodal models such as LLaVA. 
 
-Please note that LLAVA quantization is currently an **experimental feature** and does not yet support inference on various devices after export.
+Please note that LLAVA quantized model is currently only support inference with **auto_round** export format.
 
 ## Install
 If you are not using Linux, do NOT proceed, see instructions for [macOS](https://github.com/haotian-liu/LLaVA/blob/main/docs/macOS.md) and [Windows](https://github.com/haotian-liu/LLaVA/blob/main/docs/Windows.md).

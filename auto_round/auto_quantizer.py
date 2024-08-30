@@ -456,7 +456,8 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if model.__class__.main_input_name != "input_ids":
-            raise RuntimeError("We can only quantize pure text model.")
+            # raise RuntimeError("We can only quantize pure text model.")
+            logger.warning("We can only quantize pure text models and certain types of multimodal models.")
 
         if self.pre_quantized:
             model = self.convert_model(model)
@@ -484,4 +485,5 @@ if transformers_version[0] == 4 and transformers_version[1] < 38:
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
+
 

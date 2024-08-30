@@ -174,12 +174,6 @@ class TextVQAEvaluator(object):
         evaluator = TextVQAAccuracyEvaluator()
         print('Samples: {}\nAccuracy: {:.2f}%\n'.format(len(pred_list), 100. * evaluator.eval_pred_list(pred_list)))
 
-
-
-# results
-
-
-
 # def eval_single(annotation_file, result_file):
 #     experiment_name = os.path.splitext(os.path.basename(result_file))[0]
 #     print(experiment_name)
@@ -199,3 +193,70 @@ class TextVQAEvaluator(object):
 #     print('Samples: {}\nAccuracy: {:.2f}%\n'.format(len(pred_list), 100. * evaluator.eval_pred_list(pred_list)))
 
 
+if __name__ == "__main__":
+    import sys
+    import time
+    import argparse
+    from llava.mm_utils import get_model_name_from_path
+    from llava.model.builder import load_pretrained_model
+    from transformers import AutoConfig
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model_name", default="liuhaotian/llava-v1.5-7b"
+    )
+    parser.add_argument(
+        "--base_model", default="liuhaotian/llava-v1.5-7b"
+    )
+    parser.add_argument(
+        "--dataset_name", default="textvqa_val"
+    )
+    parser.add_argument(
+        "--eval_bs", default=4,
+    )
+    parser.add_argument(
+        "--trust_remote_code", action='store_true',
+        help="Whether to enable trust_remote_code"
+    )
+    parser.add_argument(
+        "--eval-question-file", type=str,
+        default="tables/question.jsonl"
+    )
+    
+    parser.add_argument(
+        "--eval-image-folder", type=str
+    )
+    
+    parser.add_argument(
+        "--eval-result-file", type=str
+    )
+    
+    parser.add_argument(
+        "--eval-annotation-file", type=str
+    )
+    args = parser.parse_args()
+    s = time.time()
+    config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=args.trust_remote_code)
+    if hasattr(config, "quantization_config"):
+        quantization_config = config.quantization_config
+        if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
+            from auto_round.auto_quantizer import AutoHfQuantizer
+        elif "quant_method" in quantization_config and quantization_config["quant_method"] == "gptq":
+            if args.device == "hpu":
+                from auto_round.auto_quantizer import AutoHfQuantizer
+    model_path = args.model_name
+    model_name = get_model_name_from_path(model_path)
+    tokenizer, model, image_processor, _ = load_pretrained_model(model_path, model_base=None, model_name=model_name,
+            torch_dtype="auto")
+    
+    evaluator = TextVQAEvaluator(
+        model,
+        tokenizer,
+        image_processor,
+        args.eval_image_folder,
+        args.eval_question_file,
+        args.eval_annotation_file,
+        model_name = model_name
+    )
+    evaluator.run_evaluate(result_file = args.eval_result_file)
+    evaluator.calculate_accuracy(result_file = args.eval_result_file)
+    print("cost time: ", time.time() - s)
