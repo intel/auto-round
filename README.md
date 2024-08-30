@@ -144,6 +144,7 @@ autoround.save_quantized(output_dir, format='auto_round')
 
 3 Setting 'minmax_lr' to 2.0/iters has been observed to occasionally yield improved results.
 
+4 Set 'low_gpu_mem_usage' to True to save GPU memory, albeit with increased tuning time.
 ## Model inference
 
 Please run the quantization code first
