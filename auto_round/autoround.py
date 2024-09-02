@@ -44,6 +44,7 @@ from .utils import (
     get_layer_names_in_block,
     mv_module_from_gpu,
     unsupport_meta_device,
+    to_device_amp_dtype,
 )
 
 # disable lwq to remove the dependency on accelerator
@@ -1227,7 +1228,7 @@ class AutoRound(object):
                 tmp_indices = pick_batch_indices[index]
                 cur_inputs = inputs[tmp_indices]
                 cur_inputs = to_device(cur_inputs, device)
-                cur_inputs = to_device(cur_inputs, amp_dtype)
+                cur_inputs = to_device_amp_dtype(cur_inputs, amp_dtype)
                 cur_args, cur_kwargs = cur_inputs
                 output_q = block.forward(*cur_args, **cur_kwargs)
                 

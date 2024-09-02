@@ -164,6 +164,36 @@ def unsupport_meta_device(model):
     return False
 
 
+def to_device_amp_dtype(input, amp_dtype=torch.float32):
+    """Moves input data to the specified device.
+
+    Args:
+    input: The input data to be moved.
+    device: The target device.
+
+    Returns:
+    The input data on the specified device.
+    """
+    if input is None:
+        return None
+    if isinstance(input, torch.Tensor) and input.dtype in [torch.float32, torch.float16, torch.bfloat16]:
+        return input.to(amp_dtype)
+    if isinstance(input, dict) or isinstance(input, UserDict):
+        for inp in input.keys():
+            input[inp] = to_device_amp_dtype(input[inp], amp_dtype)
+
+    elif isinstance(input, list) or isinstance(input, tuple):
+        if len(input) == 0:
+            return input
+        input_res = []
+        for inp in input:
+            input_res.append(to_device_amp_dtype(inp, amp_dtype))
+        if isinstance(input, tuple):
+            input_res = tuple(input_res)
+        input = input_res
+
+    return input
+
 def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
 
