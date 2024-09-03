@@ -1,18 +1,19 @@
-import argparse
+import os
+import re
 import sys
+import argparse
+import subprocess
+from packaging import version
 
 sys.path.insert(0, '../..')
 parser = argparse.ArgumentParser()
 import torch
-import os
 import transformers
-import subprocess
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
-import re
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -320,7 +321,7 @@ if __name__ == '__main__':
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type, enable_norm_bias_tuning=args.enable_norm_bias_tuning)
-    model, _ = autoround.quantize()
+    # model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
@@ -373,15 +374,18 @@ if __name__ == '__main__':
 
 
     def get_library_version(library_name):
+        import pkg_resources
         try:
-            version = subprocess.check_output(['pip', 'show', library_name]).decode().split('\n')[1].split(': ')[1]
+            version = pkg_resources.get_distribution(library_name).version
             return version
-        except subprocess.CalledProcessError:
-            return "Library not found"
+        except pkg_resources.DistributionNotFound:
+            return f"{library_name} is not installed"
+        
 
-
-    lm_eval_version = get_library_version("lm-eval")
-    if lm_eval_version == "0.3.0":
+    from packaging.version import Version
+    lm_eval_version = get_library_version("lm_eval")
+    lm_eval_version = Version(lm_eval_version)
+    if lm_eval_version == Version("0.3.0"):
         use_eval_legacy = True
 
     if isinstance(tasks, str):
@@ -408,7 +412,7 @@ if __name__ == '__main__':
         else:
             print(f"Using the latest {lm_eval_version}")
 
-    if not args.disable_eval and "fake" in deployment_device and lm_eval_version != "0.4.2":
+    if not args.disable_eval and "fake" in deployment_device and lm_eval_version < Version("0.4.2"):
         excel_name = f"{output_dir}_result.xlsx"
         output_dir += "/"
         print(excel_name, flush=True)
@@ -417,8 +421,8 @@ if __name__ == '__main__':
                    device=torch_device, excel_file=excel_name,
                    trust_remote_code=not args.disable_trust_remote_code)
 
-    if not args.disable_eval and lm_eval_version == "0.4.2":
-        from eval_042.evaluation import simple_evaluate
+    if not args.disable_eval and lm_eval_version >= Version("0.4.2"):
+        from new_eval.evaluation import simple_evaluate
 
         if 'gpu' in deployment_device or len(gpu_formats) > 0:
             model_args = f"pretrained={eval_folder}"

@@ -5,6 +5,10 @@ import time
 from collections import defaultdict
 from typing import TYPE_CHECKING, List, Optional, Union
 
+from packaging.version import Version
+import pkg_resources
+LM_EVAL_VERSION = Version(pkg_resources.get_distribution('lm_eval').version)
+
 import numpy as np
 import torch
 
@@ -20,7 +24,10 @@ from lm_eval.evaluator_utils import (
     print_writeout,
     run_task_tests,
 )
-from lm_eval.logging_utils import add_env_info, get_git_commit_hash
+if LM_EVAL_VERSION == Version('0.4.2'):
+    from lm_eval.logging_utils import add_env_info, get_git_commit_hash
+else:
+    from lm_eval.loggers.utils import add_env_info, get_git_commit_hash
 from lm_eval.tasks import TaskManager, get_task_dict
 from lm_eval.utils import eval_logger, positional_deprecated, simple_parse_args_string
 
@@ -463,9 +470,14 @@ def evaluate(
         # aggregate results ; run bootstrap CIs
         for task_output in eval_tasks:
             task_output.calculate_aggregate_metric(bootstrap_iters=bootstrap_iters)
-        results, samples, configs, versions, num_fewshot = consolidate_results(
-            eval_tasks
-        )
+        if LM_EVAL_VERSION == Version('0.4.2'):
+            results, samples, configs, versions, num_fewshot = consolidate_results(
+                eval_tasks
+            )
+        else:
+            results, samples, configs, versions, num_fewshot, higher_is_better = consolidate_results(
+                eval_tasks
+            )
 
         ### Calculate group metrics ###
         if bool(results):
