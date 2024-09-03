@@ -378,7 +378,7 @@ class WrapperLinear(torch.nn.Module):
             bias = self.orig_layer.get_bias().to(self.device)
         if self.enable_norm_bias_tuning:
             bias, _, _ = quant_tensor(self.bias_quant_func, bias, self.bias_bits, self.bias_group_size, self.bias_v,
-                                       q_scale_thresh=self.q_scale_thresh)
+                                      q_scale_thresh=self.q_scale_thresh)
 
         return F.linear(x, weight_q, bias)
 
@@ -552,7 +552,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         bias = self.orig_layer.bias
         if self.enable_norm_bias_tuning:
             bias, _, _ = quant_tensor(self.bias_quant_func, bias, self.bias_bits, self.bias_group_size, self.bias_v,
-                                       q_scale_thresh=self.q_scale_thresh)
+                                      q_scale_thresh=self.q_scale_thresh)
         x = torch.addmm(bias, x.view(-1, x.size(-1)), weight_q.t())
         x = x.view(*size_out)
         return x
@@ -656,4 +656,3 @@ def unwrapper_block(block, best_params):
                 best_param = None
             orig_layer = m.unwrapper(best_param)
             set_module(block, n, orig_layer)
-
