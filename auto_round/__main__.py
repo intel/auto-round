@@ -91,7 +91,7 @@ def setup_parser():
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="enable_minmax_tuning is deprecated")
 
-    parser.add_argument("--deployment_device", default=None, type=str,
+    parser.add_argument("--format", default=None, type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
                              "default to 'fake', indicating that it only performs"
                              " fake quantization and won't be exported to any device.")
@@ -177,21 +177,21 @@ def run():
     
     tasks = args.tasks
     use_eval_legacy = False
-    if args.deployment_device is None:
-        args.deployment_device = "auto_round"
+    if args.format is None:
+        args.format = "auto_round"
 
-    if "gpu" in args.deployment_device and args.sym is False:
+    if "gpu" in args.format and args.sym is False:
         print(
             "warning: The auto_gptq kernel has issues with asymmetric quantization."
-            " It is recommended to use --deployment_device='auto_round'")
+            " It is recommended to use --format='auto_round'")
 
-    if "marlin" in args.deployment_device and args.sym is False:
+    if "marlin" in args.format and args.sym is False:
         assert False, "marlin backend only supports sym quantization, please set --sym"
 
-    if args.act_bits <= 8 and args.deployment_device != "fake":
+    if args.act_bits <= 8 and args.format != "fake":
         assert False, "only support fake mode for activation quantization currently"
 
-    if "mx_fp" in args.data_type and args.deployment_device != "fake":
+    if "mx_fp" in args.data_type and args.format != "fake":
         assert False, "only support fake mode for mx_fp data type currently"
 
     if "mx_fp" in args.data_type and args.group_size != 32:
@@ -358,20 +358,20 @@ def run():
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
-    deployment_device = args.deployment_device.split(',')
+    args.format = args.format.split(',')
     gpu_formats = []
-    for item in deployment_device:
+    for item in args.format:
         if "gpu" in item or "auto_gptq" in item or "auto_round" in item or "auto_awq" in item:
             gpu_formats.append(item)
 
-    if 'gpu' in deployment_device:
+    if 'gpu' in args.format:
         if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
             gpu_formats.append("auto_round")
         else:
             gpu_formats.append("auto_gptq")
     gpu_formats = list(set(gpu_formats))
 
-    inplace = True if len(deployment_device) < 2 else False
+    inplace = True if len(args.format) < 2 else False
     eval_folder = None
     for gpu_format in gpu_formats:
         if "round" in gpu_format:
@@ -384,11 +384,11 @@ def run():
             eval_folder = f'{export_dir}-awq'
             autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
 
-    if 'xpu' in deployment_device:
+    if 'xpu' in args.format:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
-    if "cpu" in deployment_device:
+    if "cpu" in args.format:
         autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
-    if "fake" in deployment_device:
+    if "fake" in args.format:
         model = model.to("cpu")
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
@@ -409,15 +409,15 @@ def run():
     if isinstance(tasks, str):
         tasks = tasks.split(',')
 
-    if 'fake' in args.deployment_device and not args.disable_eval:
+    if 'fake' in args.format and not args.disable_eval:
         print(f"Using the latest {lm_eval_version}")
 
     if not args.disable_eval:
         from auto_round.eval.evaluation import simple_evaluate
 
-        if 'gpu' in deployment_device or len(gpu_formats) > 0:
+        if 'gpu' in args.format or len(gpu_formats) > 0:
             model_args = f"pretrained={eval_folder}"
-        elif "fake" in deployment_device:
+        elif "fake" in args.format:
             model_args = f"pretrained={eval_folder}"
         else:
             exit()  ## does not support cpu,xpu model eval
