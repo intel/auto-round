@@ -342,43 +342,6 @@ def collect_best_params(block):
                 params[n][key]=copy.deepcopy(m.params[key].data)
     return params
 
-
-# def collect_round_v(block):
-#     """Collects the round values for wrapped linear modules in the given block.
-#
-#     Args:
-#     block: The input block.
-#
-#     Returns:
-#     vs: A dictionary of round values for the wrapped linear modules.
-#     """
-#     vs = {}
-#     for n, m in block.named_modules():
-#         if hasattr(m, "orig_layer"):
-#             v = m.value.data
-#             vs[n] = copy.deepcopy(v)
-#     return vs
-#
-#
-# def collect_minmax_scale(block):
-#     """Collects the min-max scaling values for wrapped linear modules in the given block.
-#
-#     Args:
-#     block: The input block.
-#
-#     Returns:
-#     min_scales: A dictionary of minimum scaling values.
-#     max_scales: A dictionary of maximum scaling values.
-#     """
-#     min_scales = {}
-#     max_scales = {}
-#     for n, m in block.named_modules():
-#         if hasattr(m, "orig_layer"):
-#             min_scales[n] = copy.deepcopy(torch.clamp(m.min_scale.data, 0, 1.0))
-#             max_scales[n] = copy.deepcopy(torch.clamp(m.max_scale.data, 0, 1.0))
-#     return min_scales, max_scales
-
-
 @torch.no_grad()
 def sampling_inputs(input_ids, input_others, indices, seqlen,
                     share_attention_mask_flag=False, not_share_position_ids_flag=False, input_dim=0):
@@ -834,11 +797,11 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
                 support auto_awq format.")
         return WQLinear_GEMM
     if bits == 4 and exllama2_available and "exllamav2" in backend:
-        from auto_round_extension.cuda.qliner_exllamav2 import QuantLinear
+        from auto_round_extension.cuda.qlinear_exllamav2 import QuantLinear
     elif bits == 4 and "exllamav2" in backend:
         logger.warning_once("Please install auto-round from source to enable exllamav2 kernels, switch to triton "
                             "kernels for now")
-        from auto_round_extension.cuda.qliner_triton import QuantLinear
+        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
     else:
-        from auto_round_extension.cuda.qliner_triton import QuantLinear
+        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
     return QuantLinear
