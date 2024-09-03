@@ -36,8 +36,8 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
     """
     maxq = torch.tensor(2 ** bits - 1)
     if weight_min is None or weight_max is None:
-        wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
-        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
+        wmin_tmp = torch.clamp(weight.min(-1)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(-1)[0], min=0)
     else:
         wmin_tmp = weight_min
         wmax_tmp = weight_max
@@ -76,8 +76,8 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
     """
     maxq = torch.tensor(2 ** bits - 1)
     if weight_min is None or weight_max is None:
-        wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
-        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
+        wmin_tmp = torch.clamp(weight.min(-1)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(-1)[0], min=0)
     else:
         wmin_tmp = weight_min
         wmax_tmp = weight_max
@@ -122,8 +122,8 @@ def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0
     """
     maxq = torch.tensor(2 ** bits - 1)
     if weight_min is None or weight_max is None:
-        wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
-        wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
+        wmin_tmp = torch.clamp(weight.min(-1)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(-1)[0], min=0)
     else:
         wmin_tmp = weight_min
         wmax_tmp = weight_max
