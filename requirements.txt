@@ -8,3 +8,4 @@ triton
 numpy < 2.0
 threadpoolctl
 intel-extension-for-transformers
+tqdm

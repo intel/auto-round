@@ -21,7 +21,7 @@ import torch
 import transformers
 from transformers import set_seed
 from torch import autocast
-
+from tqdm import tqdm
 from .calib_dataset import get_dataloader
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
     WrapperTransformerConv1d
@@ -972,7 +972,7 @@ class AutoRound(object):
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
-        logger.info(dump_info)
+        logger.debug(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
@@ -1041,15 +1041,15 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     input_others[key][i].to(tmp_dtype)
-
-        for i in range(0, len(block_names), nblocks):
+        pbar = tqdm(range(0, len(block_names), nblocks))
+        for i in pbar:
             if nblocks == 1:
                 n = block_names[i]
-                logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
+                pbar.set_description(f"Quantizing {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i: i + nblocks]
-                logger.info(names)
+                pbar.set_description(f"Quantizing [{i + 1}-{i + nblocks}]/{len(block_names)}")
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
@@ -1545,4 +1545,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
