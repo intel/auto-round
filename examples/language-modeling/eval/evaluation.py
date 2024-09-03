@@ -1,100 +1,72 @@
-
-import os
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-import os.path
-import torch
+import itertools
 import logging
-import pprint
-import re
-import shutil
-import transformers
-from typing import TYPE_CHECKING, Optional, Union
+import random
 import time
-    
-if __name__ == "__main__":
-    import sys
-    sys.path.insert(0, './')
+from collections import defaultdict
+from typing import TYPE_CHECKING, List, Optional, Union
 
-EXT_TASKS = ['wikitext2', 'ptb', 'c4', 'ptb-new', 'c4-new']
-fewshots_dict = {}
-fewshots_dict['paper'] = {
-    "lambada_openai": [0],
-    "hellaswag": [0],
-    "winogrande": [0],
-    "piqa": [0],
-    "mmlu": [0],
-    "wikitext": [0],
-    "truthfulqa_mc1": [0],
-    "truthfulqa_mc2": [0],
-    "openbookqa": [0],
-    "boolq": [0],
-    "rte": [0],
-    "arc_easy": [0],
-    "arc_challenge": [0],
-    "gsm8k": [0],
-    "ceval-valid": [0],
-    "cmmlu": [0],
-}
-fewshots_dict['leadboard'] = {
-    "hellaswag": [10],
-    "winogrande": [5],
-    "arc_easy": [25],
-    "arc_challenge": [25],
-    "mmlu": [5],
-    "drop": [3],
-    "gsm8k": [5],
-}
-fewshots_dict['all'] = {
-    "lambada_openai": [0],
-    "hellaswag": [0, 10],
-    "winogrande": [0, 5],
-    "piqa": [0],
-    "coqa": [],  ## coqa is not enabled in llamav1 models
-    "truthfulqa_mc1": [0],
-    "truthfulqa_mc2": [0],
-    "openbookqa": [0],
-    "boolq": [0],
-    "rte": [0],
-    "arc_easy": [0, 25],
-    "arc_challenge": [0, 25],
-    "mmlu": [0, 5],
-    "wikitext": [0],
-    "drop": [3],
-    "gsm8k": [5]
-}
+from packaging.version import Version
+import pkg_resources
+LM_EVAL_VERSION = Version(pkg_resources.get_distribution('lm_eval').version)
+
+import numpy as np
+import torch
+
+import lm_eval.api.metrics
+import lm_eval.api.registry
+import lm_eval.models
+from lm_eval.caching.cache import delete_cache
+from lm_eval.evaluator_utils import (
+    consolidate_results,
+    get_sample_size,
+    get_task_list,
+    prepare_print_tasks,
+    print_writeout,
+    run_task_tests,
+)
+if LM_EVAL_VERSION == Version('0.4.2'):
+    from lm_eval.logging_utils import add_env_info, get_git_commit_hash
+else:
+    from lm_eval.loggers.utils import add_env_info, get_git_commit_hash
+from lm_eval.tasks import TaskManager, get_task_dict
+from lm_eval.utils import eval_logger, positional_deprecated, simple_parse_args_string
+
+if TYPE_CHECKING:
+    from lm_eval.api.model import LM
+    from lm_eval.tasks import Task
 
 
+@positional_deprecated
 def simple_evaluate(
-    model,
-    model_args: Optional[Union[str, dict, None]] = None,
-    tasks=None,
-    num_fewshot: Optional[int] = None,
-    batch_size: Optional[int] = None,
-    max_batch_size: Optional[int] = None,
-    device: Optional[str] = None,
-    use_cache: Optional[str] = None,
-    cache_requests: bool = False,
-    rewrite_requests_cache: bool = False,
-    delete_requests_cache: bool = False,
-    limit: Optional[Union[int, float]] = None,
-    bootstrap_iters: int = 100000,
-    check_integrity: bool = False,
-    decontamination_ngrams_path=None,
-    write_out: bool = False,
-    log_samples: bool = True,
-    gen_kwargs: str = None,
-    task_manager=None,
-    verbosity: str = "INFO",
-    predict_only: bool = False,
-    random_seed: int = 1234,
-    numpy_random_seed: int = 1234,
-    torch_random_seed: int = 1234,
-    lm=None
+        model,
+        model_args: Optional[Union[str, dict]] = None,
+        tasks: Optional[List[Union[str, dict, object]]] = None,
+        num_fewshot: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        max_batch_size: Optional[int] = None,
+        device: Optional[str] = None,
+        use_cache: Optional[str] = None,
+        cache_requests: bool = False,
+        rewrite_requests_cache: bool = False,
+        delete_requests_cache: bool = False,
+        limit: Optional[Union[int, float]] = None,
+        bootstrap_iters: int = 100000,
+        check_integrity: bool = False,
+        write_out: bool = False,
+        log_samples: bool = True,
+        gen_kwargs: Optional[str] = None,
+        task_manager: Optional[TaskManager] = None,
+        verbosity: str = "INFO",
+        predict_only: bool = False,
+        random_seed: int = 0,
+        numpy_random_seed: int = 1234,
+        torch_random_seed: int = 1234,
+        user_model = None, ##user model does not support tensor parallelism
 ):
     """Instantiate and evaluate a model on a list of tasks.
 
     :param model: Union[str, LM]
-        Name of model, transformers.PreTrainedModel object or LM object, see lm_eval.models.get_model
+        Name of model or LM object, see lm_eval.models.get_model
     :param model_args: Optional[str, dict]
         String or dict arguments for each model class, see LM.create_from_arg_string and LM.create_from_arg_object.
         Ignored if `model` argument is a LM object.
@@ -141,112 +113,92 @@ def simple_evaluate(
     :return
         Dictionary of results
     """
-    from lm_eval.tasks import TaskManager
-    import random
-    import numpy as np
-    import transformers
-    import lm_eval.api
-    import lm_eval.tasks
-    import lm_eval.models
-    import lm_eval.api.metrics
-    import lm_eval.api.registry
-    from lm_eval.evaluator import evaluate
-    from lm_eval.logging_utils import add_env_info, get_git_commit_hash
-    from lm_eval.tasks import get_task_dict
-    
-    from lm_eval.utils import (
-        eval_logger,
-        positional_deprecated,
-        run_task_tests,
-        simple_parse_args_string,
-    )
-    
+    from auto_round.auto_quantizer import AutoHfQuantizer
     eval_logger.setLevel(getattr(logging, f"{verbosity}"))
+    start_date = time.time()
 
     if delete_requests_cache:
         eval_logger.info("Deleting requests cache...")
         delete_cache()
-    
+
+    seed_message = []
     if random_seed is not None:
         # See https://github.com/EleutherAI/lm-evaluation-harness/pull/1412
-        eval_logger.info(f"Setting random seed to {random_seed}")
+        seed_message.append(f"Setting random seed to {random_seed}")
         random.seed(random_seed)
 
     if numpy_random_seed is not None:
-        eval_logger.info(f"Setting numpy seed to {numpy_random_seed}")
+        seed_message.append(f"Setting numpy seed to {numpy_random_seed}")
         np.random.seed(numpy_random_seed)
 
     if torch_random_seed is not None:
-        eval_logger.info(f"Setting torch manual seed to {torch_random_seed}")
+        seed_message.append(f"Setting torch manual seed to {torch_random_seed}")
         torch.manual_seed(torch_random_seed)
-    
+
+    if seed_message:
+        eval_logger.info(" | ".join(seed_message))
+
     if tasks is None:
         tasks = []
-        assert (
-            tasks != []
-        ), "No tasks specified, or no tasks found. Please verify the task names."
+    if len(tasks) == 0:
+        raise ValueError(
+            "No tasks specified, or no tasks found. Please verify the task names."
+        )
 
-    if lm == None:
-        if gen_kwargs is not None:
-            gen_kwargs = simple_parse_args_string(gen_kwargs)
-            eval_logger.warning(
-                "generation_kwargs specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!"
+    if gen_kwargs is not None:
+        gen_kwargs = simple_parse_args_string(gen_kwargs)
+        eval_logger.warning(
+            "generation_kwargs specified through cli, these settings will update set parameters in yaml tasks. "
+            "Ensure 'do_sample=True' for non-greedy decoding!"
+        )
+        if gen_kwargs == "":
+            gen_kwargs = None
+
+    if isinstance(model, str):
+        if model_args is None:
+            model_args = ""
+
+        if isinstance(model_args, dict):
+            lm = lm_eval.api.registry.get_model(model).create_from_arg_obj(
+                model_args,
+                {
+                    "batch_size": batch_size,
+                    "max_batch_size": max_batch_size,
+                    "device": device,
+                },
             )
-            if gen_kwargs == "":
-                gen_kwargs = None
 
-        if isinstance(model, str):
-            if model_args is None:
-                model_args = ""
-
-            elif isinstance(model_args, dict):
-                lm = lm_eval.api.registry.get_model(model).create_from_arg_obj(
-                    model_args,
-                    {
-                        "batch_size": batch_size,
-                        "max_batch_size": max_batch_size,
-                        "device": device,
-                    },
-                )
-
-            else:
-                lm = lm_eval.api.registry.get_model(model).create_from_arg_string(
-                    model_args,
-                    {
-                        "batch_size": batch_size,
-                        "max_batch_size": max_batch_size,
-                        "device": device,
-                    },
-                )
-        elif isinstance(model, transformers.PreTrainedModel):
-            lm = lm_eval.api.registry.get_model("hf")(
-                pretrained=model,
-                batch_size=batch_size,
-                max_batch_size=max_batch_size,
-            )
-            use_cache = None
         else:
-            assert isinstance(model, lm_eval.api.model.LM)
-            lm = model
-
-        if use_cache is not None:
-            print(f"Using cache at {use_cache + '_rank' + str(lm.rank) + '.db'}")
-            lm = lm_eval.api.model.CachingLM(
-                lm,
-                "lm_cache/"
-                + (model if isinstance(model, str) else model.model.config._name_or_path)
-                + "_"
-                + model_args.replace("=", "-").replace(",", "_").replace("/", "-")
-                + ".db",
+            lm = lm_eval.api.registry.get_model(model).create_from_arg_string(
+                model_args,
+                {
+                    "batch_size": batch_size,
+                    "max_batch_size": max_batch_size,
+                    "device": device,
+                },
             )
-            
+    else:
+        if not isinstance(model, lm_eval.api.model.LM):
+            raise TypeError
+        lm = model
+
+    if use_cache is not None:
+        eval_logger.info(f"Using cache at {use_cache + '_rank' + str(lm.rank) + '.db'}")
+        lm = lm_eval.api.model.CachingLM(
+            lm,
+            use_cache
+            # each rank receives a different cache db.
+            # necessary to avoid multiple writes to cache at once
+            + "_rank"
+            + str(lm.rank)
+            + ".db",
+        )
+    if user_model is not None:
+        lm._model = user_model
+
     if task_manager is None:
         task_manager = TaskManager(verbosity)
 
-    eval_logger.info(
-        "get_task_dict has been updated to accept an optional argument, `task_manager`"
-        "Read more here:https://github.com/EleutherAI/lm-evaluation-harness/blob/main/docs/interface.md#external-library-usage"
-    )
     task_dict = get_task_dict(tasks, task_manager)
     for task_name in task_dict.keys():
         task_obj = task_dict[task_name]
@@ -261,14 +213,16 @@ def simple_evaluate(
                     key="generation_kwargs", value=gen_kwargs, update=True
                 )
 
-            if predict_only:
-                log_samples = True
-                eval_logger.info(
-                    f"Processing {task_name} in output-only mode. Metrics will not be calculated!"
-                )
-                # we have to change the class properties post-hoc. This is pretty hacky.
-                task_obj.override_metric(metric_name="bypass")
+        if predict_only:
+            log_samples = True
+            eval_logger.info(
+                f"Processing {task_name} in output-only mode. Metrics will not be calculated!"
+            )
+            # we have to change the class properties post-hoc. This is pretty hacky.
+            task_obj.override_metric(metric_name="bypass")
 
+        # override tasks' fewshot values to the provided num_fewshot arg value
+        # except if tasks have it set to 0 manually in their configs--then we should never overwrite that
         if num_fewshot is not None:
             if (default_num_fewshot := task_obj.get_config("num_fewshot")) == 0:
                 eval_logger.info(
@@ -279,6 +233,10 @@ def simple_evaluate(
                     f"Overwriting default num_fewshot of {task_name} from {default_num_fewshot} to {num_fewshot}"
                 )
                 task_obj.set_config(key="num_fewshot", value=num_fewshot)
+        else:
+            # if num_fewshot not provided, and the task does not define a default one, default to 0
+            if (default_num_fewshot := task_obj.get_config("num_fewshot")) is None:
+                task_obj.set_config(key="num_fewshot", value=0)
 
     if check_integrity:
         run_task_tests(task_list=tasks)
@@ -290,7 +248,6 @@ def simple_evaluate(
         cache_requests=cache_requests,
         rewrite_requests_cache=rewrite_requests_cache,
         bootstrap_iters=bootstrap_iters,
-        decontamination_ngrams_path=decontamination_ngrams_path,
         write_out=write_out,
         log_samples=log_samples,
         verbosity=verbosity,
@@ -319,176 +276,311 @@ def simple_evaluate(
             "gen_kwargs": gen_kwargs,
         }
         results["git_hash"] = get_git_commit_hash()
+        results["date"] = start_date
         add_env_info(results)  # additional environment info to results
-        return results, lm
+        return results
     else:
         return None
 
 
-def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "piqa"],
-               eval_bs=32, use_accelerate=True, dtype=None, limit=None, trust_remote_code=True,
-               device="cuda:0", seed=0, nsamples=128, mark="paper", excel_file="tmp.xlsx"):
-    print("evaluation with official lm-eval", flush=True)
-    try:
-        import lm_eval.api
-        import lm_eval.tasks
-        import lm_eval.models
-        import lm_eval.api.metrics
-        import lm_eval.api.registry
-        from lm_eval.evaluator import evaluate
-    
-    except:
-        raise ImportError("""follow requirements to install dependencies.""")
-    
-    org_s = time.time()
-    if dtype == None:
-        from eval.utils import convert_dtype_torch2str_hf
-        from transformers import AutoConfig
-        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
-        if hasattr(config, "torch_dtype"):
-            dtype = convert_dtype_torch2str_hf(config.torch_dtype)
-        else:
-            dtype = "float16"
-    print(f"Using {dtype} as evaluation data type.")
-    
-    external_tasks = []
-    if isinstance(tasks, str):
-        tasks = tasks.split(',')
-    for each in EXT_TASKS:
-        if each in tasks:
-            external_tasks.append(each)
-            tasks.remove(each)
+@positional_deprecated
+def evaluate(
+        lm: "LM",
+        task_dict,
+        limit: Optional[int] = None,
+        cache_requests: bool = False,
+        rewrite_requests_cache: bool = False,
+        bootstrap_iters: Optional[int] = 100000,
+        write_out: bool = False,
+        log_samples: bool = True,
+        verbosity: str = "INFO",
+):
+    """Instantiate and evaluate a model on a list of tasks.
 
-    results = {}
-    model = None
-    lm = None
+    :param lm: obj
+        Language Model
+    :param task_dict: dict[str, Task]
+        Dictionary of tasks. Tasks will be taken to have name type(task).config.task .
+    :param limit: int, optional
+        Limit the number of examples per task (only use this for testing)
+    :param bootstrap_iters:
+        Number of iterations for bootstrap statistics
+    :param write_out: bool
+        If True, write out an example document and model input for checking task integrity
+    :param log_samples: bool
+        If True, write out all model outputs and documents for per-sample measurement and post-hoc analysis
+    :return
+        Dictionary of results
+    """
 
-    for tmp_tasks in tasks:
-        try:
-            num_fewshot = fewshots_dict[mark][tmp_tasks]
-            print(f'********* {tmp_tasks} evaluate ************')
-            task_s = time.time()
-            for shot in num_fewshot:
-                model_type = "hf"
-                model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},trust_remote_code={trust_remote_code}'
-                if 'gpu' in model_path:
-                    model_args = f'pretrained={model_path},tokenizer={model_path},dtype={dtype},autogptq=True,gptq_use_triton=True,trust_remote_code={trust_remote_code}'
-                if use_accelerate: # bool(re.search("chatglm", model_path.lower()))
-                    model_args += f',parallelize=True'
+    eval_logger.setLevel(getattr(logging, f"{verbosity}"))
 
-                if "wikitext" in tmp_tasks:
-                    tmp_eval_bs = 1
-                else:
-                    tmp_eval_bs = eval_bs
-                tmp_results, lm = simple_evaluate(model=model_type, model_args=model_args, tasks=tmp_tasks,
-                                                  num_fewshot=shot, limit=limit, batch_size=tmp_eval_bs,
-                                                  max_batch_size=tmp_eval_bs, lm=lm, device=str(device))
-                if 'mmlu' in tmp_tasks and 'cmmlu' not in tmp_tasks:
-                    sub_name = f'hendrycksTest-* {shot}-shot'
-                else:
-                    sub_name = f'{tmp_tasks} {shot}-shot'
-                print(f'{sub_name}: ')
-                pprint.pprint(tmp_results["results"])
-                print(f"\n{sub_name} cost time: {time.time() - task_s}\n")
-                results[sub_name] = {}
-                if 'mmlu' in tmp_tasks and 'cmmlu' not in tmp_tasks:
-                    for cata in ['humanities', 'other', 'stem', 'sociology']:
-                        results[sub_name][cata] = tmp_results['results'][f'mmlu_{cata}']
-                    results[sub_name]['avg'] = tmp_results['results'][f'mmlu']
-                else:
-                    results[sub_name] = tmp_results['results']
-        except Exception as e:
-            print(f'********* {tmp_tasks} ERROR ************')
-            print(str(e))
-            continue
+    # tracks all Instances/requests a model must generate output on.
+    requests = defaultdict(list)
+    # stores the amount to pad out reqs per req. type so that
+    # number of fwd passes per distributed rank is equal
+    padding_requests = defaultdict(int)
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False, trust_remote_code=True)
-    model = lm.model
-    # for external tasks
-    # maybe adjust for specific model
-    # if hasattr(lm.model.config, "max_position_embeddings"):
-    #     lm.model.seqlen = lm.model.config.max_position_embeddings
-    # else:
-    #     ## for llama-1, opt
-    #     lm.model.seqlen = 2048
+    # get lists of group hierarchy and each type of request
+    task_hierarchy, eval_tasks = get_task_list(task_dict)
+    if not log_samples:
+        if not all(
+                "bypass" not in getattr(task_output.task, "_metric_fn_list", {}).keys()
+                for task_output in eval_tasks
+        ):
+            raise ValueError("log_samples must be True for 'bypass' metric-only tasks")
+    for task_output in eval_tasks:
+        task: Task = task_output.task
+        limit = get_sample_size(task, limit)
+        task.build_all_requests(
+            limit=limit,
+            rank=lm.rank,
+            world_size=lm.world_size,
+            cache_requests=cache_requests,
+            rewrite_requests_cache=rewrite_requests_cache,
+        )
+        eval_logger.debug(
+            f"Task: {task_output.task_name}; number of requests on this rank: {len(task.instances)}"
+        )
 
-    # if "opt" in model_name:
-    #     seqlen = model.config.max_position_embeddings
-    #     model.seqlen = model.config.max_position_embeddings
-    # else:
-    #     seqlen = 2048
-    #     model.seqlen = seqlen
+        if write_out:
+            print_writeout(task)
+        # aggregate Instances by LM method requested to get output.
+        for instance in task.instances:
+            reqtype = instance.request_type
+            requests[reqtype].append(instance)
 
-    model.seqlen = 2048
-    from eval.utils import get_loaders, eval_ppl_same_with_gptq
-    for dataset in external_tasks:
-        try:
-            dataloader, testloader = get_loaders(
-                dataset, nsamples=nsamples, seed=seed,
-                tokenizer=tokenizer, seqlen=model.seqlen
+        if lm.world_size > 1:
+            instances_rnk = torch.tensor(len(task._instances), device=lm.device)
+            gathered_item = (
+                lm.accelerator.gather(instances_rnk).cpu().detach().numpy().tolist()
             )
-            ppl = eval_ppl_same_with_gptq(model, testloader, device)
-            print(dataset, ppl)
+            # "multiple_choice" task types dispatch (several) "loglikelihood" request types
+            reqtype = (
+                "loglikelihood"
+                if task.OUTPUT_TYPE == "multiple_choice"
+                else task.OUTPUT_TYPE
+            )
+            # compute number of pseudo-batches to pad with (FSDP/DDP require even batches among ranks)
+            numpad = max(gathered_item) - gathered_item[lm.rank]
+            # todo: may not account for padding in cases like SquadV2 which has multiple req types
+            padding_requests[reqtype] += numpad
 
-            results.update({dataset: ppl})
-        except Exception as e:
-            print(str(e))
-            continue
+    ### Run LM on inputs, get all outputs ###
+    # execute each type of request
+    for reqtype, reqs in requests.items():
+        eval_logger.info(f"Running {reqtype} requests")
+        # create `K` copies of each request `req` based off `K = req.repeats`
+        cloned_reqs = []
+        for req in reqs:
+            cloned_reqs.extend([req] * req.repeats)
 
-    print(results, flush=True)
-    print("cost time: ", time.time() - org_s)
-    import pickle
-    from collections import OrderedDict
-    new_dict = OrderedDict()
-    new_dict["model"] = "tmp"
-    new_dict["paper-avg"] = 0
-    new_dict["leaderboard-avg"] = 0
-    new_dict["wikitext2"] = 0
-    new_dict["ptb-new"] = 0
-    new_dict["c4-new"] = 0
-    new_dict["wikitext 0-shot_word_perplexity"] = 0
-    new_dict["wikitext 0-shot_byte_perplexity"] = 0
-    new_dict["wikitext 0-shot_bits_per_byte"] = 0
-    
-    # Special handling of mmlu for compatibility with the old excel results sequence
-    search_str = 'hendrycksTest'
-    mmlu_matching_keys = [key for key in results.keys() if search_str.lower() in key.lower()]
-    for key in mmlu_matching_keys:
-        data = results.pop(key)
-        for sub_key in data.keys():
-            for sub_sub_key in data[sub_key].keys():
-                new_key = key + "-" + sub_key + "-" + sub_sub_key
-                if "std" in new_key or "alias" in new_key:
+        if (lm.world_size > 1) and (padding_requests[reqtype] > 0):
+            for _ in range(padding_requests[reqtype]):
+                cloned_reqs.extend([req] * req.repeats)
+
+        # run requests through model
+        resps = getattr(lm, reqtype)(cloned_reqs)
+
+        # put responses from model into a list of length K for each request.
+        for x, req in zip(resps, cloned_reqs):
+            req.resps.append(x)
+
+        if lm.world_size > 1:
+            lm.accelerator.wait_for_everyone()
+
+    RANK = lm.rank
+    WORLD_SIZE = lm.world_size
+    ### Postprocess outputs ###
+    # TODO: del model here, maybe (idea: allow user to specify device of e.g. reward model separately)
+    for task_output in eval_tasks:
+        task = task_output.task
+        task.apply_filters()
+
+        ### Collect values of metrics on all datapoints ###
+        # # unpack results and sort back in order and return control to Task
+        # TODO: make it possible to use a different metric per filter
+        # Pre-process task.instances to group by doc_id
+        instances_by_doc_id = defaultdict(list)
+        for instance in task.instances:
+            instances_by_doc_id[instance.doc_id].append(instance)
+        # Sort instances within each group
+        for instances in instances_by_doc_id.values():
+            instances.sort(key=lambda x: x.idx)
+        # iterate over different filters used
+        for filter_key in task.instances[0].filtered_resps.keys():
+            doc_iterator = task.doc_iterator(
+                rank=RANK, limit=limit, world_size=WORLD_SIZE
+            )
+            for doc_id, doc in doc_iterator:
+                requests = instances_by_doc_id[doc_id]
+                metrics = task.process_results(
+                    doc, [req.filtered_resps[filter_key] for req in requests]
+                )
+                if log_samples:
+                    target = task.doc_to_target(doc)
+                    example = {
+                        "doc_id": doc_id,
+                        "doc": doc,
+                        "target": target,
+                        "arguments": [req.args for req in requests],
+                        "resps": [req.resps for req in requests],
+                        "filtered_resps": [
+                            req.filtered_resps[filter_key] for req in requests
+                        ],
+                    }
+                    example.update(metrics)
+                    task_output.logged_samples.append(example)
+                for metric, value in metrics.items():
+                    task_output.sample_metrics[(metric, filter_key)].append(value)
+
+    if WORLD_SIZE > 1:
+        # if multigpu, then gather data across all ranks to rank 0
+        # first gather logged samples across all ranks
+        for task_output in eval_tasks:
+            if log_samples:
+                # for task_name, task_samples in list(samples.items()):
+                full_samples = [None] * WORLD_SIZE if RANK == 0 else None
+                torch.distributed.gather_object(
+                    obj=task_output.logged_samples,
+                    object_gather_list=full_samples,
+                    dst=0,
+                )
+
+                if RANK == 0:
+                    task_output.logged_samples = list(
+                        itertools.chain.from_iterable(full_samples)
+                    )
+
+            # then collect metrics across all ranks
+            for metrics in task_output.sample_metrics:
+                metric_list = [None] * WORLD_SIZE if RANK == 0 else None
+                torch.distributed.gather_object(
+                    obj=task_output.sample_metrics[metrics],
+                    object_gather_list=metric_list,
+                    dst=0,
+                )
+                if RANK == 0:
+                    task_output.sample_metrics[metrics] = list(
+                        itertools.chain.from_iterable(metric_list)
+                    )
+
+    if RANK == 0:
+        ### Aggregate results over all datapoints ###
+        # aggregate results ; run bootstrap CIs
+        for task_output in eval_tasks:
+            task_output.calculate_aggregate_metric(bootstrap_iters=bootstrap_iters)
+        if LM_EVAL_VERSION == Version('0.4.2'):
+            results, samples, configs, versions, num_fewshot = consolidate_results(
+                eval_tasks
+            )
+        else:
+            results, samples, configs, versions, num_fewshot, higher_is_better = consolidate_results(
+                eval_tasks
+            )
+
+        ### Calculate group metrics ###
+        if bool(results):
+            for group, task_list in reversed(task_hierarchy.items()):
+                if len(task_list) == 0:
+                    # task_hierarchy entries are either
+                    # `group_name: [subtask1, subtask2, ...]`
+                    # or `task_name: []`.
+                    # we only want to operate on groups here.
                     continue
-                new_key = new_key.split(",")[0]
-                new_dict[new_key] = data[sub_key][sub_sub_key]
-                new_key = new_key + "_norm"
-                new_dict[new_key] = data[sub_key][sub_sub_key]
+                metric_list = list(
+                    {
+                        key
+                        for task in task_list
+                        for key in results[task].keys()
+                        if "_stderr" not in key and key not in ["alias", "samples"]
+                    }
+                )
+                for metric in metric_list:
+                    stderr = "_stderr,".join(metric.split(","))
 
-    for key in results.keys():
-        if key == "model" or key == "paper-avg" or key == "leaderboard-avg":
-            continue
-        data = results[key]
-        if not isinstance(data, dict):
-            new_dict[key] = results[key]
-            continue
-        for sub_key in data.keys():
-            for sub_sub_key in data[sub_key].keys():
-                new_key = key + "_" + sub_sub_key
-                if "std" in new_key or "alias" in new_key:
-                    continue
-                new_key = new_key.split(",")[0]
-                new_dict[new_key] = data[sub_key][sub_sub_key]
-                    
+                    # gather metrics, sizes, and stderrs from subtasks
+                    metrics = [
+                        results[task][metric]
+                        for task in task_list
+                        if metric in results[task]
+                    ]  # TODO: copy?
+                    stderrs = [
+                        results[task][stderr]
+                        for task in task_list
+                        if stderr in results[task]
+                    ]
+                    sizes = [
+                        results[task]["samples"]
+                        for task in task_list
+                        if metric in results[task]
+                    ]
 
-    import pandas as pd
-    df = pd.DataFrame(data=new_dict, index=[0])
-    df.to_excel(excel_file)
+                    # compute group's pooled metric and stderr
+                    results[group][
+                        metric
+                    ] = lm_eval.api.metrics.aggregate_subtask_metrics(metrics, sizes)
+                    # TODO: calculate grouped metric using aggregation fn
+                    if "N/A" in stderrs:
+                        results[group][stderr] = "N/A"
+                    else:
+                        results[group][
+                            stderr
+                        ] = lm_eval.api.metrics.pooled_sample_stderr(stderrs, sizes)
+                        # TODO: allow GroupConfigs to choose which variance formula is used, for back-compatibility
+                        # To use the old (likely incorrect) variance formula, comment out the above and uncomment this line:
+                        # results[group][stderr] = lm_eval.api.metrics.combined_sample_stderr(stderrs, sizes, metrics=metrics)
+
+                    results[group]["samples"] = sum(sizes)
+
+        results_agg = defaultdict(dict)
+        groups_agg = defaultdict(dict)
+        all_tasks_list = list(task_hierarchy.keys())
+        while True:
+            add_tasks_list = list(k for k in results_agg.keys())
+            left_tasks_list = sorted(list(set(all_tasks_list) - set(add_tasks_list)))
+            if len(left_tasks_list) == 0:
+                break
+
+            _task_hierarchy = {
+                k: v for k, v in task_hierarchy.items() if k in left_tasks_list
+            }
+            _results_agg, _groups_agg = prepare_print_tasks(_task_hierarchy, results)
+
+            results_agg = {**results_agg, **_results_agg}
+            groups_agg = {**groups_agg, **_groups_agg}
+
+        for group_name, task_list in task_hierarchy.items():
+            if task_list:
+                num_fewshot[group_name] = num_fewshot[
+                    task_list[0]
+                ]  # TODO: validate this
+
+        results_dict = {
+            "results": dict(results_agg.items()),
+            **({"groups": dict(groups_agg.items())} if bool(groups_agg) else {}),
+            "group_subtasks": dict(reversed(task_hierarchy.items())),
+            "configs": dict(sorted(configs.items())),
+            "versions": dict(sorted(versions.items())),
+            "n-shot": dict(sorted(num_fewshot.items())),
+        }
+        if log_samples:
+            results_dict["samples"] = dict(samples)
+
+        return results_dict
+
+    else:
+        return None
 
 
 if __name__ == "__main__":
+
+    import sys
+
+    sys.path.insert(0, '../../')
     import time
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--model_name", default="/models/opt-125m/"
@@ -497,29 +589,55 @@ if __name__ == "__main__":
         "--eval_bs", default=1,
     )
     parser.add_argument(
-        "--tasks", default=['wikitext2', 'ptb-new', 'c4-new', 'lambada_openai', 'hellaswag', 'winogrande', 'piqa',
-                    "mmlu", "wikitext", "truthfulqa_mc1", "truthfulqa_mc2", "openbookqa", "boolq", "rte",
-                    "arc_easy", "arc_challenge"]
+        "--trust_remote_code", action='store_true',
+        help="Whether to enable trust_remote_code"
     )
     parser.add_argument(
-        "--excel_path", default=None,
-        help="The path to save eval results with excel format."
+        "--device", default="cuda:0",
+        help="PyTorch device (e.g. cpu/cuda:0/hpu) for evaluation."
+    )
+    parser.add_argument("--tasks",
+                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,truthfulqa_mc1," \
+                                "openbookqa,boolq,rte,arc_easy,arc_challenge",
+                        help="lm-eval tasks for lm_eval version 0.4.2")
+    
+    parser.add_argument("--parallelize", action='store_true',
+        help="Whether to enable parallelize."
     )
 
     args = parser.parse_args()
     s = time.time()
+    from transformers import AutoConfig
+
+    config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=args.trust_remote_code)
+
+    if hasattr(config, "quantization_config"):
+        quantization_config = config.quantization_config
+        if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
+            from auto_round.auto_quantizer import AutoHfQuantizer
+        elif "quant_method" in quantization_config and quantization_config["quant_method"] == "gptq":
+            if args.device == "hpu":
+                from auto_round.auto_quantizer import AutoHfQuantizer
 
     test_tasks = args.tasks
     if isinstance(test_tasks, str):
         test_tasks = test_tasks.split(',')
     model_name = args.model_name.rstrip('/')
-    if args.excel_path is None:
-        excel_name = model_name.split('/')[-1] + ".xlsx"
-    else:
-        excel_name = args.excel_path
-    eval_model(model_path=args.model_name,
-               tasks=test_tasks,
-               eval_bs=args.eval_bs, limit=None, excel_file=excel_name)
+    from lm_eval.utils import make_table
+
+    model_args = f"pretrained={args.model_name}"
+    model_args += ",dtype=float16"
+    if args.trust_remote_code:
+        model_args += f",trust_remote_code=True"
+    if args.parallelize:
+        model_args += f",parallelize=True"
+    result = simple_evaluate(model="hf",
+                             model_args=model_args,
+                             tasks=test_tasks,
+                             device=args.device,
+                             batch_size=args.eval_bs)
+    print(make_table(result))
 
     print("cost time: ", time.time() - s)
+
 
