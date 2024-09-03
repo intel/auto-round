@@ -266,13 +266,15 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
     return calib_dataset
 
 
+
+
 def get_dataloader(
         tokenizer, 
         seqlen, 
         dataset_name="NeelNanda/pile-10k", 
         seed=42, 
         bs=8, 
-        nsamples=512, 
+        nsamples=512,
 ):
     """Generate a DataLoader for calibration using specified parameters.
 
@@ -291,7 +293,8 @@ def get_dataloader(
     Returns:
         DataLoader: The DataLoader for the calibrated dataset.
     """
-
+    g_cpu = torch.Generator()
+    g_cpu.manual_seed(seed)
     dataset_names = dataset_name.split(",")
     def filter_func(example):
         if isinstance(example["input_ids"], list):
@@ -438,5 +441,21 @@ def get_dataloader(
         res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
         return res
 
-    calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
+
+    
+
+    def seed_worker(worker_id):
+        import numpy
+        worker_seed = torch.initial_seed() % 2**32
+        numpy.random.seed(worker_seed)
+        random.seed(worker_seed)
+    
+    # TODO(Yi) should initialize the cuda generator?
+    calib_dataloader = DataLoader(dataset_final,
+                                  batch_size=bs,
+                                  shuffle=False,
+                                  collate_fn=collate_batch,
+                                  worker_init_fn=seed_worker,
+                                  generator=g_cpu,
+                                  )
     return calib_dataloader

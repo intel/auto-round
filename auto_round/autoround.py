@@ -1154,6 +1154,7 @@ class AutoRound(object):
         # TODO: unable to support self.use_quant_input by now.
         # TODO: enable amp
         amp_dtype = next(block.parameters()).dtype
+        # self.scale_dtype = amp_dtype
         block = block.to(device)
         self.amp_dtype = amp_dtype
         self.device = device
@@ -1240,6 +1241,7 @@ class AutoRound(object):
                 orig_hidden_states = to_device(orig_hidden_states, device)
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
+                        # assert q_hidden_states.shape == orig_hidden_states.shape, f"QDQ: {q_hidden_states.shape} != Target: {orig_hidden_states.shape}"
                         loss = mse_loss(q_hidden_states, orig_hidden_states)  # pylint: disable=not-callable
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable
