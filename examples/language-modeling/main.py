@@ -82,9 +82,15 @@ if __name__ == '__main__':
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="enable_minmax_tuning is deprecated")
 
-    parser.add_argument("--format", default=None, type=str,
+    parser.add_argument("--deployment_device", default=None, type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
+
+    parser.add_argument("--format", default=None, type=str,
+                        help="The format in which to save the model. "
+                        "The options are 'auto_round', 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
+                        "default to 'auto_round."
+                        )
 
     parser.add_argument("--data_type", default='int',
                         help="data type for tuning, 'int', 'mx_fp' and etc.")
@@ -157,20 +163,24 @@ if __name__ == '__main__':
 
     tasks = args.tasks
     use_eval_legacy = False
-    if args.format is None:
-        args.format = "auto_round"
 
-    if "gpu" in args.format and args.sym is False:
+    if args.format and args.deployment_device:
+        assert False, "please only specify one of format and deployment_device"
+
+    if args.deployment_device is None:
+        args.deployment_device = "auto_round"
+
+    if "gpu" in args.deployment_device and args.sym is False:
         print(
             "warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use --format='auto_round'")
 
-    if "marlin" in args.format and args.sym is False:
+    if "marlin" in args.deployment_device and args.sym is False:
         assert False, "marlin backend only supports sym quantization, please set --sym"
 
-    if args.act_bits <= 8 and args.format != "fake":
+    if args.act_bits <= 8 and args.deployment_device != "fake":
         assert False, "only support fake mode for activation quantization currently"
 
-    if "mx_fp" in args.data_type and args.format != "fake":
+    if "mx_fp" in args.data_type and args.deployment_device != "fake":
         assert False, "only support fake mode for mx_fp data type currently"
 
     if "mx_fp" in args.data_type and args.group_size != 32:
@@ -335,20 +345,20 @@ if __name__ == '__main__':
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
-    autoround_format = args.format.split(',')
+    deployment_device = args.deployment_device.split(',')
     gpu_formats = []
-    for item in autoround_format:
+    for item in deployment_device:
         if "gpu" in item or "auto_gptq" in item or "auto_round" in item or "auto_awq" in item:
             gpu_formats.append(item)
 
-    if 'gpu' in autoround_format:
+    if 'gpu' in deployment_device:
         if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
             gpu_formats.append("auto_round")
         else:
             gpu_formats.append("auto_gptq")
     gpu_formats = list(set(gpu_formats))
 
-    inplace = True if len(autoround_format) < 2 else False
+    inplace = True if len(deployment_device) < 2 else False
     eval_folder = None
     for gpu_format in gpu_formats:
         if "round" in gpu_format:
@@ -361,11 +371,11 @@ if __name__ == '__main__':
             eval_folder = f'{export_dir}-awq'
             autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
 
-    if 'xpu' in autoround_format:
+    if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
-    if "cpu" in autoround_format:
+    if "cpu" in deployment_device:
         autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
-    if "fake" in autoround_format:
+    if "fake" in deployment_device:
         model = model.to("cpu")
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
@@ -412,7 +422,7 @@ if __name__ == '__main__':
         else:
             print(f"Using the latest {lm_eval_version}")
 
-    if not args.disable_eval and "fake" in format and lm_eval_version < Version("0.4.2"):
+    if not args.disable_eval and "fake" in deployment_device and lm_eval_version < Version("0.4.2"):
         excel_name = f"{output_dir}_result.xlsx"
         output_dir += "/"
         print(excel_name, flush=True)
@@ -424,9 +434,9 @@ if __name__ == '__main__':
     if not args.disable_eval and lm_eval_version >= Version("0.4.2"):
         from eval.evaluation import simple_evaluate
 
-        if 'gpu' in format or len(gpu_formats) > 0:
+        if 'gpu' in deployment_device or len(gpu_formats) > 0:
             model_args = f"pretrained={eval_folder}"
-        elif "fake" in format:
+        elif "fake" in deployment_device:
             model_args = f"pretrained={eval_folder}"
         else:
             exit()  ## does not support cpu,xpu model eval
