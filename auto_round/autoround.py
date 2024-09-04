@@ -250,7 +250,7 @@ class AutoRound(object):
 
         if "mx_fp" in self.data_type:
             logger.warning(
-                "please save the quantized model to fake format"
+                "please save the quantized model to fake format "
                 "as real deployment is not supported for mx_fp datatype currently")
 
         if "mx_fp" in self.data_type and self.group_size != 32:
