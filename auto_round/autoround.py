@@ -12,13 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import torch
+import transformers
+
+torch.use_deterministic_algorithms(True, warn_only=True)
 
 import copy
 import time
 from typing import Optional, Union
 
-import torch
-import transformers
 from transformers import set_seed
 from torch import autocast
 from tqdm import tqdm
@@ -240,6 +243,18 @@ class AutoRound(object):
         assert self.enable_full_range is False, "only support enable_full_range=False currently"
         assert self.act_dynamic is True, "only support dynamic quantization for activation currently"
         # assert self.tokenizer != None or self.dataloader != None
+        if self.act_bits <= 8:
+            logger.warning(
+                "please save the quantized model to fake format "
+                "as real deployment is not supported for activation quantization currently")
+
+        if "mx_fp" in self.data_type:
+            logger.warning(
+                "please save the quantized model to fake format"
+                "as real deployment is not supported for mx_fp datatype currently")
+
+        if "mx_fp" in self.data_type and self.group_size != 32:
+            logger.warning("mx_fp should only support group_size of 32 in real deployment")
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.

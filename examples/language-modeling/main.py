@@ -177,14 +177,6 @@ if __name__ == '__main__':
     if "marlin" in args.deployment_device and args.sym is False:
         assert False, "marlin backend only supports sym quantization, please set --sym"
 
-    if args.act_bits <= 8 and args.deployment_device != "fake":
-        assert False, "only support fake mode for activation quantization currently"
-
-    if "mx_fp" in args.data_type and args.deployment_device != "fake":
-        assert False, "only support fake mode for mx_fp data type currently"
-
-    if "mx_fp" in args.data_type and args.group_size != 32:
-        print("warning, mx_fp should only support group_size of 32 in real deployment")
 
     model_name = args.model_name
     if model_name[-1] == "/":
