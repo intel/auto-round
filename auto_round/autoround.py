@@ -16,8 +16,6 @@ import os
 import torch
 import transformers
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.use_deterministic_algorithms(True, warn_only=True)
 
 import copy
