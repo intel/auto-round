@@ -246,10 +246,14 @@ class AutoRound(object):
         assert self.act_dynamic is True, "only support dynamic quantization for activation currently"
         # assert self.tokenizer != None or self.dataloader != None
         if self.act_bits <= 8:
-            logger.warning("please save the quantized model to fake format as real deployment is not supported for activation quantization currently")
+            logger.warning(
+                "please save the quantized model to fake format "
+                "as real deployment is not supported for activation quantization currently")
 
         if "mx_fp" in self.data_type:
-            logger.warning("please save the quantized model to fake format as real deployment is not supported for mx_fp datatype currently")
+            logger.warning(
+                "please save the quantized model to fake format"
+                "as real deployment is not supported for mx_fp datatype currently")
 
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
