@@ -139,7 +139,7 @@ def autoround_post_init(model):
                 submodule.post_init()
 
     if model_uses_exllamav2:
-        from auto_round_extension.cuda.qliner_exllamav2 import ExLlamaV2DeviceTensors
+        from auto_round_extension.cuda.qlinear_exllamav2 import ExLlamaV2DeviceTensors
 
         device_tensors = {}
         for device, scratch_bytes in fixed_bytes.items():

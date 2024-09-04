@@ -8,3 +8,5 @@ triton
 numpy < 2.0
 threadpoolctl
 lm-eval==0.4.3
+intel-extension-for-transformers
+tqdm

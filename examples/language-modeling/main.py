@@ -136,7 +136,7 @@ if __name__ == '__main__':
     parser.add_argument("--act_bits", default=32, type=int,
                         help="activation bits")
     
-    parser.add_argument("--fp_layers_list", default="", type=str,
+    parser.add_argument("--fp_layers", default="", type=str,
                         help="List of Layers to maintain original data type")
 
     args = parser.parse_args()
@@ -276,12 +276,12 @@ if __name__ == '__main__':
                 layer_config[n] = {"bits": 32}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
-    fp_layers_list = args.fp_layers_list.split(",")
-    if bool(fp_layers_list):
+    fp_layers = args.fp_layers.split(",")
+    if bool(fp_layers):
         for n, m in model.named_modules():
             if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
                 name = n.split('.')[-1]
-                if n in fp_layers_list or name in fp_layers_list:
+                if n in fp_layers or name in fp_layers:
                     layer_config[n] = {"bits": 32}
                     print(
                         f"{n} will not be quantized.")
@@ -441,3 +441,4 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
+

@@ -6,6 +6,8 @@ This document presents step-by-step instructions for auto-round.
 
 In this example, we introduce an straight-forward way to execute quantization on some popular multimodal models such as LLaVA. 
 
+Please note that LLAVA quantization is currently an **experimental feature** and does not yet support inference on various devices after export.
+
 ## Install
 If you are not using Linux, do NOT proceed, see instructions for [macOS](https://github.com/haotian-liu/LLaVA/blob/main/docs/macOS.md) and [Windows](https://github.com/haotian-liu/LLaVA/blob/main/docs/Windows.md).
 
@@ -62,11 +64,11 @@ Include the flag `--adam`. Note that AdamW is less effective than sign gradient 
 
 - **Running on Intel Gaudi2**
 ```bash
-bash run_autoround_on_gaudi.sh
+bash run_autoround.sh
 ```
 
 ## 4. Results
-Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K) datasets for quantization calibration, and TextVQA dataset for evaluation. When the vision components are not involved in quantization, it is able to achieve accuracy loss within 1%. The results for LLava-7b are as follows:
+Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K) datasets for quantization calibration, and TextVQA dataset for evaluation. When the vision components are not involved in quantization, it is able to achieve accuracy loss within 1%. The results for fake quantized LLava-7b are as follows:
 | Model | Config | Precision | Hyperparameter | Accuracy% | Relative drop |
 |  :----: | :----: | :----: | :----: | :----: | :----: |
 | liuhaotian/llava-v1.5-7b | - | FP16 | - | 58.21 | - |
@@ -94,11 +96,5 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
-
-
-
-
-
-
 
 

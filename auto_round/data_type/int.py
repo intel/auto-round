@@ -35,32 +35,20 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
         Quantized and dequantized weight, scale, zero-point
     """
     maxq = torch.tensor(2 ** bits - 1)
-    if isinstance(min_scale, torch.Tensor):
-        if weight_min is None or weight_max is None:
-            wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
-            wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
-        else:
-            wmin_tmp = weight_min
-            wmax_tmp = weight_max
-        wmin_tmp = wmin_tmp * min_scale
-        wmax_tmp = wmax_tmp * max_scale
-        wmax = torch.maximum(wmax_tmp, wmin_tmp)
-        wmin = torch.minimum(wmax_tmp, wmin_tmp)
+    if weight_min is None or weight_max is None:
+        wmin_tmp = torch.clamp(weight.min(-1)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(-1)[0], min=0)
     else:
-        if weight_min is None or weight_max is None:
-            wmin = torch.clamp(weight.min(1)[0], max=0)
-            wmax = torch.clamp(weight.max(1)[0], min=0)
-        else:
-            wmin = weight_min
-            wmax = weight_max
-
-    tmp = (wmin == 0) & (wmax == 0)
-    wmin[tmp] = -1
-    wmax[tmp] = +1
+        wmin_tmp = weight_min
+        wmax_tmp = weight_max
+    if isinstance(min_scale, torch.Tensor):
+        wmin = wmin_tmp * min_scale
+        wmax = wmax_tmp * max_scale
+    else:
+        wmin = wmin_tmp
+        wmax = wmax_tmp
     scale = ((wmax - wmin) / maxq).to(scale_dtype)
     scale = torch.clamp(scale, min=q_scale_thresh)
-    if (scale == 0.).any():
-        scale = torch.clamp(scale, min=1e-5)
     zp = round_ste(-wmin / scale)  # pylint: disable=E1130
     scale = scale.unsqueeze(dim=-1)
     zp = zp.unsqueeze(dim=-1)
@@ -71,7 +59,7 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
 
 @register_dtype("int_sym")
 def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, weight_min=None,
-                     weight_max=None, q_scale_thresh=0.0, **kargs):
+                     weight_max=None, q_scale_thresh=0.0, **kwargs):
     """Quantizes and dequantizes weight symmetrically.
 
     Args:
@@ -87,24 +75,18 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
         Quantized and dequantized weight, scale, zero-point
     """
     maxq = torch.tensor(2 ** bits - 1)
-    if isinstance(min_scale, torch.Tensor):
-        if weight_min is None or weight_max is None:
-            wmin_tmp = torch.clamp(weight.min(1)[0], max=0)
-            wmax_tmp = torch.clamp(weight.max(1)[0], min=0)
-        else:
-            wmin_tmp = weight_min
-            wmax_tmp = weight_max
-        wmin_tmp = wmin_tmp * min_scale
-        wmax_tmp = wmax_tmp * max_scale
-        wmax = torch.maximum(wmax_tmp, wmin_tmp)
-        wmin = torch.minimum(wmax_tmp, wmin_tmp)
+    if weight_min is None or weight_max is None:
+        wmin_tmp = torch.clamp(weight.min(-1)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(-1)[0], min=0)
     else:
-        if weight_min is None or weight_max is None:
-            wmin = torch.clamp(weight.min(1)[0], max=0)
-            wmax = torch.clamp(weight.max(1)[0], min=0)
-        else:
-            wmin = weight_min
-            wmax = weight_max
+        wmin_tmp = weight_min
+        wmax_tmp = weight_max
+    if isinstance(min_scale, torch.Tensor):
+        wmin = wmin_tmp * min_scale
+        wmax = wmax_tmp * max_scale
+    else:
+        wmin = wmin_tmp
+        wmax = wmax_tmp
 
     wmax_new = torch.max(wmin.abs(), wmax)
     tmp = wmin < 0
@@ -112,13 +94,8 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
     if torch.any(tmp):
         wmin_new[tmp] = -wmax_new[tmp]
 
-    tmp = (wmin_new == 0) & (wmax_new == 0)
-    wmin_new[tmp] = -1
-    wmax_new[tmp] = +1
     scale = ((wmax_new - wmin_new) / maxq).to(scale_dtype)
     scale = torch.clamp(scale, min=q_scale_thresh)
-    if (scale == 0.).any():
-        scale = torch.clamp(scale, min=1e-5)
     scale = scale.unsqueeze(dim=-1)
     zp = torch.full_like(scale, (maxq + 1) / 2)
 
@@ -144,28 +121,19 @@ def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0
         Quantized and dequantized weight, scale, zero-point
     """
     maxq = torch.tensor(2 ** bits - 1)
-    if isinstance(min_scale, torch.Tensor):
-        if weight_min is None or weight_max is None:
-            wmin_tmp = torch.clamp(weight.min(-1)[0], max=0)
-            wmax_tmp = torch.clamp(weight.max(-1)[0], min=0)
-        else:
-            wmin_tmp = weight_min
-            wmax_tmp = weight_max
-        wmin_tmp = wmin_tmp * min_scale
-        wmax_tmp = wmax_tmp * max_scale
-        wmax = torch.maximum(wmax_tmp, wmin_tmp)
-        wmin = torch.minimum(wmax_tmp, wmin_tmp)
+    if weight_min is None or weight_max is None:
+        wmin_tmp = torch.clamp(weight.min(-1)[0], max=0)
+        wmax_tmp = torch.clamp(weight.max(-1)[0], min=0)
     else:
-        if weight_min is None or weight_max is None:
-            wmin = torch.clamp(weight.min(-1)[0], max=0)
-            wmax = torch.clamp(weight.max(-1)[0], min=0)
-        else:
-            wmin = weight_min
-            wmax = weight_max
+        wmin_tmp = weight_min
+        wmax_tmp = weight_max
+    if isinstance(min_scale, torch.Tensor):
+        wmin = wmin_tmp * min_scale
+        wmax = wmax_tmp * max_scale
+    else:
+        wmin = wmin_tmp
+        wmax = wmax_tmp
 
-    tmp = (wmin == 0) & (wmax == 0)
-    wmin[tmp] = -1
-    wmax[tmp] = +1
     scale = ((wmax - wmin) / maxq).to(scale_dtype)
     scale = torch.clamp(scale, min=q_scale_thresh)
     zp = -wmin / scale  # pylint: disable=E1130
@@ -174,4 +142,3 @@ def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0
     int_w = weight / scale + v
     q = torch.clamp(int_w + zp, 0, maxq)
     return scale * (q - zp), scale, zp
-

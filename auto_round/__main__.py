@@ -22,15 +22,21 @@ import transformers
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
+from lm_eval.utils import make_table  # pylint: disable=E0401
 
 from auto_round.utils import logger
+from auto_round import AutoRoundConfig
+from auto_round.eval.evaluation import simple_evaluate
 
 def setup_parser():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--model_name", default="facebook/opt-125m"
+        "--model", default="facebook/opt-125m"
     )
+
+    parser.add_argument('--eval', action='store_true', 
+                        help="whether to use eval mode.")
 
     parser.add_argument("--bits", default=4, type=int,
                         help="number of  bits")
@@ -41,7 +47,7 @@ def setup_parser():
     parser.add_argument("--batch_size", default=8, type=int,
                         help="train batch size")
 
-    parser.add_argument("--eval_bs", default=4, type=int,
+    parser.add_argument("--eval_bs", default=1, type=int,
                         help="eval batch size")
 
     parser.add_argument("--device", default="auto", type=str,
@@ -93,8 +99,8 @@ def setup_parser():
 
     parser.add_argument("--format", default=None, type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
-                             "default to 'fake', indicating that it only performs"
-                             " fake quantization and won't be exported to any device.")
+                            "default to 'fake', indicating that it only performs"
+                            " fake quantization and won't be exported to any device.")
 
     parser.add_argument("--data_type", default='int',
                         help="data type for tuning, 'int', 'mx_fp' and etc.")
@@ -134,11 +140,11 @@ def setup_parser():
     parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
                         help="Choose which low cpu memory mode to use. "
                         "Can significantly reduce cpu memory footprint but cost more time."
-                             "1 means choose block-wise mode, load the weights of each block"
-                             " from disk when tuning and release the memory of the block after tuning."
-                             "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
-                             " minimum memory consumption and also slowest running speed."
-                             "others means not use low cpu memory. Default to 0, not use low cpu memory.")
+                        "1 means choose block-wise mode, load the weights of each block"
+                        " from disk when tuning and release the memory of the block after tuning."
+                        "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
+                        " minimum memory consumption and also slowest running speed."
+                        "others means not use low cpu memory. Default to 0, not use low cpu memory.")
 
     parser.add_argument("--low_cpu_mem_tmp_dir", default=None, type=str,
                         help="temp work space to store the temporary files "
@@ -156,9 +162,7 @@ def setup_parser():
     args = parser.parse_args()
     return args
 
-def run():
-    args = setup_parser()
-
+def tune(args):
     if args.enable_minmax_tuning:
         print(
             "enable_minmax_tuning is deprecated, it has been set to the default,"
@@ -197,7 +201,7 @@ def run():
     if "mx_fp" in args.data_type and args.group_size != 32:
         print("warning, mx_fp should only support group_size of 32 in real deployment")
 
-    model_name = args.model_name
+    model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     print(model_name, flush=True)
@@ -331,19 +335,20 @@ def run():
             raise EnvironmentError(error_message)
 
     if args.quant_lm_head and args.low_gpu_mem_usage:
-        print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
-              f"gpu")
+        print(
+            f"warning, low_gpu_mem_usage=False is strongly recommended"
+            " if the whole model could be loaded to gpu")
 
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.batch_size,
-                      dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
-                      minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
-                      amp=not args.disable_amp, nsamples=args.nsamples,
-                      low_gpu_mem_usage=args.low_gpu_mem_usage,
-                      seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, layer_config=layer_config,
-                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
-                      low_cpu_mem_usage=low_cpu_mem_usage, 
-                      data_type=args.data_type, enable_norm_bias_tuning=args.enable_norm_bias_tuning)
+    autoround = round(
+        model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.batch_size,
+        dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
+        minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, 
+        device=device_str, amp=not args.disable_amp, nsamples=args.nsamples, seed=args.seed,
+        low_gpu_mem_usage=args.low_gpu_mem_usage, scale_dtype=args.scale_dtype, 
+        gradient_accumulate_steps=args.gradient_accumulate_steps, layer_config=layer_config, 
+        enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
+        low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
+        enable_norm_bias_tuning=args.enable_norm_bias_tuning)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
@@ -413,8 +418,6 @@ def run():
         print(f"Using the latest {lm_eval_version}")
 
     if not args.disable_eval:
-        from auto_round.eval.evaluation import simple_evaluate
-
         if 'gpu' in args.format or len(gpu_formats) > 0:
             model_args = f"pretrained={eval_folder}"
         elif "fake" in args.format:
@@ -426,12 +429,43 @@ def run():
         if args.act_bits <= 8:
             user_model = model.to(device_str)
 
-        res = simple_evaluate(model="hf", model_args=model_args,
-                              tasks=tasks,
-                              batch_size=args.eval_bs, user_model=user_model)
-        from lm_eval.utils import make_table  # pylint: disable=E0401
+        res = simple_evaluate(
+            model="hf",
+            model_args=model_args,
+            tasks=tasks,
+            batch_size=args.eval_bs,
+            user_model=user_model)
 
         print(make_table(res))
+
+
+def eval(args):
+    quantization_config = AutoRoundConfig(backend=args.device)
+    user_model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        device_map=args.device, quantization_config=quantization_config)
+    model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
+    if isinstance(args.tasks, str):
+        tasks = args.tasks.split(',')
+    res = simple_evaluate(
+        model="hf",
+        model_args=model_args,
+        user_model=user_model,
+        tasks=tasks,
+        device=args.device,
+        batch_size=args.eval_bs)
+
+    from lm_eval.utils import make_table  # pylint: disable=E0401
+
+    print(make_table(res))
+
+
+def run():
+    args = setup_parser()
+    if args.eval:
+        eval(args)
+    else:
+        tune(args)
 
 
 if __name__ == '__main__':
