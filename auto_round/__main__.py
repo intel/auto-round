@@ -98,9 +98,10 @@ def setup_parser():
                         help="enable_minmax_tuning is deprecated")
 
     parser.add_argument("--format", default=None, type=str,
-                        help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
-                            "default to 'fake', indicating that it only performs"
-                            " fake quantization and won't be exported to any device.")
+                        help="The format in which to save the model. "
+                        "The options are 'auto_round', 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
+                        "default to 'auto_round."
+                        )
 
     parser.add_argument("--data_type", default='int',
                         help="data type for tuning, 'int', 'mx_fp' and etc.")
@@ -183,23 +184,6 @@ def tune(args):
     use_eval_legacy = False
     if args.format is None:
         args.format = "auto_round"
-
-    if "gpu" in args.format and args.sym is False:
-        print(
-            "warning: The auto_gptq kernel has issues with asymmetric quantization."
-            " It is recommended to use --format='auto_round'")
-
-    if "marlin" in args.format and args.sym is False:
-        assert False, "marlin backend only supports sym quantization, please set --sym"
-
-    if args.act_bits <= 8 and args.format != "fake":
-        assert False, "only support fake mode for activation quantization currently"
-
-    if "mx_fp" in args.data_type and args.format != "fake":
-        assert False, "only support fake mode for mx_fp data type currently"
-
-    if "mx_fp" in args.data_type and args.group_size != 32:
-        print("warning, mx_fp should only support group_size of 32 in real deployment")
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -363,42 +347,13 @@ def tune(args):
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
-    args.format = args.format.split(',')
-    gpu_formats = []
-    for item in args.format:
-        if "gpu" in item or "auto_gptq" in item or "auto_round" in item or "auto_awq" in item:
-            gpu_formats.append(item)
-
-    if 'gpu' in args.format:
-        if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
-            gpu_formats.append("auto_round")
-        else:
-            gpu_formats.append("auto_gptq")
-    gpu_formats = list(set(gpu_formats))
-
-    inplace = True if len(args.format) < 2 else False
-    eval_folder = None
-    for gpu_format in gpu_formats:
-        if "round" in gpu_format:
-            eval_folder = f'{export_dir}-round'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-        elif "gptq" in gpu_format:
-            eval_folder = f'{export_dir}-gpu'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-        elif "auto_awq" in gpu_format:  # pragma: no cover
-            eval_folder = f'{export_dir}-awq'
-            autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
-
-    if 'xpu' in args.format:
-        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
-    if "cpu" in args.format:
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
-    if "fake" in args.format:
-        model = model.to("cpu")
-        model.save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
-        if eval_folder is None:
-            eval_folder = output_dir
+    eval_folder = f'{export_dir}-{args.format}'
+    if 'round' in args.format or 'gptq' in args.format:
+        autoround.save_quantized(eval_folder, format=args.format, use_triton=False, inplace=True)
+    elif 'auto_awq' in args.format:
+        autoround.save_quantized(eval_folder, format=args.format, inplace=True, model_path=model_name)
+    else:
+        autoround.save_quantized(eval_folder, format=args.format, inplace=True)
 
 
     def get_library_version(library_name):
@@ -414,16 +369,9 @@ def tune(args):
     if isinstance(tasks, str):
         tasks = tasks.split(',')
 
-    if 'fake' in args.format and not args.disable_eval:
-        print(f"Using the latest {lm_eval_version}")
-
     if not args.disable_eval:
-        if 'gpu' in args.format or len(gpu_formats) > 0:
-            model_args = f"pretrained={eval_folder}"
-        elif "fake" in args.format:
-            model_args = f"pretrained={eval_folder}"
-        else:
-            exit()  ## does not support cpu,xpu model eval
+        print(f"Using the latest {lm_eval_version}")
+        model_args = f"pretrained={eval_folder}"
         model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
         user_model = None
         if args.act_bits <= 8:

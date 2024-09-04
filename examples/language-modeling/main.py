@@ -167,15 +167,16 @@ if __name__ == '__main__':
     if args.format and args.deployment_device:
         assert False, "please only specify one of format and deployment_device"
 
-    if args.deployment_device is None:
-        args.deployment_device = "auto_round"
+    if args.deployment_device is None and args.format is None:
+        args.format == "auto_round"
 
-    if "gpu" in args.deployment_device and args.sym is False:
-        print(
-            "warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use --format='auto_round'")
+    if args.deployment_device:
+        if "gpu" in args.deployment_device and args.sym is False:
+            print(
+                "warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use --format='auto_round'")
 
-    if "marlin" in args.deployment_device and args.sym is False:
-        assert False, "marlin backend only supports sym quantization, please set --sym"
+        if "marlin" in args.deployment_device and args.sym is False:
+            assert False, "marlin backend only supports sym quantization, please set --sym"
 
 
     model_name = args.model_name
@@ -337,43 +338,54 @@ if __name__ == '__main__':
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
-    deployment_device = args.deployment_device.split(',')
-    gpu_formats = []
-    for item in deployment_device:
-        if "gpu" in item or "auto_gptq" in item or "auto_round" in item or "auto_awq" in item:
-            gpu_formats.append(item)
-
-    if 'gpu' in deployment_device:
-        if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
-            gpu_formats.append("auto_round")
-        else:
-            gpu_formats.append("auto_gptq")
-    gpu_formats = list(set(gpu_formats))
-
-    inplace = True if len(deployment_device) < 2 else False
     eval_folder = None
-    for gpu_format in gpu_formats:
-        if "round" in gpu_format:
-            eval_folder = f'{export_dir}-round'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-        elif "gptq" in gpu_format:
-            eval_folder = f'{export_dir}-gpu'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-        elif "auto_awq" in gpu_format:  # pragma: no cover
-            eval_folder = f'{export_dir}-awq'
-            autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
+    if args.format: 
+        eval_folder = f'{export_dir}-{args.format}'
+        if 'round' in args.format or 'gptq' in args.format:
+            autoround.save_quantized(eval_folder, format=args.format, use_triton=False, inplace=True)
+        elif 'auto_awq' in args.format:
+            autoround.save_quantized(eval_folder, format=args.format, inplace=True, model_path=model_name)
+        else:
+            autoround.save_quantized(eval_folder, format=args.format, inplace=True)
+    else:
+        deployment_device = args.deployment_device.split(',')
+        gpu_formats = []
+        for item in deployment_device:
+            if "gpu" in item or "auto_gptq" in item or "auto_round" in item or "auto_awq" in item:
+                gpu_formats.append(item)
 
-    if 'xpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
-    if "cpu" in deployment_device:
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
-    if "fake" in deployment_device:
-        model = model.to("cpu")
-        model.save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
-        if eval_folder is None:
-            eval_folder = output_dir
+        if 'gpu' in deployment_device:
+            if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
+                gpu_formats.append("auto_round")
+            else:
+                gpu_formats.append("auto_gptq")
+        gpu_formats = list(set(gpu_formats))
 
+        inplace = True if len(deployment_device) < 2 else False
+        for gpu_format in gpu_formats:
+            if "round" in gpu_format:
+                eval_folder = f'{export_dir}-round'
+                autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+            elif "gptq" in gpu_format:
+                eval_folder = f'{export_dir}-gpu'
+                autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+            elif "auto_awq" in gpu_format:  # pragma: no cover
+                eval_folder = f'{export_dir}-awq'
+                autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
+
+        if 'xpu' in deployment_device:
+            autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
+        if "cpu" in deployment_device:
+            autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
+        if "fake" in deployment_device:
+            model = model.to("cpu")
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
+            if eval_folder is None:
+                eval_folder = output_dir
+        if not ('gpu' in deployment_device or len(gpu_formats) > 0) or 'fake' not in deployment_device:
+            print('does not support cpu, xpu model evaluation.')
+            exit()  ## does not support cpu,xpu model eval
 
     def get_library_version(library_name):
         import pkg_resources
@@ -408,13 +420,18 @@ if __name__ == '__main__':
             tmp_tasks = tasks
             tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
 
-    if 'fake' in args.format and not args.disable_eval:
+    use_qdq = False
+    if args.deployment_device and 'fake' in args.deployment_device:
+        use_qdq = True
+    if args.format and ('fake' in args.format or 'qdq' in args.format):
+        use_qdq = True
+    if use_qdq and not args.disable_eval:
         if use_eval_legacy:
             print("Using the legacy lm_eval(0.3.0)")
         else:
             print(f"Using the latest {lm_eval_version}")
 
-    if not args.disable_eval and "fake" in deployment_device and lm_eval_version < Version("0.4.2"):
+    if not args.disable_eval and use_qdq and lm_eval_version < Version("0.4.2"):
         excel_name = f"{output_dir}_result.xlsx"
         output_dir += "/"
         print(excel_name, flush=True)
@@ -426,12 +443,7 @@ if __name__ == '__main__':
     if not args.disable_eval and lm_eval_version >= Version("0.4.2"):
         from eval.evaluation import simple_evaluate
 
-        if 'gpu' in deployment_device or len(gpu_formats) > 0:
-            model_args = f"pretrained={eval_folder}"
-        elif "fake" in deployment_device:
-            model_args = f"pretrained={eval_folder}"
-        else:
-            exit()  ## does not support cpu,xpu model eval
+        model_args = f"pretrained={eval_folder}"
         model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
         user_model = None
         if args.act_bits <= 8:
