@@ -48,6 +48,31 @@ pip install -vvv --no-build-isolation -e .
 pip install auto-round
 ```
 
+## Basic Usage
+A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.  Alternatively, you can use ```auto-round``` instead of ```auto_round```.
+
+### model quantization
+```bash
+auto_round --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 32 \
+    --batch_size 8 \
+    --iters 200 \
+    --sym \
+    --seqlen 2048 \
+    --format auto_round \
+    --output_dir ./tmp_autoround 
+```
+
+### evaluation
+```bash
+auto_round --model saved_quantized_model \
+    --eval \
+    --task lambada_openai \
+    --eval_bs 1
+```
+
+
 ## Model quantization
 
 ### Gaudi2/ CPU/ GPU
