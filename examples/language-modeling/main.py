@@ -340,13 +340,14 @@ if __name__ == '__main__':
 
     eval_folder = None
     if args.format: 
-        eval_folder = f'{export_dir}-{args.format}'
-        if 'round' in args.format or 'gptq' in args.format:
-            autoround.save_quantized(eval_folder, format=args.format, use_triton=False, inplace=True)
-        elif 'auto_awq' in args.format:
-            autoround.save_quantized(eval_folder, format=args.format, inplace=True, model_path=model_name)
-        else:
-            autoround.save_quantized(eval_folder, format=args.format, inplace=True)
+        format_list = args.format.replace(' ', '').split(',')
+        inplace = False if len(format_list) > 1 else True
+        for format_ in format_list:
+            eval_folder = f'{export_dir}-{format_}'
+            if 'auto_awq' in format_:
+                autoround.save_quantized(eval_folder, format=format_, inplace=inplace, model_path=model_name)
+            else:
+                autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
     else:
         deployment_device = args.deployment_device.split(',')
         gpu_formats = []

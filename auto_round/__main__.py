@@ -63,9 +63,6 @@ def setup_parser():
     parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
                         help="The dataset for quantization training. It can be a custom one.")
 
-    parser.add_argument("--enable_quanted_input", action='store_true',
-                        help="enable_quanted_input is deprecated.")
-
     parser.add_argument("--lr", default=None, type=float,
                         help="learning rate, if None, it will be set to 1.0/iters automatically")
 
@@ -74,9 +71,6 @@ def setup_parser():
 
     parser.add_argument("--seed", default=42, type=int,
                         help="seed")
-
-    parser.add_argument("--amp", action='store_true',
-                        help="amp is deprecated ")
 
     parser.add_argument("--adam", action='store_true',
                         help="adam")
@@ -93,9 +87,6 @@ def setup_parser():
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
                         help="lower gpu memory but 50%-100% slower")
-
-    parser.add_argument("--enable_minmax_tuning", action='store_true',
-                        help="enable_minmax_tuning is deprecated")
 
     parser.add_argument("--format", default=None, type=str,
                         help="The format in which to save the model. "
@@ -164,22 +155,6 @@ def setup_parser():
     return args
 
 def tune(args):
-    if args.enable_minmax_tuning:
-        print(
-            "enable_minmax_tuning is deprecated, it has been set to the default,"
-            " use disable_minmax_tuning to turn it off")
-    if args.amp:
-        print(
-            "amp is deprecated, it has been set to the default, use disable_amp to turn it off")
-    if args.enable_quanted_input:
-        print(
-            "enable_quanted_input is deprecated. It has been set to the default;"
-            " use disable_quanted_input to turn it off")
-
-    if args.act_bits <= 8:
-        print(
-            "Warning, activation quantization is an experiment feature")
-    
     tasks = args.tasks
     use_eval_legacy = False
     if args.format is None:
@@ -347,13 +322,15 @@ def tune(args):
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
-    eval_folder = f'{export_dir}-{args.format}'
-    if 'round' in args.format or 'gptq' in args.format:
-        autoround.save_quantized(eval_folder, format=args.format, use_triton=False, inplace=True)
-    elif 'auto_awq' in args.format:
-        autoround.save_quantized(eval_folder, format=args.format, inplace=True, model_path=model_name)
-    else:
-        autoround.save_quantized(eval_folder, format=args.format, inplace=True)
+
+    format_list = args.format.replace(' ', '').split(',')
+    inplace = False if len(format_list) > 1 else True
+    for format_ in format_list:
+        eval_folder = f'{export_dir}-{format_}'
+        if 'auto_awq' in format_:
+            autoround.save_quantized(eval_folder, format=format_, inplace=inplace, model_path=model_name)
+        else:
+            autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
 
 
     def get_library_version(library_name):

@@ -343,7 +343,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--model_name", default="/models/opt-125m/"
+        "--model_name", default="facebook/opt-125m"
     )
     parser.add_argument(
         "--eval_bs", default=1,
@@ -360,7 +360,7 @@ if __name__ == "__main__":
     test_tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
     model_name = args.model_name.rstrip('/')
     excel_name = model_name.split('/')[-1] + ".xlsx"
-    eval_model(model_path=args.model_name,
+    eval_model_legacy(model_path=args.model_name,
                tasks=test_tasks,
                eval_bs=args.eval_bs, limit=None, excel_file=excel_name)
 

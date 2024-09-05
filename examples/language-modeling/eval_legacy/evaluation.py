@@ -491,7 +491,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--model_name", default="/models/opt-125m/"
+        "--model_name", default="facebook/opt-125m"
     )
     parser.add_argument(
         "--eval_bs", default=1,
