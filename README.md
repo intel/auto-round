@@ -67,9 +67,10 @@ auto_round --model facebook/opt-125m \
 We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
 
 <details>
-  <summary>best accuracy</summary>
+  <summary>Recommended Configuration</summary>
 
   ```bash
+## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
   auto_round --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
@@ -77,12 +78,9 @@ We provide two recipes for best accuracy and fast running speed with low memory.
     --iters 1000 \
     --low_gpu_mem_usage 
   ```
-</details>
-
-<details>
-  <summary>lightest</summary>
 
   ```bash
+## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
   auto_round --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
@@ -93,17 +91,7 @@ We provide two recipes for best accuracy and fast running speed with low memory.
   ```
 
 </details>
-<br>
-<details>
-  <summary>evaluation</summary>
 
-```bash
-auto_round --model saved_quantized_model \
-    --eval \
-    --task lambada_openai \
-    --eval_bs 1
-```
-</details>
 
 <br>
 <details>
@@ -225,7 +213,18 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
+<br>
+<details>
+  <summary>Evaluation</summary>
 
+```bash
+## version > 0.3.0
+auto_round --model saved_quantized_model \
+    --eval \
+    --task lambada_openai \
+    --eval_bs 1
+```
+</details>
 
 ### AutoRound format
 
