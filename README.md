@@ -50,8 +50,8 @@ pip install auto-round
 
 
 
-## model quantization
-
+## Model Quantization
+### Basic Usage
 AutoRound support Gaudi2, CPU and GPU. A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.  Alternatively, you can use ```auto-round``` instead of ```auto_round```. (**auto-round version > 0.3.0**)
 
 
@@ -185,7 +185,8 @@ Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 within the community. Asymmetric quantization typically improves accuracy but may reduce inference speed. It features
 specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization. Currently, please manually install autoawq via `pip install autoawq` before exporting.
 
-## Model inference
+## Model Inference
+
 
 Please run the quantization code first
 
