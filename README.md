@@ -135,6 +135,9 @@ output_dir = "./tmp_autoround"
 ## format= 'auto_round'(default in version>0.3.0), 'auto_gptq'(default in version<=0.3.0), 'auto_awq'
 autoround.save_quantized(output_dir, format='auto_round', inplace=True) 
 ```
+</details>
+
+<br>
 
 <details>
   <summary>Detailed Hyperparameters</summary>
@@ -222,7 +225,6 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
-</details>
 
 
 ### AutoRound format
