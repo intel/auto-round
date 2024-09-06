@@ -143,7 +143,7 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 <br>
 We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
 <details>
-  <summary>Other Recommended Configurations</summary>
+  <summary>Other Recipes</summary>
 
   ```bash
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
