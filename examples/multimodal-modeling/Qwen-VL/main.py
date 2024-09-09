@@ -22,8 +22,9 @@ DEFAULT_IM_END_TOKEN = '</img>'
 from transformers.trainer_pt_utils import LabelSmoother
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 import inspect
+from PIL import Image
 
-def DataFormating(raw_data, image_folder):
+def DataFormating(raw_data, image_folder=None, model_type='qwen'):
     for source in raw_data:
         source_inputs = source['conversations']
         for sentence in source_inputs:
@@ -31,12 +32,53 @@ def DataFormating(raw_data, image_folder):
             sentence['from'] = sentence['from'].replace('gpt', 'assistant')
             if OLD_IMAGE_TOKEN in sentence['value']:
                 sentence['value'] = sentence['value'].replace(OLD_IMAGE_TOKEN, '').strip()
-                sentence['value'] = OLD_IMAGE_TOKEN + '\n' + sentence['value']
+                sentence['value'] = OLD_IMAGE_TOKEN + sentence['value']
                 sentence['value'] = sentence['value'].strip()
-                replace_img = os.path.join(image_folder, os.path.basename(source["image"]))
-                replace_token = DEFAULT_IM_START_TOKEN + replace_img + DEFAULT_IM_END_TOKEN
+                if 'qwen2' in model_type: # for Qwen2-vl
+                    replace_token = '<|vision_start|><|image_pad|><|vision_end|>'
+                else:
+                    replace_img = os.path.join(image_folder, os.path.basename(source["image"]))
+                    replace_token = DEFAULT_IM_START_TOKEN + replace_img + DEFAULT_IM_END_TOKEN + '\n'
                 sentence["value"] = sentence["value"].replace(OLD_IMAGE_TOKEN, replace_token)
     return raw_data
+
+
+def qwen2_preprocess(
+    sources,
+    tokenizer: transformers.PreTrainedTokenizer,
+    max_len: int,
+    system_message: str = "You are a helpful assistant."
+) -> Dict:
+    roles = {"user": "<|im_start|>user", "assistant": "<|im_start|>assistant"}
+    im_start = "<|im_start|>"
+    im_end = "<|im_end|>"
+    nl_tokens = '\n'
+    _system = 'system' + nl_tokens
+
+    # Apply prompt templates
+    inputs, targets = [], []
+    for i, source in enumerate(sources):
+        if roles[source[0]["from"]] != roles["user"]:
+            source = source[1:]
+
+        text, target = "", None
+        system = im_start + _system + system_message + im_end + nl_tokens
+        text += system
+        for j, sentence in enumerate(source):
+            role = roles[sentence["from"]]
+            _text = role + nl_tokens + \
+                sentence["value"] + im_end + nl_tokens
+            text += _text
+        token_length = len(tokenizer(text).input_ids)
+        if token_length < max_len:
+            text += tokenizer.pad_token * (max_len - token_length)
+        else:
+            text = tokenizer.decode(tokenizer(text).input_ids[:max_len])
+            pass
+        inputs.append(text)
+
+    return inputs
+
 
 def preprocess(
     sources,
@@ -45,9 +87,12 @@ def preprocess(
     system_message: str = "You are a helpful assistant."
 ) -> Dict:
     roles = {"user": "<|im_start|>user", "assistant": "<|im_start|>assistant"}
-
-    im_start = tokenizer.im_start_id
-    im_end = tokenizer.im_end_id
+    if 'qwen2' not in model_type:
+        im_start = tokenizer.im_start_id
+        im_end = tokenizer.im_end_id
+    else:
+        im_start = tokenizer('<|im_start|>')
+        im_end = tokenizer('<|im_end|>')
     nl_tokens = tokenizer('\n').input_ids
     _system = tokenizer('system').input_ids + nl_tokens
     _user = tokenizer('user').input_ids + nl_tokens
@@ -82,51 +127,25 @@ def preprocess(
         target += [IGNORE_TOKEN_ID] * (max_len - len(target))
         input_ids.append(input_id[:max_len])
         targets.append(target[:max_len])
-        if i >= 512:
-            break
     input_ids = torch.tensor(input_ids, dtype=torch.int)
     targets = torch.tensor(targets, dtype=torch.int)
-
+    
     return dict(
         input_ids=input_ids,
         labels=targets,
         attention_mask=input_ids.ne(tokenizer.pad_token_id),
     )
-        
-class SupervisedDataset(Dataset):
-    """Dataset for supervised fine-tuning."""
 
-    def __init__(self, raw_data, tokenizer: transformers.PreTrainedTokenizer, max_len: int):
-        super(SupervisedDataset, self).__init__()
-
-        print("Formatting inputs...")
-        sources = [example["conversations"] for example in raw_data]
-        data_dict = preprocess(sources, tokenizer, max_len)
-
-        self.input_ids = data_dict["input_ids"]
-        self.labels = data_dict["labels"]
-        self.attention_mask = data_dict["attention_mask"]
-
-    def __len__(self):
-        return len(self.input_ids)
-
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
-        return dict(
-            input_ids=self.input_ids[i],
-            labels=self.labels[i],
-            attention_mask=self.attention_mask[i],
-        )
-        
 class LazySupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
-    def __init__(self, raw_data, tokenizer: transformers.PreTrainedTokenizer, max_len: int):
+    def __init__(self, raw_data, tokenizer: transformers.PreTrainedTokenizer,
+                 max_len: int, image_folder=None, model_type='qwen_vl'):
         super(LazySupervisedDataset, self).__init__()
         self.tokenizer = tokenizer
         self.max_len = max_len
-
+        self.image_folder = image_folder
         print("Formatting inputs...Skip in lazy mode")
-        self.tokenizer = tokenizer
         self.raw_data = raw_data
         self.cached_data_dict = {}
 
@@ -137,12 +156,31 @@ class LazySupervisedDataset(Dataset):
         if i in self.cached_data_dict:
             return self.cached_data_dict[i]
 
-        ret = preprocess([self.raw_data[i]["conversations"]], self.tokenizer, self.max_len)
-        ret = dict(
-            input_ids=ret["input_ids"][0],
-            labels=ret["labels"][0],
-            attention_mask=ret["attention_mask"][0],
-        )
+        if 'qwen2' not in model_type:
+            ret = preprocess([self.raw_data[i]["conversations"]], self.tokenizer, self.max_len)
+            ret = dict(
+                input_ids=ret["input_ids"][0],
+                labels=ret["labels"][0],
+                attention_mask=ret["attention_mask"][0],
+            )
+        else:
+            texts = qwen2_preprocess([self.raw_data[i]["conversations"]], self.tokenizer, self.max_len)
+            image_path = os.path.join(f"file://{self.image_folder}", os.path.basename(self.raw_data[i]["image"]))
+            image_inputs = fetch_image({'image':image_path})
+            ret = self.tokenizer.processor(
+                text=texts,
+                images=image_inputs,
+                videos=None,
+                padding=True,
+                return_tensors="pt",
+            )
+            ret = dict(
+                input_ids=ret["input_ids"][0],
+                # labels=ret["labels"][0],
+                attention_mask=ret["attention_mask"][0],
+                image_grid_thw=ret["image_grid_thw"][0],
+                pixel_values=ret["pixel_values"],
+            )
         self.cached_data_dict[i] = ret
 
         return ret
@@ -160,7 +198,7 @@ def set_signature_columns_if_needed(model):
     # Labels may be named label or label_ids, the default data collator handles that.
     signature_columns += list(set(["label", "label_ids", 'labels']))
     return signature_columns
-        
+    
 def get_collator_with_removed_columns(model, data_collator: Callable, description: Optional[str] = None
     ) -> Callable:
         """Wrap the data collator in a callable removing unused columns."""
@@ -174,7 +212,8 @@ def get_collator_with_removed_columns(model, data_collator: Callable, descriptio
         )
         return remove_columns_collator
     
-def get_train_dataloader(train_dataset, model, data_collator, train_batch_size=1, num_workers=0) -> DataLoader:
+def get_train_dataloader(train_dataset, model, data_collator=default_data_collator,
+                         train_batch_size=1, num_workers=0) -> DataLoader:
     """
     Returns the training [`~torch.utils.data.DataLoader`].
 
@@ -186,7 +225,8 @@ def get_train_dataloader(train_dataset, model, data_collator, train_batch_size=1
     if train_dataset is None:
         raise ValueError("Trainer: training requires a train_dataset.")
     
-    data_collator = get_collator_with_removed_columns(model, data_collator, description="training")
+    if data_collator != default_data_collator:
+        data_collator = get_collator_with_removed_columns(model, data_collator, description="training")
 
     dataloader_params = {
         "batch_size": train_batch_size,
@@ -240,7 +280,7 @@ if __name__ == '__main__':
     parser.add_argument("--seqlen", default=512, type=int,
                         help="sequence length")
 
-    parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
+    parser.add_argument("--gradient_accumulate_steps", default=8, type=int, help="gradient accumulate steps")
 
     parser.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
 
@@ -331,10 +371,8 @@ if __name__ == '__main__':
     
     torch.manual_seed(1234)
     model_name = args.model_name
-    questions = json.load(open(args.question_file, "r"))
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code,
                                               padding_side="right", use_fast=False)
-    tokenizer.pad_token_id = tokenizer.eod_id
     seqlen = args.seqlen
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
@@ -343,28 +381,40 @@ if __name__ == '__main__':
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
             
-    config = transformers.AutoConfig.from_pretrained(
-        model_name,
-        trust_remote_code=True,
-    )
-    config.use_cache = False
+    torch_dtype = "auto"
     if args.model_dtype != None:
         if args.model_dtype == "float16" or args.model_dtype == "fp16":
             torch_dtype = torch.float16
         if args.model_dtype == "bfloat16" or args.model_dtype == "bf16":
             torch_dtype = torch.bfloat16
+            
     dtype_str = convert_dtype_torch2str(torch_dtype)
-    if dtype_str == "bf16":
-        model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, trust_remote_code=not args.disable_trust_remote_code, bf16=True).eval()
-    elif dtype_str == "fp16":
-        model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, trust_remote_code=not args.disable_trust_remote_code, fp16=True).eval()
-    else:
-        model = AutoModelForCausalLM.from_pretrained(args.model_name, config=config, trust_remote_code=not args.disable_trust_remote_code).eval()
-    raw_data = DataFormating(questions, args.image_folder)
-    # dataset = SupervisedDataset(raw_data, tokenizer, max_len=tokenizer.model_max_length)
-    dataset = LazySupervisedDataset(raw_data, tokenizer, max_len=min(args.seqlen, tokenizer.model_max_length))
-    default_collator = default_data_collator if tokenizer is None else DataCollatorWithPadding(tokenizer)
-    dataloader = get_train_dataloader(dataset, model, default_collator, train_batch_size=args.train_bs)
+    questions = json.load(open(args.question_file, "r"))
+    config = transformers.AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+    model_type = config.model_type
+    if 'qwen2' not in model_type: # for Qwen-VL/Qwen-VL-Chat
+        tokenizer.pad_token_id = tokenizer.eod_id
+        config.use_cache = False
+        if dtype_str == "bf16":
+            model = AutoModelForCausalLM.from_pretrained(args.model_name, trust_remote_code=not args.disable_trust_remote_code, bf16=True).eval()
+        elif dtype_str == "fp16":
+            model = AutoModelForCausalLM.from_pretrained(args.model_name, trust_remote_code=not args.disable_trust_remote_code, fp16=True).eval()
+        else:
+            model = AutoModelForCausalLM.from_pretrained(args.model_name, trust_remote_code=not args.disable_trust_remote_code).eval()
+        raw_data = DataFormating(questions, args.image_folder)
+        default_collator = default_data_collator if tokenizer is None else DataCollatorWithPadding(tokenizer)
+    else: # for Qwen2-VL-instruct
+        from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+        from qwen_vl_utils import process_vision_info, fetch_image
+        model = Qwen2VLForConditionalGeneration.from_pretrained(args.model_name, torch_dtype=torch_dtype)
+        processor = AutoProcessor.from_pretrained(args.model_name)
+        tokenizer.processor = processor
+        default_collator = default_data_collator
+        
+    raw_data = DataFormating(questions, args.image_folder, model_type=model_type)
+    dataset = LazySupervisedDataset(raw_data, tokenizer,
+                                    max_len=min(args.seqlen, tokenizer.model_max_length), image_folder=args.image_folder)
+    dataloader = get_train_dataloader(dataset, model, data_collator=default_collator, train_batch_size=args.train_bs)
     
     from auto_round import (AutoRound,
                             AutoAdamRound)

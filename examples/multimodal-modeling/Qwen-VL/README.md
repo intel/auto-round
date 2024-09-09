@@ -4,7 +4,7 @@ Step-by-Step
 This document presents step-by-step instructions for auto-round.
 # Run Quantization on Qwen-VL Models
 
-In this example, we introduce an straight-forward way to execute quantization on some popular multimodal models such as Qwen-VL. 
+In this example, we introduce an straight-forward way to execute quantization on some popular multimodal models such as Qwen-VL and Qwen2-VL-Instruct. 
 
 ## Download the calibration data
 
@@ -179,6 +179,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
