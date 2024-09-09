@@ -129,8 +129,8 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 </details>
 
-### Basic Usage
-AutoRound support Gaudi2, CPU and GPU. A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.  Alternatively, you can use ```auto-round``` instead of ```auto_round```. (**auto-round version > 0.3.0**)
+### Basic Usage (auto-round version > 0.3.0)
+AutoRound support Gaudi2, CPU and GPU. A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.  Alternatively, you can use ```auto-round``` instead of ```auto_round```. 
 
 
 ```bash
