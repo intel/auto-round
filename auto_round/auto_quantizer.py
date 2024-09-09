@@ -456,7 +456,8 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if model.__class__.main_input_name != "input_ids":
-            logger.warning("We can only quantize pure text models and certain types(Llava/Qwen-VL/Phi-3-vision) of multimodal models.")
+            logger.warning("We can only quantize pure text models and " \
+                            "certain types(Llava/Qwen-VL/Phi-3-vision) of multimodal models.")
 
         if self.pre_quantized:
             model = self.convert_model(model)
