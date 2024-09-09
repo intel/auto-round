@@ -48,9 +48,10 @@ pip install -vvv --no-build-isolation -e .
 pip install auto-round
 ```
 
-## Model quantization
 
-### Gaudi2/ CPU/ GPU
+
+## Model Quantization
+### API Usage
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -75,6 +76,44 @@ output_dir = "./tmp_autoround"
 ## format= 'auto_round'(default in version>0.3.0), 'auto_gptq'(default in version<=0.3.0), 'auto_awq'
 autoround.save_quantized(output_dir, format='auto_round', inplace=True) 
 ```
+
+### Basic Usage
+AutoRound support Gaudi2, CPU and GPU. A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.  Alternatively, you can use ```auto-round``` instead of ```auto_round```. (**auto-round version > 0.3.0**)
+
+
+```bash
+auto_round --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --format auto_round \
+    --output_dir ./tmp_autoround
+```
+We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
+<details>
+  <summary>Other Recipes</summary>
+
+  ```bash
+## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+  auto_round --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --nsamples 512 \
+    --iters 1000 \
+    --low_gpu_mem_usage 
+  ```
+
+  ```bash
+## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
+  auto_round --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --nsamples 128 \
+    --iters 200 \
+    --seqlen 512 \
+    --batch_size 4 
+  ```
+</details>
+<br>
 
 <details>
   <summary>Detailed Hyperparameters</summary>
@@ -127,6 +166,9 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 - `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.
 
 </details>
+<br>
+
+
 
 #### Formats
 
@@ -137,33 +179,44 @@ install from the source.
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
 community. It also benefits from the Marlin kernel, which can boost inference performance notably. However, the
-asymmetric kernel has issues that can cause considerable accuracy drops, particularly at 2-bit quantization.
+asymmetric kernel has issues that can cause considerable accuracy drops, particularly at 2-bit quantization and small models.
 Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
 **AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
 within the community. Asymmetric quantization typically improves accuracy but may reduce inference speed. It features
-specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization and is not
-compatible with some models, such as Phi.
+specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization. Currently, please manually install autoawq via `pip install autoawq` before exporting.
 
-## Model inference
+## Model Inference
+
 
 Please run the quantization code first
 
 ### AutoGPTQ/AutoAWQ format
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-Refer to their repositories to inference the model.
+quantized_model_path = "./tmp_autoround"
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+                                             device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+```
+
 
 ### AutoRound format
 
-**cuda**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation
--e .
+**CPU**: no extra operations
 
-**cpu**: no extra operations
-
-**hpu**: docker image with Gaudi Software Stack is recommended. More details can be found
+**HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
-#### Gaudi2/ CPU/ GPU on 0.3.0+
+**CUDA**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation
+-e .
+
+
+#### CPU/HPU/CUDA on 0.3.0+
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -182,7 +235,7 @@ inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
-#### Gaudi2/ CPU/ GPU on 0.3.0
+#### CPU/HPU/CUDA on 0.3.0
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -196,6 +249,19 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
+<br>
+<details>
+  <summary>Evaluation</summary>
+
+```bash
+## version > 0.3.0
+auto_round --model saved_quantized_model \
+    --eval \
+    --task lambada_openai \
+    --eval_bs 1
+```
+</details>
+
 
 ## Support List
 

@@ -12,16 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import torch
+import transformers
+
+torch.use_deterministic_algorithms(True, warn_only=True)
 
 import copy
 import time
 from typing import Optional, Union
 
-import torch
-import transformers
 from transformers import set_seed
 from torch import autocast
-
+from tqdm import tqdm
 from .calib_dataset import get_dataloader
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
     WrapperTransformerConv1d
@@ -240,6 +243,18 @@ class AutoRound(object):
         assert self.enable_full_range is False, "only support enable_full_range=False currently"
         assert self.act_dynamic is True, "only support dynamic quantization for activation currently"
         # assert self.tokenizer != None or self.dataloader != None
+        if self.act_bits <= 8:
+            logger.warning(
+                "please save the quantized model to fake format "
+                "as real deployment is not supported for activation quantization currently")
+
+        if "mx_fp" in self.data_type:
+            logger.warning(
+                "please save the quantized model to fake format "
+                "as real deployment is not supported for mx_fp datatype currently")
+
+        if "mx_fp" in self.data_type and self.group_size != 32:
+            logger.warning("mx_fp should only support group_size of 32 in real deployment")
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
@@ -972,7 +987,7 @@ class AutoRound(object):
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
-        logger.info(dump_info)
+        logger.debug(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
@@ -1041,15 +1056,15 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     input_others[key][i].to(tmp_dtype)
-
-        for i in range(0, len(block_names), nblocks):
+        pbar = tqdm(range(0, len(block_names), nblocks))
+        for i in pbar:
             if nblocks == 1:
                 n = block_names[i]
-                logger.info(f"quantizing {i + 1}/{len(block_names)}, {n}")
+                pbar.set_description(f"Quantizing {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i: i + nblocks]
-                logger.info(names)
+                pbar.set_description(f"Quantizing [{i + 1}-{i + nblocks}]/{len(block_names)}")
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
@@ -1545,4 +1560,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-

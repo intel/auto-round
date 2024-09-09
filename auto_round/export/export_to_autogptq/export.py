@@ -48,7 +48,8 @@ import transformers
 from auto_round.export.register import register_format
 import threadpoolctl as tctl
 import inspect
-
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
 
 def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     """
@@ -99,6 +100,58 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     return QuantLinear
 
 
+def pack_layer(name, model, layer_config, backend, pbar):
+    with tctl.threadpool_limits(limits=1):
+        pbar.set_description(f"packing {name}")
+        if name == "lm_head":  ##dese not support lm-head
+            pbar.update(1)
+            return
+        config = layer_config[name]
+        if config["bits"] > 8:
+            pbar.update(1)
+            return
+        bits = config["bits"]
+        group_size = config["group_size"]
+        sym = config["sym"]
+
+        layer = get_module(model, name)
+        device = layer.weight.device
+
+        QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
+
+        if isinstance(layer, nn.Linear):
+            in_features = layer.in_features
+            out_features = layer.out_features
+        elif isinstance(layer, nn.Conv2d):
+            in_features = layer.in_channels
+            out_features = layer.out_channels
+        elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+            in_features = layer.weight.shape[0]
+            out_features = layer.weight.shape[1]
+
+        ##bias = layer.bias is not None and torch.any(layer.bias)
+        bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
+        new_layer = QuantLinear(  ##pylint: disable=E1123
+            bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
+        )
+
+        new_layer.device = device
+        set_module(model, name, new_layer)
+        qlayer = new_layer
+        scale = layer_config[name]["scale"]
+        zero = layer_config[name]["zp"]
+        # so far can only pack layer on CPU
+        qlayer.to("cpu")
+        ##force to float32 to be compatible with torch 2.0
+        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
+        sig = inspect.signature(qlayer.pack)
+        param_count = len(sig.parameters)
+        if param_count == 2:
+            qlayer.pack(layer, scale)
+        else:
+            qlayer.pack(layer, scale, zero, None)
+        qlayer.to(device)
+        pbar.update(1)
 @register_format("auto_gptq")
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
                                **kwargs):
@@ -141,57 +194,14 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         model = copy.deepcopy(model.to("cpu"))
 
     layer_config = kwargs["layer_config"]
+    names = list(layer_config.keys())
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        with tqdm(total=len(names), leave=True) as pbar:
+            def wrapper(name):
+                pack_layer(name, model, layer_config, backend, pbar)
 
-    with tctl.threadpool_limits(limits=1):
-        for name in layer_config.keys():
-            if name == "lm_head":  ##dese not support lm-head
-                continue
-            config = kwargs["layer_config"][name]
-            if config["bits"] > 8:
-                continue
-            logger.info(f"packing {name}")
-
-            bits = config["bits"]
-            group_size = config["group_size"]
-            sym = config["sym"]
-
-            layer = get_module(model, name)
-            device = layer.weight.device
-
-            QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
-
-            if isinstance(layer, nn.Linear):
-                in_features = layer.in_features
-                out_features = layer.out_features
-            elif isinstance(layer, nn.Conv2d):
-                in_features = layer.in_channels
-                out_features = layer.out_channels
-            elif isinstance(layer, transformers.pytorch_utils.Conv1D):
-                in_features = layer.weight.shape[0]
-                out_features = layer.weight.shape[1]
-
-            ##bias = layer.bias is not None and torch.any(layer.bias)
-            bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
-            new_layer = QuantLinear(  ##pylint: disable=E1123
-                bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
-            )
-
-            new_layer.device = device
-            set_module(model, name, new_layer)
-            qlayer = new_layer
-            scale = layer_config[name]["scale"]
-            zero = layer_config[name]["zp"]
-            # so far can only pack layer on CPU
-            qlayer.to("cpu")
-            ##force to float32 to be compatible with torch 2.0
-            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
-            sig = inspect.signature(qlayer.pack)
-            param_count = len(sig.parameters)
-            if param_count == 2:
-                qlayer.pack(layer, scale)
-            else:
-                qlayer.pack(layer, scale, zero, None)
-            qlayer.to(device)
+            for _ in executor.map(wrapper, names):
+                pass
     if output_dir is None:
         return model
     quantization_config = kwargs["serialization_dict"]
