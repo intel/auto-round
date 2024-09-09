@@ -24,9 +24,9 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 from lm_eval.utils import make_table  # pylint: disable=E0401
 
-from auto_round.utils import logger
 from auto_round import AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate
+from auto_round.utils import detect_device
 
 def setup_parser():
     parser = argparse.ArgumentParser()
@@ -164,7 +164,6 @@ def tune(args):
         model_name = model_name[:-1]
     print(model_name, flush=True)
 
-    from auto_round.utils import detect_device
 
     device_str = detect_device(args.device)
     torch_dtype = "auto"
@@ -354,9 +353,10 @@ def tune(args):
 
 def eval(args):
     quantization_config = AutoRoundConfig(backend=args.device)
+    device_str = detect_device(args.device)
     user_model = AutoModelForCausalLM.from_pretrained(
         args.model,
-        device_map=args.device, quantization_config=quantization_config)
+        device_map=device_str, quantization_config=quantization_config)
     model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
     if isinstance(args.tasks, str):
         tasks = args.tasks.split(',')
@@ -365,7 +365,6 @@ def eval(args):
         model_args=model_args,
         user_model=user_model,
         tasks=tasks,
-        device=args.device,
         batch_size=args.eval_bs)
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
