@@ -205,7 +205,7 @@ if __name__ == "__main__":
         "--model_name", default="liuhaotian/llava-v1.5-7b"
     )
     parser.add_argument(
-        "--base_model", default="liuhaotian/llava-v1.5-7b"
+        "--base_model", default=None, type=float
     )
     parser.add_argument(
         "--dataset_name", default="textvqa_val"
@@ -218,34 +218,36 @@ if __name__ == "__main__":
         help="Whether to enable trust_remote_code"
     )
     parser.add_argument(
-        "--eval-question-file", type=str,
+        "--eval_question_file", type=str,
         default="tables/question.jsonl"
     )
     
     parser.add_argument(
-        "--eval-image-folder", type=str
+        "--eval_image_folder", type=str
     )
     
     parser.add_argument(
-        "--eval-result-file", type=str
+        "--eval_result_file", type=str
     )
     
     parser.add_argument(
-        "--eval-annotation-file", type=str
+        "--eval_annotation_file", type=str
     )
     args = parser.parse_args()
     s = time.time()
     config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=args.trust_remote_code)
     if hasattr(config, "quantization_config"):
         quantization_config = config.quantization_config
-        if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
-            from auto_round.auto_quantizer import AutoHfQuantizer
-        elif "quant_method" in quantization_config and quantization_config["quant_method"] == "gptq":
-            if args.device == "hpu":
+        if "quant_method" in quantization_config and ("auto-round" in quantization_config["quant_method"] or 
+                ("gptq" in quantization_config["quant_method"] and args.device == "hpu")):
+            try:
+                from auto_round import AutoRoundConfig
+            except:
                 from auto_round.auto_quantizer import AutoHfQuantizer
+                
     model_path = args.model_name
     model_name = get_model_name_from_path(model_path)
-    tokenizer, model, image_processor, _ = load_pretrained_model(model_path, model_base=None, model_name=model_name,
+    tokenizer, model, image_processor, _ = load_pretrained_model(model_path, model_base=args.base_model, model_name=model_name,
             torch_dtype="auto")
     
     evaluator = TextVQAEvaluator(
