@@ -77,44 +77,6 @@ output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir, format='auto_round', inplace=True) 
 ```
 
-### Basic Usage
-AutoRound support Gaudi2, CPU and GPU. A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.  Alternatively, you can use ```auto-round``` instead of ```auto_round```. (**auto-round version > 0.3.0**)
-
-
-```bash
-auto_round --model facebook/opt-125m \
-    --bits 4 \
-    --group_size 128 \
-    --format auto_round \
-    --output_dir ./tmp_autoround
-```
-We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
-<details>
-  <summary>Other Recipes</summary>
-
-  ```bash
-## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-  auto_round --model facebook/opt-125m \
-    --bits 4 \
-    --group_size 128 \
-    --nsamples 512 \
-    --iters 1000 \
-    --low_gpu_mem_usage 
-  ```
-
-  ```bash
-## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-  auto_round --model facebook/opt-125m \
-    --bits 4 \
-    --group_size 128 \
-    --nsamples 128 \
-    --iters 200 \
-    --seqlen 512 \
-    --batch_size 4 
-  ```
-</details>
-<br>
-
 <details>
   <summary>Detailed Hyperparameters</summary>
 
@@ -166,9 +128,44 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 - `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.
 
 </details>
-<br>
+
+### Basic Usage
+AutoRound support Gaudi2, CPU and GPU. A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.  Alternatively, you can use ```auto-round``` instead of ```auto_round```. (**auto-round version > 0.3.0**)
 
 
+```bash
+auto_round --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --format auto_round \
+    --disable_eval \
+    --output_dir ./tmp_autoround
+```
+We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
+<details>
+  <summary>Other Recipes</summary>
+
+  ```bash
+## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+  auto_round --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --nsamples 512 \
+    --iters 1000 \
+    --low_gpu_mem_usage 
+  ```
+
+  ```bash
+## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
+  auto_round --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --nsamples 128 \
+    --iters 200 \
+    --seqlen 512 \
+    --batch_size 4 
+  ```
+</details>
 
 #### Formats
 
