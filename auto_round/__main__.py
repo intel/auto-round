@@ -24,9 +24,9 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 from lm_eval.utils import make_table  # pylint: disable=E0401
 
-from auto_round.utils import logger
 from auto_round import AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate
+from auto_round.utils import detect_device
 
 def setup_parser():
     parser = argparse.ArgumentParser()
@@ -156,7 +156,6 @@ def setup_parser():
 
 def tune(args):
     tasks = args.tasks
-    use_eval_legacy = False
     if args.format is None:
         args.format = "auto_round"
 
@@ -165,7 +164,6 @@ def tune(args):
         model_name = model_name[:-1]
     print(model_name, flush=True)
 
-    from auto_round.utils import detect_device
 
     device_str = detect_device(args.device)
     torch_dtype = "auto"
@@ -236,16 +234,6 @@ def tune(args):
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
 
-    excel_name = f"{model_name}_{args.bits}_{args.group_size}"
-    if (hasattr(model, 'config') and (model.dtype is torch.bfloat16 or model.config.torch_dtype is torch.bfloat16)):
-        dtype = 'bfloat16'
-    else:
-        if "cpu" not in device_str:
-            dtype = 'float16'
-        else:
-            dtype = 'float32'
-
-    excel_name = f"{model_name}_{args.bits}_{args.group_size}"
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
 
@@ -309,7 +297,7 @@ def tune(args):
         low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning)
     model, _ = autoround.quantize()
-    model_name = args.model_name.rstrip("/")
+    model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
 
@@ -320,7 +308,6 @@ def tune(args):
         torch.cuda.empty_cache()
 
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
-    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
 
     format_list = args.format.replace(' ', '').split(',')
@@ -366,9 +353,10 @@ def tune(args):
 
 def eval(args):
     quantization_config = AutoRoundConfig(backend=args.device)
+    device_str = detect_device(args.device)
     user_model = AutoModelForCausalLM.from_pretrained(
         args.model,
-        device_map=args.device, quantization_config=quantization_config)
+        device_map=device_str, quantization_config=quantization_config)
     model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
     if isinstance(args.tasks, str):
         tasks = args.tasks.split(',')
@@ -377,7 +365,6 @@ def eval(args):
         model_args=model_args,
         user_model=user_model,
         tasks=tasks,
-        device=args.device,
         batch_size=args.eval_bs)
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
