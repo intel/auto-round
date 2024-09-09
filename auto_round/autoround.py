@@ -20,7 +20,7 @@ import logging
 import torch
 import transformers
 from torch import autocast
-
+import numpy as np
 from .calib_dataset import get_dataloader
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from .special_model_handler import check_hidden_state_dim, check_share_attention_mask, check_not_share_position_ids
@@ -71,6 +71,7 @@ def _use_first_output(outputs):
 def freeze_mod_(mod):
     for param in mod.parameters():
         param.requires_grad = False
+
 
 class AutoRound(object):
     """This is Signround+ which is an advanced version of Signround. For more information,
@@ -1235,13 +1236,25 @@ class AutoRound(object):
                 
                 # Use the hidden_states to calculate the loss
                 q_hidden_states = output_q[0] if isinstance(output_q, tuple) else output_q
-                # outputs[tmp_indices] ((tensor,), {})
-                cur_outputs = outputs[tmp_indices][0][0]
+                # For AO' llama:
+                #   outputs[tmp_indices] (tensor, {})
+                #   outputs: [(tensor, {}), (tensor, {}), ...]
+                # For tansformers's Llama:
+                #   outputs[tmp_indices] ((tensor,), {...})
+                cur_batch_outputs =  outputs[tmp_indices] # It should be (tensor, {}) or ((tensor, ), {})
+                first_outputs = cur_batch_outputs[0]
+                cur_outputs = first_outputs[0] if isinstance(first_outputs, tuple) else first_outputs
                 orig_hidden_states = cur_outputs[0] if isinstance(cur_outputs, tuple) else cur_outputs
                 orig_hidden_states = to_device(orig_hidden_states, device)
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        # assert q_hidden_states.shape == orig_hidden_states.shape, f"QDQ: {q_hidden_states.shape} != Target: {orig_hidden_states.shape}"
+                        if np.prod(q_hidden_states.shape) != np.prod(orig_hidden_states.shape):
+                            raise ValueError(
+                                (f"The shape of the QDQ hidden states {q_hidden_states.shape} "
+                                 f"and the original hidden states {orig_hidden_states.shape} are different."
+                                 f"Please raise an issue on https://github.com/intel/auto-round/issues."
+                                 )
+                            )
                         loss = mse_loss(q_hidden_states, orig_hidden_states)  # pylint: disable=not-callable
                 else:
                     loss = mse_loss(  # pylint: disable=not-callable
