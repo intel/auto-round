@@ -379,7 +379,8 @@ def get_self_modules(model):
                 return _get(model, tmp_self_modules)
             except:
                 continue
-        warnings.warn(f"Model type {model_type} not supported")
+        warnings.warn(f"Model type {model_type} may be not supported by auto_awq,"
+                      " please checkout the auto_awq repository.")
         return None
     self_modules = MODEL_LAYERS_BY_MODEL_TYPE.get(model_type)
     return _get(model, self_modules)
