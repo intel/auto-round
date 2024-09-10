@@ -367,8 +367,8 @@ if __name__ == '__main__':
             if "round" in gpu_format:
                 eval_folder = f'{export_dir}-round'
                 autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-            elif "gptq" in gpu_format:
-                eval_folder = f'{export_dir}-gpu'
+            elif "auto_gptq" in gpu_format:
+                eval_folder = f'{export_dir}-gptq'
                 autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
             elif "auto_awq" in gpu_format:  # pragma: no cover
                 eval_folder = f'{export_dir}-awq'

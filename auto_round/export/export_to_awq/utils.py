@@ -1,16 +1,28 @@
+# Copyright (c) 2023 MIT HAN Lab
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import gc
 import torch
 import warnings
 import torch.nn as nn
 from torch.autograd import Function
-
-try:
-    import awq_ext  # with CUDA kernels (AutoAWQ_kernels)
-
-    AWQ_INSTALLED = True
-except Exception as ex:
-    AWQ_INSTALLED = False
-    warnings.warn(f"AutoAWQ could not load GEMM kernels extension. Details: {ex}")
 
 
 def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
@@ -100,21 +112,8 @@ class WQLinearMMFunction(Function):
         out_shape = x.shape[:-1] + (out_features,)
         x = x.to(torch.float16)
 
-        if AWQ_INSTALLED:
-            FP16_MATMUL_HEURISTIC_CONDITION = x.shape[0] * x.shape[1] >= 1024
-
-            if FP16_MATMUL_HEURISTIC_CONDITION:
-                out = awq_ext.dequantize_weights_cuda(
-                    qweight, scales, qzeros, 0, 0, 0, False
-                )
-                out = torch.matmul(x, out)
-            else:
-                out = awq_ext.gemm_forward_cuda(
-                    x.reshape(-1, x.shape[-1]), qweight, scales, qzeros, 8
-                )
-        else:
-            out = dequantize_gemm(qweight, qzeros, scales, w_bit, group_size)
-            out = torch.matmul(x, out)
+        out = dequantize_gemm(qweight, qzeros, scales, w_bit, group_size)
+        out = torch.matmul(x, out)
 
         out = out + bias if bias is not None else out
         out = out.reshape(out_shape)
@@ -124,29 +123,6 @@ class WQLinearMMFunction(Function):
             out = out.unsqueeze(0)
 
         return out
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        input, qweight, qzeros, scales, bias = ctx.saved_tensors
-
-        if not AWQ_INSTALLED:
-            raise ValueError(
-                "auto-awq kernels is needed to be installed to use `.backward()`. Make sure to install the auto-awq kernels"
-                " by following the installation guides in https://github.com/casper-hansen/AutoAWQ_kernels"
-            )
-
-        # Cast to correct dtype for mixed precision training
-        weights = awq_ext.dequantize_weights_cuda(
-            qweight, scales, qzeros, 1, 0, 0, False
-        ).to(grad_output.dtype)
-
-        if ctx.needs_input_grad[0]:
-            # 3D matmul using torch.bmm: https://pytorch.org/docs/stable/generated/torch.bmm.html#torch.bmm
-            # to propagate gradient across all batch sizes.
-            batch_size = grad_output.shape[0]
-            grad_input = grad_output.bmm(weights.transpose(0, 1).unsqueeze(0).repeat(batch_size, 1, 1))
-
-        return grad_input, None, None, None, None, None, None, None
 
 
 class WQLinear_GEMM(nn.Module):
@@ -389,6 +365,7 @@ def get_self_modules(model):
                 return _get(model, tmp_self_modules)
             except:
                 continue
-        assert model_type in MODEL_LAYERS_BY_MODEL_TYPE, f"Model type {model_type} not supported"
+        warnings.warn(f"Model type {model_type} not supported")
+        return None
     self_modules = MODEL_LAYERS_BY_MODEL_TYPE.get(model_type)
     return _get(model, self_modules)
