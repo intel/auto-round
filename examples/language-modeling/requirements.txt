@@ -1,4 +1,4 @@
-transformers < 4.45.0
+transformers
 torch
 lm-eval==0.4.4
 ##for lm-eval 0.4.1 we usually used
