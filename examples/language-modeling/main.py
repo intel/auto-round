@@ -372,7 +372,7 @@ if __name__ == '__main__':
                 autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
             elif "auto_awq" in gpu_format:  # pragma: no cover
                 eval_folder = f'{export_dir}-awq'
-                autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
+                autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace)
 
         if 'xpu' in deployment_device:
             autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
