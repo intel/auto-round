@@ -42,7 +42,7 @@ from typing import Dict, List, Optional, Union
 
 
 @register_format("auto_awq")
-def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
+def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
     model = kwargs["model"]
     layer_config = kwargs["layer_config"]
