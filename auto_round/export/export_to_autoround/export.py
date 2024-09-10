@@ -294,6 +294,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             if config["bits"] > 8:
                 modules_to_not_convert.append(name)
         save_awq(model, output_dir, modules_to_not_convert=modules_to_not_convert)
+    return model
 
 
 def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
@@ -360,3 +361,4 @@ def save_awq(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(quantization_config, f, indent=2)
+

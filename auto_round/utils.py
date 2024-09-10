@@ -805,3 +805,4 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
     else:
         from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
     return QuantLinear
+
