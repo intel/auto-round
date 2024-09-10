@@ -669,7 +669,8 @@ class AutoRound(object):
                 if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
                     self.inputs[name]["input_ids"].append(hidden_states.to("cpu"))
                 else:
-                    self.inputs[name]["input_ids"].extend(list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim)))
+                    self.inputs[name]["input_ids"].extend(
+                            list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim)))
             else:
                 self.inputs[name] = {}
                 if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
