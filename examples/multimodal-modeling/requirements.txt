@@ -1,6 +1,7 @@
 transformers
 torch
 tiktoken
+torchvision
 transformers_stream_generator
 peft
 sentencepiece
@@ -12,3 +13,4 @@ auto-gptq
 openpyxl
 wandb
 py-cpuinfo
+

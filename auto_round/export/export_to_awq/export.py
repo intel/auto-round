@@ -121,6 +121,7 @@ def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
     quant_config["zero_point"] = not sym
 
     save_quantized(compressed_model, save_dir=output_dir, quant_config=quant_config)
+    return compressed_model
 
 
 from safetensors.torch import save_file
@@ -225,3 +226,4 @@ def get_module_name(model, module_to_find):
         if module is module_to_find:
             return name
     return None
+

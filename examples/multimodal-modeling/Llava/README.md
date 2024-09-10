@@ -6,7 +6,7 @@ This document presents step-by-step instructions for auto-round.
 
 In this example, we introduce an straight-forward way to execute quantization on some popular multimodal models such as LLaVA. 
 
-Please note that LLAVA quantization is currently an **experimental feature** and does not yet support inference on various devices after export.
+Please note that LLAVA quantized model is currently only support inference with **auto_round** format.
 
 ## Install
 If you are not using Linux, do NOT proceed, see instructions for [macOS](https://github.com/haotian-liu/LLaVA/blob/main/docs/macOS.md) and [Windows](https://github.com/haotian-liu/LLaVA/blob/main/docs/Windows.md).
@@ -68,12 +68,12 @@ bash run_autoround.sh
 ```
 
 ## 4. Results
-Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K) datasets for quantization calibration, and TextVQA dataset for evaluation. When the vision components are not involved in quantization, it is able to achieve accuracy loss within 1%. The results for fake quantized LLava-7b are as follows:
+Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K) datasets for quantization calibration, and TextVQA dataset for evaluation. When the vision components are not involved in quantization, it is able to achieve accuracy loss within 1%. The results for LLava-7b are as follows:
 | Model | Config | Precision | Hyperparameter | Accuracy% | Relative drop |
 |  :----: | :----: | :----: | :----: | :----: | :----: |
 | liuhaotian/llava-v1.5-7b | - | FP16 | - | 58.21 | - |
-| liuhaotian/llava-v1.5-7b | W4G128 | FP16 | with vision | 56.39 | -3.13% |
-| liuhaotian/llava-v1.5-7b | W4G128 | FP16 | w/o vision | 58.08 | -0.22% |
+| liuhaotian/llava-v1.5-7b | W4G128 | FP16 | with vision | 56.11 | -3.60% |
+| liuhaotian/llava-v1.5-7b | W4G128 | FP16 | w/o vision | 57.97 | -0.41% |
 
 
 ## 5. Known Issues
