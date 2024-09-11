@@ -1094,7 +1094,7 @@ class AutoRound(object):
 
         Args:
             output_dir (str, optional): The directory to save the quantized model. Defaults to None.
-            format (str, optional): The format in which to save the model. Defaults to "auto_gptq".
+            format (str, optional): The format in which to save the model. Defaults to "auto_round".
             inplace (bool, optional): Whether to modify the model in place. Defaults to True.
             **kwargs: Additional keyword arguments specific to the export format.
 

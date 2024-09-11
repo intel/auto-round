@@ -344,35 +344,26 @@ if __name__ == '__main__':
         inplace = False if len(format_list) > 1 else True
         for format_ in format_list:
             eval_folder = f'{export_dir}-{format_}'
-            if 'auto_awq' in format_:
-                autoround.save_quantized(eval_folder, format=format_, inplace=inplace, model_path=model_name)
-            else:
-                autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
+            autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
     else:
         deployment_device = args.deployment_device.split(',')
         gpu_formats = []
         for item in deployment_device:
-            if "gpu" in item or "auto_gptq" in item or "auto_round" in item or "auto_awq" in item:
-                gpu_formats.append(item)
+            if item in ["gpu", "auto_gptq", "auto_round", "auto_awq"]:
+                if item == "gpu":
+                    if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
+                        gpu_formats.append("auto_round")
+                    else:
+                        gpu_formats.append("auto_gptq")
+                else:
+                    gpu_formats.append(item)
 
-        if 'gpu' in deployment_device:
-            if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
-                gpu_formats.append("auto_round")
-            else:
-                gpu_formats.append("auto_gptq")
         gpu_formats = list(set(gpu_formats))
 
         inplace = True if len(deployment_device) < 2 else False
         for gpu_format in gpu_formats:
-            if "round" in gpu_format:
-                eval_folder = f'{export_dir}-round'
-                autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-            elif "gptq" in gpu_format:
-                eval_folder = f'{export_dir}-gpu'
-                autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-            elif "auto_awq" in gpu_format:  # pragma: no cover
-                eval_folder = f'{export_dir}-awq'
-                autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
+            eval_folder = f'{export_dir}-{gpu_format}'
+            autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace)
 
         if 'xpu' in deployment_device:
             autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
@@ -384,7 +375,7 @@ if __name__ == '__main__':
             tokenizer.save_pretrained(output_dir)
             if eval_folder is None:
                 eval_folder = output_dir
-        if not ('gpu' in deployment_device or len(gpu_formats) > 0) or 'fake' not in deployment_device:
+        if (not ('gpu' in deployment_device or len(gpu_formats) > 0)) and 'fake' not in deployment_device:
             print('does not support cpu, xpu model evaluation.')
             exit()  ## does not support cpu,xpu model eval
 
@@ -402,14 +393,13 @@ if __name__ == '__main__':
     lm_eval_version = Version(lm_eval_version)
     if lm_eval_version == Version("0.3.0"):
         use_eval_legacy = True
+        from eval_legacy import eval_model_legacy as eval_model
+    else:
+        use_eval_legacy = False
+        from eval_legacy import eval_model
 
     if isinstance(tasks, str):
         tasks = tasks.split(',')
-    if not use_eval_legacy:
-        from eval_legacy import eval_model
-    else:
-        from eval_legacy import eval_model_legacy as eval_model
-
         if isinstance(tasks, list):
             if "mmlu" in tasks:
                 tmp_tasks = tasks
@@ -426,34 +416,36 @@ if __name__ == '__main__':
         use_qdq = True
     if args.format and ('fake' in args.format or 'qdq' in args.format):
         use_qdq = True
-    if use_qdq and not args.disable_eval:
+
+    # evaluation
+    if not args.disable_eval:
         if use_eval_legacy:
             print("Using the legacy lm_eval(0.3.0)")
         else:
             print(f"Using the latest {lm_eval_version}")
+        
+        if use_qdq and lm_eval_version < Version("0.4.2"):
+            excel_name = f"{output_dir}_result.xlsx"
+            output_dir += "/"
+            print(excel_name, flush=True)
+            eval_model(
+                model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                device=torch_device, excel_file=excel_name,
+                trust_remote_code=not args.disable_trust_remote_code)
+        
+        if lm_eval_version >= Version("0.4.2"):
+            from eval.evaluation import simple_evaluate
 
-    if not args.disable_eval and use_qdq and lm_eval_version < Version("0.4.2"):
-        excel_name = f"{output_dir}_result.xlsx"
-        output_dir += "/"
-        print(excel_name, flush=True)
-        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name,
-                   trust_remote_code=not args.disable_trust_remote_code)
+            model_args = f"pretrained={eval_folder}"
+            model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
+            user_model = None
+            if args.act_bits <= 8:
+                user_model = model.to(device_str)
 
-    if not args.disable_eval and lm_eval_version >= Version("0.4.2"):
-        from eval.evaluation import simple_evaluate
+            res = simple_evaluate(model="hf", model_args=model_args,
+                                tasks=tasks,
+                                batch_size=args.eval_bs, user_model=user_model)
+            from lm_eval.utils import make_table
 
-        model_args = f"pretrained={eval_folder}"
-        model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
-        user_model = None
-        if args.act_bits <= 8:
-            user_model = model.to(device_str)
-
-        res = simple_evaluate(model="hf", model_args=model_args,
-                              tasks=tasks,
-                              batch_size=args.eval_bs, user_model=user_model)
-        from lm_eval.utils import make_table
-
-        print(make_table(res))
-
+            print(make_table(res))

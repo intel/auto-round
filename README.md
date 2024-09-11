@@ -181,7 +181,7 @@ Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
 **AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
 within the community. Asymmetric quantization typically improves accuracy but may reduce inference speed. It features
-specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization. Currently, please manually install autoawq via `pip install autoawq` before exporting.
+specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization.
 
 ## Model Inference
 

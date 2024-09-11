@@ -314,10 +314,7 @@ def tune(args):
     inplace = False if len(format_list) > 1 else True
     for format_ in format_list:
         eval_folder = f'{export_dir}-{format_}'
-        if 'auto_awq' in format_:
-            autoround.save_quantized(eval_folder, format=format_, inplace=inplace, model_path=model_name)
-        else:
-            autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
+        autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
 
 
     def get_library_version(library_name):

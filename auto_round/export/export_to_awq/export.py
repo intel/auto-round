@@ -42,7 +42,7 @@ from typing import Dict, List, Optional, Union
 
 
 @register_format("auto_awq")
-def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
+def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
     model = kwargs["model"]
     layer_config = kwargs["layer_config"]
@@ -67,17 +67,10 @@ def save_quantized_as_autoawq(output_dir, model_path, inplace=True, **kwargs):
     else:
         compressed_model = copy.deepcopy(model.to("cpu"))
 
-    try:
-        from awq import AutoAWQForCausalLM  # pylint: disable=E0401
-        from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
-        from awq.utils.utils import clear_memory  # pylint: disable=E0401
-    except:
-        logger.error("autoawq is required. Please install it by 'pip install autoawq' to support auto_awq format.")
+    from .utils import WQLinear_GEMM, clear_memory, get_self_modules
 
     q_linear_module = WQLinear_GEMM
-    awq_model = AutoAWQForCausalLM.from_pretrained(model_path)
-    self_modules = awq_model.get_model_layers(compressed_model)
-    del awq_model  # release memory
+    self_modules = get_self_modules(compressed_model)
     for i in range(len(self_modules)):
         module = self_modules[i]
         named_linears = get_named_linears(module)

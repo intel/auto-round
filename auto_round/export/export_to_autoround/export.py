@@ -125,12 +125,8 @@ def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
         from auto_round_extension.cuda.qlinear_triton import QuantLinear
         return QuantLinear
     elif "awq" in backend:
-        try:
-            from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
-            return WQLinear_GEMM
-        except:
-            logger.error("autoawq is required. Please install it by 'pip install autoawq' to support auto_awq format.")
-            return
+        from ..export_to_awq.utils import WQLinear_GEMM
+        return WQLinear_GEMM
     elif "gptq" in backend:
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
@@ -186,7 +182,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
                 qlayer.pack(layer, scale, zero, None)
             qlayer.to(device)
         else:
-            from awq.utils.utils import clear_memory  # pylint: disable=E0401
+            from ..export_to_awq.utils import clear_memory
             scale, zp = layer_config[name]["scale"].to(torch.float32), layer_config[name]["zp"].to(torch.float32)
             scale = scale.t().contiguous()
             zp = zp.t().contiguous()
