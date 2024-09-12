@@ -1,6 +1,6 @@
 import argparse
 import sys
-
+import copy
 sys.path.insert(0, '../../..')
 parser = argparse.ArgumentParser()
 import torch
@@ -61,12 +61,45 @@ class CustomDataset(Dataset): # for llava tuning
 
     def __len__(self):
         return len(self.list_data_dict)
-
+    
 
 def create_data_loader(dataset, batch_size=1, data_collator=None):
     assert batch_size == 1, "batch_size must be 1"
     data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=data_collator)
     return data_loader
+
+def save_tower(model, save_path, quant_vision: bool = False, max_shard_size: str = "5GB", safe_serialization: bool = True):
+    if not quant_vision:
+        print("Won't save vision_tower since this part was not quantized.")
+        return
+    ori_path = save_path
+    ori_tower_name = model.get_vision_tower().vision_tower_name
+    vision_tower = model.get_vision_tower().vision_tower
+    save_path = f'{save_path}-vision_tower'
+    os.makedirs(save_path, exist_ok=True)
+    quantization_config = model.config.quantization_config
+    redundant_prefix = "model.vision_tower.vision_tower."
+    org_block_list = copy.deepcopy(quantization_config['quant_block_list'])
+    # prepare vision_tower quantize list
+    quant_block_list = [element.split(redundant_prefix)[1] if redundant_prefix in element else "" \
+                        for sublist in org_block_list for element in sublist]
+    quant_block_list = [[element for element in quant_block_list if element != ""]]
+    quantization_config['quant_block_list'] = quant_block_list
+    if hasattr(vision_tower, "config"):
+        from transformers import AutoProcessor
+        processor = AutoProcessor.from_pretrained(ori_tower_name)
+        processor.save_pretrained(save_path)
+        vision_tower.config.quantization_config = quantization_config
+        vision_tower.config.save_pretrained(save_path)
+    vision_tower.save_pretrained(save_path, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    # prepare llava model quantize list
+    quant_block_list = [element if redundant_prefix not in element else "" \
+                        for sublist in org_block_list for element in sublist]
+    quant_block_list = [[element for element in quant_block_list if element != ""]]
+    quantization_config['quant_block_list'] = quant_block_list
+    model.config.mm_vision_tower = save_path
+    model.config.save_pretrained(ori_path)
+    
 
 if __name__ == '__main__':
 
@@ -345,20 +378,24 @@ if __name__ == '__main__':
     for gpu_format in gpu_formats:
         if "round" in gpu_format:
             eval_folder = f'{export_dir}-round'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+            compressed_model = autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+            save_tower(compressed_model, eval_folder, quant_vision=args.quant_vision)
         elif "gptq" in gpu_format:
             eval_folder = f'{export_dir}-gpu'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-
+            compressed_model = autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+            save_tower(compressed_model, eval_folder, quant_vision=args.quant_vision)
     if 'xpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
+        compressed_model = autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
                                  device="xpu")
+        save_tower(compressed_model, eval_folder, quant_vision=args.quant_vision)
     if "cpu" in deployment_device:
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
+        compressed_model = autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
+        save_tower(compressed_model, eval_folder, quant_vision=args.quant_vision)
     if "fake" in deployment_device:
         model = model.to("cpu")
         model.save_pretrained(output_dir)
+        save_tower(model, output_dir, quant_vision=args.quant_vision)
         tokenizer.save_pretrained(output_dir)
         if eval_folder is None:
             eval_folder = output_dir
@@ -378,7 +415,5 @@ if __name__ == '__main__':
         )
         evaluator.run_evaluate(result_file = args.eval_result_file)
         evaluator.calculate_accuracy(result_file = args.eval_result_file)
-
-
 
 

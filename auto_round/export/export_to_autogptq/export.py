@@ -152,6 +152,8 @@ def pack_layer(name, model, layer_config, backend, pbar):
             qlayer.pack(layer, scale, zero, None)
         qlayer.to(device)
         pbar.update(1)
+        
+        
 @register_format("auto_gptq")
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
                                **kwargs):
@@ -215,9 +217,10 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     save(model, output_dir, safe_serialization=safe_serialization)
+    return model
 
 
-##
+
 def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
     """Save model state dict and configs.
 
@@ -245,6 +248,7 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
 
 
 

@@ -168,7 +168,7 @@ if __name__ == '__main__':
         assert False, "please only specify one of format and deployment_device"
 
     if args.deployment_device is None and args.format is None:
-        args.format == "auto_round"
+        args.format = "auto_round"
 
     if args.deployment_device:
         if "gpu" in args.deployment_device and args.sym is False:
@@ -324,7 +324,7 @@ if __name__ == '__main__':
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type, enable_norm_bias_tuning=args.enable_norm_bias_tuning)
-    # model, _ = autoround.quantize()
+    model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
