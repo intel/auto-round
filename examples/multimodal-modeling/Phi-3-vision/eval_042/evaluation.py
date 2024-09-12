@@ -597,11 +597,14 @@ if __name__ == "__main__":
     model_args = f"pretrained={args.model_name}"
     if hasattr(config, "quantization_config"):
         quantization_config = config.quantization_config
-        if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
-            from auto_round.auto_quantizer import AutoHfQuantizer
-        else:
-            from phi3_v import Phi3VGPTQForCausalLM
-            model_args += f",autogptq=True,gptq_use_triton=True"
+        if "quant_method" in quantization_config and ("auto-round" in quantization_config["quant_method"] or 
+                  ("gptq" in quantization_config["quant_method"] and args.device == "hpu")):
+            try:
+                from auto_round import AutoRoundConfig
+            except:
+                from auto_round.auto_quantizer import AutoHfQuantizer
+    
+    model_args += f",autogptq=True,gptq_use_triton=True"
     if args.trust_remote_code:
         model_args += f",trust_remote_code=True"
     model_args += ",dtype=bfloat16"
@@ -619,5 +622,6 @@ if __name__ == "__main__":
     print(make_table(result))
 
     print("cost time: ", time.time() - s)
+
 
 
