@@ -152,7 +152,8 @@ We provide two recipes for best accuracy and fast running speed with low memory.
     --group_size 128 \
     --nsamples 512 \
     --iters 1000 \
-    --low_gpu_mem_usage 
+    --low_gpu_mem_usage \
+    --disable_eval 
   ```
 
   ```bash
@@ -163,7 +164,8 @@ We provide two recipes for best accuracy and fast running speed with low memory.
     --nsamples 128 \
     --iters 200 \
     --seqlen 512 \
-    --batch_size 4 
+    --batch_size 4 \
+    --disable_eval 
   ```
 </details>
 

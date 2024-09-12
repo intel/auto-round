@@ -15,6 +15,7 @@
 import copy
 import logging
 import os
+import sys
 import subprocess
 from collections import UserDict
 
@@ -826,15 +827,25 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
     return QuantLinear
 
-
 def get_library_version(library_name):
-    import pkg_resources
-    try:
-        version = pkg_resources.get_distribution(library_name).version
-        return version
-    except pkg_resources.DistributionNotFound:
-        return f"{library_name} is not installed"
-
+    from packaging.version import Version
+    python_vesion = Version(sys.version.split()[0])
+    if python_vesion < Version("3.8"):
+        import warnings
+        warnings.filterwarnings('ignore', category=DeprecationWarning)
+        import pkg_resources
+        try:
+            version = pkg_resources.get_distribution(library_name).version
+            return version
+        except pkg_resources.DistributionNotFound:
+            return f"{library_name} is not installed"
+    else:
+        import importlib_metadata
+        try:
+            version = importlib_metadata.version(library_name)
+            return version
+        except importlib_metadata.PackageNotFoundError:
+            return f"{library_name} is not installed"
 
 def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     """

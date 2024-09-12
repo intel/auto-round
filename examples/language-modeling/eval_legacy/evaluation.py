@@ -342,7 +342,7 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
     
     org_s = time.time()
     if dtype == None:
-        from eval.utils import convert_dtype_torch2str_hf
+        from .utils import convert_dtype_torch2str_hf
         from transformers import AutoConfig
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
         if hasattr(config, "torch_dtype"):
@@ -420,7 +420,7 @@ def eval_model(model_path, tasks=["lambada_openai", "hellaswag", "winogrande", "
     #     model.seqlen = seqlen
 
     model.seqlen = 2048
-    from eval.utils import get_loaders, eval_ppl_same_with_gptq
+    from .utils import get_loaders, eval_ppl_same_with_gptq
     for dataset in external_tasks:
         try:
             dataloader, testloader = get_loaders(
