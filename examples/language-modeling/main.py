@@ -5,6 +5,7 @@ import argparse
 import subprocess
 from packaging import version
 
+
 sys.path.insert(0, '../..')
 parser = argparse.ArgumentParser()
 import torch
@@ -14,6 +15,17 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
+
+import logging
+import warnings
+import numexpr
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+dataset_logger = logging.getLogger("datasets")
+dataset_logger.disabled = True
+numexpr_logger = logging.getLogger("numexpr")
+numexpr_logger.disabled = True
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
