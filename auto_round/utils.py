@@ -836,14 +836,14 @@ def get_library_version(library_name):
     if python_vesion < Version("3.8"):
         import warnings
         warnings.filterwarnings('ignore', category=DeprecationWarning)
-        import pkg_resources
+        import pkg_resources # pylint: disable=E0401
         try:
             version = pkg_resources.get_distribution(library_name).version
             return version
         except pkg_resources.DistributionNotFound:
             return f"{library_name} is not installed"
     else:
-        import importlib_metadata
+        import importlib_metadata # pylint: disable=E0401
         try:
             version = importlib_metadata.version(library_name)
             return version
