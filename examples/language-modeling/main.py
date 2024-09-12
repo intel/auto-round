@@ -5,7 +5,6 @@ import argparse
 import subprocess
 from packaging import version
 
-
 sys.path.insert(0, '../..')
 parser = argparse.ArgumentParser()
 import torch
@@ -15,17 +14,6 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
-
-import logging
-import warnings
-import numexpr
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-warnings.filterwarnings('ignore', category=FutureWarning)
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-dataset_logger = logging.getLogger("datasets")
-dataset_logger.disabled = True
-numexpr_logger = logging.getLogger("numexpr")
-numexpr_logger.disabled = True
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -347,8 +335,8 @@ if __name__ == '__main__':
     if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
-    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}-qdq"
+    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
+    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
     eval_folder = None
     if args.format: 
@@ -391,8 +379,16 @@ if __name__ == '__main__':
             print('does not support cpu, xpu model evaluation.')
             exit()  ## does not support cpu,xpu model eval
 
+    def get_library_version(library_name):
+        import pkg_resources
+        try:
+            version = pkg_resources.get_distribution(library_name).version
+            return version
+        except pkg_resources.DistributionNotFound:
+            return f"{library_name} is not installed"
+        
+
     from packaging.version import Version
-    from auto_round.utils import get_library_version
     lm_eval_version = get_library_version("lm_eval")
     lm_eval_version = Version(lm_eval_version)
     if lm_eval_version == Version("0.3.0"):
@@ -401,6 +397,19 @@ if __name__ == '__main__':
     else:
         use_eval_legacy = False
         from eval_legacy import eval_model
+
+    if isinstance(tasks, str):
+        tasks = tasks.split(',')
+        if isinstance(tasks, list):
+            if "mmlu" in tasks:
+                tmp_tasks = tasks
+                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
+            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
+                tmp_tasks = tasks
+                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
+            seen = set()
+            tmp_tasks = tasks
+            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
 
     use_qdq = False
     if args.deployment_device and 'fake' in args.deployment_device:
@@ -415,21 +424,7 @@ if __name__ == '__main__':
         else:
             print(f"Using the latest {lm_eval_version}")
         
-        if isinstance(tasks, str):
-            tasks = tasks.split(',')
-
         if use_qdq and lm_eval_version < Version("0.4.2"):
-            if use_eval_legacy:
-                if "mmlu" in tasks:
-                    tmp_tasks = tasks
-                    tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
-                if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
-                    tmp_tasks = tasks
-                    tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-                seen = set()
-                tmp_tasks = tasks
-                tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
-
             excel_name = f"{output_dir}_result.xlsx"
             output_dir += "/"
             print(excel_name, flush=True)

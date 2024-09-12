@@ -169,6 +169,7 @@ def tune(args):
     torch_dtype = "auto"
     if "hpu" in device_str:
         torch_dtype = torch.bfloat16
+    torch_device = torch.device(device_str)
 
     is_glm = bool(re.search("chatglm", model_name.lower()))
     low_cpu_mem_usage = False
@@ -306,7 +307,7 @@ def tune(args):
     if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
+    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
 
 
     format_list = args.format.replace(' ', '').split(',')
