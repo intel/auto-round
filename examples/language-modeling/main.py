@@ -387,6 +387,7 @@ if __name__ == '__main__':
             tokenizer.save_pretrained(output_dir)
             if eval_folder is None:
                 eval_folder = output_dir
+
         if (not ('gpu' in deployment_device or len(gpu_formats) > 0)) and 'fake' not in deployment_device:
             print('does not support cpu, xpu model evaluation.')
             exit()  ## does not support cpu,xpu model eval
@@ -454,3 +455,4 @@ if __name__ == '__main__':
             from lm_eval.utils import make_table
 
             print(make_table(res))
+
