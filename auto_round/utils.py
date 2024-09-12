@@ -843,7 +843,7 @@ def get_library_version(library_name):
         except pkg_resources.DistributionNotFound:
             return f"{library_name} is not installed"
     else:
-        import lib_metadata
+        import importlib_metadata
         try:
             version = importlib_metadata.version(library_name)
             return version
