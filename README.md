@@ -51,7 +51,7 @@ pip install auto-round
 
 
 ## Model Quantization
-### API Usage
+### API Usage (Gaudi2/CPU/GPU)
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -129,8 +129,8 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 </details>
 
-### Basic Usage (auto-round version > 0.3.0)
-AutoRound support Gaudi2, CPU and GPU. A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.  Alternatively, you can use ```auto-round``` instead of ```auto_round```. 
+### Basic Usage (version > 0.3.0)
+A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.  Alternatively, you can use ```auto-round``` instead of ```auto_round```. 
 
 
 ```bash
@@ -152,7 +152,8 @@ We provide two recipes for best accuracy and fast running speed with low memory.
     --group_size 128 \
     --nsamples 512 \
     --iters 1000 \
-    --low_gpu_mem_usage 
+    --low_gpu_mem_usage \
+    --disable_eval 
   ```
 
   ```bash
@@ -163,7 +164,8 @@ We provide two recipes for best accuracy and fast running speed with low memory.
     --nsamples 128 \
     --iters 200 \
     --seqlen 512 \
-    --batch_size 4 
+    --batch_size 4 \
+    --disable_eval 
   ```
 </details>
 
@@ -181,7 +183,7 @@ Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
 **AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
 within the community. Asymmetric quantization typically improves accuracy but may reduce inference speed. It features
-specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization. Currently, please manually install autoawq via `pip install autoawq` before exporting.
+specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization.
 
 ## Model Inference
 

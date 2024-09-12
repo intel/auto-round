@@ -15,6 +15,7 @@
 import copy
 import logging
 import os
+import sys
 import subprocess
 from collections import UserDict
 
@@ -339,8 +340,9 @@ def collect_best_params(block):
         if hasattr(m, "orig_layer"):
             params[n] = {}
             for key in m.params.keys():
-                params[n][key]=copy.deepcopy(m.params[key].data)
+                params[n][key] = copy.deepcopy(m.params[key].data)
     return params
+
 
 @torch.no_grad()
 def sampling_inputs(input_ids, input_others, indices, seqlen,
@@ -713,10 +715,14 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     disable_exllamav1 = False
     disable_marlin = True
     use_qigen = False
+    use_tritonv2 = False
     if "qigen" in backend:
         use_qigen = True
     elif "triton" in backend:
         use_triton = True
+    elif "tritonv2" in backend:
+        use_triton = False
+        use_tritonv2 = True
     elif "marlin" in backend:
         use_triton = False
         disable_marlin = False
@@ -733,16 +739,31 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
         disable_exllamav2 = True
         disable_exllamav1 = True
     from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
-    QuantLinear = dynamically_import_QuantLinear(
-        use_triton=use_triton,
-        desc_act=False,
-        group_size=group_size,
-        bits=bits,
-        disable_exllama=disable_exllamav1,
-        disable_exllamav2=disable_exllamav2,
-        use_qigen=use_qigen,
-        disable_marlin=disable_marlin,
-    )
+    version = get_library_version("auto_gptq")
+    from packaging.version import Version
+    if Version(version) <= Version("0.7.1"):
+        QuantLinear = dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            disable_marlin=disable_marlin
+        )
+    else:
+        QuantLinear = dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            use_marlin=not disable_marlin,
+            use_tritonv2=use_tritonv2
+        )
     return QuantLinear
 
 
@@ -809,3 +830,93 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
     return QuantLinear
 
+def get_library_version(library_name):
+    from packaging.version import Version
+    python_vesion = Version(sys.version.split()[0])
+    if python_vesion < Version("3.8"):
+        import warnings
+        warnings.filterwarnings('ignore', category=DeprecationWarning)
+        import pkg_resources
+        try:
+            version = pkg_resources.get_distribution(library_name).version
+            return version
+        except pkg_resources.DistributionNotFound:
+            return f"{library_name} is not installed"
+    else:
+        import lib_metadata
+        try:
+            version = importlib_metadata.version(library_name)
+            return version
+        except importlib_metadata.PackageNotFoundError:
+            return f"{library_name} is not installed"
+
+def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
+    """
+    Configures and returns a QuantLinear class based on the specified backend and parameters.
+
+    Args:
+        backend (str): The backend to be used for quantization. Supported values include "qigen", "triton", "marlin",
+                       "exllama", and "cuda".
+        bits (int, optional): The number of bits for quantization. Default is 4.
+        group_size (int, optional): The group size for quantization. Default is 128.
+        sym (bool, optional): Flag indicating whether to use symmetric quantization. Default is False.
+
+    Returns:
+        class: The dynamically imported QuantLinear class configured according to the specified parameters.
+    """
+    use_triton = True
+    disable_exllamav2 = True
+    disable_exllamav1 = False
+    disable_marlin = True
+    use_qigen = False
+    if "qigen" in backend:
+        use_triton = False
+        use_qigen = True
+    elif "triton" in backend:
+        use_triton = True
+    elif "marlin" in backend and sym:
+        use_triton = False
+        disable_marlin = False
+    elif "exllama" in backend:  ##need v1 code to export
+        use_triton = True  ##same with triton
+        disable_marlin = True
+    elif "cuda" in backend:
+        use_triton = False
+        disable_marlin = True
+        disable_exllamav2 = True
+        disable_exllamav1 = True
+    if use_triton:
+        from auto_round.export.export_to_autogptq.qlinear_triton import QuantLinear
+        return QuantLinear
+    try:
+        import auto_gptq  # pylint: disable=E0401
+    except:
+        logger.error(f"please install auto_gptq via 'pip install auto-gptq' to support exporting to {backend}")
+        exit()
+
+    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
+    version = get_library_version("auto_gptq")
+    from packaging.version import Version
+    if Version(version) <= Version("0.7.1"):
+        QuantLinear = dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            disable_marlin=disable_marlin,
+        )
+    else:
+        QuantLinear = dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            use_marlin=not disable_marlin,
+        )
+    return QuantLinear
