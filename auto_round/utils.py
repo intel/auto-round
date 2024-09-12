@@ -846,14 +846,6 @@ def get_library_version(library_name):
             return version
         except importlib_metadata.PackageNotFoundError:
             return f"{library_name} is not installed"
-def get_library_version(library_name):
-    import pkg_resources
-    try:
-        version = pkg_resources.get_distribution(library_name).version
-        return version
-    except pkg_resources.DistributionNotFound:
-        return f"{library_name} is not installed"
-
 
 def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     """
