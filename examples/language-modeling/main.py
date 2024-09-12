@@ -5,6 +5,7 @@ import argparse
 import subprocess
 from packaging import version
 
+
 sys.path.insert(0, '../..')
 parser = argparse.ArgumentParser()
 import torch
@@ -14,6 +15,17 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
+
+import logging
+import warnings
+import numexpr
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+dataset_logger = logging.getLogger("datasets")
+dataset_logger.disabled = True
+numexpr_logger = logging.getLogger("numexpr")
+numexpr_logger.disabled = True
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -335,8 +347,8 @@ if __name__ == '__main__':
     if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
-    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
+    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
+    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}-qdq"
 
     eval_folder = None
     if args.format: 
@@ -344,35 +356,26 @@ if __name__ == '__main__':
         inplace = False if len(format_list) > 1 else True
         for format_ in format_list:
             eval_folder = f'{export_dir}-{format_}'
-            if 'auto_awq' in format_:
-                autoround.save_quantized(eval_folder, format=format_, inplace=inplace, model_path=model_name)
-            else:
-                autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
+            autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
     else:
         deployment_device = args.deployment_device.split(',')
         gpu_formats = []
         for item in deployment_device:
-            if "gpu" in item or "auto_gptq" in item or "auto_round" in item or "auto_awq" in item:
-                gpu_formats.append(item)
+            if item in ["gpu", "auto_gptq", "auto_round", "auto_awq"]:
+                if item == "gpu":
+                    if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
+                        gpu_formats.append("auto_round")
+                    else:
+                        gpu_formats.append("auto_gptq")
+                else:
+                    gpu_formats.append(item)
 
-        if 'gpu' in deployment_device:
-            if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
-                gpu_formats.append("auto_round")
-            else:
-                gpu_formats.append("auto_gptq")
         gpu_formats = list(set(gpu_formats))
 
         inplace = True if len(deployment_device) < 2 else False
         for gpu_format in gpu_formats:
-            if "round" in gpu_format:
-                eval_folder = f'{export_dir}-round'
-                autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-            elif "gptq" in gpu_format:
-                eval_folder = f'{export_dir}-gpu'
-                autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-            elif "auto_awq" in gpu_format:  # pragma: no cover
-                eval_folder = f'{export_dir}-awq'
-                autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace, model_path=model_name)
+            eval_folder = f'{export_dir}-{gpu_format}'
+            autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace)
 
         if 'xpu' in deployment_device:
             autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
@@ -384,77 +387,72 @@ if __name__ == '__main__':
             tokenizer.save_pretrained(output_dir)
             if eval_folder is None:
                 eval_folder = output_dir
-        if not ('gpu' in deployment_device or len(gpu_formats) > 0) and 'fake' not in deployment_device:
+
+        if (not ('gpu' in deployment_device or len(gpu_formats) > 0)) and 'fake' not in deployment_device:
             print('does not support cpu, xpu model evaluation.')
             exit()  ## does not support cpu,xpu model eval
 
-    def get_library_version(library_name):
-        import pkg_resources
-        try:
-            version = pkg_resources.get_distribution(library_name).version
-            return version
-        except pkg_resources.DistributionNotFound:
-            return f"{library_name} is not installed"
-        
-
     from packaging.version import Version
+    from auto_round.utils import get_library_version
     lm_eval_version = get_library_version("lm_eval")
     lm_eval_version = Version(lm_eval_version)
     if lm_eval_version == Version("0.3.0"):
         use_eval_legacy = True
-
-    if isinstance(tasks, str):
-        tasks = tasks.split(',')
-    if not use_eval_legacy:
-        from eval_legacy import eval_model
-    else:
         from eval_legacy import eval_model_legacy as eval_model
-
-        if isinstance(tasks, list):
-            if "mmlu" in tasks:
-                tmp_tasks = tasks
-                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
-            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
-                tmp_tasks = tasks
-                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-            seen = set()
-            tmp_tasks = tasks
-            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
+    else:
+        use_eval_legacy = False
+        from eval_legacy import eval_model
 
     use_qdq = False
     if args.deployment_device and 'fake' in args.deployment_device:
         use_qdq = True
     if args.format and ('fake' in args.format or 'qdq' in args.format):
         use_qdq = True
-    if use_qdq and not args.disable_eval:
+
+    # evaluation
+    if not args.disable_eval:
         if use_eval_legacy:
             print("Using the legacy lm_eval(0.3.0)")
         else:
             print(f"Using the latest {lm_eval_version}")
+        
+        if isinstance(tasks, str):
+            tasks = tasks.split(',')
 
-    if not args.disable_eval and use_qdq and lm_eval_version < Version("0.4.2"):
-        excel_name = f"{output_dir}_result.xlsx"
-        output_dir += "/"
-        print(excel_name, flush=True)
-        eval_model(model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                   eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                   device=torch_device, excel_file=excel_name,
-                   trust_remote_code=not args.disable_trust_remote_code)
+        if use_qdq and lm_eval_version < Version("0.4.2"):
+            if use_eval_legacy:
+                if "mmlu" in tasks:
+                    tmp_tasks = tasks
+                    tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
+                if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
+                    tmp_tasks = tasks
+                    tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
+                seen = set()
+                tmp_tasks = tasks
+                tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
 
-    if not args.disable_eval and lm_eval_version >= Version("0.4.2"):
-        from eval.evaluation import simple_evaluate
+            excel_name = f"{output_dir}_result.xlsx"
+            output_dir += "/"
+            print(excel_name, flush=True)
+            eval_model(
+                model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+                device=torch_device, excel_file=excel_name,
+                trust_remote_code=not args.disable_trust_remote_code)
+        
+        if lm_eval_version >= Version("0.4.2"):
+            from eval.evaluation import simple_evaluate
 
-        model_args = f"pretrained={eval_folder}"
-        model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
-        user_model = None
-        if args.act_bits <= 8:
-            user_model = model.to(device_str)
+            model_args = f"pretrained={eval_folder}"
+            model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
+            user_model = None
+            if args.act_bits <= 8:
+                user_model = model.to(device_str)
 
-        res = simple_evaluate(model="hf", model_args=model_args,
-                              tasks=tasks,
-                              batch_size=args.eval_bs, user_model=user_model)
-        from lm_eval.utils import make_table
+            res = simple_evaluate(model="hf", model_args=model_args,
+                                tasks=tasks,
+                                batch_size=args.eval_bs, user_model=user_model)
+            from lm_eval.utils import make_table
 
-        print(make_table(res))
-
+            print(make_table(res))
 
