@@ -57,7 +57,7 @@ def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
     Dynamically imports and returns the appropriate QuantLinear class based on the specified backend and parameters.
 
     Args:
-        backend (str): The backend to be used for quantization. Supported values include "auto_round" and "gptq".
+        backend (str): The backend to be used for quantization. Supported values include "auto_round" "awq" and "gptq".
         bits (int): The number of bits for quantization.
         group_size (int): The group size for quantization.
         sym (bool): Flag indicating whether to use symmetric quantization.
@@ -81,7 +81,7 @@ def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
     elif "gptq" in backend:
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
-        assert False, f"only support auto_gptq, auto_awq,and auto_round backend"
+        assert False, f"only support auto_gptq, auto_awq and auto_round backend"
 
 
 def pack_layer(name, model, layer_config, backend, pbar):
