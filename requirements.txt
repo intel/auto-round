@@ -10,3 +10,4 @@ threadpoolctl
 lm-eval==0.4.4
 intel-extension-for-transformers
 tqdm
+packaging
