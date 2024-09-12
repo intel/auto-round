@@ -4,7 +4,7 @@ Step-by-Step
 This document presents step-by-step instructions for auto-round.
 # Run Quantization on Qwen-VL Models
 
-In this example, we introduce an straight-forward way to execute quantization on some popular multimodal models such as Qwen-VL. 
+In this example, we introduce an straight-forward way to execute quantization on some popular multimodal models such as Qwen-VL and Qwen2-VL-Instruct. 
 
 ## Download the calibration data
 
@@ -75,6 +75,7 @@ Enter into the examples folder and install requirements
 ```bash
 pip install -r requirements.txt
 ```
+For Qwen2-VL quantization/Inference, please follow [Qwen2 official requirements](https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct)
 
 - **Default Settings:**
 ```bash
@@ -105,13 +106,15 @@ bash run_autoround.sh
 
 ## 3. run inference
 
+- Qwen-VL inference
+
 ```python
   from transformers import AutoModelForCausalLM, AutoTokenizer
   from transformers.generation import GenerationConfig
   import torch
   from transformers import set_seed
   set_seed(1234)
-  from auto_round.auto_quantizer import AutoHfQuantizer
+  from auto_round import AutoRoundConfig
   quantized_model_path = "./tmp_autoround"
   tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, trust_remote_code=True)
   # use bf16
@@ -141,6 +144,62 @@ bash run_autoround.sh
 ```
 
 
+- Qwen2-VL-7B-Instruct inference
+
+```python
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from qwen_vl_utils import process_vision_info
+from auto_round import AutoRoundConfig
+quantized_model_path="./tmp_autoround"
+model = Qwen2VLForConditionalGeneration.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
+processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
+messages = [{
+    "role": "user",
+    "content": [
+        {
+            "type": "image",
+            "image": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg",
+        },
+        {"type": "text", "text": "Describe this image."},]
+}]
+# Preparation for inference
+text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+image_inputs, video_inputs = process_vision_info(messages)
+inputs = processor(
+    text=[text],
+    images=image_inputs,
+    videos=video_inputs,
+    padding=True,
+    return_tensors="pt",
+)
+inputs = inputs.to("cuda")
+ 
+# Inference: Generation of the output
+generated_ids = model.generate(**inputs, max_new_tokens=50)
+generated_ids_trimmed = [
+    out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+]
+output_text = processor.batch_decode(
+    generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+)
+print(output_text)
+# The image depicts a serene beach scene at sunset. A woman is sitting on the sand, facing a large dog that appears to be a Labrador Retriever. The dog is wearing a harness and is extending its paw towards the woman's hand, possibly
+
+# messages = [{
+#     "role": "user",
+#     "content": [
+#         {
+#             "type": "image",
+#             "image": "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/transformers/tasks/ai2d-demo.jpg",
+#         },
+#         {"type": "text", "text": "What does the label 15 represent? (1) lava (2) core (3) tunnel (4) ash cloud"},]
+# }]
+
+# The label 15 represents an ash cloud. In the context of a volcano, an ash cloud is formed when volcanic ash is ejected into the atmosphere during an eruption. Therefore, the correct answer is:\n\n(4) ash cloud
+
+```
+
+
 ## 4. Results
 Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K) datasets for quantization calibration, and TextVQA dataset for evaluation. please follow the [recipe](./run_autoround.sh) and [evaluate script](./run_eval.sh). The results for Qwen-VL are as follows:
 | Metric         | bf16   | INT4   |
@@ -163,7 +222,6 @@ Using [COCO 2017](https://cocodataset.org/) and [LLaVA-Instruct-150K](https://hu
 | scienceVQA     | 0.6748 | 0.6574 |
 
 
-
 ## 5. Environment
 
 PyTorch 1.8 or higher version is needed
@@ -179,6 +237,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 

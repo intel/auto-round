@@ -61,7 +61,7 @@ import requests
 import io
 from transformers import AutoModelForCausalLM
 from transformers import AutoProcessor
-from auto_round.auto_quantizer import AutoHfQuantizer
+from auto_round import AutoRoundConfig
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True, torch_dtype="auto", _attn_implementation='flash_attention_2') # use _attn_implementation='eager' to disable flash attention
 
@@ -130,6 +130,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 

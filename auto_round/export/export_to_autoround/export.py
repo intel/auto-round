@@ -232,6 +232,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if output_dir is None:
         return model
     tokenizer = kwargs["tokenizer"]
+    if output_dir is None:
+        model.tokenizer = tokenizer
+        return model
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     modules_to_not_convert = []

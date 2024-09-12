@@ -45,10 +45,11 @@ if __name__ == "__main__":
 
     if hasattr(config, "quantization_config"):
         quantization_config = config.quantization_config
-        if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
-            from auto_round.auto_quantizer import AutoHfQuantizer
-        elif "quant_method" in quantization_config and quantization_config["quant_method"] == "gptq":
-            if args.device == "hpu":
+        if "quant_method" in quantization_config and ("auto-round" in quantization_config["quant_method"] or 
+                  ("gptq" in quantization_config["quant_method"] and args.device == "hpu")):
+            try:
+                from auto_round import AutoRoundConfig
+            except:
                 from auto_round.auto_quantizer import AutoHfQuantizer
     model_name = args.model_name
     torch_dtype = torch.float
@@ -97,5 +98,6 @@ if __name__ == "__main__":
                 )
 
     print("cost time: ", time.time() - s)
+
 
 

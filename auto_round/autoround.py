@@ -28,7 +28,10 @@ from tqdm import tqdm
 from .calib_dataset import get_dataloader
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
     WrapperTransformerConv1d
-from .special_model_handler import check_hidden_state_dim, check_share_attention_mask, check_not_share_position_ids
+from .special_model_handler import (check_hidden_state_dim,
+                                    check_share_attention_mask,
+                                    check_not_share_position_ids,
+                                    check_not_share_rotary_pos_emb)
 from .utils import (
     CpuInfo,
     block_forward,
@@ -452,12 +455,16 @@ class AutoRound(object):
                 self.seqlen,
                 self.share_attention_mask_flag,
                 self.not_share_position_ids_flag,
+                self.not_share_rotary_pos_emb_flag,
                 self.input_dim
             )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
-            output.extend(list(torch.split(tmp_output, 1, dim=self.input_dim)))
+            if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
+                output.append(tmp_output)
+            else:
+                output.extend(list(torch.split(tmp_output, 1, dim=self.input_dim)))
         torch.cuda.empty_cache()
 
         return output
@@ -657,11 +664,19 @@ class AutoRound(object):
                 self.input_dim = check_hidden_state_dim(self.model, positional_args)
                 self.share_attention_mask_flag = check_share_attention_mask(self.model, hidden_states, **kwargs)
                 self.not_share_position_ids_flag = check_not_share_position_ids(self.model, **kwargs)
+                self.not_share_rotary_pos_emb_flag = check_not_share_rotary_pos_emb(self.model, **kwargs)
             if name in self.inputs:
-                self.inputs[name]["input_ids"].extend(list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim)))
+                if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
+                    self.inputs[name]["input_ids"].append(hidden_states.to("cpu"))
+                else:
+                    self.inputs[name]["input_ids"].extend(
+                            list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim)))
             else:
                 self.inputs[name] = {}
-                self.inputs[name]["input_ids"] = list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim))
+                if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
+                    self.inputs[name]["input_ids"] = [hidden_states.to("cpu")]
+                else:
+                    self.inputs[name]["input_ids"] = list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim))
 
             if "positional_inputs" not in self.inputs[name]:
                 self.inputs[name]["positional_inputs"] = []
@@ -690,13 +705,25 @@ class AutoRound(object):
                                 self.inputs[name][key].extend(list(torch.split(alibi.to("cpu"), 1, dim=0)))
                             else:
                                 self.inputs[name][key] = list(torch.split(alibi.to("cpu"), 1, dim=0))
-                    elif "position_ids" in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
-                                if self.not_share_position_ids_flag \
-                                else to_device(kwargs[key], device=torch.device("cpu"))
+                    elif "position_ids" in key or 'cache_position' in key:
+                        if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
+                            if key not in self.inputs[name].keys():
+                               self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
+                            else:
+                                self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
+                        elif key not in self.inputs[name].keys():
+                                self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
+                                    if self.not_share_position_ids_flag \
+                                    else to_device(kwargs[key], device=torch.device("cpu"))
                         elif kwargs[key] is not None and self.not_share_position_ids_flag:
                             self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
+                    elif 'rotary_pos_emb' in key or 'cu_seqlens' in key:
+                        if key not in self.inputs[name].keys():
+                            self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))] \
+                                if self.not_share_rotary_pos_emb_flag \
+                                else to_device(kwargs[key], device=torch.device("cpu"))
+                        elif kwargs[key] is not None and self.not_share_rotary_pos_emb_flag:
+                            self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
                     elif key not in self.inputs[name].keys():
                         self.inputs[name][key] = to_device(kwargs[key], device=torch.device("cpu"))
             if name == self.last_cache_name:
@@ -939,10 +966,11 @@ class AutoRound(object):
                     seqlen=self.seqlen,
                     share_attention_mask_flag=self.share_attention_mask_flag,
                     not_share_position_ids_flag=self.not_share_position_ids_flag,
+                    not_share_rotary_pos_emb_flag=self.not_share_rotary_pos_emb_flag,
                     input_dim=self.input_dim,
                 )
 
-                current_output = [output[i] for i in indices]
+                current_output = [output[x] for x in indices]
                 current_output = torch.cat(current_output, dim=self.input_dim)
 
                 current_output = to_device(current_output, device)
@@ -1560,3 +1588,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+

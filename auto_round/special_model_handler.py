@@ -16,8 +16,8 @@ import torch
 
 share_attention_mask_tuple = ("baichuan",)
 special_states_dim_tuple = ("chatglm",)
-not_share_position_ids_tuple = ("llava", "phi3_v",)
-
+not_share_position_ids_tuple = ("llava", "phi3_v", "qwen2_vl",)
+not_share_rotary_pos_emb_tuple = ("qwen2_vl",)
 def check_share_attention_mask(model, hidden_states, attention_mask=None, **kwargs):
     """Checks if the attention mask states of the hidden states are shared in the model.
 
@@ -64,4 +64,12 @@ def check_not_share_position_ids(model, **kwargs):
             break
     return bool(is_special)
 
+
+def check_not_share_rotary_pos_emb(model, **kwargs):
+    is_special = False
+    for key in not_share_rotary_pos_emb_tuple:
+        if hasattr(model, "config") and key in model.config.model_type:
+            is_special = True
+            break
+    return bool(is_special)
 
