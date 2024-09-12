@@ -380,12 +380,24 @@ if __name__ == '__main__':
             exit()  ## does not support cpu,xpu model eval
 
     def get_library_version(library_name):
-        import pkg_resources
-        try:
-            version = pkg_resources.get_distribution(library_name).version
-            return version
-        except pkg_resources.DistributionNotFound:
-            return f"{library_name} is not installed"
+        from packaging.version import Version
+        python_vesion = Version(sys.version.split()[0])
+        if python_vesion < Version("3.8"):
+            import warnings
+            warnings.filterwarnings('ignore', category=DeprecationWarning)
+            import pkg_resources
+            try:
+                version = pkg_resources.get_distribution(library_name).version
+                return version
+            except pkg_resources.DistributionNotFound:
+                return f"{library_name} is not installed"
+        else:
+            import importlib_metadata
+            try:
+                version = importlib_metadata.version(library_name)
+                return version
+            except importlib_metadata.PackageNotFoundError:
+                return f"{library_name} is not installed"
         
 
     from packaging.version import Version
@@ -397,19 +409,6 @@ if __name__ == '__main__':
     else:
         use_eval_legacy = False
         from eval_legacy import eval_model
-
-    if isinstance(tasks, str):
-        tasks = tasks.split(',')
-        if isinstance(tasks, list):
-            if "mmlu" in tasks:
-                tmp_tasks = tasks
-                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
-            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
-                tmp_tasks = tasks
-                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-            seen = set()
-            tmp_tasks = tasks
-            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
 
     use_qdq = False
     if args.deployment_device and 'fake' in args.deployment_device:
@@ -424,7 +423,21 @@ if __name__ == '__main__':
         else:
             print(f"Using the latest {lm_eval_version}")
         
+        if isinstance(tasks, str):
+            tasks = tasks.split(',')
+
         if use_qdq and lm_eval_version < Version("0.4.2"):
+            if isinstance(tasks, list):
+                if "mmlu" in tasks:
+                    tmp_tasks = tasks
+                    tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
+                if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
+                    tmp_tasks = tasks
+                    tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
+                seen = set()
+                tmp_tasks = tasks
+                tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
+
             excel_name = f"{output_dir}_result.xlsx"
             output_dir += "/"
             print(excel_name, flush=True)

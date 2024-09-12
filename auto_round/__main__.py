@@ -14,6 +14,7 @@
 
 import os
 import re
+import sys
 import argparse
 
 import torch
@@ -318,11 +319,24 @@ def tune(args):
 
 
     def get_library_version(library_name):
-        try:
-            version = subprocess.check_output(['pip', 'show', library_name]).decode().split('\n')[1].split(': ')[1]
-            return version
-        except subprocess.CalledProcessError:
-            return "Library not found"
+        from packaging.version import Version
+        python_vesion = Version(sys.version.split()[0])
+        if python_vesion < Version("3.8"):
+            import warnings
+            warnings.filterwarnings('ignore', category=DeprecationWarning)
+            import pkg_resources
+            try:
+                version = pkg_resources.get_distribution(library_name).version
+                return version
+            except pkg_resources.DistributionNotFound:
+                return f"{library_name} is not installed"
+        else:
+            import importlib_metadata
+            try:
+                version = importlib_metadata.version(library_name)
+                return version
+            except importlib_metadata.PackageNotFoundError:
+                return f"{library_name} is not installed"
 
 
     lm_eval_version = get_library_version("lm-eval")
