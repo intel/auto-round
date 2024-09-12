@@ -27,7 +27,7 @@ from lm_eval.utils import make_table  # pylint: disable=E0401
 
 from auto_round import AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate
-from auto_round.utils import detect_device
+from auto_round.utils import detect_device, get_library_version
 
 def setup_parser():
     parser = argparse.ArgumentParser()
@@ -316,27 +316,6 @@ def tune(args):
     for format_ in format_list:
         eval_folder = f'{export_dir}-{format_}'
         autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
-
-
-    def get_library_version(library_name):
-        from packaging.version import Version
-        python_vesion = Version(sys.version.split()[0])
-        if python_vesion < Version("3.8"):
-            import warnings
-            warnings.filterwarnings('ignore', category=DeprecationWarning)
-            import pkg_resources
-            try:
-                version = pkg_resources.get_distribution(library_name).version
-                return version
-            except pkg_resources.DistributionNotFound:
-                return f"{library_name} is not installed"
-        else:
-            import importlib_metadata
-            try:
-                version = importlib_metadata.version(library_name)
-                return version
-            except importlib_metadata.PackageNotFoundError:
-                return f"{library_name} is not installed"
 
 
     lm_eval_version = get_library_version("lm-eval")

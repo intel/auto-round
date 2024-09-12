@@ -335,8 +335,8 @@ if __name__ == '__main__':
     if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
-    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
+    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
+    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}-qdq"
 
     eval_folder = None
     if args.format: 
@@ -379,28 +379,8 @@ if __name__ == '__main__':
             print('does not support cpu, xpu model evaluation.')
             exit()  ## does not support cpu,xpu model eval
 
-    def get_library_version(library_name):
-        from packaging.version import Version
-        python_vesion = Version(sys.version.split()[0])
-        if python_vesion < Version("3.8"):
-            import warnings
-            warnings.filterwarnings('ignore', category=DeprecationWarning)
-            import pkg_resources
-            try:
-                version = pkg_resources.get_distribution(library_name).version
-                return version
-            except pkg_resources.DistributionNotFound:
-                return f"{library_name} is not installed"
-        else:
-            import importlib_metadata
-            try:
-                version = importlib_metadata.version(library_name)
-                return version
-            except importlib_metadata.PackageNotFoundError:
-                return f"{library_name} is not installed"
-        
-
     from packaging.version import Version
+    from auto_round.utils import get_library_version
     lm_eval_version = get_library_version("lm_eval")
     lm_eval_version = Version(lm_eval_version)
     if lm_eval_version == Version("0.3.0"):

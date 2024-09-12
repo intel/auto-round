@@ -54,11 +54,11 @@ from .low_cpu_mem.utils import get_layers_before_block
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import logging
-import numexpr
 dataset_logger = logging.getLogger("datasets")
 dataset_logger.disabled = True
 numexpr_logger = logging.getLogger("numexpr")
 numexpr_logger.disabled = True
+import numexpr
 
 
 class AutoRound(object):
