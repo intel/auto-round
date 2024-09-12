@@ -112,7 +112,8 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     quant_config["bits"] = bits
     quant_config["group_size"] = group_size
     quant_config["zero_point"] = not sym
-
+    if output_dir is None:
+        return compressed_model
     save_quantized(compressed_model, save_dir=output_dir, quant_config=quant_config)
     return compressed_model
 

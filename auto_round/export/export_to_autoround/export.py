@@ -229,6 +229,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
+    if output_dir is None:
+        return model
     tokenizer = kwargs["tokenizer"]
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
