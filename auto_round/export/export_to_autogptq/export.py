@@ -36,8 +36,8 @@
 # SOFTWARE.
 import torch
 
-from auto_round.utils import check_to_quantized, get_block_names,\
-        get_module, logger, get_layer_names_in_block, set_module
+from auto_round.utils import check_to_quantized, get_block_names, \
+    get_module, logger, get_layer_names_in_block, set_module
 import copy
 import json
 import os
@@ -50,54 +50,7 @@ import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
-
-def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
-    """
-    Configures and returns a QuantLinear class based on the specified backend and parameters.
-
-    Args:
-        backend (str): The backend to be used for quantization. Supported values include "qigen", "triton", "marlin",
-                       "exllama", and "cuda".
-        bits (int, optional): The number of bits for quantization. Default is 4.
-        group_size (int, optional): The group size for quantization. Default is 128.
-        sym (bool, optional): Flag indicating whether to use symmetric quantization. Default is False.
-
-    Returns:
-        class: The dynamically imported QuantLinear class configured according to the specified parameters.
-    """
-    use_triton = True
-    disable_exllamav2 = True
-    disable_exllamav1 = False
-    disable_marlin = True
-    use_qigen = False
-    if "qigen" in backend:
-        use_triton = False
-        use_qigen = True
-    elif "marlin" in backend and sym:
-        use_triton = False
-        disable_marlin = False
-    else:
-        ##we all use triton for others, ##TODO may have bugs for some backends
-        from auto_round.export.export_to_autogptq.qlinear_triton import QuantLinear
-        return QuantLinear
-    try:
-        import auto_gptq  # pylint: disable=E0401
-    except:
-        logger.warning_once(f"please install auto_gptq via 'pip install auto-gptq' to support exporting to {backend}")
-        exit()
-
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
-    QuantLinear = dynamically_import_QuantLinear(
-        use_triton=use_triton,
-        desc_act=False,
-        group_size=group_size,
-        bits=bits,
-        disable_exllama=disable_exllamav1,
-        disable_exllamav2=disable_exllamav2,
-        use_qigen=use_qigen,
-        disable_marlin=disable_marlin,
-    )
-    return QuantLinear
+from auto_round.utils import get_autogptq_packing_qlinear
 
 
 def pack_layer(name, model, layer_config, backend, pbar):
@@ -152,8 +105,8 @@ def pack_layer(name, model, layer_config, backend, pbar):
             qlayer.pack(layer, scale, zero, None)
         qlayer.to(device)
         pbar.update(1)
-        
-        
+
+
 @register_format("auto_gptq")
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
                                **kwargs):
@@ -162,7 +115,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     model = kwargs["model"]
     tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
-    safe_serialization = True if 'safe_serialization' not in kwargs.keys() else  kwargs["safe_serialization"]
+    safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     quant_block_list = kwargs["quant_block_list"]
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     if tokenizer is not None:
@@ -220,7 +173,6 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     return model
 
 
-
 def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
     """Save model state dict and configs.
 
@@ -248,7 +200,3 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-
-
-

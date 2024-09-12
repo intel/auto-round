@@ -27,6 +27,7 @@ import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
+from auto_round.utils import get_autogptq_packing_qlinear
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -51,62 +52,12 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
 
 
-def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
-    """
-    Configures and returns a QuantLinear class based on the specified backend and parameters.
-
-    Args:
-        backend (str): The backend to be used for quantization. Supported values include "qigen", "triton", "marlin",
-                       "exllama", and "cuda".
-        bits (int, optional): The number of bits for quantization. Default is 4.
-        group_size (int, optional): The group size for quantization. Default is 128.
-        sym (bool, optional): Flag indicating whether to use symmetric quantization. Default is False.
-
-    Returns:
-        class: The dynamically imported QuantLinear class configured according to the specified parameters.
-    """
-    use_triton = True
-    disable_exllamav2 = True
-    disable_exllamav1 = False
-    disable_marlin = True
-    use_qigen = False
-    if "qigen" in backend:
-        use_triton = False
-        use_qigen = True
-    elif "triton" in backend:
-        use_triton = True
-    elif "marlin" in backend and sym:
-        use_triton = False
-        disable_marlin = False
-    elif "exllama" in backend:  ##need v1 code to export
-        use_triton = True  ##same with triton
-        disable_marlin = True
-    elif "cuda" in backend:
-        use_triton = False
-        disable_marlin = True
-        disable_exllamav2 = True
-        disable_exllamav1 = True
-
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
-    QuantLinear = dynamically_import_QuantLinear(
-        use_triton=use_triton,
-        desc_act=False,
-        group_size=group_size,
-        bits=bits,
-        disable_exllama=disable_exllamav1,
-        disable_exllamav2=disable_exllamav2,
-        use_qigen=use_qigen,
-        disable_marlin=disable_marlin,
-    )
-    return QuantLinear
-
-
 def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
     """
     Dynamically imports and returns the appropriate QuantLinear class based on the specified backend and parameters.
 
     Args:
-        backend (str): The backend to be used for quantization. Supported values include "auto_round" and "gptq".
+        backend (str): The backend to be used for quantization. Supported values include "auto_round" "awq" and "gptq".
         bits (int): The number of bits for quantization.
         group_size (int): The group size for quantization.
         sym (bool): Flag indicating whether to use symmetric quantization.
@@ -117,10 +68,10 @@ def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
     Raises:
         AssertionError: If the backend is not supported.
     """
-    if "auto_round" in backend and "awq" not in backend:
+    if "auto_round" in backend and "awq" not in backend and "gptq" not in backend:
         ##only support triton and exllamav2
         if not ("triton" in backend or "exllamav2" in backend):
-            logger.warning_once(f"autoround format does not support {backend}, try to pack with autogptq")
+            logger.warning_once(f"auto_round format does not support {backend}, try to pack each layer with auto_gptq")
             return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
         from auto_round_extension.cuda.qlinear_triton import QuantLinear
         return QuantLinear
@@ -130,7 +81,7 @@ def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
     elif "gptq" in backend:
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
-        assert False, f"only support gptq and autoround backend"
+        assert False, f"only support auto_gptq, auto_awq and auto_round backend"
 
 
 def pack_layer(name, model, layer_config, backend, pbar):
@@ -226,11 +177,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         AssertionError: If the backend is not supported.
     """
     if ":" not in backend:
-        backend = "autoround:exllamav2"
+        backend = "auto_round:exllamav2"
     backend = backend.replace("autoround", "auto_round")
     backend = backend.replace("auto-round", "auto_round")
-    if not ("triton" in backend or "exllamav2" in backend or "awq" in backend):
-        logger.info(f"autoround format does not support {backend}, try to pack with autogptq")
+    if not ("triton" in backend or "exllamav2" in backend or "awq" in backend or "gptq" in backend):
+        logger.info(f"auto_round format does not support {backend}, try to pack each layer with autogptq")
         backend = backend.replace("auto_round", "auto_gptq")
 
     model = kwargs["model"]
@@ -278,6 +229,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
+    if output_dir is None:
+        return model
     tokenizer = kwargs["tokenizer"]
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
@@ -357,4 +310,3 @@ def save_awq(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(quantization_config, f, indent=2)
-
