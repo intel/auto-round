@@ -419,7 +419,7 @@ if __name__ == '__main__':
             tasks = tasks.split(',')
 
         if use_qdq and lm_eval_version < Version("0.4.2"):
-            if isinstance(tasks, list):
+            if use_eval_legacy:
                 if "mmlu" in tasks:
                     tmp_tasks = tasks
                     tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
