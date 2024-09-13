@@ -17,7 +17,6 @@ import re
 import argparse
 
 import torch
-import subprocess
 import transformers
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
@@ -177,7 +176,6 @@ def tune(args):
         args.low_cpu_mem_tmp_dir = os.path.join(args.output_dir, "low_cpu_mem_tmp")
     if args.low_cpu_mem_mode == 2:
         from auto_round.low_cpu_mem.utils import load_model_with_hooks
-
         model = load_model_with_hooks(
             model_name,
             model_cls,
@@ -189,7 +187,6 @@ def tune(args):
         )
     elif args.low_cpu_mem_mode == 1:
         from auto_round.low_cpu_mem.utils import load_empty_model
-
         low_cpu_mem_usage = True
         model = load_empty_model(
             model_name,
@@ -205,18 +202,16 @@ def tune(args):
             trust_remote_code=not args.disable_trust_remote_code
         )
 
-    from auto_round import (AutoRound,
-                            AutoAdamRound)
+    from auto_round import AutoRound, AutoAdamRound
 
     model = model.eval()
     # align with GPTQ to eval ppl
+    seqlen = args.seqlen
     if "opt" in model_name:
         seqlen = model.config.max_position_embeddings
         model.seqlen = model.config.max_position_embeddings
     else:
         seqlen = 2048
-        model.seqlen = seqlen
-    seqlen = args.seqlen
 
     if args.model_dtype != None:
         if args.model_dtype == "float16" or args.model_dtype == "fp16":
@@ -262,7 +257,6 @@ def tune(args):
         lm_head_layer_name = n
     if args.quant_lm_head:
         from transformers import AutoConfig
-
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
         if config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
             tied_keys = model._tied_weights_keys
@@ -299,7 +293,6 @@ def tune(args):
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
-
         shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
 
     model.eval()
@@ -308,13 +301,11 @@ def tune(args):
 
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
 
-
     format_list = args.format.replace(' ', '').split(',')
     inplace = False if len(format_list) > 1 else True
     for format_ in format_list:
         eval_folder = f'{export_dir}-{format_}'
         autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
-
 
     lm_eval_version = get_library_version("lm-eval")
 
@@ -335,7 +326,6 @@ def tune(args):
             tasks=tasks,
             batch_size=args.eval_bs,
             user_model=user_model)
-
         print(make_table(res))
 
 
@@ -352,7 +342,6 @@ def eval(args):
         batch_size=args.eval_bs)
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
-
     print(make_table(res))
 
 
