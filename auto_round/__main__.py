@@ -26,7 +26,7 @@ from lm_eval.utils import make_table  # pylint: disable=E0401
 
 from auto_round import AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate
-from auto_round.utils import detect_device
+from auto_round.utils import detect_device, get_library_version
 
 def setup_parser():
     parser = argparse.ArgumentParser()
@@ -36,7 +36,7 @@ def setup_parser():
     )
 
     parser.add_argument('--eval', action='store_true', 
-                        help="whether to use eval mode.")
+                        help="whether to use eval only mode.")
 
     parser.add_argument("--bits", default=4, type=int,
                         help="number of  bits")
@@ -109,7 +109,7 @@ def setup_parser():
                         help="Where to store the final model.")
 
     parser.add_argument("--disable_eval", action='store_true',
-                        help="Whether to do lmeval evaluation.")
+                        help="Whether to do lm-eval evaluation after tuning.")
 
     parser.add_argument("--disable_amp", action='store_true',
                         help="disable amp")
@@ -314,14 +314,6 @@ def tune(args):
     for format_ in format_list:
         eval_folder = f'{export_dir}-{format_}'
         autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
-
-
-    def get_library_version(library_name):
-        try:
-            version = subprocess.check_output(['pip', 'show', library_name]).decode().split('\n')[1].split(': ')[1]
-            return version
-        except subprocess.CalledProcessError:
-            return "Library not found"
 
 
     lm_eval_version = get_library_version("lm-eval")
