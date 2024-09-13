@@ -348,19 +348,15 @@ def tune(args):
 
 
 def eval(args):
-    quantization_config = AutoRoundConfig(backend=args.device)
     device_str = detect_device(args.device)
-    user_model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        device_map=device_str, quantization_config=quantization_config)
     model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
     if isinstance(args.tasks, str):
         tasks = args.tasks.split(',')
     res = simple_evaluate(
         model="hf",
         model_args=model_args,
-        user_model=user_model,
         tasks=tasks,
+        device=device_str,
         batch_size=args.eval_bs)
 
     from lm_eval.utils import make_table  # pylint: disable=E0401

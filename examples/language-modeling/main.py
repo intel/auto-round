@@ -94,7 +94,7 @@ if __name__ == '__main__':
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="enable_minmax_tuning is deprecated")
 
-    parser.add_argument("--deployment_device", default='auto_round', type=str,
+    parser.add_argument("--deployment_device", default=None, type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'xpu', 'gpu(auto_gptq)' and 'auto_round'."
                              "default to 'auto_round', 'fake' indicating that it only performs fake quantization and won't be exported to any device.")
     
@@ -183,6 +183,8 @@ if __name__ == '__main__':
         args.format = "auto_round"
 
     if args.deployment_device:
+        warnings.warn("The deployment_device is deprecated and will be removed in future version."
+                      "Please use format instead", DeprecationWarning)
         if "gpu" in args.deployment_device and args.sym is False:
             print(
                 "warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use --format='auto_round'")

@@ -63,9 +63,10 @@ reduce the seqlen to 512 (potential accuracy drop)
 or combine them
 
 - **Reduced CPU Memory Usage:**
-set "--low_cpu_mem_mode 1" to use block-wise mode, load the weights from disk of each block when tuning and release the memory of the block after tuning. (more tuning cost)
 
-set "--low_cpu_mem_mode 2" to use layer-wise mode, load the weights of each layer from disk when tuning, minimum memory consumption and also slowest running speed.
+  - set "--low_cpu_mem_mode 1" to use block-wise mode, load the weights from disk of each block when tuning and release the memory of the block after tuning. (more tuning cost)
+
+  - set "--low_cpu_mem_mode 2" to use layer-wise mode, load the weights of each layer from disk when tuning, minimum memory consumption and also slowest running speed.
 
 
 - **Speedup the tuning:**
@@ -132,7 +133,7 @@ CUDA_VISIBLE_DEVICES=1,2 python3 eval/evaluation.py --model_name /save_model_pat
 
 - User could also perform evaluation on Intel Gaudi-2 using the following script.
 ```bash
-python3 eval_042/evaluation.py --model_name /saved_model_path/ --tasks mmlu --device hpu
+python3 eval/evaluation.py --model_name /saved_model_path/ --tasks mmlu --device hpu
 ```
 
 You can also utilize the official lm_eval [link](https://github.com/EleutherAI/lm-evaluation-harness/tree/main?tab=readme-ov-file#basic-usage).
