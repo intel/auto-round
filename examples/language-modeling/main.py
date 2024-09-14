@@ -248,10 +248,8 @@ if __name__ == '__main__':
     # align with GPTQ to eval ppl
     if "opt" in model_name:
         seqlen = model.config.max_position_embeddings
-        model.seqlen = model.config.max_position_embeddings
     else:
         seqlen = 2048
-        model.seqlen = seqlen
     seqlen = args.seqlen
 
     if args.model_dtype != None:
