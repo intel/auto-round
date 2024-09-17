@@ -5,15 +5,63 @@ import argparse
 import subprocess
 from packaging import version
 
+import logging
+
+
+logging.basicConfig(level=logging.INFO)
+from auto_round.utils import logger
 
 sys.path.insert(0, '../..')
 parser = argparse.ArgumentParser()
 import torch
 import transformers
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-torch.use_deterministic_algorithms(True, warn_only=True)
+# os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+# torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
+
+
+
+def freeze_random(seed=0):
+    import random
+    import numpy as np
+    random.seed(seed)
+
+    torch.manual_seed(seed)
+
+    np.random.seed(seed)
+
+    g = torch.Generator()
+    g.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+
+freeze_random(42)
+
+
+def _use_deterministic():
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=False)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    logger.warning(
+        (
+            "Reproducibility is enabled with `AO_USE_DETERMINISTIC_ALGORITHMS=1`, which sets "
+            "`torch.use_deterministic_algorithms(True, warn_only=False)` and "
+            "environment variable `CUBLAS_WORKSPACE_CONFIG` to `:4096:8`.\n"
+            "Please note that this may impact performance, or cause crashes if the model includes non-deterministic operations."
+        )
+    )
+
+
+AO_USE_DETERMINISTIC_ALGORITHMS = (
+    os.environ.get("AO_USE_DETERMINISTIC_ALGORITHMS", "0") == "1"
+)
+if AO_USE_DETERMINISTIC_ALGORITHMS:
+    _use_deterministic()
 
 
 import logging
@@ -94,7 +142,7 @@ if __name__ == '__main__':
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="enable_minmax_tuning is deprecated")
 
-    parser.add_argument("--deployment_device", default='auto_round', type=str,
+    parser.add_argument("--deployment_device", default=None, type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'xpu', 'gpu(auto_gptq)' and 'auto_round'."
                              "default to 'auto_round', 'fake' indicating that it only performs fake quantization and won't be exported to any device.")
     
@@ -132,6 +180,8 @@ if __name__ == '__main__':
 
     parser.add_argument("--disable_trust_remote_code", action='store_true',
                         help="Whether to disable trust_remote_code")
+    parser.add_argument("--eval_float", action='store_true',
+                        help="Whether to evaluate the float model")
 
     parser.add_argument("--disable_quanted_input", action='store_true',
                         help="whether to disuse the output of quantized block to tune the next block")
@@ -326,6 +376,45 @@ if __name__ == '__main__':
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
+        
+    # ==-----------------------------------------------------------------------------------------------------------------
+    # Eval float
+    if args.eval_float:
+        print(f"evaluating the float model {model_name}")
+        from packaging.version import Version
+        from auto_round.utils import get_library_version
+        lm_eval_version = get_library_version("lm_eval")
+        lm_eval_version = Version(lm_eval_version)
+        if lm_eval_version == Version("0.3.0"):
+            use_eval_legacy = True
+            from eval_legacy import eval_model_legacy as eval_model
+        else:
+            use_eval_legacy = False
+            from eval_legacy import eval_model
+        if use_eval_legacy:
+            print("Using the legacy lm_eval(0.3.0)")
+        else:
+            print(f"Using the latest {lm_eval_version}")
+        
+        if isinstance(tasks, str):
+            tasks = tasks.split(',')
+
+        if lm_eval_version >= Version("0.4.2"):
+            from eval.evaluation import simple_evaluate
+
+            model_args = f"pretrained={args.model_name}"
+            model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
+            user_model = None
+            if args.act_bits <= 8:
+                user_model = model.to(device_str)
+
+            res = simple_evaluate(model="hf", model_args=model_args,
+                                tasks=tasks,
+                                batch_size=args.eval_bs, user_model=user_model)
+            from lm_eval.utils import make_table
+
+            print(make_table(res))
+            exit()
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,

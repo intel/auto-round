@@ -16,7 +16,7 @@ import os
 import torch
 import transformers
 
-torch.use_deterministic_algorithms(True, warn_only=True)
+# torch.use_deterministic_algorithms(True, warn_only=True)
 
 import copy
 import time
