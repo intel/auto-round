@@ -157,6 +157,8 @@ if __name__ == '__main__':
     parser.add_argument("--fp_layers", default="", type=str,
                         help="List of Layers to maintain original data type")
 
+    parser.add_argument("--hybrid_json", default=None, type=str)
+
     args = parser.parse_args()
 
     if args.enable_minmax_tuning:
@@ -326,6 +328,11 @@ if __name__ == '__main__':
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
+
+    if args.hybrid_json is not None:
+        import json
+        layer_data = json.load(open(args.hybrid_json, 'r'))
+        layer_config = layer_data
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,

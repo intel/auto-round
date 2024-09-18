@@ -230,6 +230,8 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer = orig_layer
         self.device = device
         self.bits = self.orig_layer.bits
+        if self.bits == 8:
+            enable_minmax_tuning = False
         self.group_size = self.orig_layer.group_size
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
