@@ -18,6 +18,7 @@ import argparse
 
 import torch
 import transformers
+
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
@@ -25,7 +26,8 @@ from lm_eval.utils import make_table  # pylint: disable=E0401
 
 from auto_round import AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate
-from auto_round.utils import detect_device, get_library_version
+from auto_round.utils import detect_device, get_library_version, detect_device_count
+
 
 def setup_parser():
     parser = argparse.ArgumentParser()
@@ -34,7 +36,7 @@ def setup_parser():
         "--model", default="facebook/opt-125m"
     )
 
-    parser.add_argument('--eval', action='store_true', 
+    parser.add_argument('--eval', action='store_true',
                         help="whether to use eval only mode.")
 
     parser.add_argument("--bits", default=4, type=int,
@@ -89,8 +91,8 @@ def setup_parser():
 
     parser.add_argument("--format", default=None, type=str,
                         help="The format in which to save the model. "
-                        "The options are 'auto_round', 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
-                        "default to 'auto_round."
+                             "The options are 'auto_round', 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
+                             "default to 'auto_round."
                         )
 
     parser.add_argument("--data_type", default='int',
@@ -130,28 +132,29 @@ def setup_parser():
 
     parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
                         help="Choose which low cpu memory mode to use. "
-                        "Can significantly reduce cpu memory footprint but cost more time."
-                        "1 means choose block-wise mode, load the weights of each block"
-                        " from disk when tuning and release the memory of the block after tuning."
-                        "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
-                        " minimum memory consumption and also slowest running speed."
-                        "others means not use low cpu memory. Default to 0, not use low cpu memory.")
+                             "Can significantly reduce cpu memory footprint but cost more time."
+                             "1 means choose block-wise mode, load the weights of each block"
+                             " from disk when tuning and release the memory of the block after tuning."
+                             "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
+                             " minimum memory consumption and also slowest running speed."
+                             "others means not use low cpu memory. Default to 0, not use low cpu memory.")
 
     parser.add_argument("--low_cpu_mem_tmp_dir", default=None, type=str,
                         help="temp work space to store the temporary files "
-                        "when using low cpu memory mode. Will remove after tuning.")
+                             "when using low cpu memory mode. Will remove after tuning.")
 
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 
     parser.add_argument("--act_bits", default=32, type=int,
                         help="activation bits")
-    
+
     parser.add_argument("--fp_layers_list", default="", type=str,
                         help="List of Layers to maintain original data type")
 
     args = parser.parse_args()
     return args
+
 
 def tune(args):
     tasks = args.tasks
@@ -162,7 +165,6 @@ def tune(args):
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     print(model_name, flush=True)
-
 
     device_str = detect_device(args.device)
     torch_dtype = "auto"
@@ -197,10 +199,16 @@ def tune(args):
             trust_remote_code=not args.disable_trust_remote_code
         )
     else:
-        model = model_cls.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-            trust_remote_code=not args.disable_trust_remote_code
-        )
+        if detect_device_count() > 1:
+            model = model_cls.from_pretrained(
+                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                trust_remote_code=not args.disable_trust_remote_code, device_map="auto"
+            )
+        else:
+            model = model_cls.from_pretrained(
+                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                trust_remote_code=not args.disable_trust_remote_code
+            )
 
     from auto_round import AutoRound, AutoAdamRound
 
@@ -274,18 +282,22 @@ def tune(args):
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 
-    if args.quant_lm_head and args.low_gpu_mem_usage:
-        print(
-            f"warning, low_gpu_mem_usage=False is strongly recommended"
-            " if the whole model could be loaded to gpu")
+    if args.quant_lm_head:
+        for n, m in model.named_parameters():
+            if not "cuda" in str(m.device) or not "hpu" in str(m.device):
+                print(f"warning, we strongly recommend using additional CUDA/HPU devices,e.g. "
+                      f"'CUDA_VISIBLE_DEVICES=0,1 auto-round xxx',"
+                      f" for optimal performance during calibration when enabling lm-head quantization. "
+                      f"Otherwise, the process may be significantly slower.")
+                break
 
     autoround = round(
         model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.batch_size,
         dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
-        minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, 
+        minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
         device=device_str, amp=not args.disable_amp, nsamples=args.nsamples, seed=args.seed,
-        low_gpu_mem_usage=args.low_gpu_mem_usage, scale_dtype=args.scale_dtype, 
-        gradient_accumulate_steps=args.gradient_accumulate_steps, layer_config=layer_config, 
+        low_gpu_mem_usage=args.low_gpu_mem_usage, scale_dtype=args.scale_dtype,
+        gradient_accumulate_steps=args.gradient_accumulate_steps, layer_config=layer_config,
         enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
         low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning)

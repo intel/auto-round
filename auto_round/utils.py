@@ -430,6 +430,17 @@ def check_to_quantized(config):
         return True
 
 
+def detect_device_count():
+    if torch.cuda.is_available():
+        return torch.cuda.device_count()
+    else:
+        try:
+            import habana_frameworks.torch.hpu as hthpu
+            return hthpu.device_count()
+        except:
+            return 0
+
+
 def detect_device(device=None):
     def is_valid_digit(s):
         try:
@@ -830,25 +841,27 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
     return QuantLinear
 
+
 def get_library_version(library_name):
     from packaging.version import Version
     python_vesion = Version(sys.version.split()[0])
     if python_vesion < Version("3.8"):
         import warnings
         warnings.filterwarnings('ignore', category=DeprecationWarning)
-        import pkg_resources # pylint: disable=E0401
+        import pkg_resources  # pylint: disable=E0401
         try:
             version = pkg_resources.get_distribution(library_name).version
             return version
         except pkg_resources.DistributionNotFound:
             return f"{library_name} is not installed"
     else:
-        import importlib_metadata # pylint: disable=E0401
+        import importlib_metadata  # pylint: disable=E0401
         try:
             version = importlib_metadata.version(library_name)
             return version
         except importlib_metadata.PackageNotFoundError:
             return f"{library_name} is not installed"
+
 
 def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     """

@@ -50,10 +50,11 @@ from .utils import (
     to_dtype,
     get_layer_names_in_block,
     mv_module_from_gpu,
-    unsupport_meta_device,
+    unsupport_meta_device, detect_device_count,
 )
 
 from .low_cpu_mem.utils import get_layers_before_block
+import accelerate
 
 
 class AutoRound(object):
@@ -164,7 +165,7 @@ class AutoRound(object):
             "please do not using device_map='auto' in model loading, "
             "or follow examples/language-modeling/main.py to enable low_cpu_mem_usage")
         self.model = model.eval()
-        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        # self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -283,6 +284,8 @@ class AutoRound(object):
         self.start_time = time.time()
         all_first_block_names = [block[0] for block in all_blocks]
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
+        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+            accelerate.hooks.remove_hook_from_submodules(self.model)
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
@@ -581,7 +584,10 @@ class AutoRound(object):
         """
         try:
             if not self.model.device.type == "meta":
-                self.model = self.model.to(self.device)
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    pass
+                else:
+                    self.model = self.model.to(self.device)
             all_inputs = self.cache_inter_data(
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
@@ -670,7 +676,7 @@ class AutoRound(object):
                     self.inputs[name]["input_ids"].append(hidden_states.to("cpu"))
                 else:
                     self.inputs[name]["input_ids"].extend(
-                            list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim)))
+                        list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim)))
             else:
                 self.inputs[name] = {}
                 if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
@@ -708,13 +714,13 @@ class AutoRound(object):
                     elif "position_ids" in key or 'cache_position' in key:
                         if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
                             if key not in self.inputs[name].keys():
-                               self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
+                                self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
                             else:
                                 self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
                         elif key not in self.inputs[name].keys():
-                                self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
-                                    if self.not_share_position_ids_flag \
-                                    else to_device(kwargs[key], device=torch.device("cpu"))
+                            self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
+                                if self.not_share_position_ids_flag \
+                                else to_device(kwargs[key], device=torch.device("cpu"))
                         elif kwargs[key] is not None and self.not_share_position_ids_flag:
                             self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif 'rotary_pos_emb' in key or 'cu_seqlens' in key:
@@ -1588,4 +1594,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
-
