@@ -912,7 +912,7 @@ class AutoRound(object):
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():
-            if hasattr(m, "orig_layer"):
+            if hasattr(m, "orig_layer") and m.bits != 8:
                 if "v" in m.params.keys():
                     round_params.append(m.params['v'])
                 if "max_scale" in m.params.keys():
