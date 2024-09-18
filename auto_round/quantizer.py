@@ -258,7 +258,9 @@ class WrapperLinear(torch.nn.Module):
                 self.group_size),
             requires_grad=True)
         if self.bits == 8:
-            self.value = torch.tensor(0.0, device=self.device, dtype=weight_dtype)
+            self.value = torch.nn.Parameter(
+                torch.tensor(0.0, device=self.device, dtype=weight_dtype), 
+                requires_grad=False)
         self.params["v"] = self.value
         weight_reshape = reshape_tensor(orig_layer_weight.data, self.group_size)
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
@@ -289,7 +291,9 @@ class WrapperLinear(torch.nn.Module):
                     self.bias_group_size),
                 requires_grad=True)
             if self.bits == 8:
-                self.bias_v = torch.tensor(0.0, device=self.device, dtype=weight_dtype)
+                self.bias_v = torch.nn.Parameter(
+                    torch.tensor(0.0, device=self.device, dtype=weight_dtype), 
+                    requires_grad=False)
             from auto_round.data_type.int import quant_tensor_asym_wo_round
             self.bias_quant_func = quant_tensor_asym_wo_round
             self.params["bias_v"] = self.bias_v
