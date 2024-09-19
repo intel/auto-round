@@ -282,15 +282,6 @@ def tune(args):
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 
-    if args.quant_lm_head:
-        for n, m in model.named_parameters():
-            if not "cuda" in str(m.device) or not "hpu" in str(m.device):
-                print(f"warning, we strongly recommend using additional CUDA/HPU devices,e.g. "
-                      f"'CUDA_VISIBLE_DEVICES=0,1 auto-round xxx',"
-                      f" for optimal performance during calibration when enabling lm-head quantization. "
-                      f"Otherwise, the process may be significantly slower.")
-                break
-
     autoround = round(
         model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.batch_size,
         dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,

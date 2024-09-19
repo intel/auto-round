@@ -285,7 +285,7 @@ class AutoRound(object):
         all_first_block_names = [block[0] for block in all_blocks]
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-            accelerate.hooks.remove_hook_from_submodules(self.model)
+            accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
@@ -377,15 +377,28 @@ class AutoRound(object):
         if len(layer_names) == 0:
             return
         q_layer_inputs = None
-        if self.enable_quanted_input:
+        enable_quanted_input = self.enable_quanted_input
+        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
+            from accelerate.big_modeling import dispatch_model
+
+            dispatch_model(self.model, self.model.hf_device_map)
+
+        # if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
+        #     enable_quanted_input = False
+        #     logger.info("Set enable_quantized_input to False for tuning the following layers to simplify the process.")
+
+        if enable_quanted_input:
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
+            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                accelerate.hooks.remove_hook_from_submodules(
+                    self.model)  ##self.model.hf_device_map has not been changed
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         torch.cuda.empty_cache()
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
-            q_layer_input = q_layer_inputs[layer_name] if self.enable_quanted_input else None
+            q_layer_input = q_layer_inputs[layer_name] if enable_quanted_input else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
             self.quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
             for i in range(len(layer_input)):
@@ -564,7 +577,7 @@ class AutoRound(object):
         if self.low_cpu_mem_usage:
             for n, m in embed_layers:
                 m = m.to("meta")
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=[], last_cache_name=None):
@@ -595,6 +608,11 @@ class AutoRound(object):
             torch.cuda.empty_cache()
         except:
             logger.info("switch to cpu to cache inputs")
+            if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"]<8:
+                logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
+                      f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
+                      f" for optimal performance during calibration when enabling lm-head quantization. "
+                      f"Otherwise, the process may be significantly slower.")
             self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             torch.cuda.empty_cache()
             all_inputs = self.cache_inter_data(

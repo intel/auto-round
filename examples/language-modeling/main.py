@@ -249,11 +249,7 @@ if __name__ == '__main__':
                             AutoAdamRound)
 
     model = model.eval()
-    # align with GPTQ to eval ppl
-    if "opt" in model_name:
-        seqlen = model.config.max_position_embeddings
-    else:
-        seqlen = 2048
+
     seqlen = args.seqlen
 
     if args.model_dtype != None:
@@ -326,15 +322,6 @@ if __name__ == '__main__':
         if transformers_version[0] == 4 and transformers_version[1] < 38:
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
-
-    if args.quant_lm_head:
-        for n, m in model.named_parameters():
-            if not "cuda" in str(m.device) or not "hpu" in str(m.device):
-                print(f"warning, we strongly recommend using additional CUDA/HPU devices,e.g. "
-                      f"'CUDA_VISIBLE_DEVICES=0,1 auto-round xxx',"
-                      f" for optimal performance during calibration when enabling lm-head quantization. "
-                      f"Otherwise, the process may be significantly slower.")
-                break
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
