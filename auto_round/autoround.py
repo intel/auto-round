@@ -165,7 +165,6 @@ class AutoRound(object):
             "please do not using device_map='auto' in model loading, "
             "or follow examples/language-modeling/main.py to enable low_cpu_mem_usage")
         self.model = model.eval()
-        # self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -382,10 +381,6 @@ class AutoRound(object):
             from accelerate.big_modeling import dispatch_model
 
             dispatch_model(self.model, self.model.hf_device_map)
-
-        # if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
-        #     enable_quanted_input = False
-        #     logger.info("Set enable_quantized_input to False for tuning the following layers to simplify the process.")
 
         if enable_quanted_input:
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)

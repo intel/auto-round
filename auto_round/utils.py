@@ -420,6 +420,16 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
 
 
 def check_to_quantized(config):
+    """Checks if the configuration is valid for quantization.
+
+    Args:
+        config (dict or object): The configuration to check. It can be either a
+            dictionary with a 'bits' key or an object with a 'bits' attribute.
+
+    Returns:
+        bool: True if the configuration is valid for quantization (bits <= 8),
+            False otherwise.
+    """
     if isinstance(config, dict):
         if config["bits"] > 8:
             return False
@@ -431,17 +441,41 @@ def check_to_quantized(config):
 
 
 def detect_device_count():
+    """Detects the number of available computation devices.
+
+    This function checks if CUDA is available. If it is, it returns the count
+    of available CUDA devices. If not, it attempts to import the Habana
+    device framework to return the count of Habana devices. If the import
+    fails or no devices are found, it returns 0.
+
+    Returns:
+        int: The number of available devices (CUDA or Habana).
+    """
     if torch.cuda.is_available():
         return torch.cuda.device_count()
     else:
         try:
-            import habana_frameworks.torch.hpu as hthpu
+            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
             return hthpu.device_count()
-        except:
+        except ImportError:
             return 0
 
 
 def detect_device(device=None):
+    """Detects the appropriate computation device.
+
+    This function determines the device to use for computations. It can take
+    a specific device index or default to 'auto'. The function checks for
+    available devices in the following order: CUDA, Habana, and finally CPU.
+
+    Args:
+        device (str, int, or torch.device, optional): The desired device.
+            If 'auto' or None, the function will determine the best device
+            automatically.
+
+    Returns:
+        str: The device to use for computations, formatted as a string.
+    """
     def is_valid_digit(s):
         try:
             num = int(s)
