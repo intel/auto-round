@@ -111,6 +111,10 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
+        try:
+            import intel_extension_for_transformers
+        except:
+            return
 
         from auto_round.auto_quantizer import AutoHfQuantizer
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
