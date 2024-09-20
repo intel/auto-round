@@ -27,6 +27,7 @@ from lm_eval.utils import make_table  # pylint: disable=E0401
 from auto_round import AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate
 from auto_round.utils import detect_device, get_library_version, detect_device_count
+from auto_round.utils import logger
 
 
 def setup_parser():
@@ -48,7 +49,7 @@ def setup_parser():
     parser.add_argument("--batch_size", default=8, type=int,
                         help="train batch size")
 
-    parser.add_argument("--eval_bs", default=1, type=int,
+    parser.add_argument("--eval_bs", default=None, type=int,
                         help="eval batch size")
 
     parser.add_argument("--device", default="auto", type=str,
@@ -164,7 +165,7 @@ def tune(args):
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
-    print(model_name, flush=True)
+    logger.info(f"start to quantize {model_name}")
 
     device_str = detect_device(args.device)
     torch_dtype = "auto"
@@ -231,8 +232,8 @@ def tune(args):
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
-            print(f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length",
-                  flush=True)
+            logger.info(
+                f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length")
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
 
@@ -248,7 +249,7 @@ def tune(args):
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                 layer_config[n] = {"bits": 32}
-                print(
+                logger.info(
                     f"{n} will not be quantized due to its shape not being divisible by 32,"
                     " resulting in an exporting issue to autogptq")
     fp_layers_list = args.fp_layers_list.split(",")
@@ -258,7 +259,7 @@ def tune(args):
                 name = n.split('.')[-1]
                 if n in fp_layers_list or name in fp_layers_list:
                     layer_config[n] = {"bits": 32}
-                    print(
+                    logger.info(
                         f"{n} will not be quantized.")
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():
@@ -271,8 +272,8 @@ def tune(args):
             for item in tied_keys:
                 if lm_head_layer_name in item:  ##TODO extend to encoder-decoder layer, seq classification model
                     args.quant_lm_head = False
-                    print(
-                        f"warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
+                    logger.warning(
+                        f"reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
                         f"supported currently")
                     break
     if args.quant_lm_head:
@@ -316,7 +317,7 @@ def tune(args):
         tasks = tasks.split(',')
 
     if not args.disable_eval:
-        print(f"Using the latest {lm_eval_version}")
+        logger.info(f"Using lm-eval version {lm_eval_version}")
         model_args = f"pretrained={eval_folder}"
         model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
         user_model = None
@@ -350,6 +351,8 @@ def eval(args):
 
 def run():
     args = setup_parser()
+    if args.eval_bs is None:
+        args.eval_bs = "auto"
     if args.eval:
         eval(args)
     else:

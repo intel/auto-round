@@ -476,6 +476,7 @@ def detect_device(device=None):
     Returns:
         str: The device to use for computations, formatted as a string.
     """
+
     def is_valid_digit(s):
         try:
             num = int(s)
@@ -912,6 +913,8 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
         class: The dynamically imported QuantLinear class configured according to the specified parameters.
     """
     use_triton = True
+    if bits not in [2, 4, 8]:
+        use_triton = False
     disable_exllamav2 = True
     disable_exllamav1 = False
     disable_marlin = True
