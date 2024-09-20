@@ -173,11 +173,11 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
 #### Formats
 
-**AutoRound format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision inference.[2,4]
+**AutoRound format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision inference. [2,4]
 bits are supported. It
 resolves the asymmetric quantization kernel issues found in the AutoGPTQ format and supports both LM-head quantization
 and mixed precision. However, it has not yet gained widespread community adoption. For CUDA support, you will need to
-install from the source. [2,4] bits are supported
+install from the source.
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
 community, [2,3,4,8] bits are supported, for 3 bits, pip install auto-gptq first before quantization. It also benefits
