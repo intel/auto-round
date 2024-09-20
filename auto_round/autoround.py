@@ -603,11 +603,11 @@ class AutoRound(object):
             torch.cuda.empty_cache()
         except:
             logger.info("switch to cpu to cache inputs")
-            if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"]<8:
+            if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 8:
                 logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
-                      f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
-                      f" for optimal performance during calibration when enabling lm-head quantization. "
-                      f"Otherwise, the process may be significantly slower.")
+                               f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
+                               f" for optimal performance during calibration when enabling lm-head quantization. "
+                               f"Otherwise, the process may be significantly slower.")
             self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             torch.cuda.empty_cache()
             all_inputs = self.cache_inter_data(
@@ -1168,6 +1168,16 @@ class AutoRound(object):
             logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
             exit()
         save_quantized_as_format = EXPORT_FORMAT.get(format)
+        if "gptq" in format and not self.sym:
+            logger.warning(
+                "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
+                " particularly for 2-bit quantization and smaller models."
+                " We recommend exporting to either the AutoAWQ format (4 bits) or "
+                "the AutoRound format (2 bits) to enhance performance."
+             )
+        if "awq" in format and not self.bits == 4:
+            raise ValueError("The AWQ format only supports W4 asym quantization ")
+
         serialization_keys = [
             "bits",
             "group_size",

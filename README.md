@@ -187,7 +187,7 @@ models.
 Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
 **AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
-within the community, only 4-bits asymmetric quantization is supported. Asymmetric quantization typically improves
+within the community, only 4-bits quantization is supported. Asymmetric quantization typically improves
 accuracy but may reduce inference speed. It features
 specialized layer fusion tailored for Llama models.
 
@@ -216,7 +216,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
-**CUDA**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation
+**CUDA**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install  --no-build-isolation
 -e .
 
 #### CPU/HPU/CUDA on 0.3.0+
