@@ -11,13 +11,13 @@ AutoRound
 <div align="left">
 
 AutoRound is an advanced quantization algorithm for low-bits LLM inference. It's tailored for a wide range
-of models. Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200
+of models. AutoRound adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200
 steps,
 which competes impressively against recent methods without introducing any additional inference overhead and keeping low
 tuning cost. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516v4) for more
 details and visit [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for
-more accuracy data across various models.
+more accuracy data and recipes across various models.
 
 <div align="center">
 
@@ -177,8 +177,8 @@ and mixed precision. However, it has not yet gained widespread community adoptio
 install from the source.
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
-community. It also benefits from the Marlin kernel, which can boost inference performance notably. However, the
-asymmetric kernel has issues that can cause considerable accuracy drops, particularly at 2-bit quantization and small models.
+community. It also benefits from the Marlin kernel, which can boost inference performance notably. However, **the
+asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small models.
 Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
 **AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
@@ -206,7 +206,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 ### AutoRound format
 
-**CPU**: no extra operations
+**CPU**: pip install intel-extension-for-transformers
 
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).

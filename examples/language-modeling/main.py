@@ -43,7 +43,7 @@ if __name__ == '__main__':
     parser.add_argument("--train_bs", default=8, type=int,
                         help="train batch size")
 
-    parser.add_argument("--eval_bs", default=4, type=int,
+    parser.add_argument("--eval_bs", default=None, type=int,
                         help="eval batch size")
 
     parser.add_argument("--device", default="auto", type=str,
@@ -390,6 +390,9 @@ if __name__ == '__main__':
             print('does not support cpu, xpu model evaluation.')
             exit()  ## does not support cpu,xpu model eval
 
+    if args.disable_eval:
+        exit()
+
     from packaging.version import Version
     from auto_round.utils import get_library_version
 
@@ -402,55 +405,52 @@ if __name__ == '__main__':
         use_eval_legacy = False
         from eval_legacy import eval_model
 
-    use_qdq = False
-    if args.deployment_device and 'fake' in args.deployment_device:
-        use_qdq = True
-    if args.format and ('fake' in args.format or 'qdq' in args.format):
-        use_qdq = True
-
     # evaluation
-    if not args.disable_eval:
+    if use_eval_legacy:
+        print("Using the legacy lm_eval(0.3.0)")
+    else:
+        print(f"Using the lm_eval version {lm_eval_version}")
+
+    if isinstance(tasks, str):
+        tasks = tasks.split(',')
+
+    if lm_eval_version < Version("0.4.2"):
+        if args.eval_bs is None:
+            args.eval_bs = 1
         if use_eval_legacy:
-            print("Using the legacy lm_eval(0.3.0)")
-        else:
-            print(f"Using the latest {lm_eval_version}")
-
-        if isinstance(tasks, str):
-            tasks = tasks.split(',')
-
-        if use_qdq and lm_eval_version < Version("0.4.2"):
-            if use_eval_legacy:
-                if "mmlu" in tasks:
-                    tmp_tasks = tasks
-                    tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
-                if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
-                    tmp_tasks = tasks
-                    tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-                seen = set()
+            if "mmlu" in tasks:
                 tmp_tasks = tasks
-                tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
+                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
+            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
+                tmp_tasks = tasks
+                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
+            seen = set()
+            tmp_tasks = tasks
+            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
 
-            excel_name = f"{output_dir}_result.xlsx"
-            output_dir += "/"
-            print(excel_name, flush=True)
-            eval_model(
-                model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-                eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-                device=torch_device, excel_file=excel_name,
-                trust_remote_code=not args.disable_trust_remote_code)
+        excel_name = f"{output_dir}_result.xlsx"
+        output_dir += "/"
+        print(excel_name, flush=True)
+        eval_model(
+            model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
+            eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
+            device=torch_device, excel_file=excel_name,
+            trust_remote_code=not args.disable_trust_remote_code)
 
-        if lm_eval_version >= Version("0.4.2"):
-            from eval.evaluation import simple_evaluate
+    if lm_eval_version >= Version("0.4.2"):
+        if args.eval_bs is None:
+            args.eval_bs = "auto"
+        from eval.evaluation import simple_evaluate
 
-            model_args = f"pretrained={eval_folder}"
-            model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
-            user_model = None
-            if args.act_bits <= 8:
-                user_model = model.to(device_str)
+        model_args = f"pretrained={eval_folder}"
+        model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
+        user_model = None
+        if args.act_bits <= 8:
+            user_model = model.to(device_str)
 
-            res = simple_evaluate(model="hf", model_args=model_args,
-                                  tasks=tasks,
-                                  batch_size=args.eval_bs, user_model=user_model)
-            from lm_eval.utils import make_table
+        res = simple_evaluate(model="hf", model_args=model_args,
+                              tasks=tasks,
+                              batch_size=args.eval_bs, user_model=user_model)
+        from lm_eval.utils import make_table
 
-            print(make_table(res))
+        print(make_table(res))
