@@ -19,17 +19,19 @@ from typing import TYPE_CHECKING, List, Optional, Union
 
 import lm_eval
 from lm_eval import simple_evaluate as lm_simple_evaluate
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def simple_evaluate(
         model,
         model_args: Optional[Union[str, dict]] = None,
-        user_model = None,
+        user_model=None,
         batch_size: Optional[int] = None,
         max_batch_size: Optional[int] = None,
         device: Optional[str] = None,
         **kwargs):
-
     try:
         from auto_round import AutoRoundConfig
     except:
@@ -37,7 +39,7 @@ def simple_evaluate(
 
     if model_args is None:
         model_args = ""
-    
+
     if isinstance(model_args, dict):
         lm = lm_eval.api.registry.get_model(model).create_from_arg_obj(
             model_args,
@@ -66,5 +68,3 @@ def simple_evaluate(
         max_batch_size=max_batch_size,
         device=device,
         **kwargs)
-
-

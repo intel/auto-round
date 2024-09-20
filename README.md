@@ -11,13 +11,13 @@ AutoRound
 <div align="left">
 
 AutoRound is an advanced quantization algorithm for low-bits LLM inference. It's tailored for a wide range
-of models. Our method adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200
+of models. AutoRound adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200
 steps,
 which competes impressively against recent methods without introducing any additional inference overhead and keeping low
 tuning cost. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516v4) for more
 details and visit [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for
-more accuracy data across various models.
+more accuracy data and recipes across various models.
 
 <div align="center">
 
@@ -48,9 +48,8 @@ pip install -vvv --no-build-isolation -e .
 pip install auto-round
 ```
 
-
-
 ## Model Quantization
+
 ### API Usage (Gaudi2/CPU/GPU)
 
 ```python
@@ -130,8 +129,9 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 </details>
 
 ### Basic Usage (version > 0.3.0)
-A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.  Alternatively, you can use ```auto-round``` instead of ```auto_round```. 
 
+A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.
+Alternatively, you can use ```auto-round``` instead of ```auto_round```.
 
 ```bash
 auto_round --model facebook/opt-125m \
@@ -141,6 +141,7 @@ auto_round --model facebook/opt-125m \
     --disable_eval \
     --output_dir ./tmp_autoround
 ```
+
 We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
 <details>
   <summary>Other Recipes</summary>
@@ -167,30 +168,35 @@ We provide two recipes for best accuracy and fast running speed with low memory.
     --batch_size 4 \
     --disable_eval 
   ```
+
 </details>
 
 #### Formats
 
-**AutoRound format**：This format is well-suited for CPU and HPU devices, as well as mixed-precision inference. It
+**AutoRound format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision inference. [2,4]
+bits are supported. It
 resolves the asymmetric quantization kernel issues found in the AutoGPTQ format and supports both LM-head quantization
 and mixed precision. However, it has not yet gained widespread community adoption. For CUDA support, you will need to
 install from the source.
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
-community. It also benefits from the Marlin kernel, which can boost inference performance notably. However, the
-asymmetric kernel has issues that can cause considerable accuracy drops, particularly at 2-bit quantization and small models.
+community, [2,3,4,8] bits are supported, for 3 bits, pip install auto-gptq first before quantization. It also benefits
+from the Marlin kernel, which can boost inference performance notably. However, **the
+asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
+models.
 Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
 **AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
-within the community. Asymmetric quantization typically improves accuracy but may reduce inference speed. It features
-specialized layer fusion tailored for Llama models. However, it supports only 4-bit asymmetric quantization.
+within the community, only 4-bits asymmetric quantization is supported. Asymmetric quantization typically improves
+accuracy but may reduce inference speed. It features
+specialized layer fusion tailored for Llama models.
 
 ## Model Inference
-
 
 Please run the quantization code first
 
 ### AutoGPTQ/AutoAWQ format
+
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -203,17 +209,15 @@ inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
-
 ### AutoRound format
 
-**CPU**: no extra operations
+**CPU**: pip install intel-extension-for-transformers
 
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
 **CUDA**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install -vvv --no-build-isolation
 -e .
-
 
 #### CPU/HPU/CUDA on 0.3.0+
 
@@ -223,7 +227,7 @@ from auto_round import AutoRoundConfig
 
 device = "auto"  ##cpu, hpu, cuda
 quantization_config = AutoRoundConfig(
-  backend=device
+    backend=device
 )
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
@@ -248,6 +252,7 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
+
 <br>
 <details>
   <summary>Evaluation</summary>
@@ -259,8 +264,8 @@ auto_round --model saved_quantized_model \
     --task lambada_openai \
     --eval_bs 1
 ```
-</details>
 
+</details>
 
 ## Support List
 
