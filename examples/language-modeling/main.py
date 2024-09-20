@@ -5,7 +5,6 @@ import argparse
 import subprocess
 from packaging import version
 
-
 sys.path.insert(0, '../..')
 parser = argparse.ArgumentParser()
 import torch
@@ -15,10 +14,10 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
-
 import logging
 import warnings
 import numexpr
+
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -97,11 +96,11 @@ if __name__ == '__main__':
     parser.add_argument("--deployment_device", default=None, type=str,
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'xpu', 'gpu(auto_gptq)' and 'auto_round'."
                              "default to 'auto_round', 'fake' indicating that it only performs fake quantization and won't be exported to any device.")
-    
+
     parser.add_argument("--format", default=None, type=str,
                         help="The format in which to save the model. "
-                        "The options are 'auto_round', 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
-                        "default to 'auto_round."
+                             "The options are 'auto_round', 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
+                             "default to 'auto_round."
                         )
 
     parser.add_argument("--data_type", default='int',
@@ -153,7 +152,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--act_bits", default=32, type=int,
                         help="activation bits")
-    
+
     parser.add_argument("--fp_layers", default="", type=str,
                         help="List of Layers to maintain original data type")
 
@@ -192,13 +191,12 @@ if __name__ == '__main__':
         if "marlin" in args.deployment_device and args.sym is False:
             assert False, "marlin backend only supports sym quantization, please set --sym"
 
-
     model_name = args.model_name
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     print(model_name, flush=True)
 
-    from auto_round.utils import detect_device
+    from auto_round.utils import detect_device, detect_device_count
 
     device_str = detect_device(args.device)
     torch_dtype = "auto"
@@ -236,20 +234,22 @@ if __name__ == '__main__':
             trust_remote_code=not args.disable_trust_remote_code
         )
     else:
-        model = model_cls.from_pretrained(
-            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-            trust_remote_code=not args.disable_trust_remote_code
-        )
+        if detect_device_count() > 1:
+            model = model_cls.from_pretrained(
+                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                trust_remote_code=not args.disable_trust_remote_code, device_map="auto"
+            )
+        else:
+            model = model_cls.from_pretrained(
+                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                trust_remote_code=not args.disable_trust_remote_code
+            )
 
     from auto_round import (AutoRound,
                             AutoAdamRound)
 
     model = model.eval()
-    # align with GPTQ to eval ppl
-    if "opt" in model_name:
-        seqlen = model.config.max_position_embeddings
-    else:
-        seqlen = 2048
+
     seqlen = args.seqlen
 
     if args.model_dtype != None:
@@ -323,10 +323,6 @@ if __name__ == '__main__':
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 
-    if args.quant_lm_head and args.low_gpu_mem_usage:
-        print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
-              f"gpu")
-
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
@@ -335,7 +331,8 @@ if __name__ == '__main__':
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
-                      low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type, enable_norm_bias_tuning=args.enable_norm_bias_tuning)
+                      low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
+                      enable_norm_bias_tuning=args.enable_norm_bias_tuning)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
@@ -351,7 +348,7 @@ if __name__ == '__main__':
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}-qdq"
 
     eval_folder = None
-    if args.format: 
+    if args.format:
         format_list = args.format.replace(' ', '').split(',')
         inplace = False if len(format_list) > 1 else True
         for format_ in format_list:
@@ -363,7 +360,8 @@ if __name__ == '__main__':
         for item in deployment_device:
             if item in ["gpu", "auto_gptq", "auto_round", "auto_awq"]:
                 if item == "gpu":
-                    if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
+                    if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name][
+                        "data_type"] == "int":
                         gpu_formats.append("auto_round")
                     else:
                         gpu_formats.append("auto_gptq")
@@ -394,6 +392,7 @@ if __name__ == '__main__':
 
     from packaging.version import Version
     from auto_round.utils import get_library_version
+
     lm_eval_version = get_library_version("lm_eval")
     lm_eval_version = Version(lm_eval_version)
     if lm_eval_version == Version("0.3.0"):
@@ -415,7 +414,7 @@ if __name__ == '__main__':
             print("Using the legacy lm_eval(0.3.0)")
         else:
             print(f"Using the latest {lm_eval_version}")
-        
+
         if isinstance(tasks, str):
             tasks = tasks.split(',')
 
@@ -439,7 +438,7 @@ if __name__ == '__main__':
                 eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
                 device=torch_device, excel_file=excel_name,
                 trust_remote_code=not args.disable_trust_remote_code)
-        
+
         if lm_eval_version >= Version("0.4.2"):
             from eval.evaluation import simple_evaluate
 
@@ -450,9 +449,8 @@ if __name__ == '__main__':
                 user_model = model.to(device_str)
 
             res = simple_evaluate(model="hf", model_args=model_args,
-                                tasks=tasks,
-                                batch_size=args.eval_bs, user_model=user_model)
+                                  tasks=tasks,
+                                  batch_size=args.eval_bs, user_model=user_model)
             from lm_eval.utils import make_table
 
             print(make_table(res))
-
