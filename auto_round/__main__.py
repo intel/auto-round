@@ -27,7 +27,8 @@ from lm_eval.utils import make_table  # pylint: disable=E0401
 from auto_round import AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate
 from auto_round.utils import detect_device, get_library_version, detect_device_count
-from auto_round.utils import  logger
+from auto_round.utils import logger
+
 
 def setup_parser():
     parser = argparse.ArgumentParser()
@@ -231,7 +232,8 @@ def tune(args):
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
-            logger.info(f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length")
+            logger.info(
+                f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length")
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
 
