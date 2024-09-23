@@ -10,7 +10,7 @@ python -m auto_round \
     --iters 200 \
     --bits 4 \
     --act_bits 4 \
-    --data_type "mx_fp4" \
+    --data_type "mx_fp" \
     --tasks piqa,winogrande,hellaswag,lambada_openai,mmlu \
     --format fake \
     --output_dir tmp_dir
