@@ -351,14 +351,6 @@ if __name__ == '__main__':
                       low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type, enable_norm_bias_tuning=args.enable_norm_bias_tuning)
     model, _ = autoround.quantize()
 
-    # add qdq
-    # from tools import convert_mxfp
-    # data_type = 'int_asym'
-    # data_type = 'mx_fp4'
-    # num_bits = 4
-    # model = convert_mxfp(model, group_size=-1, data_type=data_type, num_bits=num_bits, layer_config=layer_config)
-    # model = model.to(device_str)
-
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
@@ -470,7 +462,6 @@ if __name__ == '__main__':
             user_model = None
             if args.act_bits <= 8:
                 user_model = model.to(device_str)
-                user_model = user_model.to(torch.float16)
 
             res = simple_evaluate(model="hf", model_args=model_args,
                                 tasks=tasks,
