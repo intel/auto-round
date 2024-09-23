@@ -18,10 +18,8 @@ python -m auto_round \
 
 command to eval saved model
 ```bash
-python -m auto_round --model facebook/opt-125m \
-    --bits 4 \
-    --group_size 128 \
-    --format fake \
-    --disable_eval \
-    --output_dir ./tmp_autoround
+python -m auto_round --model model_name_or_path \
+    --tasks piqa,winogrande,hellaswag,lambada_openai,mmlu \
+    --device 0 \
+    --eval 
 ```
