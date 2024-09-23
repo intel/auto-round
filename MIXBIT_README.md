@@ -1,0 +1,27 @@
+command to run autoround with mixbit, will automatic run eval.
+```bash
+python -m auto_round \
+    --model_name model_name_or_path \
+    --device 0 \
+    --hybrid_json hybrid_json_path \
+    --group_size 32 \
+    --seqlen 2048 \
+    --nsamples 512 \
+    --iters 200 \
+    --bits 4 \
+    --act_bits 4 \
+    --data_type "mx_fp4" \
+    --tasks piqa,winogrande,hellaswag,lambada_openai,mmlu \
+    --format fake \
+    --output_dir tmp_dir
+```
+
+command to eval saved model
+```bash
+python -m auto_round --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --format fake \
+    --disable_eval \
+    --output_dir ./tmp_autoround
+```

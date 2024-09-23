@@ -149,6 +149,8 @@ def setup_parser():
     
     parser.add_argument("--fp_layers_list", default="", type=str,
                         help="List of Layers to maintain original data type")
+    
+    parser.add_argument("--hybrid_json", default=None, type=str)
 
     args = parser.parse_args()
     return args
@@ -278,6 +280,12 @@ def tune(args):
         print(
             f"warning, low_gpu_mem_usage=False is strongly recommended"
             " if the whole model could be loaded to gpu")
+    
+    if args.hybrid_json is not None:
+        import json
+        layer_data = json.load(open(args.hybrid_json, 'r'))
+        layer_config = layer_data
+        print(layer_config)
 
     autoround = round(
         model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.batch_size,
