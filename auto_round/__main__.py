@@ -284,7 +284,11 @@ def tune(args):
     if args.hybrid_json is not None:
         import json
         layer_data = json.load(open(args.hybrid_json, 'r'))
-        layer_config = layer_data
+        for name in layer_data:
+            layer_config[name] = {
+                'bits': layer_data[name]['bits'],
+                'act_bits': layer_data[name]['bits']
+            }
         print(layer_config)
 
     autoround = round(

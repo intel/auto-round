@@ -1,7 +1,7 @@
 command to run autoround with mixbit, will automatic run eval.
 ```bash
 python -m auto_round \
-    --model_name model_name_or_path \
+    --model model_name_or_path \
     --device 0 \
     --hybrid_json hybrid_json_path \
     --group_size 32 \

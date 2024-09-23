@@ -329,10 +329,16 @@ if __name__ == '__main__':
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
 
+    layer_config = {}
     if args.hybrid_json is not None:
         import json
         layer_data = json.load(open(args.hybrid_json, 'r'))
-        layer_config = layer_data
+        for name in layer_data:
+            layer_config[name] = {
+                'bits': layer_data[name]['bits'],
+                'act_bits': layer_data[name]['bits']
+            }
+        print(layer_config)
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
@@ -344,6 +350,15 @@ if __name__ == '__main__':
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type, enable_norm_bias_tuning=args.enable_norm_bias_tuning)
     model, _ = autoround.quantize()
+
+    # add qdq
+    # from tools import convert_mxfp
+    # data_type = 'int_asym'
+    # data_type = 'mx_fp4'
+    # num_bits = 4
+    # model = convert_mxfp(model, group_size=-1, data_type=data_type, num_bits=num_bits, layer_config=layer_config)
+    # model = model.to(device_str)
+
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
@@ -455,9 +470,11 @@ if __name__ == '__main__':
             user_model = None
             if args.act_bits <= 8:
                 user_model = model.to(device_str)
+                user_model = user_model.to(torch.float16)
 
             res = simple_evaluate(model="hf", model_args=model_args,
                                 tasks=tasks,
+                                device=device_str,
                                 batch_size=args.eval_bs, user_model=user_model)
             from lm_eval.utils import make_table
 
