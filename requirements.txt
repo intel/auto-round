@@ -7,7 +7,7 @@ transformers
 triton
 numpy < 2.0
 threadpoolctl
-lm-eval==0.4.4
-intel-extension-for-transformers
+lm-eval==0.4.2 # The main use 0.4.4
+# intel-extension-for-transformers
 tqdm
 packaging

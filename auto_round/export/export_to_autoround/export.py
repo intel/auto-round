@@ -176,6 +176,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     Raises:
         AssertionError: If the backend is not supported.
     """
+    export_for_inference = kwargs.get("export_for_inference", False)
     if ":" not in backend:
         backend = "auto_round:exllamav2"
     backend = backend.replace("autoround", "auto_round")
@@ -194,6 +195,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "intel/auto-round"
+    if export_for_inference and "gptq" in backend:
+        quantization_config["quant_method"] = "gptq"
+        quantization_config["disable_exllama"] = True
     if "awq" not in backend:
         quantization_config["backend"] = backend
     extra_config = {}
