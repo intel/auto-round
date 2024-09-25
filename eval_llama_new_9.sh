@@ -1,0 +1,2 @@
+export model_name=/path/to/model
+PYTHONBREAKPOINT=0 AO_USE_DETERMINISTIC_ALGORITHMS=1 python main.py --model_name $model_name --gradient_accumulate_steps 2 --model_dtype bfloat16 --group_size 128  --train_bs 4 --iters 1000 --nsample 512  --format auto_gptq   --disable_quanted_input   --tasks  hellaswag,piqa,wikitext,truthfulqa_mc1,truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge,lambada_openai,winogrande,mmlu 
