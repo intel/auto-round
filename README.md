@@ -312,9 +312,9 @@ release most of the models ourselves.
 ## Integration
 AutoRound has been integrated into multiple repositories.
 
-[ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel)
-
 [Intel Neural Compressor](https://github.com/intel/neural-compressor)
+
+[ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel)
 
 [pytorch/ao](https://github.com/pytorch/ao)
 
