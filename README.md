@@ -27,7 +27,7 @@ more accuracy data and recipes across various models.
 
 ## What's New
 * [2024/09] AutoRound format supports several LVM models, check out the examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
-* [2024/08] AutoRound format supports Intel Gaudi2 devices. For an example, please refer
+* [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
   to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
 * [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters (for 2-bit
   and W4A4), activation quantization, and the mx_fp data type.
