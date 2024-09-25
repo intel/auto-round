@@ -1176,7 +1176,7 @@ class AutoRound(object):
                 "the AutoRound format (2 bits) to enhance performance."
              )
         if "awq" in format and not self.bits == 4:
-            raise ValueError("The AWQ format only supports W4 asym quantization ")
+            raise ValueError("The AWQ format only supports W4 quantization ")
 
         serialization_keys = [
             "bits",
