@@ -165,6 +165,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     quantization_config["desc_act"] = False  ## for autogptq API
     quantization_config["true_sequential"] = False
     quantization_config["damp_percent"] = 0.01
+    quantization_config["disable_exllama"] = True
     if modules_in_block_to_quantize is not None:
         quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
     if hasattr(model, "config"):
