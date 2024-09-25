@@ -308,6 +308,19 @@ release most of the models ourselves.
 | bigscience/bloom-3b                    | [accuracy](./docs/bloom-3B-acc.md), [recipe](./examples/language-modeling/scripts/bloom-3b.sh), [example](./examples/language-modeling/)                                                                                                                                                                                  |
 | EleutherAI/gpt-j-6b                    | [accuracy](./docs/gpt-j-6B-acc.md), [recipe](./examples/language-modeling/scripts/gpt-j-6b.sh), [example](./examples/language-modeling/)                                                                                                                                                                                  | 
 
+
+## Integration
+AutoRound has been integrated into multiple repositories.
+
+[ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel)
+
+[Intel Neural Compressor](https://github.com/intel/neural-compressor)
+
+[pytorch/ao](https://github.com/pytorch/ao)
+
+
+
+
 ## Reference
 
 If you find AutoRound useful for your research, please cite our paper:
