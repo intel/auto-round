@@ -196,10 +196,10 @@ class QuantLinear(nn.Module):
                 dtype=torch.float16,
             ),
         )
-        self.register_buffer(
-            "g_idx",
-            torch.tensor([i // self.group_size for i in range(infeatures)], dtype=torch.int32),
-        )
+        # self.register_buffer(
+        #     "g_idx",
+        #     torch.tensor([i // self.group_size for i in range(infeatures)], dtype=torch.int32),
+        # )
 
         if bias:
             self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
@@ -214,7 +214,7 @@ class QuantLinear(nn.Module):
             "qweight": self.qweight,
             "qzeros": self.qzeros,
             "scales": self.scales,
-            "g_idx": self.g_idx,
+            # "g_idx": self.g_idx,
         }
         temp_dq = temp_dq.get_scratch_slice(self.temp_dq_size())
         self.q_handle = ext_make_q_matrix(self.q_tensors, temp_dq)
