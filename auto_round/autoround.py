@@ -617,7 +617,7 @@ class AutoRound(object):
 
     @torch.no_grad()
     def cache_inter_data(self, block_names, nsamples, layer_names=[], last_cache_name=None):
-        """Save the inputs of block_name for calibration. For layers, we cache both of inputs and output.
+        """Save the inputs of block_name for calibration.
 
         This method temporarily replaces the forward method of the model to capture
         the inputs passing through the specified block. It then calibrates the model

@@ -49,12 +49,13 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
         wmax = wmax_tmp
     scale = ((wmax - wmin) / maxq).to(scale_dtype)
     scale = torch.clamp(scale, min=q_scale_thresh)
-    zp = round_ste(-wmin / scale)  # pylint: disable=E1130
+    zp = round_ste(-wmin / scale).to(weight.dtype)  # pylint: disable=E1130
     scale = scale.unsqueeze(dim=-1)
     zp = zp.unsqueeze(dim=-1)
     int_w = round_ste(weight / scale + v)
     q = torch.clamp(int_w + zp, 0, maxq)
-    return scale * (q - zp), scale, zp
+    qdq_result = (scale * (q - zp)).to(weight.dtype)
+    return qdq_result, scale, zp
 
 
 @register_dtype("int_sym")
@@ -101,7 +102,8 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
 
     int_w = round_ste(weight / scale + v)
     q = torch.clamp(int_w + zp, 0, maxq)
-    return scale * (q - zp), scale, zp
+    qdq_result = (scale * (q - zp)).to(weight.dtype)
+    return qdq_result, scale, zp
 
 
 def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
@@ -141,4 +143,5 @@ def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0
     zp = zp.unsqueeze(dim=-1)
     int_w = weight / scale + v
     q = torch.clamp(int_w + zp, 0, maxq)
-    return scale * (q - zp), scale, zp
+    qdq_result = (scale * (q - zp)).to(weight.dtype)
+    return qdq_result, scale, zp
