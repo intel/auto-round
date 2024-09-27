@@ -18,6 +18,7 @@ You can also refer to the official Qwen-VL finetuning requirements to create a [
 
 ## Download the evaluation data
 Please refer to [Qwen-VL evaluation](https://github.com/cognitedata/Qwen-VL-finetune/blob/master/eval_mm/EVALUATION.md)
+
 Note: The quantized Qwen2-VL model evaluation is currently not supported.
 <details>
 <summary>TextVQA Data Preparation</summary>
@@ -77,7 +78,6 @@ Enter into the examples folder and install requirements
 ```bash
 pip install -r requirements.txt
 ```
-For Qwen2-VL quantization/Inference, please follow [Qwen2 official requirements](https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct)
 
 For Qwen2-VL quantization/Inference, please follow [Qwen2 official requirements](https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct) and install the latest version of transformers by **building from source**.
 
