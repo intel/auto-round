@@ -703,7 +703,7 @@ class AutoRound(object):
                 self.inputs[name]["positional_inputs"] = to_device(positional_args)
 
             for key in kwargs.keys():
-                if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) \
+                if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) or isinstance(kwargs[key], tuple)\
                         or (key == "alibi") or (key == "attention_mask"):
                     if "attention_mask" in key:
                         if key not in self.inputs[name].keys():
@@ -732,8 +732,8 @@ class AutoRound(object):
                                 self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
                         elif key not in self.inputs[name].keys():
                             self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
-                                if self.not_share_position_ids_flag \
-                                else to_device(kwargs[key], device=torch.device("cpu"))
+                                    if self.not_share_position_ids_flag \
+                                    else to_device(kwargs[key], device=torch.device("cpu"))
                         elif kwargs[key] is not None and self.not_share_position_ids_flag:
                             self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif 'rotary_pos_emb' in key or 'cu_seqlens' in key:
@@ -743,8 +743,14 @@ class AutoRound(object):
                                 else to_device(kwargs[key], device=torch.device("cpu"))
                         elif kwargs[key] is not None and self.not_share_rotary_pos_emb_flag:
                             self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
+                    elif "cross_attention_states" in key:
+                        if key not in self.inputs[name].keys():
+                            self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
+                        else:
+                            self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif key not in self.inputs[name].keys():
                         self.inputs[name][key] = to_device(kwargs[key], device=torch.device("cpu"))
+                    
             if name == self.last_cache_name:
                 raise NotImplementedError
             else:
@@ -1617,3 +1623,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+
