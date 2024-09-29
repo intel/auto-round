@@ -19,7 +19,7 @@ from auto_round.data_type.register import register_dtype, QUANT_FUNC_WITH_DTYPE
 
 @register_dtype("int_asym")
 def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-                      weight_min=None, weight_max=None, q_scale_thresh=0.0, **kwargs):
+                      weight_min=None, weight_max=None, q_scale_thresh=0.0, scale_dim=0, **kwargs):
     """Quantizes and dequantizes weight asymmetrically.
 
     Args:
@@ -41,9 +41,14 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
     else:
         wmin_tmp = weight_min
         wmax_tmp = weight_max
-    if isinstance(min_scale, torch.Tensor):
+    if isinstance(min_scale, torch.Tensor) and scale_dim==0:
         wmin = wmin_tmp * min_scale
         wmax = wmax_tmp * max_scale
+    # elif isinstance(max_scale, torch.Tensor) and scale_dim == 1:
+    #     assert len(max_scale.shape) == 1
+    #     repeat_num = weight.numel() // max_scale.numel()
+    #     max_scale = max_scale.repeat(repeat_num, 1)
+    #     shared_exp *= (max_scale.unsqueeze(dim=0))
     else:
         wmin = wmin_tmp
         wmax = wmax_tmp
@@ -60,7 +65,7 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
 
 @register_dtype("int_sym")
 def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, weight_min=None,
-                     weight_max=None, q_scale_thresh=0.0, **kwargs):
+                     weight_max=None, q_scale_thresh=0.0,scale_dim=0, **kwargs):
     """Quantizes and dequantizes weight symmetrically.
 
     Args:
@@ -107,7 +112,7 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
 
 
 def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-                               weight_min=None, weight_max=None, q_scale_thresh=0.0, **kwargs):
+                               weight_min=None, weight_max=None, q_scale_thresh=0.0, scale_dim=0, **kwargs):
     """Quantizes and dequantizes weight asymmetrically without rounding, this is mainly for tuning bias, norm.
 
     Args:

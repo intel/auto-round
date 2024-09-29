@@ -818,11 +818,16 @@ class AutoRound(object):
         else:
             wrapper_linear = WrapperTransformerConv1d(layer, enable_minmax_tuning=self.enable_minmax_tuning,
                                                       device=device).to(device)
+
         round_params = []
         minmax_params = []
-        round_params.append(wrapper_linear.value)
-        minmax_params.append(wrapper_linear.min_scale)
-        minmax_params.append(wrapper_linear.max_scale)
+
+        for key in layer.params.keys():
+            if "scale" in key:
+                minmax_params.append(layer.params[key])
+            else:
+                round_params.append(layer.params[key])
+
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
@@ -931,14 +936,13 @@ class AutoRound(object):
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():
-            if hasattr(m, "orig_layer"):
-                if "v" in m.params.keys():
-                    round_params.append(m.params['v'])
-                if "max_scale" in m.params.keys():
-                    minmax_params.append(m.params["min_scale"])
-                    minmax_params.append(m.params["max_scale"])
-                if "bias_v" in m.params.keys():
-                    round_params.append(m.params["bias_v"])
+            if not hasattr(m, "orig_layer"):
+                continue
+            for key in m.params.keys():
+                if "scale" in key:
+                    minmax_params.append(m.params[key])
+                else:
+                    round_params.append(m.params[key])
 
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
