@@ -234,16 +234,21 @@ class WrapperLinear(torch.nn.Module):
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
         self.data_type = self.orig_layer.data_type
-        self.weight_quant_func, self.data_type = get_quant_func(self.data_type, self.bits, self.sym)
+
         self.act_bits = self.orig_layer.act_bits
         self.act_group_size = self.orig_layer.act_group_size
         self.act_sym = self.orig_layer.act_sym
         self.act_dynamic = self.orig_layer.act_dynamic
         self.act_quant = self.act_bits <= 8
         self.params = {}
-
+        data_type = self.data_type
         if self.act_quant:
-            self.act_quant_func, _ = get_quant_func(self.data_type, self.act_bits, self.act_sym)
+            if data_type == "int" and self.act_bits == 4 and self.bits == 4 and self.group_size == -1 and self.act_group_size == -1 and self.act_group_size == -1:  ## tricky code
+                data_type = "quarot_int_sym"
+            self.act_quant_func, _ = get_quant_func(data_type, self.act_bits, self.act_sym)
+            self.weight_quant_func, self.data_type = get_quant_func(data_type, self.bits, self.sym)
+        else:
+            self.weight_quant_func, self.data_type = get_quant_func(data_type, self.bits, self.sym)
 
         self.q_scale_thresh = 1e-5
 
@@ -339,6 +344,8 @@ class WrapperLinear(torch.nn.Module):
         if self.act_quant:
             self.orig_layer.act_quant_func = self.act_quant_func
             wrapper_layer = WrapperWALayer(self.orig_layer)
+            wrapper_layer.scale = scale
+            wrapper_layer.zp = zp
             return wrapper_layer
 
         if hasattr(self.orig_layer, 'update'):

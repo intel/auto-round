@@ -105,6 +105,46 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
     qdq_result = (scale * (q - zp)).to(weight.dtype)
     return qdq_result, scale, zp
 
+@register_dtype("quarot_int_sym")
+def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, weight_min=None,
+                     weight_max=None, q_scale_thresh=0.0, **kwargs):
+    """Quantizes and dequantizes weight symmetrically.
+
+    Args:
+        weight: Tensor containing the weight to be quantized
+        bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        v: Rounding value perturbation
+        min_scale: Minimum scale coefficient for weight
+        max_scale: Maximum scale coefficient for weight
+        weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
+        weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
+
+    Returns:
+        Quantized and dequantized weight, scale, zero-point
+    """
+    if bits<=1:
+        raise ValueError("bits must be greater than 1")
+    maxq = torch.tensor(2 ** (bits-1) - 1).to(weight.device)
+    minq = torch.tensor(-(2 ** (bits - 1))).to(weight.device)
+    if weight_min is None or weight_max is None:
+        abs_w_max_tmp = torch.clamp(torch.abs(weight).max(-1)[0], min=0)
+    else:
+        abs_w_max_tmp = torch.max(torch.abs(weight_min),torch.abs(weight_max))
+
+    if isinstance(max_scale, torch.Tensor):
+        abs_w_max = abs_w_max_tmp * max_scale
+    else:
+        abs_w_max = abs_w_max_tmp
+
+
+    scale = (abs_w_max / maxq).to(scale_dtype)
+    scale = torch.clamp(scale, min=q_scale_thresh)
+    scale = scale.unsqueeze(dim=-1)
+
+    int_w = round_ste(weight / scale + v)
+    q = torch.clamp(int_w, minq, maxq)
+    qdq_result = (scale * q).to(weight.dtype)
+    return qdq_result, scale, None
 
 def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
                                weight_min=None, weight_max=None, q_scale_thresh=0.0, **kwargs):

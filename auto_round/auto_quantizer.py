@@ -41,6 +41,7 @@ from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
+import auto_round_extension.quarot.qlinear_quarot
 from auto_round.utils import get_module, set_module, dynamic_import_inference_linear
 import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
 from enum import Enum
@@ -337,7 +338,7 @@ class AutoRoundQuantizer(HfQuantizer):
             else "int"  # pragma: no cover
         sym = quantization_config.sym
         quant_block_list = quantization_config.quant_block_list \
-                           if hasattr(quantization_config, "quant_block_list") else None
+            if hasattr(quantization_config, "quant_block_list") else None
         layer_names = get_layer_names_in_block(model, quant_block_list=quant_block_list)
         extra_config = {}
         if hasattr(quantization_config, "extra_config"):
@@ -392,7 +393,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
             layer = get_module(module, layer_name)
             device = get_device(layer)
-            QuantLinear = dynamic_import_inference_linear(backend, bits, group_size, sym)
+            has_bias = layer.bias is not None
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
                 out_features = layer.out_features
@@ -402,16 +403,23 @@ class AutoRoundQuantizer(HfQuantizer):
             elif isinstance(layer, Conv1D):  ##TODO need to have a check
                 in_features = layer.weight.shape[0]
                 out_features = layer.weight.shape[1]
-            bias = layer.bias is not None
+
+            if "quarot" in backend:
+                QuantLinear = auto_round_extension.quarot.qlinear_quarot.LinearW4A4Sym
+                new_layer = QuantLinear(in_features, out_features, has_bias)
+                new_layer.device = device
+                set_module(module, layer_name, new_layer)
+                continue
+            QuantLinear = dynamic_import_inference_linear(backend, bits, group_size, sym)
             try:
                 new_layer = QuantLinear(  # pylint: disable=E1123
                     bits,
                     group_size,
                     in_features,
                     out_features,
-                    bias,
+                    has_bias,
                     weight_dtype=layer.weight.dtype,
-                    clip = clip
+                    clip=clip
                 )
             except:
                 new_layer = QuantLinear(  # pylint: disable=E1123
@@ -419,7 +427,7 @@ class AutoRoundQuantizer(HfQuantizer):
                     group_size,
                     in_features,
                     out_features,
-                    bias,
+                    has_bias,
                     weight_dtype=layer.weight.dtype,
                 )
 
@@ -457,7 +465,7 @@ class AutoRoundQuantizer(HfQuantizer):
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if model.__class__.main_input_name != "input_ids":
             logger.warning("We can only quantize pure text models and " \
-                            "certain types(Llava/Qwen-VL/Phi-3-vision) of multimodal models.")
+                           "certain types(Llava/Qwen-VL/Phi-3-vision) of multimodal models.")
 
         if self.pre_quantized:
             model = self.convert_model(model)
@@ -485,5 +493,3 @@ if transformers_version[0] == 4 and transformers_version[1] < 38:
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
-
-

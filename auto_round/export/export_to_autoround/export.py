@@ -14,6 +14,7 @@
 
 
 import copy
+import gc
 import json
 import os
 
@@ -97,9 +98,6 @@ def pack_layer(name, model, layer_config, backend, pbar):
         sym = config["sym"]
 
         layer = get_module(model, name)
-        device = layer.weight.device
-
-        QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features
@@ -110,7 +108,20 @@ def pack_layer(name, model, layer_config, backend, pbar):
         elif isinstance(layer, transformers.pytorch_utils.Conv1D):
             in_features = layer.weight.shape[0]
             out_features = layer.weight.shape[1]
+
+
+        if "quarot" in backend:
+            from auto_round_extension.quarot.qlinear_quarot import LinearW4A4Sym
+            new_layer = LinearW4A4Sym.from_float(layer, config["scale"])
+            new_layer = new_layer.to("cpu")
+            set_module(model, name, new_layer)
+            torch.cuda.empty_cache()
+            gc.collect()
+            pbar.update(1)
+            return
         bias = layer.bias is not None and torch.any(layer.bias)
+        device = layer.weight.device
+        QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
 
         if "awq" not in backend:
             new_layer = QuantLinear(  ##pylint: disable=E1123
@@ -178,9 +189,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     """
     if ":" not in backend:
         backend = "auto_round:exllamav2"
+    if kwargs["bits"] == 4 and kwargs["group_size"] == -1 and kwargs["act_bits"] == 4 and kwargs[
+        "act_group_size"] == -1:
+        backend = "auto_round:quarot"  ##tricky code
     backend = backend.replace("autoround", "auto_round")
     backend = backend.replace("auto-round", "auto_round")
-    if not ("triton" in backend or "exllamav2" in backend or "awq" in backend or "gptq" in backend):
+    if not (
+            "triton" in backend or "exllamav2" in backend or "awq" in backend or "gptq" in backend or "quarot" in backend):
         logger.info(f"auto_round format does not support {backend}, try to pack each layer with autogptq")
         backend = backend.replace("auto_round", "auto_gptq")
 

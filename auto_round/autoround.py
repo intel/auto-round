@@ -1154,7 +1154,7 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
-        if format == "fake" or format == "qdq" or self.act_bits <= 8:  ##TODO fix act quantizaiton later
+        if format == "fake" or format == "qdq":
             self.model = self.model.to("cpu")
             self.model.save_pretrained(output_dir)
             if self.tokenizer is not None:
@@ -1180,6 +1180,8 @@ class AutoRound(object):
 
         serialization_keys = [
             "bits",
+            "act_bits",
+            "act_group_size",
             "group_size",
             "sym",
             "data_type",
@@ -1230,6 +1232,8 @@ class AutoRound(object):
             serialization_dict=serialization_dict,
             backend=backend,
             quant_block_list=self.quant_block_list,
+            act_bits = self.act_bits,
+            act_group_size = self.act_group_size,
             **kwargs
         )
         return compressed_model
