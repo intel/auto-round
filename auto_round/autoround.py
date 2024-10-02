@@ -703,7 +703,8 @@ class AutoRound(object):
                 self.inputs[name]["positional_inputs"] = to_device(positional_args)
 
             for key in kwargs.keys():
-                if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) or isinstance(kwargs[key], tuple)\
+                if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) \
+                        or isinstance(kwargs[key], tuple) \
                         or (key == "alibi") or (key == "attention_mask"):
                     if "attention_mask" in key:
                         if key not in self.inputs[name].keys():
