@@ -132,8 +132,7 @@ class WrapperLayerNorm(torch.nn.Module):
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
                 self.group_size),
             requires_grad=True)
-        self.params = {}
-        self.params["v"] = self.v
+        self.params = {"v": self.v}
         from auto_round.data_type.int import quant_tensor_asym_wo_round
         self.quant_func = quant_tensor_asym_wo_round
 
@@ -291,7 +290,7 @@ class WrapperLinear(torch.nn.Module):
         self.enable_act_minmax_scale = True
         if self.enable_act_minmax_scale:
             if self.act_group_size == -1:
-                act_group_size = 1
+                act_group_size = self.orig_layer.weight.shape[1]
             else:
                 act_group_size = self.act_group_size
             self.act_min_scale = torch.nn.Parameter(
@@ -307,8 +306,8 @@ class WrapperLinear(torch.nn.Module):
             self.params["act_min_scale"] = self.act_min_scale
             self.params["act_max_scale"] = self.act_max_scale
         else:
-            self.act_min_scale = 1.0
-            self.act_max_scale = 1.0
+            self.act_min_scale = torch.tensor(1.0, device=self.device, dtype=weight_dtype)
+            self.act_max_scale = torch.tensor(1.0, device=self.device, dtype=weight_dtype)
 
     def unwrapper(self, best_params):
         """Unwrapper the layer to the original layer.
@@ -356,9 +355,8 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.data_type = self.data_type
         if self.act_quant:
-            if self.enable_act_minmax_scale:
-                self.orig_layer.act_min_scale = act_min_scale
-                self.orig_layer.act_max_scale = act_max_scale
+            self.orig_layer.act_min_scale = act_min_scale
+            self.orig_layer.act_max_scale = act_max_scale
 
             self.orig_layer.act_quant_func = self.act_quant_func
             wrapper_layer = WrapperWALayer(self.orig_layer)
@@ -387,12 +385,16 @@ class WrapperLinear(torch.nn.Module):
         with torch.no_grad():
             self.min_scale.clamp_(0, 1.0)
             self.max_scale.clamp_(0, 1.0)
+            self.act_min_scale.clamp_(0, 1.0)
+            self.act_max_scale.clamp_(0, 1.0)
+
         weight_q, _, _ = quant_tensor(self.weight_quant_func, weight, self.bits, self.group_size, self.value,
                                       self.min_scale,
                                       self.max_scale, self.scale_dtype, self.weight_min, self.weight_max,
                                       data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
         weight_q = weight_q.to(weight.dtype)
         if self.act_quant:
+
             if self.enable_act_minmax_scale:
                 x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
                                        scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,

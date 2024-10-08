@@ -1042,6 +1042,9 @@ class AutoRound(object):
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
+            for key in best_params.keys():
+                if "act_max_scale" in best_params[key].keys():
+                    print(key, torch.min(best_params[key]["act_max_scale"]), torch.max(best_params[key]["act_max_scale"]),flush=True)
             unwrapper_block(block, best_params)
         if self.enable_quanted_input:
             if self.low_cpu_mem_usage:
