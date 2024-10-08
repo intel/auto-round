@@ -38,7 +38,7 @@ FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
-def quant_mx(tensor, bits, data_type, v, max_scale, **kwargs):
+def quant_mx(tensor, bits, data_type, v, max_scale, scale_dim=0, **kwargs):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -61,8 +61,16 @@ def quant_mx(tensor, bits, data_type, v, max_scale, **kwargs):
     """
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
     shared_exp, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
-    if isinstance(max_scale, torch.Tensor):
+    if isinstance(max_scale, torch.Tensor) and scale_dim == 0:
         shared_exp *= (max_scale.unsqueeze(dim=-1))
+    elif isinstance(max_scale, torch.Tensor) and len(max_scale.shape)<1:
+        shared_exp *= max_scale
+    elif isinstance(max_scale, torch.Tensor)  and scale_dim == 1:
+        assert len(max_scale.shape) == 1
+        repeat_num = shared_exp.numel() // max_scale.numel()
+        max_scale = max_scale.repeat(repeat_num, 1)
+        max_scale = max_scale.reshape_as(shared_exp)
+        shared_exp *= max_scale
     else:
         shared_exp *= max_scale
     scale_emax = 2 ** (8 - 1) - 1
@@ -74,7 +82,7 @@ def quant_mx(tensor, bits, data_type, v, max_scale, **kwargs):
     shared_exp[shared_exp > scale_emax] = scale_emax  ##changed Nan
     shared_exp[shared_exp < -scale_emax] = -scale_emax
     tensor = tensor / (2 ** shared_exp)
-    is_mx_fp4 = data_type == "mx_fp4" or ("mx_fp" in data_type and bits==4)
+    is_mx_fp4 = data_type == "mx_fp4" or ("mx_fp" in data_type and bits == 4)
     multiply = 2 if is_mx_fp4 else 1  ## 2 is a tricky setting
     tensor = tensor + v * multiply
     if ebits != 0:

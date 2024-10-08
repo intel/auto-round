@@ -107,7 +107,7 @@ class WrapperWALayer(torch.nn.Module):
                                self.orig_layer.group_size,
                                scale_dtype=self.orig_layer.scale_dtype,
                                q_scale_thresh=self.orig_layer.q_scale_thresh,
-                               data_type=self.orig_layer.data_type)
+                               data_type=self.orig_layer.data_type,min_scale= self.orig_layer.act_min_scale, max_scale=self.orig_layer.act_max_scale,scale_dim=1)
         return self.orig_layer.forward(x)
 
 
@@ -132,8 +132,7 @@ class WrapperLayerNorm(torch.nn.Module):
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
                 self.group_size),
             requires_grad=True)
-        self.params = {}
-        self.params["v"] = self.v
+        self.params = {"v": self.v}
         from auto_round.data_type.int import quant_tensor_asym_wo_round
         self.quant_func = quant_tensor_asym_wo_round
 
@@ -293,6 +292,28 @@ class WrapperLinear(torch.nn.Module):
             self.bias_quant_func = quant_tensor_asym_wo_round
             self.params["bias_v"] = self.bias_v
 
+        self.enable_act_minmax_scale = True
+        if self.enable_act_minmax_scale:
+            if self.act_group_size == -1:
+                act_group_size = self.orig_layer.weight.shape[1]
+            else:
+                act_group_size = self.act_group_size
+            self.act_min_scale = torch.nn.Parameter(
+                torch.ones((self.orig_layer.weight.shape[1] + act_group_size - 1) // act_group_size,
+                           device=self.device, dtype=self.orig_layer.weight.dtype),
+                requires_grad=True
+            )
+            self.act_max_scale = torch.nn.Parameter(
+                torch.ones((self.orig_layer.weight.shape[1] + act_group_size - 1) // act_group_size,
+                           device=self.device, dtype=self.orig_layer.weight.dtype),
+                requires_grad=True  ##using weight.dtype
+            )
+            self.params["act_min_scale"] = self.act_min_scale
+            self.params["act_max_scale"] = self.act_max_scale
+        else:
+            self.act_min_scale = torch.tensor(1.0, device=self.device, dtype=weight_dtype)
+            self.act_max_scale = torch.tensor(1.0, device=self.device, dtype=weight_dtype)
+
     def unwrapper(self, best_params):
         """Unwrapper the layer to the original layer.
 
@@ -304,19 +325,16 @@ class WrapperLinear(torch.nn.Module):
         Returns:
         - torch.nn.Module: The original linear layer with updated weights after quantization and dequantization.
         """
-        min_scale = torch.tensor(1.0)
-        max_scale = torch.tensor(1.0)
-        v = torch.tensor(0.0)
-        if best_params is not None:
-            min_scale = best_params.get('min_scale', min_scale)
-            max_scale = best_params.get('max_scale', max_scale)
-            v = best_params.get('v', v)
+        min_scale = best_params.get('min_scale', torch.tensor(1.0, device=self.device))
+        max_scale = best_params.get('max_scale', torch.tensor(1.0, device=self.device))
+        act_min_scale = best_params.get('act_min_scale', torch.tensor(1.0, device=self.device))
+        act_max_scale = best_params.get('act_max_scale', torch.tensor(1.0, device=self.device))
+        v = best_params.get('v', torch.tensor(0.0, device=self.device))
 
         min_scale.clamp_(0, 1.0)
         max_scale.clamp_(0, 1.0)
-        v = v.to(self.device)
-        min_scale = min_scale.to(self.device)
-        max_scale = max_scale.to(self.device)
+        act_min_scale.clamp_(0, 1.0)
+        act_max_scale.clamp_(0, 1.0)
 
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
@@ -332,7 +350,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.weight.grad = None
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
-        if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
+        if self.enable_norm_bias_tuning and "bias_v" in best_params:  ##fake quant
             bias_v = best_params["bias_v"]
             bias, _, _ = quant_tensor(self.bias_quant_func, self.orig_layer.bias, self.bias_bits, self.bias_group_size,
                                       bias_v, q_scale_thresh=self.q_scale_thresh)
@@ -342,6 +360,9 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.data_type = self.data_type
         if self.act_quant:
+            self.orig_layer.act_min_scale = act_min_scale
+            self.orig_layer.act_max_scale = act_max_scale
+
             self.orig_layer.act_quant_func = self.act_quant_func
             wrapper_layer = WrapperWALayer(self.orig_layer)
             wrapper_layer.scale = scale
@@ -368,17 +389,28 @@ class WrapperLinear(torch.nn.Module):
         weight = self.orig_layer.weight
         if weight.device.type == 'meta':
             weight = self.orig_layer.get_weight().to(self.device)
-        self.min_scale.data.copy_(torch.clamp(self.min_scale.data, 0, 1.0))
-        self.max_scale.data.copy_(torch.clamp(self.max_scale.data, 0, 1.0))
+        with torch.no_grad():
+            self.min_scale.clamp_(0, 1.0)
+            self.max_scale.clamp_(0, 1.0)
+            self.act_min_scale.clamp_(0, 1.0)
+            self.act_max_scale.clamp_(0, 1.0)
+
         weight_q, _, _ = quant_tensor(self.weight_quant_func, weight, self.bits, self.group_size, self.value,
                                       self.min_scale,
                                       self.max_scale, self.scale_dtype, self.weight_min, self.weight_max,
                                       data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
         weight_q = weight_q.to(weight.dtype)
         if self.act_quant:
-            x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
-                                   scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
-                                   data_type=self.data_type)
+
+            if self.enable_act_minmax_scale:
+                x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
+                                       scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
+                                       data_type=self.data_type, min_scale=self.act_min_scale,
+                                       max_scale=self.act_max_scale, scale_dim=1)
+            else:
+                x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
+                                       scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
+                                       data_type=self.data_type)
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
         if bias is not None and bias.device.type == 'meta':

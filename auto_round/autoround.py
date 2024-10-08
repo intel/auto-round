@@ -818,11 +818,16 @@ class AutoRound(object):
         else:
             wrapper_linear = WrapperTransformerConv1d(layer, enable_minmax_tuning=self.enable_minmax_tuning,
                                                       device=device).to(device)
+
         round_params = []
         minmax_params = []
-        round_params.append(wrapper_linear.value)
-        minmax_params.append(wrapper_linear.min_scale)
-        minmax_params.append(wrapper_linear.max_scale)
+
+        for key in layer.params.keys():
+            if "scale" in key:
+                minmax_params.append(layer.params[key])
+            else:
+                round_params.append(layer.params[key])
+
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
@@ -929,20 +934,22 @@ class AutoRound(object):
             block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device)
 
         round_params = []
+        act_params=[]
         minmax_params = []
         for n, m in block.named_modules():
-            if hasattr(m, "orig_layer"):
-                if "v" in m.params.keys():
-                    round_params.append(m.params['v'])
-                if "max_scale" in m.params.keys():
-                    minmax_params.append(m.params["min_scale"])
-                    minmax_params.append(m.params["max_scale"])
-                if "bias_v" in m.params.keys():
-                    round_params.append(m.params["bias_v"])
+            if not hasattr(m, "orig_layer"):
+                continue
+            for key in m.params.keys():
+                if "act" in key:
+                    act_params.append(m.params[key])
+                elif "scale" in key:
+                    minmax_params.append(m.params[key])
+                else:
+                    round_params.append(m.params[key])
 
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}, {"params": act_params, "lr": self.minmax_lr*2}], lr=self.lr, weight_decay=0
             )
         else:
             optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
@@ -1038,6 +1045,12 @@ class AutoRound(object):
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
+            for key in best_params.keys():
+                if "act_max_scale" in best_params[key].keys():
+                    print(key,"act_max_scale", torch.min(best_params[key]["act_max_scale"]), torch.max(best_params[key]["act_max_scale"]),flush=True)
+                if "act_min_scale" in best_params[key].keys():
+                    print(key, "act_min_scale", torch.min(best_params[key]["act_min_scale"]),
+                          torch.max(best_params[key]["act_min_scale"]), flush=True)
             unwrapper_block(block, best_params)
         if self.enable_quanted_input:
             if self.low_cpu_mem_usage:
