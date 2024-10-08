@@ -55,6 +55,36 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
+    def test_consective_quant(self):
+        bits, group_size, sym = 4, -1, False
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+
+        model = AutoModelForCausalLM.from_pretrained("microsoft/phi-2", torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained("microsoft/phi-2", trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+
+
+
     def test_mx_fp4(self):
         bits, group_size, sym = 4, 32, False
         autoround = AutoRound(
