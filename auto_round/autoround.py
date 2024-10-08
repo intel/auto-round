@@ -934,19 +934,22 @@ class AutoRound(object):
             block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device)
 
         round_params = []
+        act_params=[]
         minmax_params = []
         for n, m in block.named_modules():
             if not hasattr(m, "orig_layer"):
                 continue
             for key in m.params.keys():
-                if "scale" in key:
+                if "act" in key:
+                    act_params.append(m.params[key])
+                elif "scale" in key:
                     minmax_params.append(m.params[key])
                 else:
                     round_params.append(m.params[key])
 
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
+                [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}, {"params": act_params, "lr": self.minmax_lr*2}], lr=self.lr, weight_decay=0
             )
         else:
             optimizer = self.optimizer(round_params, lr=self.lr, weight_decay=0)
@@ -1044,7 +1047,10 @@ class AutoRound(object):
         with torch.no_grad():
             for key in best_params.keys():
                 if "act_max_scale" in best_params[key].keys():
-                    print(key, torch.min(best_params[key]["act_max_scale"]), torch.max(best_params[key]["act_max_scale"]),flush=True)
+                    print(key,"act_max_scale", torch.min(best_params[key]["act_max_scale"]), torch.max(best_params[key]["act_max_scale"]),flush=True)
+                if "act_min_scale" in best_params[key].keys():
+                    print(key, "act_min_scale", torch.min(best_params[key]["act_min_scale"]),
+                          torch.max(best_params[key]["act_min_scale"]), flush=True)
             unwrapper_block(block, best_params)
         if self.enable_quanted_input:
             if self.low_cpu_mem_usage:

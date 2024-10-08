@@ -41,14 +41,16 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
     else:
         wmin_tmp = weight_min
         wmax_tmp = weight_max
-    if isinstance(min_scale, torch.Tensor) and scale_dim == 0:
+    if isinstance(min_scale, torch.Tensor) and (scale_dim == 0 or 1 == min_scale.numel()):
         wmin = wmin_tmp * min_scale
         wmax = wmax_tmp * max_scale
-    # elif isinstance(max_scale, torch.Tensor) and scale_dim == 1:
-    #     assert len(max_scale.shape) == 1
-    #     repeat_num = weight.numel() // max_scale.numel()
-    #     max_scale = max_scale.repeat(repeat_num, 1)
-    #     shared_exp *= (max_scale.unsqueeze(dim=0))
+    elif isinstance(max_scale, torch.Tensor) and scale_dim == 1:
+        assert len(max_scale.shape) == 1
+        repeat_num = wmin_tmp.numel() // max_scale.numel()
+        max_scale = max_scale.repeat(repeat_num, 1).view(-1)
+        min_scale = min_scale.repeat(repeat_num, 1).view(-1)
+        wmin = wmin_tmp * min_scale
+        wmax = wmax_tmp * max_scale
     else:
         wmin = wmin_tmp
         wmax = wmax_tmp
