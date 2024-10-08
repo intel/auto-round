@@ -367,7 +367,8 @@ def sampling_inputs(input_ids, input_others, indices, seqlen,
     for key in input_others.keys():
         if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key) \
                 or (not_share_position_ids_flag and ("position_ids" in key or "cache_position" in key)) \
-                or (not_share_rotary_pos_emb_flag and ("rotary_pos_emb" in key or 'cu_seqlens' in key)):
+                or (not_share_rotary_pos_emb_flag and ("rotary_pos_emb" in key or 'cu_seqlens' in key)) \
+                or "cross_attention_states" in key:
             current_input_others[key] = None
             if input_others[key] is not None:
                 current_input_others[key] = [input_others[key][i] for i in indices]
@@ -970,3 +971,4 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             use_marlin=not disable_marlin,
         )
     return QuantLinear
+
