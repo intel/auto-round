@@ -68,7 +68,7 @@ class AutoRound(object):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether symmetric quantization is to be used (default is False).
-        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config (dict): Configuration for weight quantization (default is None).
         layer_config={
                    'layer1':##layer_name
                    {
@@ -125,7 +125,7 @@ class AutoRound(object):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            layer_config: dict = {},
+            layer_config: dict = None,
             enable_full_range: bool = False,  ##for symmetric, TODO support later
             batch_size: int = 8,
             amp: bool = True,
@@ -182,7 +182,7 @@ class AutoRound(object):
         self.low_gpu_mem_usage = low_gpu_mem_usage
         self.data_type = data_type
         self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
-        self.layer_config = layer_config
+        self.layer_config = {} if layer_config is None else layer_config
         self.seed = seed
         set_seed(self.seed)
         self.tokenizer = tokenizer
@@ -1346,7 +1346,7 @@ class AutoOPTRound(AutoRound):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is False).
-        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config (dict): Configuration for weight quantization (default is None).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
@@ -1389,7 +1389,7 @@ class AutoOPTRound(AutoRound):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            layer_config: dict = {},
+            layer_config=None,
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
@@ -1459,6 +1459,8 @@ class AutoOPTRound(AutoRound):
             **kwargs,
         )
 
+        if layer_config is None:
+            layer_config = {}
         self.optimizer = self.get_optimizer(optimizer)
 
     def get_optimizer(self, optimizer):
@@ -1511,7 +1513,7 @@ class AutoAdamRound(AutoOPTRound):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (str): Whether symmetric quantization to be used (default is False).
-        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config (dict): Configuration for weight quantization (default is None).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
@@ -1554,7 +1556,7 @@ class AutoAdamRound(AutoOPTRound):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            layer_config: dict = {},
+            layer_config=None,
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
