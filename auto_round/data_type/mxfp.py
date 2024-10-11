@@ -99,7 +99,7 @@ def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **
     elif mantissa_rounding == "floor":
         tensor = floor_ste(tensor)
     else:
-        raise  ValueError("mantissa_rounding only supports even, nearest or floor.")
+        raise ValueError("mantissa_rounding only supports even, nearest or floor.")
     max_mantissa = 2 ** (mbits - 1) - 1
     tensor = torch.clamp(tensor, -max_mantissa, max_mantissa)
 
