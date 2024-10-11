@@ -38,7 +38,7 @@ FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
-def quant_mx(tensor, bits, data_type, v, max_scale, **kwargs):
+def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **kwargs):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -74,7 +74,7 @@ def quant_mx(tensor, bits, data_type, v, max_scale, **kwargs):
     shared_exp[shared_exp > scale_emax] = scale_emax  ##changed Nan
     shared_exp[shared_exp < -scale_emax] = -scale_emax
     tensor = tensor / (2 ** shared_exp)
-    is_mx_fp4 = data_type == "mx_fp4" or ("mx_fp" in data_type and bits==4)
+    is_mx_fp4 = data_type == "mx_fp4" or ("mx_fp" in data_type and bits == 4)
     multiply = 2 if is_mx_fp4 else 1  ## 2 is a tricky setting
     tensor = tensor + v * multiply
     if ebits != 0:
@@ -89,7 +89,14 @@ def quant_mx(tensor, bits, data_type, v, max_scale, **kwargs):
     # Scale up so appropriate number of mbits are in the integer portion of the number
     tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** private_exp) * (2 ** (mbits - 2))
 
-    tensor = torch.sign(tensor) * round_ste(torch.abs(tensor))  ##adopt round-to-floor which we found is much better
+    if mantissa_rounding == "even":
+        abs_tensor = torch.abs(tensor)
+        mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
+        tensor = torch.sign(tensor) * (floor_ste(abs_tensor + 0.5) - mask_tensor)
+    elif mantissa_rounding == "nearst":
+        tensor = round_ste(tensor)
+    elif mantissa_rounding == "floor":
+        tensor = round_ste(tensor)
     max_mantissa = 2 ** (mbits - 1) - 1
     tensor = torch.clamp(tensor, -max_mantissa, max_mantissa)
 
