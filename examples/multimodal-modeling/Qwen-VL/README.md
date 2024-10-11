@@ -1,8 +1,8 @@
 Step-by-Step
 ============
-
 This document presents step-by-step instructions for auto-round.
-# Run Quantization on Qwen-VL Models
+
+# Run Quantization on Qwen-VL/Qwen2-VL-Instruct Models
 
 In this example, we introduce an straight-forward way to execute quantization on some popular multimodal models such as Qwen-VL and Qwen2-VL-Instruct. 
 
@@ -17,8 +17,9 @@ COCO: [train2017](http://images.cocodataset.org/zips/train2017.zip), and unzip t
 You can also refer to the official Qwen-VL finetuning requirements to create a [custom dataset](https://github.com/QwenLM/Qwen-VL/blob/master/README.md#data-preparation)
 
 ## Download the evaluation data
-
 Please refer to [Qwen-VL evaluation](https://github.com/cognitedata/Qwen-VL-finetune/blob/master/eval_mm/EVALUATION.md)
+
+Note: The quantized Qwen2-VL model evaluation is currently not supported.
 <details>
 <summary>TextVQA Data Preparation</summary>
 
@@ -71,15 +72,18 @@ cd ../..
 <br />
 
 ## 2. Run Examples
+
 Enter into the examples folder and install requirements
+
 ```bash
 pip install -r requirements.txt
 ```
-For Qwen2-VL quantization/Inference, please follow [Qwen2 official requirements](https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct)
+
+For Qwen2-VL quantization/Inference, please follow [Qwen2 official requirements](https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct) and install the latest version of transformers by **building from source**.
 
 - **Default Settings:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Qwen/Qwen-VL  --bits 4 --group_size 128
+CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Qwen/Qwen2-VL-7B-Instruct  --bits 4 --group_size 128
 ```
 
 - **Speedup the tuning:**
@@ -87,17 +91,6 @@ CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Qwen/Qwen-VL  --bits 4 --gro
 reduce the seqlen to 512(potential large accuracy drop)
 
 or combine them
-
-- **Enable quantized lm-head:**
-
-Currently only support in Intel xpu and AutoRound format,however, we found the fake tuning could improve the accuracy is some scenarios. low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to the device, otherwise it will be quite slow to cache the inputs of lm-head. Another way is reducing nsamples,e.g. 128, to alleviate the issue.
-```bash
-CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name Qwen/Qwen-VL  --bits 4 --group_size 128 --quant_lm_head
-```
-
-- **Utilizing the AdamW Optimizer:**
-
-Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 - **Running on Intel Gaudi2**
 ```bash
@@ -237,6 +230,7 @@ If you find SignRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
