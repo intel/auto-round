@@ -38,7 +38,7 @@ FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
-def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="floor", **kwargs):
+def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **kwargs):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
