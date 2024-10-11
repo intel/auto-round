@@ -38,7 +38,7 @@ FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
-def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **kwargs):
+def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="floor", **kwargs):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -93,7 +93,7 @@ def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **
         abs_tensor = torch.abs(tensor)
         mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
         tensor = torch.sign(tensor) * (floor_ste(abs_tensor + 0.5) - mask_tensor)
-    elif mantissa_rounding == "nearst":
+    elif mantissa_rounding == "nearest":
         tensor = round_ste(tensor)
     elif mantissa_rounding == "floor":
         tensor = floor_ste(tensor)
