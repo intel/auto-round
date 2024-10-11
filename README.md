@@ -15,7 +15,7 @@ of models. AutoRound adopts sign gradient descent to fine-tune rounding values a
 steps,
 which competes impressively against recent methods without introducing any additional inference overhead and keeping low
 tuning cost. The below
-image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516v4) for more
+image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
 details and visit [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for
 more accuracy data and recipes across various models.
 
