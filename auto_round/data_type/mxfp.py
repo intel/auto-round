@@ -38,7 +38,7 @@ FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
-def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **kwargs):
+def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="floor", **kwargs):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -52,6 +52,7 @@ def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **
         data_type (str): The data type for quantization (e.g., 'mx_fp4').
         v (float): A value used for adjusting the tensors.
         max_scale (float or torch.Tensor): The maximum scale to be applied to the tensors.
+        mantissa_rounding (str): rounding method for mantissa,currently support even,nearest,floor
 
     Returns:
         tuple: A tuple containing the quantized tensors, shared exponent, and None (reserved for future use).
@@ -97,6 +98,8 @@ def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **
         tensor = round_ste(tensor)
     elif mantissa_rounding == "floor":
         tensor = floor_ste(tensor)
+    else:
+        raise  ValueError("mantissa_rounding only supports even, nearest or floor.")
     max_mantissa = 2 ** (mbits - 1) - 1
     tensor = torch.clamp(tensor, -max_mantissa, max_mantissa)
 
