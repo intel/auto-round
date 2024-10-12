@@ -67,7 +67,6 @@ class TestAutoRound(unittest.TestCase):
         out1 = model_tmp(inp)
         
         assert out0[0].equal(out1[0])
-        print(float(out0[0][0][0][0]))
         self.assertTrue(isclose(float(out0[0][0][0][0]), -0.021002087742090225, rel_tol=1e-04))
 
 
