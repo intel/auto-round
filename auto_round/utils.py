@@ -891,11 +891,11 @@ def get_library_version(library_name):
         except pkg_resources.DistributionNotFound:
             return f"{library_name} is not installed"
     else:
-        import importlib_metadata  # pylint: disable=E0401
+        import importlib.metadata  # pylint: disable=E0401
         try:
-            version = importlib_metadata.version(library_name)
+            version = importlib.metadata.version(library_name)
             return version
-        except importlib_metadata.PackageNotFoundError:
+        except importlib.metadata.PackageNotFoundError:
             return f"{library_name} is not installed"
 
 
@@ -971,4 +971,5 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             use_marlin=not disable_marlin,
         )
     return QuantLinear
+
 
