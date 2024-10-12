@@ -77,8 +77,8 @@ _register_template(
 _register_template(
     model_type="mllama",
     format_user="<|start_header_id|>user<|end_header_id|>\n{{content}}<|eot_id|>",
-    format_system="<|begin_of_text|><|start_header_id|>system\n{{content}}<|end_header_id|>\n",
-    # format_observation="<|start_header_id|>tool\n{{content}}<|end_header_id|>\n<|im_start|>assistant\n",
+    format_assistant="<|start_header_id|>assistant<|end_header_id|>\n{{content}}<|eot_id|>",
+    format_system="<|begin_of_text|><|start_header_id|>system|end_header_id|>\n{{content}}<<eot_id>",
     default_system="You are a helpful assistant.",
     replace_tokens=[("<image>", "<|image|>")]
 )

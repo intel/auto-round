@@ -9,6 +9,9 @@ from transformers import set_seed
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
+import sys
+sys.path.insert(0, '../../..')
+
 def setup_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
