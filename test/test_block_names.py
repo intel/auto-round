@@ -168,6 +168,8 @@ class TestQuantizationBlocks(unittest.TestCase):
             import auto_gptq
         except:
             return
+        if not torch.cuda.is_available():
+            return
         quantized_model_path = "./saved"
         autoround.save_quantized(quantized_model_path, inplace=False, safe_serialization=False, format="auto_round")
         
