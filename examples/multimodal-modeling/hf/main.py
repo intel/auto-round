@@ -1,67 +1,13 @@
 import os
 import argparse
-from typing import Callable, Optional
 
-import inspect
+import warnings
 import torch
-from torch.utils.data import Dataset, DataLoader
 import transformers
 from transformers import set_seed
-from transformers.trainer_utils import RemoveColumnsCollator
-from transformers.data.data_collator import default_data_collator
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
-import sys
-sys.path.insert(0, "/home/hengguo/code/delete_later/auto-round")
-
-
-def set_signature_columns_if_needed(model):
-    # Inspect model forward signature to keep only the arguments it accepts.
-    model_to_inspect = model
-    signature = inspect.signature(model_to_inspect.forward)
-    signature_columns = list(signature.parameters.keys())
-    # Labels may be named label or label_ids, the default data collator handles that.
-    signature_columns += list(set(["label", "label_ids", 'labels']))
-    return signature_columns
-
-def get_collator_with_removed_columns(model, data_collator: Callable, description: Optional[str] = None
-    ) -> Callable:
-        """Wrap the data collator in a callable removing unused columns."""
-        signature_columns = set_signature_columns_if_needed(model)
-
-        remove_columns_collator = RemoveColumnsCollator(
-            data_collator=data_collator,
-            signature_columns=signature_columns,
-            description=description,
-            model_name=model.__class__.__name__,
-        )
-        return remove_columns_collator
-    
-def get_train_dataloader(train_dataset, model, data_collator=default_data_collator,
-                         train_batch_size=1, num_workers=0) -> DataLoader:
-    """
-    Returns the training [`~torch.utils.data.DataLoader`].
-
-    Will use no sampler if `train_dataset` does not implement `__len__`, a random sampler (adapted to distributed
-    training if necessary) otherwise.
-
-    Subclass and override this method if you want to inject some custom behavior.
-    """
-    if train_dataset is None:
-        raise ValueError("Trainer: training requires a train_dataset.")
-    
-    if data_collator != default_data_collator:
-        data_collator = get_collator_with_removed_columns(model, data_collator, description="training")
-
-    dataloader_params = {
-        "batch_size": train_batch_size,
-        "collate_fn": data_collator,
-        "num_workers": num_workers,
-    }
-
-    return DataLoader(train_dataset, **dataloader_params)
 
 def setup_args():
     parser = argparse.ArgumentParser()
@@ -120,6 +66,12 @@ def setup_args():
                         help="targeted inference acceleration platform,The options are 'fake', 'cpu', 'gpu' and 'xpu'."
                              "default to 'fake', indicating that it only performs fake quantization and won't be exported to any device.")
 
+    parser.add_argument("--format", default=None, type=str,
+                        help="The format in which to save the model. "
+                             "The options are 'auto_round', 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
+                             "default to 'auto_round."
+                        )
+
     parser.add_argument("--scale_dtype", default='fp16',
                         help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
@@ -163,10 +115,8 @@ def setup_args():
     parser.add_argument("--question_file", default=None, type=str,
                             help="The dataset for quantization training. It can be a custom one.")
     
-    # ================= Evaluation Related =====================
-    # parser.add_argument("--eval-path", type=str, default=None)
-    
-    parser.add_argument("--eval-dataset", type=str, default="textvqa_val,scienceqa_test_img")
+    parser.add_argument("--template", default=None, type=str,
+                            help="The template for building training dataset. It can be a custom one.")
 
     args = parser.parse_args()
     return args
@@ -184,8 +134,22 @@ def main():
     if args.act_bits <= 8 and args.deployment_device != "fake":
         assert False, "only support fake mode for activation quantization currently"
         
-    if "marlin" in args.deployment_device and args.sym == False:
-        assert False, "marlin backend only supports sym quantization, please set --sym"
+    if args.format and args.deployment_device:
+        assert False, "please only specify one of format and deployment_device"
+
+    if args.deployment_device is None and args.format is None:
+        args.format = "auto_round"
+
+    if args.deployment_device:
+        warnings.warn("The deployment_device is deprecated and will be removed in future version."
+                      "Please use format instead", DeprecationWarning)
+
+        if "marlin" in args.deployment_device and args.sym == False:
+            assert False, "marlin backend only supports sym quantization, please set --sym"
+
+    if args.format:
+        if "marlin" in args.format and args.sym == False:
+            assert False, "marlin backend only supports sym quantization, please set --sym"
         
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -209,7 +173,6 @@ def main():
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
     tokenizer.processor = processor
     model_type = config.model_type
-    default_collator = default_data_collator
 
     model_cls = AutoModelForCausalLM
     if "qwen2" in model_type:
@@ -220,23 +183,16 @@ def main():
         from transformers import MllamaForConditionalGeneration
         model_cls = MllamaForConditionalGeneration
     else:
-        default_collator = default_data_collator if tokenizer is None else DataCollatorWithPadding(tokenizer)
         model_cls = AutoModelForCausalLM
     
     model = model_cls.from_pretrained(model_name, device_map="auto", torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code,)
 
-    # build dataloader
-    from utils import LlavaDataset
-    dataset = LlavaDataset(
-        model_type, tokenizer, args.question_file, 
-        args.image_folder, max_len=min(args.seqlen, tokenizer.model_max_length))
-    # for i in dataset:
-    #     print(i)
-    #     breakpoint()
-    dataloader = get_train_dataloader(dataset, model, data_collator=default_collator, train_batch_size=args.train_bs)
-    # for i in dataloader:
-    #     print(i)
-    #     breakpoint()
+    from auto_round.vlm_dataset import get_dataloader
+    if args.template:
+        template = args.template
+    else:
+        template = model_type
+    dataloader = get_dataloader(template, tokenizer, question_path=args.question_file, image_path=args.image_folder, seqlen=args.seqlen)
 
     from auto_round import (AutoRound,
                             AutoAdamRound)
@@ -304,41 +260,49 @@ def main():
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
     output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}-qdq"
 
-    deployment_device = args.deployment_device.split(',')
-    gpu_formats = []
-    for item in deployment_device:
-        if "gpu" in item or "auto_gptq" in item or "auto_round" in item:
-            gpu_formats.append(item)
+    if args.format:
+        format_list = args.format.replace(' ', '').split(',')
+        inplace = False if len(format_list) > 1 else True
+        for format_ in format_list:
+            eval_folder = f'{export_dir}-{format_}'
+            autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
+    else:
+        deployment_device = args.deployment_device.split(',')
+        gpu_formats = []
+        for item in deployment_device:
+            if item in ["gpu", "auto_gptq", "auto_round", "auto_awq"]:
+                if item == "gpu":
+                    if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name][
+                        "data_type"] == "int":
+                        gpu_formats.append("auto_round")
+                    else:
+                        gpu_formats.append("auto_gptq")
+                else:
+                    gpu_formats.append(item)
+        gpu_formats = list(set(gpu_formats))
 
-    if 'gpu' in deployment_device:
-        if lm_head_layer_name in layer_config.keys() and layer_config[lm_head_layer_name]["data_type"] == "int":
-            gpu_formats.append("auto_round")
-        else:
-            gpu_formats.append("auto_gptq")
-    gpu_formats = list(set(gpu_formats))
+        inplace = True if len(deployment_device) < 2 else False
+        for gpu_format in gpu_formats:
+            eval_folder = f'{export_dir}-{gpu_format}'
+            autoround.save_quantized(eval_folder, format=gpu_format, inplace=inplace)
 
-    inplace = True if len(deployment_device) < 2 else False
-    eval_folder = None
-    for gpu_format in gpu_formats:
-        if "round" in gpu_format:
-            eval_folder = f'{export_dir}-round'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-        elif "gptq" in gpu_format:
-            eval_folder = f'{export_dir}-gpu'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+        if 'xpu' in deployment_device:
+            autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace)
+        if "cpu" in deployment_device:
+            autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
+        if "fake" in deployment_device:
+            model = model.to("cpu")
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
+            if eval_folder is None:
+                eval_folder = output_dir
 
-    if 'xpu' in deployment_device:
-        autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
-                                 compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
-                                 device="xpu")
-    if "cpu" in deployment_device:
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
-    if "fake" in deployment_device:
-        model = model.to("cpu")
-        model.save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
-        if eval_folder is None:
-            eval_folder = output_dir
+    if (not ('gpu' in deployment_device or len(gpu_formats) > 0)) and 'fake' not in deployment_device:
+        print('does not support cpu, xpu model evaluation.')
+        exit()  ## does not support cpu,xpu model eval
+    
+    if args.disable_eval:
+        exit()
 
 if __name__ == '__main__':
     main()
