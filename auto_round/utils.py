@@ -808,8 +808,8 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
             disable_exllama=disable_exllamav1,
             disable_exllamav2=disable_exllamav2,
             use_qigen=use_qigen,
-            use_marlin=not disable_marlin,
-            use_tritonv2=use_tritonv2
+            use_marlin=not disable_marlin,  # pylint: disable=E1123
+            use_tritonv2=use_tritonv2  # pylint: disable=E1123
         )
     return QuantLinear
 
@@ -967,8 +967,8 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             bits=bits,
             disable_exllama=disable_exllamav1,
             disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen,
-            use_marlin=not disable_marlin,
+            use_qigen=use_qigen, # pylint: disable=E1123
+            use_marlin=not disable_marlin, # pylint: disable=E1123
         )
     return QuantLinear
 

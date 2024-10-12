@@ -92,7 +92,8 @@ def setup_parser():
 
     parser.add_argument("--format", default=None, type=str,
                         help="The format in which to save the model. "
-                             "The options are 'auto_round', 'auto_round:marlin', 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
+                             "The options are 'auto_round', 'auto_round:gptq','auto_round:marlin',"
+                             " 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
                              "default to 'auto_round."
                         )
 
@@ -163,7 +164,8 @@ def tune(args):
         args.format = "auto_round"
     if "auto_gptq" in args.format and args.asym is True:
         print(
-            "warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use sym quantization or --format='auto_round'")
+            "warning: The auto_gptq kernel has issues with asymmetric quantization. "
+            "It is recommended to use sym quantization or --format='auto_round'")
 
     if "marlin" in args.format and args.asym is True:
         assert False, "marlin backend only supports sym quantization, please remove --asym"

@@ -29,7 +29,9 @@ more accuracy data and recipes across various models.
 
 * [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
   configuration. This approach is typically better or comparable to asymmetric quantization and significantly
-  outperforms other symmetric variants, especially at low bit-widths like 2-bit.
+  outperforms other symmetric variants, especially at low bit-widths like 2-bit. No need to compile from source to run
+  AutoRound format anymore.
+
 * [2024/09] AutoRound format supports several LVM models, check out the
   examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
 * [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
@@ -221,7 +223,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
-**CUDA**: pip install auto-gptq for sym quantization, for asym quantization, need to install auto-round from source
+**CUDA**: pip install auto-gptq for sym quantization(tuning needs auto-round 0.30+), for asym quantization, need to install auto-round from source
 
 #### CPU/HPU/CUDA on 0.3.0+
 
@@ -243,6 +245,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
 #### CPU/HPU/CUDA on 0.3.0
+
+**CUDA**:  need to install auto-round from source
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
