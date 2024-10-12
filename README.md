@@ -26,7 +26,9 @@ more accuracy data and recipes across various models.
 <div align="left">
 
 ## What's New
-* [2024/09] AutoRound format supports several LVM models, check out the examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
+
+* [2024/09] AutoRound format supports several LVM models, check out the
+  examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
 * [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
   to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
 * [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters (for 2-bit
@@ -61,14 +63,14 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 from auto_round import AutoRound
 
-bits, group_size, sym = 4, 128, False
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
+bits, group_size = 4, 128
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size)
 
-## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-# autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
+## the best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+# autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size)
 
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-# autoround = AutoRound(model, tokenizer, nsamples=128, iters=200, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym)
+# autoround = AutoRound(model, tokenizer, nsamples=128, iters=200, seqlen=512, batch_size=4, bits=bits, group_size=group_size)
 
 autoround.quantize()
 output_dir = "./tmp_autoround"
@@ -87,7 +89,7 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 - `group_size (int)`: Size of the quantization group (default is 128).
 
-- `sym (bool)`: Whether to use symmetric quantization (default is False).
+- `sym (bool)`: Whether to use symmetric quantization (default is True).
 
 - `enable_quanted_input (bool)`: Whether to use the output of the previous quantized block as the input for the current
   block for tuning (default is True).
@@ -173,7 +175,8 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
 #### Formats
 
-**AutoRound Format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision inference. [2,4]
+**AutoRound Format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
+inference. [2,4]
 bits are supported. It
 resolves the asymmetric quantization kernel issues found in the AutoGPTQ format and supports both LM-head quantization
 and mixed precision. However, it has not yet gained widespread community adoption. For CUDA support, you will need to
@@ -216,7 +219,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
-**CUDA**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install  --no-build-isolation
+**CUDA**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install --no-build-isolation
 -e .
 
 #### CPU/HPU/CUDA on 0.3.0+
@@ -308,8 +311,8 @@ release most of the models ourselves.
 | bigscience/bloom-3b                    | [accuracy](./docs/bloom-3B-acc.md), [recipe](./examples/language-modeling/scripts/bloom-3b.sh), [example](./examples/language-modeling/)                                                                                                                                                                                  |
 | EleutherAI/gpt-j-6b                    | [accuracy](./docs/gpt-j-6B-acc.md), [recipe](./examples/language-modeling/scripts/gpt-j-6b.sh), [example](./examples/language-modeling/)                                                                                                                                                                                  | 
 
-
 ## Integration
+
 AutoRound has been integrated into multiple repositories.
 
 [Intel Neural Compressor](https://github.com/intel/neural-compressor)
@@ -317,9 +320,6 @@ AutoRound has been integrated into multiple repositories.
 [ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel)
 
 [pytorch/ao](https://github.com/pytorch/ao)
-
-
-
 
 ## Reference
 
