@@ -102,7 +102,7 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
 
 
 @register_dtype("int_sym_gptq")
-def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, weight_min=None,
+def quant_tensor_sym_gptq(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, weight_min=None,
                      weight_max=None, q_scale_thresh=0.0, **kwargs):
     """Quantizes and dequantizes weight symmetrically.
 
@@ -148,48 +148,6 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
     qdq_result = (scale * (q - zp)).to(weight.dtype)
     return qdq_result, scale, zp
 
-
-# @register_dtype("int_sym")
-# def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, weight_min=None,
-#                      weight_max=None, q_scale_thresh=0.0, **kwargs):
-#     """Quantizes and dequantizes weight symmetrically.
-#
-#     Args:
-#         weight: Tensor containing the weight to be quantized
-#         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-#         v: Rounding value perturbation
-#         min_scale: Minimum scale coefficient for weight
-#         max_scale: Maximum scale coefficient for weight
-#         weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
-#         weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
-#
-#     Returns:
-#         Quantized and dequantized weight, scale, zero-point
-#     """
-#     maxq = torch.tensor(2 ** (bits - 1))  ##different
-#     if weight_min is None or weight_max is None:
-#         wmin_tmp = torch.clamp(weight.min(-1)[0], max=0)
-#         wmax_tmp = torch.clamp(weight.max(-1)[0], min=0)
-#     else:
-#         wmin_tmp = weight_min
-#         wmax_tmp = weight_max
-#     if isinstance(min_scale, torch.Tensor):
-#         wmin = wmin_tmp * min_scale
-#         wmax = wmax_tmp * max_scale
-#     else:
-#         wmin = wmin_tmp
-#         wmax = wmax_tmp
-#     max_v = (2 * (torch.abs(wmax) < torch.abs(wmin)).int() - 1) * torch.max(torch.abs(wmax), torch.abs(wmin))
-#
-#     scale = (max_v / maxq).to(scale_dtype)
-#     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
-#     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
-#     scale = scale.unsqueeze(dim=-1)
-#     zp = zp.unsqueeze(dim=-1)
-#     int_w = round_ste(weight / scale + v)
-#     q = torch.clamp(int_w + zp, 0, 2 ** bits - 1)
-#     qdq_result = (scale * (q - zp)).to(weight.dtype)
-#     return qdq_result, scale, zp
 
 
 def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
