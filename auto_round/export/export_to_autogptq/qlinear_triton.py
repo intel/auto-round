@@ -19,11 +19,11 @@ import torch
 import torch.nn as nn
 import transformers
 
+
 class TritonModuleMixin:
     @classmethod
     def warmup(cls, model, transpose=False, seqlen=2048):
         pass
-
 
 
 class QuantLinear(nn.Module, TritonModuleMixin):
@@ -39,7 +39,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         self.outfeatures = outfeatures
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
-        self.maxq = 2**self.bits - 1
+        self.maxq = 2 ** self.bits - 1
 
         self.register_buffer(
             "qweight",
@@ -96,7 +96,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         for idx in range(self.infeatures):
             intweight.append(
                 torch.round((W[:, idx] + scale_zeros[self.g_idx[idx]]) / self.scales[self.g_idx[idx]]).to(torch.int)[
-                    :, None
+                :, None
                 ]
             )
         intweight = torch.cat(intweight, dim=1)
@@ -135,8 +135,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         qzeros = qzeros.astype(np.int32)
         self.qzeros = torch.from_numpy(qzeros)
 
-
-
+        delattr(self, "g_idx")
 
 
 __all__ = ["QuantLinear"]

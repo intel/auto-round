@@ -1,10 +1,9 @@
 import argparse
 import sys
-
 sys.path.insert(0, '../../..')
 parser = argparse.ArgumentParser()
-import torch
 import os
+import torch
 import transformers
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -12,8 +11,7 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import set_seed
 import json
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
+from transformers import AutoTokenizer, AutoProcessor, AutoModelForCausalLM
 from auto_round.utils import convert_dtype_torch2str
 from typing import Dict, Optional, List
 OLD_IMAGE_TOKEN = '<image>'
@@ -36,6 +34,8 @@ def DataFormating(raw_data, image_folder=None, model_type='qwen'):
                 sentence['value'] = sentence['value'].strip()
                 if 'qwen2' in model_type: # for Qwen2-vl
                     replace_token = '<|vision_start|><|image_pad|><|vision_end|>'
+                if 'mllama' in model_type:
+                    replace_token = '<|image|>'
                 else:
                     replace_img = os.path.join(image_folder, os.path.basename(source["image"]))
                     replace_token = DEFAULT_IM_START_TOKEN + replace_img + DEFAULT_IM_END_TOKEN + '\n'
@@ -43,17 +43,25 @@ def DataFormating(raw_data, image_folder=None, model_type='qwen'):
     return raw_data
 
 
-def qwen2_preprocess(
+def common_preprocess(
     sources,
     tokenizer: transformers.PreTrainedTokenizer,
     max_len: int,
-    system_message: str = "You are a helpful assistant."
+    system_message: str = "You are a helpful assistant.",
+    model_type='qwen2'
 ) -> Dict:
-    roles = {"user": "<|im_start|>user", "assistant": "<|im_start|>assistant"}
-    im_start = "<|im_start|>"
-    im_end = "<|im_end|>"
+    if 'mllama' in model_type:
+        roles = {"user": "<|start_header_id|>user<|end_header_id|>\n", "assistant": "<|start_header_id|>assistant<|end_header_id|>\n"}
+        im_start = "<|start_header_id|>"
+        im_end = "<|end_header_id|>\n"
+        im_dot = '<|eot_id|>'
+        text_start = '<|begin_of_text|>'
+    else :
+        roles = {"user": "<|im_start|>user", "assistant": "<|im_start|>assistant"}
+        im_start = "<|im_start|>"
+        im_end = "<|im_end|>"
     nl_tokens = '\n'
-    _system = 'system' + nl_tokens
+    _system = 'system'
 
     # Apply prompt templates
     inputs, targets = [], []
@@ -62,12 +70,19 @@ def qwen2_preprocess(
             source = source[1:]
 
         text, target = "", None
-        system = im_start + _system + system_message + im_end + nl_tokens
+        if 'mllama' in model_type:
+            system = text_start + im_start + _system + im_end + nl_tokens + system_message + im_dot
+        else:
+            system = im_start + _system + nl_tokens + system_message + im_end + nl_tokens
         text += system
         for j, sentence in enumerate(source):
             role = roles[sentence["from"]]
-            _text = role + nl_tokens + \
-                sentence["value"] + im_end + nl_tokens
+            if 'mllama' in model_type:
+                _text = role + nl_tokens + \
+                    sentence["value"] + im_dot
+            else:
+                _text = role + nl_tokens + \
+                    sentence["value"] + im_end + nl_tokens
             text += _text
         token_length = len(tokenizer(text).input_ids)
         if token_length < max_len:
@@ -156,33 +171,46 @@ class LazySupervisedDataset(Dataset):
         if i in self.cached_data_dict:
             return self.cached_data_dict[i]
 
-        if 'qwen2' not in model_type:
+        if 'qwen' == model_type: # for Qwen-VL
             ret = preprocess([self.raw_data[i]["conversations"]], self.tokenizer, self.max_len)
             ret = dict(
                 input_ids=ret["input_ids"][0],
                 labels=ret["labels"][0],
                 attention_mask=ret["attention_mask"][0],
             )
-        else:
-            texts = qwen2_preprocess([self.raw_data[i]["conversations"]], self.tokenizer, self.max_len)
-            image_path = os.path.join(f"file://{self.image_folder}", os.path.basename(self.raw_data[i]["image"]))
-            image_inputs = fetch_image({'image':image_path})
+        else: # Qwen2-VL and Llama-3.2 
+            texts = common_preprocess([self.raw_data[i]["conversations"]], self.tokenizer, self.max_len, model_type=model_type)
+            if 'qwen2' in model_type:
+                image_path = os.path.join(f"file://{self.image_folder}", os.path.basename(self.raw_data[i]["image"]))
+                image = fetch_image({'image':image_path})
+            else:
+                image = Image.open(os.path.join(self.image_folder, os.path.basename(self.raw_data[i]["image"]))) #.convert('RGB')
             ret = self.tokenizer.processor(
                 text=texts,
-                images=image_inputs,
-                videos=None,
+                images=image,
                 padding=True,
+                truncation=True,
                 return_tensors="pt",
+                # videos=None,
             )
-            ret = dict(
-                input_ids=ret["input_ids"][0],
-                # labels=ret["labels"][0],
-                attention_mask=ret["attention_mask"][0],
-                image_grid_thw=ret["image_grid_thw"][0],
-                pixel_values=ret["pixel_values"],
-            )
+            if 'qwen2' in model_type:
+                ret = dict(
+                    input_ids=ret["input_ids"][0],
+                    # labels=ret["labels"][0],
+                    attention_mask=ret["attention_mask"][0],
+                    image_grid_thw=ret["image_grid_thw"][0],
+                    pixel_values=ret["pixel_values"],
+                )
+            else:
+                ret = dict(
+                    input_ids=ret["input_ids"][0],
+                    attention_mask=ret["attention_mask"][0],
+                    aspect_ratio_ids=ret["aspect_ratio_ids"][0],
+                    aspect_ratio_mask=ret["aspect_ratio_mask"][0],
+                    cross_attention_mask=ret["cross_attention_mask"][0],
+                    pixel_values=ret["pixel_values"][0],
+                )
         self.cached_data_dict[i] = ret
-
         return ret
     
     
@@ -340,7 +368,7 @@ if __name__ == '__main__':
     # ================= Evaluation Related =====================
     # parser.add_argument("--eval-path", type=str, default=None)
     
-    parser.add_argument("--eval-dataset", type=str, default="textvqa_val,scienceqa_test_img")
+    parser.add_argument("--eval_dataset", type=str, default="textvqa_val,scienceqa_test_img")
 
     args = parser.parse_args()
 
@@ -392,7 +420,14 @@ if __name__ == '__main__':
     questions = json.load(open(args.question_file, "r"))
     config = transformers.AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     model_type = config.model_type
-    if 'qwen2' not in model_type: # for Qwen-VL/Qwen-VL-Chat
+    if "mllama" in model_type:
+        from transformers import MllamaForConditionalGeneration
+        model = MllamaForConditionalGeneration.from_pretrained(args.model_name, 
+                                                               trust_remote_code=not args.disable_trust_remote_code) # torch_dtype=torch.bfloat16
+        processor = AutoProcessor.from_pretrained(args.model_name)
+        tokenizer.processor = processor
+        default_collator = default_data_collator
+    elif 'qwen2' not in model_type: # for Qwen-VL/Qwen-VL-Chat
         tokenizer.pad_token_id = tokenizer.eod_id
         config.use_cache = False
         if dtype_str == "bf16":
@@ -401,7 +436,6 @@ if __name__ == '__main__':
             model = AutoModelForCausalLM.from_pretrained(args.model_name, trust_remote_code=not args.disable_trust_remote_code, fp16=True).eval()
         else:
             model = AutoModelForCausalLM.from_pretrained(args.model_name, trust_remote_code=not args.disable_trust_remote_code).eval()
-        raw_data = DataFormating(questions, args.image_folder)
         default_collator = default_data_collator if tokenizer is None else DataCollatorWithPadding(tokenizer)
     else: # for Qwen2-VL-instruct
         from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
@@ -410,7 +444,7 @@ if __name__ == '__main__':
         processor = AutoProcessor.from_pretrained(args.model_name)
         tokenizer.processor = processor
         default_collator = default_data_collator
-        
+    
     raw_data = DataFormating(questions, args.image_folder, model_type=model_type)
     dataset = LazySupervisedDataset(raw_data, tokenizer,
                                     max_len=min(args.seqlen, tokenizer.model_max_length), image_folder=args.image_folder)
@@ -518,7 +552,7 @@ if __name__ == '__main__':
         if eval_folder is None:
             eval_folder = output_dir
 
-    if not args.disable_eval and "fake" in deployment_device:  ## TODO
+    if not args.disable_eval and "fake" in deployment_device and model_type == "qwen":  ## for Qwen-VL
         model = model.half()
         model = model.to(torch_device)
         datasets=args.eval_dataset.split(',')

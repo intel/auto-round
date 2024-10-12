@@ -68,7 +68,7 @@ class AutoRound(object):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether symmetric quantization is to be used (default is False).
-        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config (dict): Configuration for weight quantization (default is None).
         layer_config={
                    'layer1':##layer_name
                    {
@@ -125,7 +125,7 @@ class AutoRound(object):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            layer_config: dict = {},
+            layer_config: dict = None,
             enable_full_range: bool = False,  ##for symmetric, TODO support later
             batch_size: int = 8,
             amp: bool = True,
@@ -182,7 +182,7 @@ class AutoRound(object):
         self.low_gpu_mem_usage = low_gpu_mem_usage
         self.data_type = data_type
         self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
-        self.layer_config = layer_config
+        self.layer_config = {} if layer_config is None else layer_config
         self.seed = seed
         set_seed(self.seed)
         self.tokenizer = tokenizer
@@ -617,7 +617,7 @@ class AutoRound(object):
 
     @torch.no_grad()
     def cache_inter_data(self, block_names, nsamples, layer_names=[], last_cache_name=None):
-        """Save the inputs of block_name for calibration. For layers, we cache both of inputs and output.
+        """Save the inputs of block_name for calibration.
 
         This method temporarily replaces the forward method of the model to capture
         the inputs passing through the specified block. It then calibrates the model
@@ -704,6 +704,7 @@ class AutoRound(object):
 
             for key in kwargs.keys():
                 if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) \
+                        or isinstance(kwargs[key], tuple) \
                         or (key == "alibi") or (key == "attention_mask"):
                     if "attention_mask" in key:
                         if key not in self.inputs[name].keys():
@@ -732,8 +733,8 @@ class AutoRound(object):
                                 self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
                         elif key not in self.inputs[name].keys():
                             self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
-                                if self.not_share_position_ids_flag \
-                                else to_device(kwargs[key], device=torch.device("cpu"))
+                                    if self.not_share_position_ids_flag \
+                                    else to_device(kwargs[key], device=torch.device("cpu"))
                         elif kwargs[key] is not None and self.not_share_position_ids_flag:
                             self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif 'rotary_pos_emb' in key or 'cu_seqlens' in key:
@@ -743,8 +744,14 @@ class AutoRound(object):
                                 else to_device(kwargs[key], device=torch.device("cpu"))
                         elif kwargs[key] is not None and self.not_share_rotary_pos_emb_flag:
                             self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
+                    elif "cross_attention_states" in key:
+                        if key not in self.inputs[name].keys():
+                            self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
+                        else:
+                            self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif key not in self.inputs[name].keys():
                         self.inputs[name][key] = to_device(kwargs[key], device=torch.device("cpu"))
+                    
             if name == self.last_cache_name:
                 raise NotImplementedError
             else:
@@ -1176,7 +1183,7 @@ class AutoRound(object):
                 "the AutoRound format (2 bits) to enhance performance."
              )
         if "awq" in format and not self.bits == 4:
-            raise ValueError("The AWQ format only supports W4 asym quantization ")
+            raise ValueError("The AWQ format only supports W4 quantization ")
 
         serialization_keys = [
             "bits",
@@ -1339,7 +1346,7 @@ class AutoOPTRound(AutoRound):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is False).
-        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config (dict): Configuration for weight quantization (default is None).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
@@ -1382,7 +1389,7 @@ class AutoOPTRound(AutoRound):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            layer_config: dict = {},
+            layer_config=None,
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
@@ -1452,6 +1459,8 @@ class AutoOPTRound(AutoRound):
             **kwargs,
         )
 
+        if layer_config is None:
+            layer_config = {}
         self.optimizer = self.get_optimizer(optimizer)
 
     def get_optimizer(self, optimizer):
@@ -1504,7 +1513,7 @@ class AutoAdamRound(AutoOPTRound):
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (str): Whether symmetric quantization to be used (default is False).
-        layer_config (dict): Configuration for weight quantization (default is an empty dictionary).
+        layer_config (dict): Configuration for weight quantization (default is None).
         enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
@@ -1547,7 +1556,7 @@ class AutoAdamRound(AutoOPTRound):
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
-            layer_config: dict = {},
+            layer_config=None,
             enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
@@ -1617,3 +1626,4 @@ class AutoAdamRound(AutoOPTRound):
             optimizer,
             **kwargs,
         )
+

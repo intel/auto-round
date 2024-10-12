@@ -26,11 +26,11 @@ more accuracy data and recipes across various models.
 <div align="left">
 
 ## What's New
-
-* [2024/08] AutoRound format supports Intel Gaudi2 devices. For an example, please refer
+* [2024/09] AutoRound format supports several LVM models, check out the examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
+* [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
   to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
-* [2024/08] AutoRound includes several experimental features, e.g., activation quantization, mx_fp data type, and fast
-  tuning of norm/bias parameters.
+* [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters (for 2-bit
+  and W4A4), activation quantization, and the mx_fp data type.
 * [2024/07] Important change: the default value of nsamples has been changed from 512 to 128 to reduce the memory
   usages, which may cause a slight accuracy drop in some scenarios
 
@@ -121,7 +121,7 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
   NeelNanda/pile-10k"). Local json file and combination of datasets have been supported, e.g. "
   ./tmp.json,NeelNanda/pile-10k:train, mbpp:train+validation+test"
 
-- `layer_config (dict)`: Configuration for weight quantization (default is an empty dictionary), mainly for mixed bits
+- `layer_config (dict)`: Configuration for weight quantization (default is None), mainly for mixed bits
   or mixed precision.
 
 - `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.
@@ -173,7 +173,7 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
 #### Formats
 
-**AutoRound format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision inference. [2,4]
+**AutoRound Format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision inference. [2,4]
 bits are supported. It
 resolves the asymmetric quantization kernel issues found in the AutoGPTQ format and supports both LM-head quantization
 and mixed precision. However, it has not yet gained widespread community adoption. For CUDA support, you will need to
@@ -186,7 +186,7 @@ asymmetric kernel has issues** that can cause considerable accuracy drops, parti
 models.
 Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
-**AutoAWQ format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
+**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
 within the community, only 4-bits quantization is supported. Asymmetric quantization typically improves
 accuracy but may reduce inference speed. It features
 specialized layer fusion tailored for Llama models.
@@ -307,6 +307,19 @@ release most of the models ourselves.
 | facebook/opt-2.7b                      | [accuracy](./docs/opt-2.7b-acc.md), [recipe](./examples/language-modeling/scripts/opt-2.7b.sh), [example](./examples/language-modeling/)                                                                                                                                                                                  |
 | bigscience/bloom-3b                    | [accuracy](./docs/bloom-3B-acc.md), [recipe](./examples/language-modeling/scripts/bloom-3b.sh), [example](./examples/language-modeling/)                                                                                                                                                                                  |
 | EleutherAI/gpt-j-6b                    | [accuracy](./docs/gpt-j-6B-acc.md), [recipe](./examples/language-modeling/scripts/gpt-j-6b.sh), [example](./examples/language-modeling/)                                                                                                                                                                                  | 
+
+
+## Integration
+AutoRound has been integrated into multiple repositories.
+
+[Intel Neural Compressor](https://github.com/intel/neural-compressor)
+
+[ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel)
+
+[pytorch/ao](https://github.com/pytorch/ao)
+
+
+
 
 ## Reference
 
