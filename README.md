@@ -29,9 +29,8 @@ more accuracy data and recipes across various models.
 
 * [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
   configuration. This approach is typically better or comparable to asymmetric quantization and significantly
-  outperforms other symmetric variants, especially at low bit-widths like 2-bit. No need to compile from source to run
+  outperforms other symmetric variants, especially at low bit-widths like 2-bit. And,no need to compile from source to run
   AutoRound format anymore.
-
 * [2024/09] AutoRound format supports several LVM models, check out the
   examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
 * [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
