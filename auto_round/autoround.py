@@ -58,8 +58,7 @@ import accelerate
 
 
 class AutoRound(object):
-    """This is Signround+ which is an advanced version of Signround. For more information,
-     please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
+    """For more information, please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
      for the quantization of llms." arXiv preprint arXiv:2309.05516 (2023).
 
     Args:

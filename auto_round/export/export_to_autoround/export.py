@@ -180,6 +180,10 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         backend = "auto_round:exllamav2"
     backend = backend.replace("autoround", "auto_round")
     backend = backend.replace("auto-round", "auto_round")
+    ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
+    if  kwargs.get("sym") is None or kwargs["sym"] == True and "gptq" not in backend:
+        backend = backend.replace('auto_round','auto_round:gptq')
+
     if not ("triton" in backend or "exllamav2" in backend or "awq" in backend or "gptq" in backend):
         logger.info(f"auto_round format does not support {backend}, try to pack each layer with autogptq")
         backend = backend.replace("auto_round", "auto_gptq")

@@ -27,6 +27,9 @@ more accuracy data and recipes across various models.
 
 ## What's New
 
+* [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
+  configuration. This approach is typically better or comparable to asymmetric quantization and significantly
+  outperforms other symmetric variants, especially at low bit-widths like 2-bit.
 * [2024/09] AutoRound format supports several LVM models, check out the
   examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
 * [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
@@ -177,9 +180,9 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
 **AutoRound Format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
 inference. [2,4]
-bits are supported. It
-resolves the asymmetric quantization kernel issues found in the AutoGPTQ format and supports both LM-head quantization
-and mixed precision. However, it has not yet gained widespread community adoption. For CUDA support, you will need to
+bits are supported. It also benefits
+from the Marlin kernel, which can boost inference performance notably.However, it has not yet gained widespread
+community adoption. For CUDA support, you will need to
 install from the source.
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
@@ -190,8 +193,7 @@ models.
 Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
-within the community, only 4-bits quantization is supported. Asymmetric quantization typically improves
-accuracy but may reduce inference speed. It features
+within the community, only 4-bits quantization is supported. It features
 specialized layer fusion tailored for Llama models.
 
 ## Model Inference
@@ -219,8 +221,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
-**CUDA**: git clone https://github.com/intel/auto-round.git && cd auto-round && pip install --no-build-isolation
--e .
+**CUDA**: pip install auto-gptq for sym quantization, for asym quantization, need to install auto-round from source
 
 #### CPU/HPU/CUDA on 0.3.0+
 

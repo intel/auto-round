@@ -10,3 +10,4 @@ threadpoolctl
 lm-eval==0.4.4
 tqdm
 packaging
+auto-gptq>=0.7.1
