@@ -800,7 +800,7 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
             disable_marlin=disable_marlin
         )
     else:
-        QuantLinear = dynamically_import_QuantLinear(
+        QuantLinear = dynamically_import_QuantLinear( # pylint: disable=E1123
             use_triton=use_triton,
             desc_act=False,
             group_size=group_size,
@@ -808,8 +808,8 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
             disable_exllama=disable_exllamav1,
             disable_exllamav2=disable_exllamav2,
             use_qigen=use_qigen,
-            use_marlin=not disable_marlin,  # pylint: disable=E1123
-            use_tritonv2=use_tritonv2  # pylint: disable=E1123
+            use_marlin=not disable_marlin,
+            use_tritonv2=use_tritonv2
         )
     return QuantLinear
 
@@ -960,15 +960,15 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             disable_marlin=disable_marlin,
         )
     else:
-        QuantLinear = dynamically_import_QuantLinear(
+        QuantLinear = dynamically_import_QuantLinear(# pylint: disable=E1123
             use_triton=use_triton,
             desc_act=False,
             group_size=group_size,
             bits=bits,
             disable_exllama=disable_exllamav1,
             disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen, # pylint: disable=E1123
-            use_marlin=not disable_marlin, # pylint: disable=E1123
+            use_qigen=use_qigen,
+            use_marlin=not disable_marlin,
         )
     return QuantLinear
 
