@@ -92,7 +92,7 @@ def setup_parser():
 
     parser.add_argument("--format", default=None, type=str,
                         help="The format in which to save the model. "
-                             "The options are 'auto_round', 'auto_round:gptq','auto_round:marlin',"
+                             "The options are 'auto_round', 'auto_round:gptq','auto_round:awq','auto_round:marlin',"
                              " 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
                              "default to 'auto_round."
                         )

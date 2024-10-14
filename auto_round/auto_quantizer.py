@@ -41,7 +41,8 @@ from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
-from auto_round.utils import get_module, set_module, dynamic_import_inference_linear
+from auto_round.utils import get_module, set_module, dynamic_import_inference_linear, is_hpu_supported, \
+    get_layerwise_backend
 import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
 from enum import Enum
 import copy
@@ -97,27 +98,6 @@ def is_auto_round_available():
                 f"Found an incompatible version of auto-round. Found version {version_autoround},"
                 f" but only version above {AUTOROUND_MINIMUM_VERSION} are supported"
             )
-
-
-def is_autoround_exllamav2_available():
-    res = True
-    try:
-        from autoround_exllamav2_kernels import gemm_half_q_half, make_q_matrix
-    except ImportError as e:
-        res = False
-    return res
-
-
-def is_hpu_supported():  # pragma: no cover
-    try:
-        import subprocess
-        import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-        hqt_version = subprocess.check_output(['pip', 'show', \
-                                               'habana_quantization_toolkit']).decode().split('\n')[1].split(': ')[1]
-        assert (hqt_version >= "1.17")
-    except ImportError as e:
-        return False
-    return True
 
 
 if is_auto_round_available():
@@ -239,6 +219,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
             sym: bool = False,
             backend="auto",
             layer_config: dict = None,
+            format: str = None,
             **kwargs,
     ):
 
@@ -247,17 +228,9 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.dataset = dataset
         self.group_size = group_size
         self.sym = sym
-        if "auto" == backend:
-            if torch.cuda.is_available():
-                backend = "auto_round:exllamav2"
-            elif is_hpu_supported():
-                backend = "hpu"
-            else:
-                backend = "cpu"
-        elif "cuda" == backend:
-            backend = "auto_round:exllamav2"
         self.backend = backend
         self.layer_config = layer_config
+        self.format = format
         if kwargs is not None:
             for key in kwargs.keys():
                 setattr(self, key, kwargs[key])
@@ -293,7 +266,6 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def __init__(self, quantization_config: QuantizationConfigMixin, **kwargs):
         super().__init__(quantization_config, **kwargs)
-        self.exllama2_available = is_autoround_exllamav2_available()
 
     def validate_environment(self, *args, **kwargs):
         if not is_auto_round_available():
@@ -337,7 +309,7 @@ class AutoRoundQuantizer(HfQuantizer):
             else "int"  # pragma: no cover
         sym = quantization_config.sym
         quant_block_list = quantization_config.quant_block_list \
-                           if hasattr(quantization_config, "quant_block_list") else None
+            if hasattr(quantization_config, "quant_block_list") else None
         layer_names = get_layer_names_in_block(model, quant_block_list=quant_block_list)
         extra_config = {}
         if hasattr(quantization_config, "extra_config"):
@@ -366,19 +338,24 @@ class AutoRoundQuantizer(HfQuantizer):
         else:  # pragma: no cover
             logger.error("Please specify quantization backend")
 
-        self._replace_by_quant_layers(model, layer_configs, backend)
+        format = quantization_config.format
+        self._replace_by_quant_layers(model, layer_configs, backend, format)
         return model
 
-    def _replace_by_quant_layers(self, module: nn.Module, layer_configs, backend):
+    def _replace_by_quant_layers(self, module: nn.Module, layer_configs, backend, format=None):
         """Replaces linear layers in `module` by `QuantLinear`
 
         Args:
             module (`nn.Module`):
                 Module to quantize
-            names (`List[str]`):
-                List of names of the module to quantize
-            name (`str`, defaults to `""`):
-                To keep track of the name of the current module
+            layer_configs (`List[dict]`):
+                List of quantization config for the module to quantize
+            backend (`str` or `None`):
+                device+format
+            format (`str` or `None`):
+                packing format
+
+
         """
         for layer_name in layer_configs.keys():
             config = layer_configs[layer_name]
@@ -392,7 +369,8 @@ class AutoRoundQuantizer(HfQuantizer):
 
             layer = get_module(module, layer_name)
             device = get_device(layer)
-            QuantLinear = dynamic_import_inference_linear(backend, bits, group_size, sym)
+            layer_backend = get_layerwise_backend(backend, bits, group_size, sym, format)
+            QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym, format)
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
                 out_features = layer.out_features
@@ -403,25 +381,33 @@ class AutoRoundQuantizer(HfQuantizer):
                 in_features = layer.weight.shape[0]
                 out_features = layer.weight.shape[1]
             bias = layer.bias is not None
-            try:
-                new_layer = QuantLinear(  # pylint: disable=E1123
+            if "awq" in layer_backend:
+                new_layer = QuantLinear.from_linear(  # pylint: disable=E1123
+                    layer,
                     bits,
                     group_size,
-                    in_features,
-                    out_features,
-                    bias,
-                    weight_dtype=layer.weight.dtype,
-                    clip = clip
+                    init_only=True
                 )
-            except:
-                new_layer = QuantLinear(  # pylint: disable=E1123
-                    bits,
-                    group_size,
-                    in_features,
-                    out_features,
-                    bias,
-                    weight_dtype=layer.weight.dtype,
-                )
+            else:
+                try:
+                    new_layer = QuantLinear(  # pylint: disable=E1123
+                        bits,
+                        group_size,
+                        in_features,
+                        out_features,
+                        bias,
+                        weight_dtype=layer.weight.dtype,
+                        clip=clip
+                    )
+                except:
+                    new_layer = QuantLinear(  # pylint: disable=E1123
+                        bits,
+                        group_size,
+                        in_features,
+                        out_features,
+                        bias,
+                        weight_dtype=layer.weight.dtype,
+                    )
 
             new_layer.device = device
             set_module(module, layer_name, new_layer)
@@ -457,7 +443,7 @@ class AutoRoundQuantizer(HfQuantizer):
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if model.__class__.main_input_name != "input_ids":
             logger.warning("We can only quantize pure text models and " \
-                            "certain types(Llava/Qwen-VL/Phi-3-vision) of multimodal models.")
+                           "certain types(Llava/Qwen-VL/Phi-3-vision) of multimodal models.")
 
         if self.pre_quantized:
             model = self.convert_model(model)
@@ -479,11 +465,8 @@ class AutoRoundQuantizer(HfQuantizer):
 
 import transformers
 
-transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
-if transformers_version[0] == 4 and transformers_version[1] < 38:
+if version.parse(transformers.__version__) < version.parse("4.38.0"):
     logger.error("Please upgrade transformers>=4.38.0 to support lm-head quantization")
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
-
-

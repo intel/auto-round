@@ -27,7 +27,7 @@ import torch
 from torch.amp import autocast
 
 from functools import lru_cache
-
+from packaging import version
 
 @lru_cache(None)
 def warning_once(self, msg: str):
@@ -800,7 +800,7 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
             disable_marlin=disable_marlin
         )
     else:
-        QuantLinear = dynamically_import_QuantLinear( # pylint: disable=E1123
+        QuantLinear = dynamically_import_QuantLinear(  # pylint: disable=E1123
             use_triton=use_triton,
             desc_act=False,
             group_size=group_size,
@@ -814,7 +814,97 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     return QuantLinear
 
 
-def dynamic_import_inference_linear(backend, bits, group_size, sym):
+def is_autoround_exllamav2_available():
+    res = True
+    try:
+        from autoround_exllamav2_kernels import gemm_half_q_half, make_q_matrix
+    except ImportError as e:
+        res = False
+    return res
+
+
+def is_hpu_supported():  # pragma: no cover
+    try:
+        import subprocess
+        import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+        hqt_version = subprocess.check_output(['pip', 'show', \
+                                               'habana_quantization_toolkit']).decode().split('\n')[1].split(': ')[1]
+        assert (hqt_version >= "1.17")
+    except ImportError as e:
+        return False
+    return True
+
+
+def get_layerwise_backend(backend, bits, group_size, sym, format):
+    ##handle cuda
+
+    if ("auto" in  backend and torch.cuda.is_available()) or "cuda" in backend:
+        if "marlin" in backend and "marlin" not in format: ##must match
+            raise ValueError(
+                "marlin inference only supports `auto_round:marlin` format now")  ##TODO support convertion later
+        elif "marlin" in backend and "marlin" in format:
+            backend="auto_round:gptq:marlin"
+
+
+        if format is None and "auto" in backend:
+            if is_autoround_exllamav2_available() and bits == 4:
+                backend = "auto_round:exllamav2"
+            else:
+                backend = "auto_round:tritonv2"
+        elif format is not None and  "auto" in backend:
+            backend = format
+
+        ##TODO add more checking here
+        if "cuda" not in backend:
+            backend = "cuda:" + backend
+        else:
+            backend = backend
+        if "marlin" in backend and version.parse(auto_gptq.__version__) <= version.parse("0.7.1"):
+            logger.error("Please upgrade auto_gptq>0.7.1 to support marlin kernel")
+            exit()
+
+
+    ##handle hpu
+    elif ("auto" == backend and is_hpu_supported()) or "hpu" in backend or "gaudi" in backend:
+        if 4!=bits:
+            raise ValueError("hpu only supports 4 bits")
+        if "marlin" in format or "marlin" in backend:
+            raise ValueError(
+                "hpu does only support `marlin` format now")
+        if "awq" in format:
+            raise ValueError(
+                "hpu does only support `awq` format now")
+
+        if format is None and "auto" in backend:
+            backend = "auto_round"
+        elif format is not None and "auto" in backend:
+            backend =  format
+
+        if not "hpu" in backend:
+            backend = "hpu:" + backend
+
+    ##handle cpu
+    elif "auto" == backend or "cpu" in backend:
+        if "marlin" in format or "marlin" in backend:
+            raise ValueError(
+                "cpu does only support `marlin` format now")
+        elif "awq" in format:
+            raise ValueError(
+                "cpu does only support `awq` format now")
+        if format is None and "auto" in backend:
+            backend = "auto_round"
+        elif format is not None and "auto" in backend:
+            backend =  format
+
+        if not "cpu" in backend:
+            backend = "cpu:" + backend
+
+    else:
+        raise ValueError(f"backend does not support {backend}, you could set it to 'auto' instead ")
+    return backend
+
+
+def dynamic_import_inference_linear(backend, bits, group_size, sym, format):
     """Dynamically imports and returns the appropriate QuantLinear class based on the given bits and backend.
 
        Args:
@@ -827,55 +917,52 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
            class:
                The appropriate QuantLinear class for the given configuration.
        """
-    exllama2_available = is_autoround_exllamav2_available()
-    ##TODO may have bug for marlin backend
-    if (not torch.cuda.is_available() and not is_optimum_habana_available()) or "qbits" in backend or "cpu" in backend:
+    if "cpu" in backend:
         try:
             from intel_extension_for_transformers import qbits  # pylint: disable=E0401
         except Exception as e:
             raise ImportError("Please install Intel Extension for Transformers via 'pip install "
                               "intel-extension-for-transformers' to  inference on X86 CPU")
-        import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
-        return qlinear_qbits.QuantLinear
-    if "gptq" in backend:
-        if not is_optimum_habana_available():
-            try:
-                import auto_gptq  # pylint: disable=E0401
-            except Exception as e:
-                raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
-            return get_autogptq_infer_linear(backend, bits, group_size, sym)
-        else:  # pragma: no cover
-            try:
-                import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
-            except Exception as e:
-                pass
-            else:
-                from auto_round_extension.hpu.qlinear_hpu_gptq import QuantLinear
-                return QuantLinear
-    if (bits == 4 and is_optimum_habana_available()) or "hpu" in backend:  # pragma: no cover
-        try:
-            import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
-        except Exception as e:
-            pass
+        if "gptq" in backend:
+            import auto_round_extension.qbits.qlinear_qbits_gptq as qlinear_qbits_gptq
+            return qlinear_qbits_gptq.QuantLinear
+        elif "auto_round" in backend: ## auto_round must in the end
+            import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits_autoround
+            return qlinear_qbits_autoround.QuantLinear
         else:
+            raise ValueError(f"does not support {backend} in cpu")
+
+    elif "hpu" in backend:
+        import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
+        if "gptq" in backend:
+            from auto_round_extension.hpu.qlinear_hpu_gptq import QuantLinear as QuantLinear_gptq
+            return QuantLinear_gptq
+        elif "auto_round" in backend: ## auto_round must in the end
             from auto_round_extension.hpu.qlinear_hpu import QuantLinear
             return QuantLinear
-    if "awq" in backend:  # pragma: no cover
-        try:
-            from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
-        except:
-            raise ImportError("autoawq is required. Please install it by 'pip install autoawq' to \
-                support auto_awq format.")
-        return WQLinear_GEMM
-    if bits == 4 and exllama2_available and "exllamav2" in backend:
-        from auto_round_extension.cuda.qlinear_exllamav2 import QuantLinear
-    elif bits == 4 and "exllamav2" in backend:
-        logger.warning_once("Please install auto-round from source to enable exllamav2 kernels, switch to triton "
-                            "kernels for now")
-        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
+        else:
+            raise ValueError(f"does not support {backend} in hpu")
+    elif "cuda" in backend:
+        if "gptq" in backend:
+            return get_autogptq_infer_linear(backend, bits, group_size, sym)
+        elif "awq" in backend:
+            try:
+                from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
+            except:
+                raise ImportError("autoawq is required. Please install it by 'pip install autoawq' to \
+                           support auto_awq format.")
+            return WQLinear_GEMM
+        elif "auto_round" in backend: ## auto_round must in the end
+            if bits == 4  and "exllamav2" in backend:
+                from auto_round_extension.cuda.qlinear_exllamav2 import QuantLinear
+            else:
+                from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
+            return QuantLinear
     else:
-        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
-    return QuantLinear
+        raise ValueError(f"does not support {backend} ")
+
+
+
 
 
 def get_library_version(library_name):
@@ -960,7 +1047,7 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             disable_marlin=disable_marlin,
         )
     else:
-        QuantLinear = dynamically_import_QuantLinear(# pylint: disable=E1123
+        QuantLinear = dynamically_import_QuantLinear(  # pylint: disable=E1123
             use_triton=use_triton,
             desc_act=False,
             group_size=group_size,
@@ -971,5 +1058,3 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             use_marlin=not disable_marlin,
         )
     return QuantLinear
-
-
