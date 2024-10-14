@@ -829,6 +829,8 @@ def is_hpu_supported():  # pragma: no cover
 
 def get_layerwise_backend(backend, bits, group_size, sym,
                           format):  ## this may have lots of bugs if users specify other backend
+
+
     ##handle cuda
     if ("auto" in backend and torch.cuda.is_available()) or "cuda" in backend:
         if "marlin" in backend and "marlin" not in format:  ##must match
@@ -856,7 +858,7 @@ def get_layerwise_backend(backend, bits, group_size, sym,
 
 
     ##handle hpu
-    elif ("auto" == backend and is_hpu_supported()) or "hpu" in backend or "gaudi" in backend:
+    elif ("auto" == backend and is_hpu_supported()) or "hpu" in backend:
         if 4 != bits:
             raise ValueError("hpu only supports 4 bits")
         if "marlin" in format or "marlin" in backend:
@@ -886,12 +888,20 @@ def get_layerwise_backend(backend, bits, group_size, sym,
             backend = "auto_round"
         elif format is not None and "auto" in backend:
             backend = format
-
         if not "cpu" in backend:
             backend = "cpu:" + backend
 
-    else:
-        raise ValueError(f"backend does not support {backend}, you could set it to 'auto' instead ")
+    if "cpu" not in backend and "hpu" not in backend and "cuda" not in backend:
+        if torch.cuda.is_available():
+            backend = "cuda:" + backend
+        elif  is_hpu_supported():
+            backend = "hpu:" + backend
+        else:
+            backend = "cpu:" + backend
+
+
+
+
     return backend
 
 
