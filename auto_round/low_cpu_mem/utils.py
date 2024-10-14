@@ -387,10 +387,12 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
             return module.ori_to(device_or_dtype)
         elif len(module._modules) == 0:
             # skip method type
-            if len(module._parameters) == 0 or module.weight.device.type != 'meta':
+            if len(module._parameters) == 0:
                 return module.ori_to(device_or_dtype)
             else:
-                for n, _ in module.named_parameters():
+                for n, p in module.named_parameters():
+                    if p.device.type != 'meta':
+                        continue
                     param_name = name + "." + n
                     value = load_value(empty_model, param_name, empty_model.path)
                     dtype = None
