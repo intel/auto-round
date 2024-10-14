@@ -841,7 +841,7 @@ def get_layerwise_backend(backend, bits, group_size, sym, format):
     if ("auto" in  backend and torch.cuda.is_available()) or "cuda" in backend:
         if "marlin" in backend and "marlin" not in format: ##must match
             raise ValueError(
-                "marlin inference only supports `auto_round:marlin` format now")  ##TODO support convertion later
+                "marlin inference only supports `auto_round:marlin` format now")  ##TODO support conversion later
         elif "marlin" in backend and "marlin" in format:
             backend="auto_round:gptq:marlin"
 
