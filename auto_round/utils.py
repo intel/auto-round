@@ -29,6 +29,7 @@ from torch.amp import autocast
 from functools import lru_cache
 from packaging import version
 
+
 @lru_cache(None)
 def warning_once(self, msg: str):
     self.warning(msg)
@@ -814,15 +815,6 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     return QuantLinear
 
 
-def is_autoround_exllamav2_available():
-    res = True
-    try:
-        from autoround_exllamav2_kernels import gemm_half_q_half, make_q_matrix
-    except ImportError as e:
-        res = False
-    return res
-
-
 def is_hpu_supported():  # pragma: no cover
     try:
         import subprocess
@@ -835,23 +827,22 @@ def is_hpu_supported():  # pragma: no cover
     return True
 
 
-def get_layerwise_backend(backend, bits, group_size, sym, format):
+def get_layerwise_backend(backend, bits, group_size, sym,
+                          format):  ## this may have lots of bugs if users specify other backend
     ##handle cuda
-
-    if ("auto" in  backend and torch.cuda.is_available()) or "cuda" in backend:
-        if "marlin" in backend and "marlin" not in format: ##must match
+    if ("auto" in backend and torch.cuda.is_available()) or "cuda" in backend:
+        if "marlin" in backend and "marlin" not in format:  ##must match
             raise ValueError(
                 "marlin inference only supports `auto_round:marlin` format now")  ##TODO support conversion later
-        elif "marlin" in backend and "marlin" in format:
-            backend="auto_round:gptq:marlin"
-
+        elif "marlin" in format:
+            backend = "auto_round:gptq:marlin"
 
         if format is None and "auto" in backend:
             if is_autoround_exllamav2_available() and bits == 4:
                 backend = "auto_round:exllamav2"
             else:
                 backend = "auto_round:tritonv2"
-        elif format is not None and  "auto" in backend:
+        elif format is not None and "auto" in backend:
             backend = format
 
         ##TODO add more checking here
@@ -866,7 +857,7 @@ def get_layerwise_backend(backend, bits, group_size, sym, format):
 
     ##handle hpu
     elif ("auto" == backend and is_hpu_supported()) or "hpu" in backend or "gaudi" in backend:
-        if 4!=bits:
+        if 4 != bits:
             raise ValueError("hpu only supports 4 bits")
         if "marlin" in format or "marlin" in backend:
             raise ValueError(
@@ -878,7 +869,7 @@ def get_layerwise_backend(backend, bits, group_size, sym, format):
         if format is None and "auto" in backend:
             backend = "auto_round"
         elif format is not None and "auto" in backend:
-            backend =  format
+            backend = format
 
         if not "hpu" in backend:
             backend = "hpu:" + backend
@@ -894,7 +885,7 @@ def get_layerwise_backend(backend, bits, group_size, sym, format):
         if format is None and "auto" in backend:
             backend = "auto_round"
         elif format is not None and "auto" in backend:
-            backend =  format
+            backend = format
 
         if not "cpu" in backend:
             backend = "cpu:" + backend
@@ -926,7 +917,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym, format):
         if "gptq" in backend:
             import auto_round_extension.qbits.qlinear_qbits_gptq as qlinear_qbits_gptq
             return qlinear_qbits_gptq.QuantLinear
-        elif "auto_round" in backend: ## auto_round must in the end
+        elif "auto_round" in backend:  ## auto_round must in the end
             import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits_autoround
             return qlinear_qbits_autoround.QuantLinear
         else:
@@ -937,7 +928,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym, format):
         if "gptq" in backend:
             from auto_round_extension.hpu.qlinear_hpu_gptq import QuantLinear as QuantLinear_gptq
             return QuantLinear_gptq
-        elif "auto_round" in backend: ## auto_round must in the end
+        elif "auto_round" in backend:  ## auto_round must in the end
             from auto_round_extension.hpu.qlinear_hpu import QuantLinear
             return QuantLinear
         else:
@@ -952,17 +943,14 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym, format):
                 raise ImportError("autoawq is required. Please install it by 'pip install autoawq' to \
                            support auto_awq format.")
             return WQLinear_GEMM
-        elif "auto_round" in backend: ## auto_round must in the end
-            if bits == 4  and "exllamav2" in backend:
+        elif "auto_round" in backend:  ## auto_round must in the end
+            if bits == 4 and "exllamav2" in backend:
                 from auto_round_extension.cuda.qlinear_exllamav2 import QuantLinear
             else:
                 from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
             return QuantLinear
     else:
         raise ValueError(f"does not support {backend} ")
-
-
-
 
 
 def get_library_version(library_name):
