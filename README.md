@@ -193,7 +193,7 @@ asymmetric kernel has issues** that can cause considerable accuracy drops, parti
 models.
 Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
-**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
+**AutoAWQ Format**(>0.3.0): This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
 within the community, only 4-bits quantization is supported. It features
 specialized layer fusion tailored for Llama models.
 
