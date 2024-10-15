@@ -41,9 +41,12 @@ from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
-from auto_round.utils import get_module, set_module, dynamic_import_inference_linear, is_hpu_supported, \
-    get_layerwise_backend
+from auto_round.utils import get_module, set_module, is_hpu_supported
+
+from auto_round.backend import get_layer_backend, dynamic_import_inference_linear
+
 import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
+import auto_round_extension.qbits.qlinear_qbits_gptq as qlinear_qbits_gptq
 from enum import Enum
 import copy
 
@@ -354,9 +357,48 @@ class AutoRoundQuantizer(HfQuantizer):
                 device+format
             format (`str` or `None`):
                 packing format
-
-
         """
+        device = "cpu"
+        backend = backend or ""
+
+        if "cpu" not in backend and "gpu" not in backend and "hpu" not in backend:
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif is_hpu_supported():
+                device = "hpu"
+            backend = backend.replace("auto", "")
+        else:
+            if "gpu" in backend:
+                device = "cuda"
+            elif "hpu" in backend:
+                device = "hpu"
+            backend = backend.replace(device, "")
+
+        if not device:
+            raise ValueError(f"Unsupported backend {backend}, please set it to `auto` to have a try")
+
+        if backend == "":
+            backend = format
+
+        def process(format):
+            if format is None:
+                format = "auto_round:exllamav2"
+            elif "gptq" in format:
+                format = format.replace("auto_round:", "")
+                if format == "gptq":
+                    format = "gptq:exllamav2"
+            elif "awq" in format:
+                format = "awq:gemm"
+            else:
+                format = "auto_round:exllamav2"
+
+            if "marlin" in format:
+                format = "gptq:marlin"
+            return format
+
+        format = process(format)
+        backend = process(backend)
+
         for layer_name in layer_configs.keys():
             config = layer_configs[layer_name]
             bits = config["bits"]
@@ -368,9 +410,6 @@ class AutoRoundQuantizer(HfQuantizer):
                 continue
 
             layer = get_module(module, layer_name)
-            device = get_device(layer)
-            layer_backend = get_layerwise_backend(backend, bits, group_size, sym, format)
-            QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym, format)
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
                 out_features = layer.out_features
@@ -380,6 +419,12 @@ class AutoRoundQuantizer(HfQuantizer):
             elif isinstance(layer, Conv1D):  ##TODO need to have a check
                 in_features = layer.weight.shape[0]
                 out_features = layer.weight.shape[1]
+
+            layer_backend = get_layer_backend(device, backend, format, bits, group_size, sym, in_features, out_features)
+            QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym)
+
+            layer_device = get_device(layer)
+
             bias = layer.bias is not None
             if "awq" in layer_backend:
                 new_layer = QuantLinear.from_linear(  # pylint: disable=E1123
@@ -409,13 +454,13 @@ class AutoRoundQuantizer(HfQuantizer):
                         weight_dtype=layer.weight.dtype,
                     )
 
-            new_layer.device = device
+            new_layer.device = layer_device
             set_module(module, layer_name, new_layer)
 
     def qbits_post_init(self, model):
         dep_check = True
         for layer in model.modules():
-            if isinstance(layer, qlinear_qbits.QuantLinear):
+            if isinstance(layer, (qlinear_qbits.QuantLinear, qlinear_qbits_gptq.QuantLinear)):
                 if dep_check:
                     layer.req_check()
                 layer.post_init()
