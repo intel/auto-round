@@ -699,7 +699,6 @@ class AutoRound(object):
 
             for key in kwargs.keys():
                 if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) \
-                        or isinstance(kwargs[key], tuple) \
                         or (key == "alibi") or (key == "attention_mask"):
                     if "attention_mask" in key:
                         if key not in self.inputs[name].keys():
@@ -721,7 +720,7 @@ class AutoRound(object):
                             else:
                                 self.inputs[name][key] = list(torch.split(alibi.to("cpu"), 1, dim=0))
                     elif "position_ids" in key or 'cache_position' in key:
-                        if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
+                        if self.train_bs == 1 and self.not_share_position_ids_flag:
                             if key not in self.inputs[name].keys():
                                 self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
                             else:
@@ -1619,5 +1618,6 @@ class AutoAdamRound(AutoOPTRound):
             optimizer=optimizer,
             **kwargs,
         )
+
 
 
