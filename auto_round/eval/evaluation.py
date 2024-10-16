@@ -23,11 +23,28 @@ import os
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+from lm_eval.models.huggingface import HFLM
+
+
+def simple_evaluate_user_model(
+        user_model,
+        tokenizer,
+        batch_size: Optional[int] = None,
+        max_batch_size: Optional[int] = None,
+        **kwargs
+):
+    hflm = HFLM(pretrained=user_model, tokenizer=tokenizer, batch_size=batch_size, max_batch_size=max_batch_size)
+    return lm_simple_evaluate(
+        model=hflm,
+        model_args=None,
+        batch_size=batch_size,
+        max_batch_size=max_batch_size,
+        **kwargs)
+
 
 def simple_evaluate(
         model,
         model_args: Optional[Union[str, dict]] = None,
-        user_model=None,
         batch_size: Optional[int] = None,
         max_batch_size: Optional[int] = None,
         device: Optional[str] = None,
@@ -37,32 +54,8 @@ def simple_evaluate(
     except:
         from auto_round.auto_quantizer import AutoHfQuantizer
 
-    if model_args is None:
-        model_args = ""
-
-    if isinstance(model_args, dict):
-        lm = lm_eval.api.registry.get_model(model).create_from_arg_obj(
-            model_args,
-            {
-                "batch_size": batch_size,
-                "max_batch_size": max_batch_size,
-                "device": device,
-            },
-        )
-
-    else:
-        lm = lm_eval.api.registry.get_model(model).create_from_arg_string(
-            model_args,
-            {
-                "batch_size": batch_size,
-                "max_batch_size": max_batch_size,
-                "device": device,
-            },
-        )
-    if user_model is not None:
-        lm._model = user_model
     return lm_simple_evaluate(
-        model=lm,
+        model=model,
         model_args=model_args,
         batch_size=batch_size,
         max_batch_size=max_batch_size,
