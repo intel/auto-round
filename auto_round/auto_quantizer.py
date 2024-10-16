@@ -321,7 +321,7 @@ class AutoRoundQuantizer(HfQuantizer):
             else:
                 return "cpu"
 
-        ##determin by backend
+        ##determine by backend
         backend = self.find_backend(target_backend)
         if backend is None:
             raise ValueError("Backend not found, please set it to 'auto' to have a try ")
