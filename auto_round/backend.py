@@ -79,19 +79,12 @@ BackendInfos['auto_round:qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, Fal
                                                   feature_checks=[],
                                                   convertable_format=["triton_zp+-1"])
 
-# BackendInfos['auto_round:gptq:qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
-#                                                     packing_format="qbits_zp+-1",
-#                                                     bits=[2, 4, 8], group_size=None,
-#                                                     priority=0,
-#                                                     feature_checks=[],
-#                                                     convertable_format=["triton_zp+-1"])
 
-
-BackendInfos['gptq:marlin'] = BackendInfo(device=["gpu"], sym=[True],
-                                          packing_format="marlin",
-                                          bits=[4], group_size=[-1, 32, 128],
-                                          priority=5,
-                                          feature_checks=[feature_multiply_checker_32])
+# BackendInfos['gptq:marlin'] = BackendInfo(device=["gpu"], sym=[True],
+#                                           packing_format="marlin",
+#                                           bits=[4], group_size=[-1, 32, 128],
+#                                           priority=5,
+#                                           feature_checks=[feature_multiply_checker_32])
 
 BackendInfos['auto_round:hpu'] = BackendInfo(device=["hpu"], sym=[True, False],
                                              packing_format="hpu",
@@ -182,6 +175,47 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         else:
             return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
 
+def process_device_target_orig_backend(backend, orig_backend):
+    device = "cpu"
+    backend = backend or ""
+
+    if "cpu" not in backend and "gpu" not in backend and "hpu" not in backend:
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif is_hpu_supported():
+            device = "hpu"
+        backend = backend.replace("auto", "")
+    else:
+        if "gpu" in backend:
+            device = "cuda"
+        elif "hpu" in backend:
+            device = "hpu"
+        backend = backend.replace(device, "")
+
+    if not device:
+        raise ValueError(f"Unsupported backend {backend}, please set it to `auto` to have a try")
+
+    if backend == "":
+        backend = format
+
+    def process(format):
+        if format is None:
+            format = "auto_round:exllamav2"
+        elif "gptq" in format:
+            format = format.replace("auto_round:", "")
+            if format == "gptq":
+                format = "gptq:exllamav2"
+        elif "awq" in format:
+            format = "awq:gemm"
+        else:
+            format = "auto_round:exllamav2"
+
+        if "marlin" in format:
+            format = "gptq:marlin"
+        return format
+
+    format = process(format)
+    backend = process(backend)
 
 def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_features, out_features):
     ##check device
