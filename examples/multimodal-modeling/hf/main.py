@@ -112,10 +112,10 @@ def setup_args():
                         help="To determine whether the quantization should handle vision component.")
     
     # ========== Calibration Datasets ============= 
-    parser.add_argument("--image_folder", default="coco", type=str,
+    parser.add_argument("--image_path", default="coco", type=str,
                         help="The dataset for quantization training. It can be a custom one.")
     
-    parser.add_argument("--question_file", default=None, type=str,
+    parser.add_argument("--question_path", default=None, type=str,
                             help="The dataset for quantization training. It can be a custom one.")
     
     parser.add_argument("--template", default=None, type=str,
@@ -178,9 +178,8 @@ def main():
     model_type = config.model_type
 
     model_cls = AutoModelForCausalLM
-    if "qwen2" in model_type:
+    if "qwen2_vl" in model_type:
         from transformers import Qwen2VLForConditionalGeneration
-        from transformers.data.data_collator import DataCollatorWithPadding
         model_cls = Qwen2VLForConditionalGeneration
     elif "mllama" in model_type:
         from transformers import MllamaForConditionalGeneration
@@ -195,7 +194,7 @@ def main():
         template = args.template
     else:
         template = model_type
-    dataloader = get_dataloader(template, tokenizer, question_path=args.question_file, image_path=args.image_folder, seqlen=args.seqlen)
+    dataloader = get_dataloader(template, tokenizer, question_path=args.question_path, image_path=args.image_path, seqlen=args.seqlen)
 
     from auto_round import (AutoRound,
                             AutoAdamRound)

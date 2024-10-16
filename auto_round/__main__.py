@@ -21,7 +21,7 @@ import transformers
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig
 from lm_eval.utils import make_table  # pylint: disable=E0401
 
 from auto_round import AutoRoundConfig
@@ -153,6 +153,19 @@ def setup_parser():
     parser.add_argument("--fp_layers_list", default="", type=str,
                         help="List of Layers to maintain original data type")
 
+    # ======================= VLM =======================
+    parser.add_argument("--quant_vision", action='store_true',
+                        help="To determine whether the quantization should handle vision component.")
+
+    parser.add_argument("--image_path", default="coco", type=str,
+                        help="The dataset for quantization training. It can be a custom one.")
+    
+    parser.add_argument("--question_path", default=None, type=str,
+                            help="The dataset for quantization training. It can be a custom one.")
+    
+    parser.add_argument("--template", default=None, type=str,
+                            help="The template for building training dataset. It can be a custom one.")
+
     args = parser.parse_args()
     return args
 
@@ -174,7 +187,25 @@ def tune(args):
 
     is_glm = bool(re.search("chatglm", model_name.lower()))
     low_cpu_mem_usage = False
+
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+
+    model_type = config.model_type
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
+
+    # for VLM
+    if args.question_path:
+        from transformers import AutoProcessor
+        if "qwen2_vl" in model_type:
+            from transformers import Qwen2VLForConditionalGeneration
+            model_cls = Qwen2VLForConditionalGeneration
+        elif "mllama" in model_type:
+            from transformers import MllamaForConditionalGeneration
+            model_cls = MllamaForConditionalGeneration
+        processor = AutoProcessor.from_pretrained(model_name)
+        tokenizer.processor = processor
+
     if args.low_cpu_mem_tmp_dir is None:
         args.low_cpu_mem_tmp_dir = os.path.join(args.output_dir, "low_cpu_mem_tmp")
     if args.low_cpu_mem_mode == 2:
@@ -228,7 +259,6 @@ def tune(args):
         if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
             model = model.to(torch.bfloat16)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
@@ -265,8 +295,6 @@ def tune(args):
     for n, _ in model.named_modules():
         lm_head_layer_name = n
     if args.quant_lm_head:
-        from transformers import AutoConfig
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
         if config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
             tied_keys = model._tied_weights_keys
             for item in tied_keys:
@@ -283,16 +311,31 @@ def tune(args):
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 
+    from auto_round.vlm_dataset import get_dataloader
+    if args.template:
+        template = args.template
+    else:
+        template = model_type
+    dataloader = get_dataloader(template, tokenizer, question_path=args.question_path, image_path=args.image_path, seqlen=args.seqlen)
+
+    if args.question_path:
+        from auto_round.utils import get_multimodal_block_names
+        dataset = dataloader
+        quant_block_list = get_multimodal_block_names(model, args.quant_vision)
+    else:
+        dataset = args.dataset
+        quant_block_list = None
+
     autoround = round(
         model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.batch_size,
-        dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
+        dataset=dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
         minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
         device=device_str, amp=not args.disable_amp, nsamples=args.nsamples, seed=args.seed,
         low_gpu_mem_usage=args.low_gpu_mem_usage, scale_dtype=args.scale_dtype,
         gradient_accumulate_steps=args.gradient_accumulate_steps, layer_config=layer_config,
         enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
         low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
-        enable_norm_bias_tuning=args.enable_norm_bias_tuning)
+        enable_norm_bias_tuning=args.enable_norm_bias_tuning, quant_block_list=quant_block_list)
     model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
