@@ -150,7 +150,7 @@ class TestQuantizationBlocks(unittest.TestCase):
         from auto_round.utils import get_block_names, validate_modules
         llm_block_names = get_block_names(self.model)
         validate_modules(llm_block_names)
-        bits, group_size, sym, train_bs = 4, 128, False, 20
+        bits, group_size, sym, batch_size = 4, 128, False, 20
         autoround = AutoRound(
             self.model,
             self.tokenizer,
@@ -159,7 +159,7 @@ class TestQuantizationBlocks(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=2,
-            train_bs=train_bs,
+            batch_size=batch_size,
             dataset=self.llm_dataloader,
             quant_block_list=llm_block_names
         )
@@ -188,5 +188,6 @@ class TestQuantizationBlocks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

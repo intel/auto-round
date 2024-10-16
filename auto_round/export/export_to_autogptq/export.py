@@ -113,13 +113,16 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
     model = kwargs["model"]
-    tokenizer = kwargs["tokenizer"]
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     quant_block_list = kwargs["quant_block_list"]
     logger.info("Saving quantized model to autogptq format, this may take a while...")
+    tokenizer = kwargs.get("tokenizer", None)
+    processor = kwargs.get("processor", None)
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
+    if processor is not None:
+        processor.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
     if bool(quant_block_list):
         all_blocks = quant_block_list
@@ -200,3 +203,4 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
