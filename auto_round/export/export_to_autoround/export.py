@@ -198,6 +198,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "intel/auto-round"
+    tokenizer = kwargs.get("tokenizer", None)
+    processor = kwargs.get("processor", None)
     if "awq" not in backend:
         quantization_config["backend"] = backend
     extra_config = {}
@@ -235,12 +237,14 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         model.config.quantization_config = quantization_config
     if output_dir is None:
         return model
-    tokenizer = kwargs["tokenizer"]
+    
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
+    if processor is not None:
+        processor.save_pretrained(output_dir)
     modules_to_not_convert = []
     if "awq" not in backend:
         save(model, output_dir, safe_serialization=safe_serialization)
@@ -317,3 +321,4 @@ def save_awq(
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(quantization_config, f, indent=2)
+
