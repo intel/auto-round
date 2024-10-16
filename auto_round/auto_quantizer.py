@@ -47,8 +47,10 @@ from auto_round.backend import get_layer_backend, dynamic_import_inference_linea
 
 import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
 import auto_round_extension.qbits.qlinear_qbits_gptq as qlinear_qbits_gptq
+from auto_round.backend import BackendInfos
 from enum import Enum
 import copy
+import re
 
 logger = getLogger(__name__)
 import sys
@@ -246,12 +248,12 @@ class AutoRoundConfig(QuantizationConfigMixin):
             raise ValueError(f"Only support quantization to [2,4,8] bits but found {self.bits}")
         if self.group_size != -1 and self.group_size <= 0:
             raise ValueError("group_size must be greater than 0 or equal to -1")
-        ##TODO add more check
 
     def get_loading_attributes(self):
-        attributes_dict = copy.deepcopy(self.__dict__)
-        loading_attributes = ["backend"]
-        loading_attibutes_dict = {i: j for i, j in attributes_dict.items() if i in loading_attributes}
+        # attributes_dict = copy.deepcopy(self.__dict__)
+        loading_attibutes_dict = {"target_backend": self.backend}
+        # loading_attributes = ["backend"]
+        # loading_attibutes_dict = {i: j for i, j in attributes_dict.items() if i in loading_attributes}
         return loading_attibutes_dict
 
     def to_dict(self):
@@ -291,6 +293,40 @@ class AutoRoundQuantizer(HfQuantizer):
             logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
         return torch_dtype
 
+    def find_backend(self, target_backend: str):
+        if target_backend in BackendInfos:
+            return target_backend
+        else:
+            for key in BackendInfos.keys():
+                backendInfo = BackendInfos[key]
+                if backendInfo.alias is not None and target_backend in backendInfo.alias:
+                    return key
+        return None
+
+    def detect_device(self, target_backend, orig_backend):
+        if target_backend is None:
+            target_backend = orig_backend
+        if "cuda" in target_backend:
+            return "cuda"
+        elif "hpu" in target_backend:
+            return "hpu"
+        elif "cpu" in target_backend:
+            return "cpu"
+
+        if target_backend.split(":")[0] == "auto":
+            if torch.cuda.is_available():
+                return "cuda"
+            elif is_hpu_supported():
+                return "hpu"
+            else:
+                return "cpu"
+
+        ##determin by backend
+        backend = self.find_backend(target_backend)
+        if backend is None:
+            raise ValueError("Backend not found, please set it to 'auto' to have a try ")
+        return BackendInfos[backend].device[0]
+
     def convert_model(self, model: nn.Module):
         """Convert the model to an AutoRound model by getting and replacing the layers.
 
@@ -298,14 +334,18 @@ class AutoRoundQuantizer(HfQuantizer):
             model (`nn.Module`):
                 Model to be converted
         """
+
         from auto_round.utils import get_layer_names_in_block
 
         quantization_config = model.config.quantization_config
+        if not hasattr(quantization_config, "target_backend"):
+            quantization_config.target_backend = quantization_config.backend
+        target_device = self.detect_device(quantization_config.target_backend, quantization_config.backend)
         if hasattr(quantization_config, "backend"):  # pragma: no cover
-            backend = quantization_config.backend
-            if "hpu" in backend and model.dtype != torch.bfloat16:
+            if "hpu" == target_device and model.dtype != torch.bfloat16:
                 logger.info("change the dtype to `bfloat16` as HPU does not support float16")
                 model = model.to(torch.bfloat16)
+
         bits = quantization_config.bits
         group_size = quantization_config.group_size
         data_type = quantization_config.data_type if hasattr(quantization_config, "data_type") \
@@ -341,11 +381,10 @@ class AutoRoundQuantizer(HfQuantizer):
         else:  # pragma: no cover
             logger.error("Please specify quantization backend")
 
-        format = quantization_config.format
-        self._replace_by_quant_layers(model, layer_configs, backend, format)
+        self._replace_by_quant_layers(model, layer_configs, quantization_config.target_backend, target_device, backend)
         return model
 
-    def _replace_by_quant_layers(self, module: nn.Module, layer_configs, backend, format=None):
+    def _replace_by_quant_layers(self, module: nn.Module, layer_configs, target_backend, target_device, orig_backend):
         """Replaces linear layers in `module` by `QuantLinear`
 
         Args:
@@ -356,48 +395,25 @@ class AutoRoundQuantizer(HfQuantizer):
             backend (`str` or `None`):
                 device+format
             format (`str` or `None`):
-                packing format
+                original packing format
         """
-        device = "cpu"
-        backend = backend or ""
 
-        if "cpu" not in backend and "gpu" not in backend and "hpu" not in backend:
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif is_hpu_supported():
-                device = "hpu"
-            backend = backend.replace("auto", "")
-        else:
-            if "gpu" in backend:
-                device = "cuda"
-            elif "hpu" in backend:
-                device = "hpu"
-            backend = backend.replace(device, "")
+        def remove_str(input_string: str, sub_str) -> str:
+            pattern = re.escape(sub_str) + r':?'
+            return re.sub(pattern, '', input_string)
 
-        if not device:
-            raise ValueError(f"Unsupported backend {backend}, please set it to `auto` to have a try")
+        if "auto" == target_backend.split(':')[0]:
+            target_backend = target_backend[4:]  ##remove auto
+            if target_backend[0] == ":":
+                target_backend = target_backend[1:]
 
-        if backend == "":
-            backend = format
-
-        def process(format):
-            if format is None:
-                format = "auto_round:exllamav2"
-            elif "gptq" in format:
-                format = format.replace("auto_round:", "")
-                if format == "gptq":
-                    format = "gptq:exllamav2"
-            elif "awq" in format:
-                format = "awq:gemm"
-            else:
-                format = "auto_round:exllamav2"
-
-            if "marlin" in format:
-                format = "gptq:marlin"
-            return format
-
-        format = process(format)
-        backend = process(backend)
+        ##remove device info from target_backend
+        target_backend = remove_str(target_backend, "cpu")
+        target_backend = remove_str(target_backend, "hpu")
+        target_backend = remove_str(target_backend, "cuda")
+        orig_backend = self.find_backend(orig_backend)
+        if target_backend == "":
+            target_backend = orig_backend
 
         for layer_name in layer_configs.keys():
             config = layer_configs[layer_name]
@@ -420,7 +436,9 @@ class AutoRoundQuantizer(HfQuantizer):
                 in_features = layer.weight.shape[0]
                 out_features = layer.weight.shape[1]
 
-            layer_backend = get_layer_backend(device, backend, format, bits, group_size, sym, in_features, out_features)
+            layer_backend = get_layer_backend(target_device, target_backend, orig_backend, bits, group_size, sym,
+                                              in_features, out_features)
+
             QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym)
 
             layer_device = get_device(layer)

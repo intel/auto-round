@@ -181,8 +181,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     backend = backend.replace("autoround", "auto_round")
     backend = backend.replace("auto-round", "auto_round")
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
-    if  (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
-        backend = backend.replace('auto_round','auto_round:gptq')
+    if (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
+        backend = backend.replace('auto_round', 'auto_round:gptq')
 
     if not ("triton" in backend or "exllamav2" in backend or "awq" in backend or "gptq" in backend):
         logger.info(f"AutoRound format does not support {backend}, try to pack each layer with AutoGPTQ")
@@ -199,8 +199,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "intel/auto-round"
 
-    quantization_config["backend"] = backend ##this may be changed by inference, so we add format to save this value
-    quantization_config["format"] = backend
+    quantization_config["backend"] = backend
     extra_config = {}
     for layer_name in layer_config:
         if layer_name not in layer_names_in_block and layer_config[layer_name]["bits"] <= 8:  ##lm head
@@ -272,4 +271,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
