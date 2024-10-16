@@ -34,7 +34,7 @@ def DataFormating(raw_data, image_folder=None, model_type='qwen'):
                 sentence['value'] = sentence['value'].strip()
                 if 'qwen2' in model_type: # for Qwen2-vl
                     replace_token = '<|vision_start|><|image_pad|><|vision_end|>'
-                if 'mllama' in model_type:
+                elif 'mllama' in model_type:
                     replace_token = '<|image|>'
                 else:
                     replace_img = os.path.join(image_folder, os.path.basename(source["image"]))
@@ -422,7 +422,7 @@ if __name__ == '__main__':
     model_type = config.model_type
     if "mllama" in model_type:
         from transformers import MllamaForConditionalGeneration
-        model = MllamaForConditionalGeneration.from_pretrained(args.model_name, 
+        model = MllamaForConditionalGeneration.from_pretrained(args.model_name, attn_implementation="eager",
                                                                trust_remote_code=not args.disable_trust_remote_code) # torch_dtype=torch.bfloat16
         processor = AutoProcessor.from_pretrained(args.model_name)
         tokenizer.processor = processor
@@ -577,6 +577,7 @@ if __name__ == '__main__':
                     batch_size=args.eval_bs,
                     device=str(torch_device)
                 )
+
 
 
 
