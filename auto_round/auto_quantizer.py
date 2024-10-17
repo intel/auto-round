@@ -443,6 +443,7 @@ class AutoRoundQuantizer(HfQuantizer):
                 ##need repack
                 assert sym == True, "marlin only supports symmetric quantization"
                 assert target_device == "cuda", "marlin only supports cuda device"
+                assert not "awq" in orig_backend, "marlin does not support repacking from awq format"
                 self.need_marlin_repacking = True
                 ##using orig backend to load the layer then replace
                 layer_backend = orig_backend
