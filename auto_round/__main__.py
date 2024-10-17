@@ -157,11 +157,8 @@ def setup_parser():
     parser.add_argument("--quant_vision", action='store_true',
                         help="To determine whether the quantization should handle vision component.")
 
-    parser.add_argument("--image_path", default="coco", type=str,
+    parser.add_argument("--images", default="coco", type=str,
                         help="The dataset for quantization training. It can be a custom one.")
-    
-    parser.add_argument("--question_path", default=None, type=str,
-                            help="The dataset for quantization training. It can be a custom one.")
     
     parser.add_argument("--template", default=None, type=str,
                             help="The template for building training dataset. It can be a custom one.")
@@ -188,23 +185,9 @@ def tune(args):
     is_glm = bool(re.search("chatglm", model_name.lower()))
     low_cpu_mem_usage = False
 
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
 
-    model_type = config.model_type
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
-
-    # for VLM
-    if args.question_path:
-        from transformers import AutoProcessor
-        if "qwen2_vl" in model_type:
-            from transformers import Qwen2VLForConditionalGeneration
-            model_cls = Qwen2VLForConditionalGeneration
-        elif "mllama" in model_type:
-            from transformers import MllamaForConditionalGeneration
-            model_cls = MllamaForConditionalGeneration
-        processor = AutoProcessor.from_pretrained(model_name)
-        tokenizer.processor = processor
 
     if args.low_cpu_mem_tmp_dir is None:
         args.low_cpu_mem_tmp_dir = os.path.join(args.output_dir, "low_cpu_mem_tmp")
@@ -295,6 +278,7 @@ def tune(args):
     for n, _ in model.named_modules():
         lm_head_layer_name = n
     if args.quant_lm_head:
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
         if config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
             tied_keys = model._tied_weights_keys
             for item in tied_keys:
@@ -311,31 +295,16 @@ def tune(args):
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 
-    from auto_round.vlm_dataset import get_dataloader
-    if args.template:
-        template = args.template
-    else:
-        template = model_type
-    dataloader = get_dataloader(template, tokenizer, question_path=args.question_path, image_path=args.image_path, seqlen=args.seqlen)
-
-    if args.question_path:
-        from auto_round.utils import get_multimodal_block_names
-        dataset = dataloader
-        quant_block_list = get_multimodal_block_names(model, args.quant_vision)
-    else:
-        dataset = args.dataset
-        quant_block_list = None
-
     autoround = round(
         model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.batch_size,
-        dataset=dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
+        dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
         minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
         device=device_str, amp=not args.disable_amp, nsamples=args.nsamples, seed=args.seed,
         low_gpu_mem_usage=args.low_gpu_mem_usage, scale_dtype=args.scale_dtype,
         gradient_accumulate_steps=args.gradient_accumulate_steps, layer_config=layer_config,
         enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
         low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
-        enable_norm_bias_tuning=args.enable_norm_bias_tuning, quant_block_list=quant_block_list)
+        enable_norm_bias_tuning=args.enable_norm_bias_tuning)
     model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
@@ -392,6 +361,107 @@ def eval(args):
     print(make_table(res))
 
 
+def tune_mllm(args):
+    if args.act_bits <= 8:
+        print(
+            "Warning, activation quantization is an experiment feature")
+    
+    if "marlin" in args.format and args.sym == False:
+        assert False, "marlin backend only supports sym quantization, please set --sym"
+
+    if args.act_bits <= 8 and args.deployment_device != "fake":
+        assert False, "only support fake mode for activation quantization currently"
+    
+    model_name = args.model_name
+    if model_name[-1] == "/":
+        model_name = model_name[:-1]
+    print(model_name, flush=True)
+
+    from auto_round.utils import detect_device
+
+    device_str = detect_device(args.device)
+    torch_dtype = "auto"
+    if "hpu" in device_str:
+        torch_dtype = torch.bfloat16
+    
+    torch.manual_seed(1234)
+    model_name = args.model_name
+
+    # load_model
+    from auto_round.mllm import load_mllm, get_mllm_dataloader
+    model, tokenizer = load_mllm(model_name, device_map="auto", torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code)
+
+    if args.template:
+        template = args.template
+    else:
+        template = model.config.model_type
+    dataloader = get_mllm_dataloader(template, tokenizer, question_path=args.question_path, image_path=args.image_path, seqlen=args.seqlen)
+
+    from auto_round import AutoMLLMROund
+
+    model = model.eval()
+    seqlen = args.seqlen
+
+    round = AutoMLLMROund
+    layer_config = {}
+    for n, m in model.named_modules():
+        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
+            if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
+                layer_config[n] = {"bits": 32}
+                print(
+                    f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
+    lm_head_layer_name = "lm_head"
+    for n, _ in model.named_modules():
+        lm_head_layer_name = n
+    if args.quant_lm_head:
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        if config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
+            tied_keys = model._tied_weights_keys
+            for item in tied_keys:
+                if lm_head_layer_name in item:  ##TODO extend to encoder-decoder layer, seq classification model
+                    args.quant_lm_head = False
+                    print(
+                        f"warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
+                        f"supported currently")
+                    break
+    if args.quant_lm_head:
+        layer_config[lm_head_layer_name] = {"bits": args.bits}
+        transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
+        if transformers_version[0] == 4 and transformers_version[1] < 38:
+            error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
+            raise EnvironmentError(error_message)
+
+    if args.quant_lm_head and args.low_gpu_mem_usage:
+        print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
+              f"gpu")
+    
+    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
+                      dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
+                      minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
+                      amp=not args.disable_amp, nsamples=args.nsamples,
+                      low_gpu_mem_usage=args.low_gpu_mem_usage, device=device_str,
+                      seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
+                      scale_dtype=args.scale_dtype, layer_config=layer_config,
+                      enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
+                      quant_vision=args.quant_vision)
+    model, _ = autoround.quantize()
+    model_name = args.model_name.rstrip("/")
+
+    model.eval()
+    if args.device != "cpu":
+        torch.cuda.empty_cache()
+    
+    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
+
+    format_list = args.format.replace(' ', '').split(',')
+    inplace = False if len(format_list) > 1 else True
+    for format_ in format_list:
+        eval_folder = f'{export_dir}-{format_}'
+        autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
+
+
 def run():
     args = setup_parser()
     if args.eval_bs is None:
@@ -401,6 +471,11 @@ def run():
     else:
         tune(args)
 
+
+def run_mllm():
+    args = setup_parser()
+    tune_mllm(args)
+    
 
 if __name__ == '__main__':
     run()

@@ -134,8 +134,6 @@ def main():
         print(
             "Warning, activation quantization is an experiment feature")
     
-    if args.act_bits <= 8 and args.deployment_device != "fake":
-        assert False, "only support fake mode for activation quantization currently"
         
     if args.format and args.deployment_device:
         assert False, "please only specify one of format and deployment_device"
@@ -147,12 +145,18 @@ def main():
         warnings.warn("The deployment_device is deprecated and will be removed in future version."
                       "Please use format instead", DeprecationWarning)
 
+        if args.act_bits <= 8 and args.deployment_device != "fake":
+            assert False, "only support fake mode for activation quantization currently"
+
         if "marlin" in args.deployment_device and args.sym == False:
             assert False, "marlin backend only supports sym quantization, please set --sym"
 
     if args.format:
         if "marlin" in args.format and args.sym == False:
             assert False, "marlin backend only supports sym quantization, please set --sym"
+
+        if args.act_bits <= 8 and args.deployment_device != "fake":
+            assert False, "only support fake mode for activation quantization currently"
         
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -169,43 +173,21 @@ def main():
     torch.manual_seed(1234)
     model_name = args.model_name
 
-    # load_model
-    from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer, AutoConfig, Qwen2VLForConditionalGeneration
-    config = AutoConfig.from_pretrained(model_name)
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-    tokenizer.processor = processor
-    model_type = config.model_type
+    from auto_round.mllm import load_mllm, get_mllm_dataloader
+    model, tokenizer = load_mllm(model_name, device_map="auto", torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code)
 
-    model_cls = AutoModelForCausalLM
-    if "qwen2_vl" in model_type:
-        from transformers import Qwen2VLForConditionalGeneration
-        model_cls = Qwen2VLForConditionalGeneration
-    elif "mllama" in model_type:
-        from transformers import MllamaForConditionalGeneration
-        model_cls = MllamaForConditionalGeneration
-    else:
-        model_cls = AutoModelForCausalLM
-    
-    model = model_cls.from_pretrained(model_name, device_map="auto", torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code,)
-
-    from auto_round.vlm_dataset import get_dataloader
     if args.template:
         template = args.template
     else:
-        template = model_type
-    dataloader = get_dataloader(template, tokenizer, question_path=args.question_path, image_path=args.image_path, seqlen=args.seqlen)
+        template = model.config.model_type
+    dataloader = get_mllm_dataloader(template, tokenizer, question_path=args.question_path, image_path=args.image_path, seqlen=args.seqlen)
 
-    from auto_round import (AutoRound,
-                            AutoAdamRound)
-    from auto_round.utils import get_multimodal_block_names
+    from auto_round import AutoMLLMROund
 
     model = model.eval()
     seqlen = args.seqlen
 
-    round = AutoRound
-    if args.adam:
-        round = AutoAdamRound
+    round = AutoMLLMROund
 
     layer_config = {}
     for n, m in model.named_modules():
@@ -241,8 +223,6 @@ def main():
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
         
-    quant_block_list = get_multimodal_block_names(model, args.quant_vision)
-    
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
                       dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
@@ -251,7 +231,7 @@ def main():
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
-                      quant_block_list=quant_block_list)
+                      quant_vision=args.quant_vision)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
 

@@ -25,6 +25,8 @@ from typing import Optional, Union
 from transformers import set_seed
 from torch import autocast
 from tqdm import tqdm
+import accelerate
+
 from .calib_dataset import get_dataloader
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
     WrapperTransformerConv1d
@@ -51,10 +53,10 @@ from .utils import (
     get_layer_names_in_block,
     mv_module_from_gpu,
     unsupport_meta_device, detect_device_count,
+    get_multimodal_block_names,
 )
-
 from .low_cpu_mem.utils import get_layers_before_block
-import accelerate
+from .mllm import get_mllm_dataloader, Template
 
 
 class AutoRound(object):
@@ -1632,3 +1634,94 @@ class AutoAdamRound(AutoOPTRound):
         )
 
 
+class AutoMLLMROund(AutoRound):
+    def __init__(
+            self,
+            model,
+            tokenizer,
+            bits: int = 4,
+            group_size: int = 128,
+            sym: bool = False,
+            layer_config: dict = None,
+            enable_full_range: bool = False,  ##for symmetric, TODO support later
+            batch_size: int = 8,
+            amp: bool = True,
+            device: str = None,
+            lr_scheduler=None,
+            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = None,
+            images: Union[str, torch.utils.data.DataLoader] = None,
+            template: Union[str, Template] = None,
+            quant_vision: bool = False,
+            enable_quanted_input: bool = True,
+            enable_minmax_tuning: bool = True,
+            lr: float = None,
+            minmax_lr: float = None,
+            low_gpu_mem_usage: bool = False,
+            low_cpu_mem_usage: bool = False,
+            iters: int = 200,
+            seqlen: int = 2048,
+            nsamples: int = 128,
+            sampler: str = "rand",
+            seed: int = 42,
+            nblocks: int = 1,
+            gradient_accumulate_steps: int = 1,
+            not_use_best_mse: bool = False,
+            dynamic_max_gap: int = -1,
+            data_type: str = "int",
+            scale_dtype: str = "fp16",
+            act_bits: int = 32,
+            act_group_size: int = None,
+            act_sym: bool = None,
+            act_dynamic: bool = True,
+            quant_block_list: list = None,
+            enable_norm_bias_tuning: bool = False,
+            **kwargs,
+    ):
+        super(AutoMLLMROund, self).__init__(
+            model=model,
+            tokenizer=tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            layer_config=layer_config,
+            enable_full_range=enable_full_range,
+            batch_size=batch_size,
+            amp=amp,
+            device=device,
+            lr_scheduler=lr_scheduler,
+            dataset=dataset,
+            enable_quanted_input=enable_quanted_input,
+            enable_minmax_tuning=enable_minmax_tuning,
+            lr=lr,
+            minmax_lr=minmax_lr,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            iters=iters,
+            seqlen=seqlen,
+            nsamples=nsamples,
+            sampler=sampler,
+            seed=seed,
+            nblocks=nblocks,
+            gradient_accumulate_steps=gradient_accumulate_steps,
+            not_use_best_mse=not_use_best_mse,
+            dynamic_max_gap=dynamic_max_gap,
+            data_type=data_type,
+            scale_dtype=scale_dtype,
+            act_bits=act_bits,
+            act_group_size=act_group_size,
+            act_sym=act_sym,
+            act_dynamic=act_dynamic,
+            enable_norm_bias_tuning=enable_norm_bias_tuning,
+            quant_block_list=quant_block_list,
+            **kwargs,
+        )
+        self.images = images
+        self.template = template
+        self.quant_vision = quant_vision
+        if self.template is None:
+            self.template = self.model.config.model_type
+        assert self.dataset is not None, "dataset should not be None"
+        if isinstance(self.dataset, str):
+            self.dataset = get_mllm_dataloader(self.template, tokenizer, dataset, images, seqlen, batch_size)
+        
+        self.quant_block_list = get_multimodal_block_names(self.model, quant_vision)
