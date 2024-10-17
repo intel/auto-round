@@ -1624,7 +1624,7 @@ class AutoAdamRound(AutoOPTRound):
 
 
 
-class AutoMLLMROund(AutoRound):
+class AutoMLLMRound(AutoRound):
     def __init__(
             self,
             model,
@@ -1667,7 +1667,7 @@ class AutoMLLMROund(AutoRound):
             enable_norm_bias_tuning: bool = False,
             **kwargs,
     ):
-        super(AutoMLLMROund, self).__init__(
+        super(AutoMLLMRound, self).__init__(
             model=model,
             tokenizer=tokenizer,
             bits=bits,

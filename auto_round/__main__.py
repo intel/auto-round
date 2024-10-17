@@ -402,21 +402,15 @@ def tune_mllm(args):
     model_name = args.model_name
 
     # load_model
-    from auto_round.mllm import load_mllm, get_mllm_dataloader
+    from auto_round.mllm import load_mllm
     model, tokenizer = load_mllm(model_name, device_map="auto", torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code)
 
-    if args.template:
-        template = args.template
-    else:
-        template = model.config.model_type
-    dataloader = get_mllm_dataloader(template, tokenizer, question_path=args.question_path, image_path=args.image_path, seqlen=args.seqlen)
-
-    from auto_round import AutoMLLMROund
+    from auto_round import AutoMLLMRound
 
     model = model.eval()
     seqlen = args.seqlen
 
-    round = AutoMLLMROund
+    round = AutoMLLMRound
     layer_config = {}
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
@@ -451,8 +445,9 @@ def tune_mllm(args):
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
     
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
-                      dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
+    autoround = round(model, tokenizer, dataset=args.question_path, images=args.image_path,
+                      bits=args.bits, group_size=args.group_size, sym=args.sym, batch_size=args.train_bs,
+                      seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
                       amp=not args.disable_amp, nsamples=args.nsamples,
                       low_gpu_mem_usage=args.low_gpu_mem_usage, device=device_str,
