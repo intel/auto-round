@@ -181,8 +181,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     backend = backend.replace("autoround", "auto_round")
     backend = backend.replace("auto-round", "auto_round")
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
-    if  (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
-        backend = backend.replace('auto_round','auto_round:gptq')
+    if (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
+        backend = backend.replace('auto_round', 'auto_round:gptq')
 
     if not ("triton" in backend or "exllamav2" in backend or "awq" in backend or "gptq" in backend):
         logger.info(f"AutoRound format does not support {backend}, try to pack each layer with AutoGPTQ")
@@ -198,10 +198,10 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "intel/auto-round"
+
+    quantization_config["backend"] = backend
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
-    if "awq" not in backend:
-        quantization_config["backend"] = backend
     extra_config = {}
     for layer_name in layer_config:
         if layer_name not in layer_names_in_block and layer_config[layer_name]["bits"] <= 8:  ##lm head
@@ -243,17 +243,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         return model
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
+
     if processor is not None:
         processor.save_pretrained(output_dir)
-    modules_to_not_convert = []
-    if "awq" not in backend:
-        save(model, output_dir, safe_serialization=safe_serialization)
-    else:
-        for name in layer_config.keys():
-            config = kwargs["layer_config"][name]
-            if config["bits"] > 8:
-                modules_to_not_convert.append(name)
-        save_awq(model, output_dir, modules_to_not_convert=modules_to_not_convert)
+    save(model, output_dir, safe_serialization=safe_serialization)
+
     return model
 
 
@@ -283,42 +277,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-
-def save_awq(
-        model: nn.Module,
-        save_dir: str,
-        max_shard_size: str = "5GB",
-        safe_serialization: bool = True,
-        modules_to_not_convert: list = [],
-):
-    """Save model state dict and configs.
-
-    Args:
-        model (`nn.Module`):
-            Model to be saved. The model can be wrapped or unwrapped.
-        save_dir (`str`):
-            Directory to which to save. Will be created if it doesn't exist.
-        max_shard_size (`str`, defaults to `"10GB"`):
-            The maximum size for a checkpoint before being sharded. Checkpoints shard will then be each of size
-            lower than this size. If expressed as a string, needs to be digits followed by a unit (like `"5MB"`).
-            <Tip warning={true}>
-
-            If a single weight of the model is bigger than `max_shard_size`, it will be in its own checkpoint shard
-            which will be bigger than `max_shard_size`.
-
-            </Tip>
-        safe_serialization (`bool`, defaults to `True`):
-            Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    quantization_config = model.config.quantization_config
-    model.config.quantization_config["quant_method"] = "awq"
-    model.config.quantization_config["modules_to_not_convert"] = None if not modules_to_not_convert \
-        else modules_to_not_convert
-    model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    config_file = "quantization_config.json"
-    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
-            json.dump(quantization_config, f, indent=2)
 

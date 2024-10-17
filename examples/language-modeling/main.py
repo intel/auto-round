@@ -352,7 +352,9 @@ if __name__ == '__main__':
         format_list = args.format.replace(' ', '').split(',')
         inplace = False if len(format_list) > 1 else True
         for format_ in format_list:
-            eval_folder = f'{export_dir}-{format_}'
+            save_format_ = format_.replace(":", "-")
+            save_format_ = save_format_.replace("_", "-")
+            eval_folder = f'{export_dir}-{save_format_}'
             autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
     else:
         deployment_device = args.deployment_device.split(',')

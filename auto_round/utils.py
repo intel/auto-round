@@ -27,6 +27,7 @@ import torch
 from torch.amp import autocast
 
 from functools import lru_cache
+from packaging import version
 
 
 @lru_cache(None)
@@ -760,126 +761,18 @@ def is_autoround_exllamav2_available():
     return res
 
 
-def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
-    use_triton = False
-    disable_exllamav2 = False
-    disable_exllamav1 = False
-    disable_marlin = True
-    use_qigen = False
-    use_tritonv2 = False
-    if "qigen" in backend:
-        use_qigen = True
-    elif "triton" in backend:
-        use_triton = True
-    elif "tritonv2" in backend:
-        use_triton = False
-        use_tritonv2 = True
-    elif "marlin" in backend:
-        use_triton = False
-        disable_marlin = False
-    elif "exllamav2" in backend:
-        use_triton = False
-        disable_exllamav2 = False
-        disable_marlin = True
-    elif "exllamav1" in backend:
-        use_triton = False
-        disable_marlin = True
-    elif "cuda" in backend:
-        use_triton = False
-        disable_marlin = True
-        disable_exllamav2 = True
-        disable_exllamav1 = True
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
-    version = get_library_version("auto_gptq")
-    from packaging.version import Version
-    if Version(version) <= Version("0.7.1"):
-        QuantLinear = dynamically_import_QuantLinear(
-            use_triton=use_triton,
-            desc_act=False,
-            group_size=group_size,
-            bits=bits,
-            disable_exllama=disable_exllamav1,
-            disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen,
-            disable_marlin=disable_marlin
-        )
-    else:
-        QuantLinear = dynamically_import_QuantLinear( # pylint: disable=E1123
-            use_triton=use_triton,
-            desc_act=False,
-            group_size=group_size,
-            bits=bits,
-            disable_exllama=disable_exllamav1,
-            disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen,
-            use_marlin=not disable_marlin,
-            use_tritonv2=use_tritonv2
-        )
-    return QuantLinear
 
 
-def dynamic_import_inference_linear(backend, bits, group_size, sym):
-    """Dynamically imports and returns the appropriate QuantLinear class based on the given bits and backend.
-
-       Args:
-           bits (int):
-               The number of bits for quantization.
-           backend (str):
-               The backend to be used for quantization, such as "qbits", "cpu", or "exllamav2".
-
-       Returns:
-           class:
-               The appropriate QuantLinear class for the given configuration.
-       """
-    exllama2_available = is_autoround_exllamav2_available()
-    ##TODO may have bug for marlin backend
-    if (not torch.cuda.is_available() and not is_optimum_habana_available()) or "qbits" in backend or "cpu" in backend:
-        try:
-            from intel_extension_for_transformers import qbits  # pylint: disable=E0401
-        except Exception as e:
-            raise ImportError("Please install Intel Extension for Transformers via 'pip install "
-                              "intel-extension-for-transformers' to  inference on X86 CPU")
-        import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
-        return qlinear_qbits.QuantLinear
-    if "gptq" in backend:
-        if not is_optimum_habana_available():
-            try:
-                import auto_gptq  # pylint: disable=E0401
-            except Exception as e:
-                raise ImportError("Please install auto-gptq via 'pip install auto-gptq' to support GPTQ backend ")
-            return get_autogptq_infer_linear(backend, bits, group_size, sym)
-        else:  # pragma: no cover
-            try:
-                import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
-            except Exception as e:
-                pass
-            else:
-                from auto_round_extension.hpu.qlinear_hpu_gptq import QuantLinear
-                return QuantLinear
-    if (bits == 4 and is_optimum_habana_available()) or "hpu" in backend:  # pragma: no cover
-        try:
-            import habana_frameworks.torch.hpu  # noqa: F401 # pylint: disable=E0401
-        except Exception as e:
-            pass
-        else:
-            from auto_round_extension.hpu.qlinear_hpu import QuantLinear
-            return QuantLinear
-    if "awq" in backend:  # pragma: no cover
-        try:
-            from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
-        except:
-            raise ImportError("autoawq is required. Please install it by 'pip install autoawq' to \
-                support auto_awq format.")
-        return WQLinear_GEMM
-    if bits == 4 and exllama2_available and "exllamav2" in backend:
-        from auto_round_extension.cuda.qlinear_exllamav2 import QuantLinear
-    elif bits == 4 and "exllamav2" in backend:
-        logger.warning_once("Please install auto-round from source to enable exllamav2 kernels, switch to triton "
-                            "kernels for now")
-        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
-    else:
-        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
-    return QuantLinear
+def is_hpu_supported():  # pragma: no cover
+    try:
+        import subprocess
+        import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+        hqt_version = subprocess.check_output(['pip', 'show', \
+                                               'habana_quantization_toolkit']).decode().split('\n')[1].split(': ')[1]
+        assert (hqt_version >= "1.17")
+    except ImportError as e:
+        return False
+    return True
 
 
 def get_library_version(library_name):
@@ -964,7 +857,7 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             disable_marlin=disable_marlin,
         )
     else:
-        QuantLinear = dynamically_import_QuantLinear(# pylint: disable=E1123
+        QuantLinear = dynamically_import_QuantLinear(  # pylint: disable=E1123
             use_triton=use_triton,
             desc_act=False,
             group_size=group_size,
@@ -975,6 +868,3 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             use_marlin=not disable_marlin,
         )
     return QuantLinear
-
-
-

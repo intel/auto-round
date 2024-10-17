@@ -193,7 +193,7 @@ asymmetric kernel has issues** that can cause considerable accuracy drops, parti
 models.
 Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
-**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
+**AutoAWQ Format**(>0.3.0): This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
 within the community, only 4-bits quantization is supported. It features
 specialized layer fusion tailored for Llama models.
 
@@ -230,13 +230,13 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRoundConfig
 
-device = "auto"  ##cpu, hpu, cuda
+backend = "auto"  ##cpu, hpu, cuda, cuda:marlin('pip install -v gptqmodel --no-build-isolation')
 quantization_config = AutoRoundConfig(
-    backend=device
+    backend=backend
 )
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map=device, quantization_config=quantization_config)
+                                             device_map=backend.split(':')[0], quantization_config=quantization_config)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
