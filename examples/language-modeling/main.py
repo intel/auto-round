@@ -50,8 +50,8 @@ if __name__ == '__main__':
                         help="The device to be used for tuning. The default is set to auto/None,"
                              "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
 
-    parser.add_argument("--sym", action='store_true',
-                        help=" sym quantization")
+    parser.add_argument("--asym", action='store_true',
+                        help=" asym quantization")
 
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
@@ -184,12 +184,12 @@ if __name__ == '__main__':
     if args.deployment_device:
         warnings.warn("The deployment_device is deprecated and will be removed in future version."
                       "Please use format instead", DeprecationWarning)
-        if "gpu" in args.deployment_device and args.sym is False:
+        if "gpu" in args.deployment_device and args.asym is True:
             print(
-                "warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use --format='auto_round'")
+                "warning: The auto_gptq kernel has issues with asymmetric quantization. It is recommended to use sym quantization or --format='auto_round'")
 
-        if "marlin" in args.deployment_device and args.sym is False:
-            assert False, "marlin backend only supports sym quantization, please set --sym"
+        if "marlin" in args.deployment_device and args.asym is True:
+            assert False, "marlin backend only supports sym quantization, please remove --asym"
 
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -323,7 +323,7 @@ if __name__ == '__main__':
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
+    autoround = round(model, tokenizer, args.bits, args.group_size, sym=not args.asym, batch_size=args.train_bs,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
                       amp=not args.disable_amp, nsamples=args.nsamples,
@@ -446,11 +446,21 @@ if __name__ == '__main__':
         model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
         user_model = None
         if args.act_bits <= 8:
-            user_model = model.to(device_str)
+            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                from accelerate.big_modeling import dispatch_model
 
-        res = simple_evaluate(model="hf", model_args=model_args,
-                              tasks=tasks,
-                              batch_size=args.eval_bs, user_model=user_model)
+                dispatch_model(model, model.hf_device_map)
+                user_model = model
+            else:
+                user_model = model.to(device_str)
+            if args.eval_bs == "auto":
+                args.eval_bs = 16
+            from auto_round.eval.evaluation import  simple_evaluate_user_model
+            res = simple_evaluate_user_model(user_model, tokenizer,tasks=tasks,batch_size=args.eval_bs)
+        else:
+            res = simple_evaluate(model="hf", model_args=model_args,
+                                  tasks=tasks,
+                                  batch_size=args.eval_bs)
         from lm_eval.utils import make_table
 
         print(make_table(res))

@@ -366,14 +366,18 @@ def sampling_inputs(input_ids, input_others, indices, seqlen,
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
         if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key) \
-                or (not_share_position_ids_flag and ("position_ids" in key or "cache_position" in key)) \
+                or (not_share_position_ids_flag and ("position_ids" in key or \
+                    "cache_position" in key or "position_embeddings" in key)) \
                 or (not_share_rotary_pos_emb_flag and ("rotary_pos_emb" in key or 'cu_seqlens' in key)) \
                 or "cross_attention_states" in key:
             current_input_others[key] = None
             if input_others[key] is not None:
                 current_input_others[key] = [input_others[key][i] for i in indices]
                 if not isinstance(current_input_others[key], torch.Tensor):
-                    current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+                    if len(current_input_others[key]) == 1:
+                        current_input_others[key] = current_input_others[key][0]
+                    else:
+                        current_input_others[key] = torch.cat(current_input_others[key], dim=0)
         else:
             current_input_others[key] = input_others[key]
 
@@ -800,7 +804,7 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
             disable_marlin=disable_marlin
         )
     else:
-        QuantLinear = dynamically_import_QuantLinear(
+        QuantLinear = dynamically_import_QuantLinear( # pylint: disable=E1123
             use_triton=use_triton,
             desc_act=False,
             group_size=group_size,
@@ -960,7 +964,7 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             disable_marlin=disable_marlin,
         )
     else:
-        QuantLinear = dynamically_import_QuantLinear(
+        QuantLinear = dynamically_import_QuantLinear(# pylint: disable=E1123
             use_triton=use_triton,
             desc_act=False,
             group_size=group_size,
@@ -971,5 +975,6 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             use_marlin=not disable_marlin,
         )
     return QuantLinear
+
 
 

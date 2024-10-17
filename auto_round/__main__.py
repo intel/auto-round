@@ -56,8 +56,8 @@ def setup_parser():
                         help="The device to be used for tuning. The default is set to auto/None,"
                              "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
 
-    parser.add_argument("--sym", action='store_true',
-                        help=" sym quantization")
+    parser.add_argument("--asym", action='store_true',
+                        help=" asym quantization")
 
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
@@ -92,7 +92,8 @@ def setup_parser():
 
     parser.add_argument("--format", default=None, type=str,
                         help="The format in which to save the model. "
-                             "The options are 'auto_round', 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
+                             "The options are 'auto_round', 'auto_round:gptq','auto_round:marlin',"
+                             " 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
                              "default to 'auto_round."
                         )
 
@@ -171,6 +172,13 @@ def tune(args):
     tasks = args.tasks
     if args.format is None:
         args.format = "auto_round"
+    if "auto_gptq" in args.format and args.asym is True:
+        print(
+            "warning: The auto_gptq kernel has issues with asymmetric quantization. "
+            "It is recommended to use sym quantization or --format='auto_round'")
+
+    if "marlin" in args.format and args.asym is True:
+        assert False, "marlin backend only supports sym quantization, please remove --asym"
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -296,7 +304,7 @@ def tune(args):
             raise EnvironmentError(error_message)
 
     autoround = round(
-        model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.batch_size,
+        model, tokenizer, args.bits, args.group_size, sym=not args.asym, batch_size=args.batch_size,
         dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
         minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
         device=device_str, amp=not args.disable_amp, nsamples=args.nsamples, seed=args.seed,
@@ -332,16 +340,22 @@ def tune(args):
         logger.info(f"Using lm-eval version {lm_eval_version}")
         model_args = f"pretrained={eval_folder}"
         model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
-        user_model = None
         if args.act_bits <= 8:
-            user_model = model.to(device_str)
+            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                from accelerate.big_modeling import dispatch_model
 
-        res = simple_evaluate(
-            model="hf",
-            model_args=model_args,
-            tasks=tasks,
-            batch_size=args.eval_bs,
-            user_model=user_model)
+                dispatch_model(model, model.hf_device_map)
+                user_model = model
+            else:
+                user_model = model.to(device_str)
+            if args.eval_bs == "auto":
+                args.eval_bs = 16
+            from auto_round.eval.evaluation import simple_evaluate_user_model
+            res = simple_evaluate_user_model(user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs)
+        else:
+            res = simple_evaluate(model="hf", model_args=model_args,
+                                  tasks=tasks,
+                                  batch_size=args.eval_bs)
         print(make_table(res))
 
 

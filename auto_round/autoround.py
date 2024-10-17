@@ -60,8 +60,7 @@ from .mllm import get_mllm_dataloader, Template
 
 
 class AutoRound(object):
-    """This is Signround+ which is an advanced version of Signround. For more information,
-     please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
+    """For more information, please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
      for the quantization of llms." arXiv preprint arXiv:2309.05516 (2023).
 
     Args:
@@ -69,7 +68,7 @@ class AutoRound(object):
         tokenizer: An optional tokenizer for processing input data. If none is provided, a dataloader must be supplied.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
-        sym (bool): Whether symmetric quantization is to be used (default is False).
+        sym (bool): Whether symmetric quantization is to be used (default is True).
         layer_config (dict): Configuration for weight quantization (default is None).
         layer_config={
                    'layer1':##layer_name
@@ -77,7 +76,7 @@ class AutoRound(object):
                        'data_type': 'int',
                        'bits': 4,
                        'group_size': 128,
-                       'sym': False
+                       'sym': True
                        'act_data_type': None,
                        'act_bits': 32,
                        'act_group_size': None,
@@ -86,7 +85,6 @@ class AutoRound(object):
                    }
                    ...
                }
-        enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
         device: The device to be used for tuning (default is "auto").
@@ -128,7 +126,6 @@ class AutoRound(object):
             group_size: int = 128,
             sym: bool = False,
             layer_config: dict = None,
-            enable_full_range: bool = False,  ##for symmetric, TODO support later
             batch_size: int = 8,
             amp: bool = True,
             device: str = None,
@@ -209,7 +206,6 @@ class AutoRound(object):
         self.gradient_accumulate_steps = gradient_accumulate_steps
         self.not_use_best_mse = not_use_best_mse
         self.dynamic_max_gap = dynamic_max_gap
-        self.enable_full_range = enable_full_range
         self.lr_scheduler = lr_scheduler
         self.optimizer = self.get_optimizer(None)
         self.share_attention_mask_flag = None
@@ -245,7 +241,6 @@ class AutoRound(object):
         assert self.seqlen > 0, "seqlen must be positive"
         assert self.nblocks > 0, "nblocks must be positive"
         assert self.gradient_accumulate_steps > 0, "gradient accumulate step must be positive"
-        assert self.enable_full_range is False, "only support enable_full_range=False currently"
         assert self.act_dynamic is True, "only support dynamic quantization for activation currently"
         # assert self.tokenizer != None or self.dataloader != None
         if self.act_bits <= 8:
@@ -727,8 +722,8 @@ class AutoRound(object):
                                 self.inputs[name][key].extend(list(torch.split(alibi.to("cpu"), 1, dim=0)))
                             else:
                                 self.inputs[name][key] = list(torch.split(alibi.to("cpu"), 1, dim=0))
-                    elif "position_ids" in key or 'cache_position' in key:
-                        if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
+                    elif "position_ids" in key or 'cache_position' in key or 'position_embeddings' in key:
+                        if self.train_bs == 1 and self.not_share_position_ids_flag:
                             if key not in self.inputs[name].keys():
                                 self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
                             else:
@@ -1111,7 +1106,7 @@ class AutoRound(object):
                 input_others[key] = input_others[key].to(tmp_dtype)
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
-                    input_others[key][i].to(tmp_dtype)
+                    to_dtype(input_others[key][i], tmp_dtype)
         pbar = tqdm(range(0, len(block_names), nblocks))
         for i in pbar:
             if nblocks == 1:
@@ -1347,9 +1342,8 @@ class AutoOPTRound(AutoRound):
         tokenizer: An optional tokenizer for processing input data.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
-        sym (bool): Whether sym to be used (default is False).
+        sym (bool): Whether sym to be used (default is True).
         layer_config (dict): Configuration for weight quantization (default is None).
-        enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
         device: The device to be used for training (default is "auto").
@@ -1390,9 +1384,8 @@ class AutoOPTRound(AutoRound):
             tokenizer=None,
             bits: int = 4,
             group_size: int = 128,
-            sym: bool = False,
+            sym: bool = True,
             layer_config=None,
-            enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
             device=None,
@@ -1431,7 +1424,6 @@ class AutoOPTRound(AutoRound):
             group_size=group_size,
             sym=sym,
             layer_config=layer_config,
-            enable_full_range=enable_full_range,
             batch_size=batch_size,
             amp=amp,
             device=device,
@@ -1516,9 +1508,8 @@ class AutoAdamRound(AutoOPTRound):
         tokenizer: An optional tokenizer for processing input data.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
-        sym (str): Whether symmetric quantization to be used (default is False).
+        sym (str): Whether symmetric quantization to be used (default is True).
         layer_config (dict): Configuration for weight quantization (default is None).
-        enable_full_range (bool): Whether to enable full range quantization (default is False).
         batch_size (int): Batch size for training (default is 8).
         amp (bool): Whether to use automatic mixed precision (default is True).
         device: The device to be used for training (default is "auto").
@@ -1559,9 +1550,8 @@ class AutoAdamRound(AutoOPTRound):
             tokenizer=None,
             bits: int = 4,
             group_size: int = 128,
-            sym: bool = False,
+            sym: bool = True,
             layer_config=None,
-            enable_full_range: bool = False,
             batch_size: int = 8,
             amp: bool = True,
             device=None,
@@ -1600,7 +1590,6 @@ class AutoAdamRound(AutoOPTRound):
             group_size=group_size,
             sym=sym,
             layer_config=layer_config,
-            enable_full_range=enable_full_range,
             batch_size=batch_size,
             amp=amp,
             device=device,
@@ -1632,6 +1621,7 @@ class AutoAdamRound(AutoOPTRound):
             optimizer=optimizer,
             **kwargs,
         )
+
 
 
 class AutoMLLMROund(AutoRound):
