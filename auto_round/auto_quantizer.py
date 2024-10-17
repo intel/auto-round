@@ -294,18 +294,58 @@ class AutoRoundQuantizer(HfQuantizer):
         return torch_dtype
 
     def find_backend(self, target_backend: str):
+        """Finds the matching backend key based on the target backend or its alias.
+
+        This function checks if the provided `target_backend` is directly present in `BackendInfos`.
+        If not, it iterates through the backends to see if the `target_backend` matches any backend's alias.
+
+        Args:
+            target_backend (str):
+                The name of the backend or alias to find.
+
+        Returns:
+            str or None:
+                The backend key if a match is found, otherwise `None`.
+        """
+        # Directly return if target_backend exists in BackendInfos
         if target_backend in BackendInfos:
             return target_backend
-        else:
-            for key in BackendInfos.keys():
-                backendInfo = BackendInfos[key]
-                if backendInfo.alias is not None and target_backend in backendInfo.alias:
-                    return key
+
+        # Search through BackendInfos to check if target_backend matches any backend alias
+        for key in BackendInfos.keys():
+            backendInfo = BackendInfos[key]
+            if backendInfo.alias is not None and target_backend in backendInfo.alias:
+                return key
+
+        # Return None if no matching backend or alias is found
         return None
 
     def detect_device(self, target_backend, orig_backend):
+        """Detects the appropriate device for the specified backend.
+
+        This function determines the device type based on the target backend. If the target backend is
+        not specified, it defaults to the original backend. The function checks for the availability
+        of CUDA, HPU, or CPU, and returns the appropriate device type.
+
+        Args:
+            target_backend (str or None):
+                The name of the target backend. If None, defaults to `orig_backend`.
+            orig_backend (str):
+                The original backend name to fall back on if `target_backend` is None.
+
+        Returns:
+            str:
+                The type of device detected ('cuda', 'hpu', or 'cpu').
+
+        Raises:
+            ValueError:
+                If the specified backend cannot be found.
+        """
+        # Default to the original backend if target_backend is not provided
         if target_backend is None:
             target_backend = orig_backend
+
+        # Check for specific device types based on the target backend
         if "cuda" in target_backend:
             return "cuda"
         elif "hpu" in target_backend:
@@ -313,6 +353,7 @@ class AutoRoundQuantizer(HfQuantizer):
         elif "cpu" in target_backend:
             return "cpu"
 
+        # Determine the device automatically based on availability
         if target_backend.split(":")[0] == "auto":
             if torch.cuda.is_available():
                 return "cuda"
@@ -321,18 +362,31 @@ class AutoRoundQuantizer(HfQuantizer):
             else:
                 return "cpu"
 
-        ##determine by backend
+        # Find the backend and determine the device type from BackendInfos
         backend = self.find_backend(target_backend)
         if backend is None:
             raise ValueError("Backend not found, please set it to 'auto' to have a try ")
+
         return BackendInfos[backend].device[0]
 
     def convert_model(self, model: nn.Module):
-        """Convert the model to an AutoRound model by getting and replacing the layers.
+        """Converts the given model to an AutoRound model by replacing its layers with quantized layers.
+
+        This method extracts the quantization configuration from the model and adjusts its layers
+        according to the specified quantization parameters. It supports different backends and
+        ensures that the model's data type is compatible with the selected hardware.
 
         Args:
-            model (`nn.Module`):
-                Model to be converted
+            model (nn.Module):
+                The model to be converted into an AutoRound model.
+
+        Returns:
+            nn.Module:
+                The converted AutoRound model with quantized layers.
+
+        Raises:
+            ValueError:
+                If the quantization backend is not specified in the configuration.
         """
 
         from auto_round.utils import get_layer_names_in_block
@@ -340,25 +394,30 @@ class AutoRoundQuantizer(HfQuantizer):
         quantization_config = model.config.quantization_config
         if not hasattr(quantization_config, "target_backend"):
             quantization_config.target_backend = quantization_config.backend
+
         target_device = self.detect_device(quantization_config.target_backend, quantization_config.backend)
+
         if hasattr(quantization_config, "backend"):  # pragma: no cover
             if "hpu" == target_device and model.dtype != torch.bfloat16:
-                logger.info("change the dtype to `bfloat16` as HPU does not support float16")
+                logger.info("Change the dtype to `bfloat16` as HPU does not support float16")
                 model = model.to(torch.bfloat16)
 
         bits = quantization_config.bits
         group_size = quantization_config.group_size
-        data_type = quantization_config.data_type if hasattr(quantization_config, "data_type") \
-            else "int"  # pragma: no cover
+        data_type = quantization_config.data_type if hasattr(quantization_config,
+                                                             "data_type") else "int"  # pragma: no cover
         sym = quantization_config.sym
-        quant_block_list = quantization_config.quant_block_list \
-            if hasattr(quantization_config, "quant_block_list") else None
+        quant_block_list = quantization_config.quant_block_list if hasattr(quantization_config,
+                                                                           "quant_block_list") else None
         layer_names = get_layer_names_in_block(model, quant_block_list=quant_block_list)
+
         extra_config = {}
         if hasattr(quantization_config, "extra_config"):
             extra_config = quantization_config.extra_config
+
         layer_names += extra_config.keys()
         layer_names = list(set(layer_names))
+
         layer_configs = {}
         for layer_name in layer_names:
             layer_configs[layer_name] = {}
@@ -374,48 +433,74 @@ class AutoRoundQuantizer(HfQuantizer):
                 layer_configs[layer_name]["data_type"] = extra_config[layer_name].get("data_type", data_type)
                 layer_configs[layer_name]["sym"] = extra_config[layer_name].get("sym", sym)
                 layer_configs[layer_name]["clip"] = extra_config[layer_name].get("clip", False)
+
         if hasattr(quantization_config, "backend"):  # pragma: no cover
             backend = quantization_config.backend
         elif 'gptq' in quantization_config.quant_method:  # pragma: no cover
             backend = 'gptq'
         else:  # pragma: no cover
             logger.error("Please specify quantization backend")
+            raise ValueError("Quantization backend must be specified.")
 
         self._replace_by_quant_layers(model, layer_configs, quantization_config.target_backend, target_device, backend)
         return model
 
     def _replace_by_quant_layers(self, module: nn.Module, layer_configs, target_backend, target_device, orig_backend):
-        """Replaces linear layers in `module` by `QuantLinear`
+        """Replaces linear layers in the given module with quantized layers.
+
+        This method iterates over the specified layer configurations and replaces
+        the original layers in the module with instances of `QuantLinear`. It handles
+        various layer types and ensures that the correct quantization parameters are applied.
 
         Args:
-            module (`nn.Module`):
-                Module to quantize
-            layer_configs (`List[dict]`):
-                List of quantization config for the module to quantize
-            backend (`str` or `None`):
-                device+format
-            format (`str` or `None`):
-                original packing format
+            module (nn.Module):
+                The module containing layers to be quantized.
+            layer_configs (dict):
+                A dictionary containing configuration for each layer's quantization.
+            target_backend (str):
+                The backend to use for quantization, which includes device and format information.
+            target_device (str):
+                The device on which the model will run (e.g., 'cuda', 'cpu', 'hpu').
+            orig_backend (str):
+                The original backend of the packing.
+
+        Raises:
+            AssertionError:
+                If any condition related to backend or quantization configuration is not met.
         """
 
         def remove_str(input_string: str, sub_str) -> str:
+            """Removes the specified substring from the input string, if present.
+
+            Args:
+                input_string (str):
+                    The original string from which to remove the substring.
+                sub_str (str):
+                    The substring to be removed.
+
+            Returns:
+                str:
+                    The modified string with the substring removed.
+            """
             pattern = re.escape(sub_str) + r':?'
             return re.sub(pattern, '', input_string)
 
         if "auto" == target_backend.split(':')[0]:
-            target_backend = target_backend[4:]  ##remove auto
+            target_backend = target_backend[4:]  # Remove 'auto'
             if len(target_backend) >= 1 and target_backend[0] == ":":
                 target_backend = target_backend[1:]
 
-        ##remove device info from target_backend
+        # Remove device info from target_backend
         target_backend = remove_str(target_backend, "cpu")
         target_backend = remove_str(target_backend, "hpu")
         target_backend = remove_str(target_backend, "cuda")
         orig_backend = self.find_backend(orig_backend)
+
         if target_backend == "":
             target_backend = orig_backend
 
         self.need_marlin_repacking = False
+
         for layer_name in layer_configs.keys():
             config = layer_configs[layer_name]
             bits = config["bits"]
@@ -423,6 +508,7 @@ class AutoRoundQuantizer(HfQuantizer):
             data_type = config["data_type"]
             sym = config["sym"]
             clip = config["clip"]
+
             if not (bits <= 8):
                 continue
 
@@ -430,30 +516,30 @@ class AutoRoundQuantizer(HfQuantizer):
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
                 out_features = layer.out_features
-            elif isinstance(layer, nn.Conv2d):  ##not supported now
+            elif isinstance(layer, nn.Conv2d):  # Not supported currently
                 in_features = layer.in_channels
                 out_features = layer.out_channels
-            elif isinstance(layer, Conv1D):  ##TODO need to have a check
+            elif isinstance(layer, Conv1D):  # TODO: Needs verification
                 in_features = layer.weight.shape[0]
                 out_features = layer.weight.shape[1]
             else:
                 continue
 
             if "marlin" in target_backend and "marlin" not in orig_backend:
-                ##need repack
-                assert sym == True, "marlin only supports symmetric quantization"
-                assert target_device == "cuda", "marlin only supports cuda device"
-                assert not "awq" in orig_backend, "marlin does not support repacking from awq format"
+                # Need to repack
+                assert sym == True, "Marlin only supports symmetric quantization"
+                assert target_device == "cuda", "Marlin only supports CUDA device"
+                assert not "awq" in orig_backend, "Marlin does not support repacking from AWQ format"
                 self.need_marlin_repacking = True
-                ##using orig backend to load the layer then replace
+                # Using original backend to load the layer then replace
                 layer_backend = orig_backend
             else:
-                target_backend = self.find_backend(target_backend) ## TODO move out if have supported marlin
-                layer_backend = get_layer_backend(target_device, target_backend, orig_backend, bits, group_size, sym,
-                                                  in_features, out_features)
+                target_backend = self.find_backend(target_backend)  # TODO: Move out if have supported marlin
+                layer_backend = get_layer_backend(
+                    target_device, target_backend, orig_backend, bits, group_size, sym, in_features, out_features
+                )
 
             QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym)
-
 
             layer_device = get_device(layer)
 
@@ -500,13 +586,36 @@ class AutoRoundQuantizer(HfQuantizer):
         return model
 
     def repack_marlin(self, model):
+        """Repack the model to use Marlin format for quantized layers.
+
+        This method iterates through the model's modules, identifies instances of
+        `QuantLinear`, and replaces them with `MarlinInferenceQuantLinear`. It
+        handles the initialization of various parameters and the repacking of
+        quantized weights and scales for optimized performance on Marlin.
+
+        Args:
+            model (nn.Module):
+                The model to be repacked into Marlin format.
+
+        Raises:
+            ImportError:
+                If the required modules for Marlin inference cannot be imported.
+        """
         message = "Repacking to Marlin format"
+
         for n, m in tqdm(model.named_modules(), desc=message, total=len(list(model.named_modules()))):
             if m.__class__.__name__ == "QuantLinear":
-                from gptqmodel.nn_modules.qlinear.qlinear_marlin_inference import MarlinInferenceQuantLinear, \
-                    marlin_permute_scales, marlin_make_workspace
+                try:
+                    from gptqmodel.nn_modules.qlinear.qlinear_marlin_inference import ( # pylint: disable=E0401
+                        MarlinInferenceQuantLinear,
+                        marlin_permute_scales,
+                        marlin_make_workspace
+                    )
+                except ImportError:
+                    raise ImportError("Failed to import Marlin inference modules.")
 
                 with torch.device("meta"):
+                    # Create a new MarlinInferenceQuantLinear module with the appropriate parameters.
                     new_module = MarlinInferenceQuantLinear(
                         bits=4,
                         group_size=m.group_size,
@@ -516,8 +625,11 @@ class AutoRoundQuantizer(HfQuantizer):
                         outfeatures=m.outfeatures,
                         bias=m.bias is not None,
                     )
+
                 device = m.qweight.device
-                import gptqmodel_marlin_cuda_inference
+                import gptqmodel_marlin_cuda_inference # pylint: disable=E0401
+
+                # Initialize the necessary parameters for the new module.
                 new_module.g_idx = torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device),
                                                       requires_grad=False)
                 new_module.g_idx_sort_indices = torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device),
@@ -526,28 +638,37 @@ class AutoRoundQuantizer(HfQuantizer):
                                                    requires_grad=False)
                 new_module.bias = m.bias
 
-                marlin_qweight = gptqmodel_marlin_cuda_inference.gptq_marlin_repack(
+                # Repack the quantized weight for the Marlin format.
+                marlin_qweight = gptqmodel_marlin_cuda_inference.gptq_marlin_repack( # pylint: disable=E0401
                     m.qweight,
                     new_module.g_idx_sort_indices,
                     m.infeatures,
                     m.outfeatures,
-                    m.bits)
+                    m.bits
+                )
                 new_module.qweight.resize_(marlin_qweight.shape)
                 new_module.qweight = nn.Parameter(marlin_qweight, requires_grad=False)
 
+                # Permute scales for the new module's configuration.
                 marlin_scales = marlin_permute_scales(
                     m.scales,
                     size_k=m.infeatures,
                     size_n=m.outfeatures,
-                    group_size=m.group_size)
+                    group_size=m.group_size
+                )
 
                 new_module.scales.resize_(marlin_scales.shape)
                 new_module.scales = nn.Parameter(marlin_scales, requires_grad=False)
 
-                new_module.workspace = marlin_make_workspace(  ##Todo mv this to post init?
-                    new_module.outfeatures, device)
+                # Create a workspace for the new module.
+                new_module.workspace = marlin_make_workspace(  # TODO: Consider moving this to post-init.
+                    new_module.outfeatures, device
+                )
 
+                # Replace the original module in the model with the new Marlin module.
                 set_module(model, n, new_module)
+
+                # Clear cache and perform garbage collection to free memory.
                 torch.cuda.empty_cache()
                 gc.collect()
 
