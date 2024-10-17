@@ -29,7 +29,6 @@ class BackendInfo:
     bits: List[int]
     group_size: Optional[List[int]] = None
     priority: int = 0  ##higher is better
-    # require_packages: List[str] = field(default_factory=list)
     convertable_format: List[str] = field(default_factory=list)
     feature_checks: List[Any] = field(default_factory=list)
     inference_layer: Any = None
@@ -73,7 +72,7 @@ BackendInfos['gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              priority=5,
                                              feature_checks=[feature_multiply_checker_32],
                                              alias=["auto_round:gptq:exllamav2", "auto_round:auto_gptq:exllamav2",
-                                                    'gptq', 'auto_gptq']
+                                                    'gptq', 'auto_gptq',"auto_round:gptq", "auto_round:auto_gptq"]
                                              )
 
 BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
@@ -88,7 +87,7 @@ BackendInfos['awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##ac
                                        bits=[4], group_size=None,
                                        priority=4, feature_checks=[feature_num_greater_checker_1024],
                                        alias=["auto_awq:gemm", "auto_round:awq:gemm", "auto_round:auto_awq:gemm", "awq",
-                                              "auto_awq"])
+                                              "auto_awq","auto_round:awq", "aut_round:auto_awq"])
 
 BackendInfos['auto_round:qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
                                                packing_format="qbits",
