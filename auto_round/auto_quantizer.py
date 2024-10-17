@@ -226,7 +226,6 @@ class AutoRoundConfig(QuantizationConfigMixin):
             sym: bool = False,
             backend="auto",
             layer_config: dict = None,
-            format: str = None,
             **kwargs,
     ):
 
@@ -237,7 +236,6 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.sym = sym
         self.backend = backend
         self.layer_config = layer_config
-        self.format = format
         if kwargs is not None:
             for key in kwargs.keys():
                 setattr(self, key, kwargs[key])
@@ -418,8 +416,6 @@ class AutoRoundQuantizer(HfQuantizer):
             target_backend = orig_backend
 
         self.need_marlin_repacking = False
-        self.need_check_marlin = False
-
         for layer_name in layer_configs.keys():
             config = layer_configs[layer_name]
             bits = config["bits"]
@@ -446,11 +442,10 @@ class AutoRoundQuantizer(HfQuantizer):
             if "marlin" in target_backend and "marlin" not in orig_backend:
                 ##need repack
                 assert sym == True, "marlin only supports symmetric quantization"
-                assert target_device == "cuda", "marlin only supports cuda quantization"
+                assert target_device == "cuda", "marlin only supports cuda device"
                 self.need_marlin_repacking = True
                 ##using orig backend to load the layer then replace
                 layer_backend = orig_backend
-
             else:
                 target_backend = self.find_backend(target_backend) ## TODO move out if have supported marlin
                 layer_backend = get_layer_backend(target_device, target_backend, orig_backend, bits, group_size, sym,
@@ -469,13 +464,6 @@ class AutoRoundQuantizer(HfQuantizer):
                     group_size,
                     init_only=True
                 )
-            # elif "marlin" in layer_backend:
-            #     new_layer = QuantLinear(bits, group_size, desc_act=False, sym=True, infeatures=in_features,
-            #                             outfeatures=out_features, bias=layer.bias is not None)
-            #     new_layer.B = new_layer.qweight
-            #     delattr(new_layer, "qweight")
-            #     new_layer.s = new_layer.scales
-            #     delattr(new_layer, "scales")
             else:
                 try:
                     new_layer = QuantLinear(  # pylint: disable=E1123
