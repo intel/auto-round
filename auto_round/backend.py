@@ -15,10 +15,8 @@
 import functools
 from dataclasses import dataclass, field
 from typing import List, Any, Optional
-import torch
 
-import auto_round_extension.cuda.qlinear_exllamav2
-from auto_round.utils import is_hpu_supported, get_autogptq_infer_linear
+from auto_round.utils import get_library_version
 
 BackendInfos = {}
 
@@ -38,15 +36,20 @@ class BackendInfo:
     alias: Optional[List[str]] = None
 
 
-def feature_multiply_checker(in_feature, out_feature, multiply):
-    return in_feature % multiply == 0 and out_feature % multiply == 0
+def feature_multiply_checker(in_feature, out_feature, in_feature_multiplier, out_feature_multiplier=None):
+    if out_feature_multiplier is None:
+        out_feature_multiplier = in_feature_multiplier
+    return in_feature % in_feature_multiplier == 0 and out_feature % out_feature_multiplier == 0
 
 
 def feature_num_greater_checker(in_feature, out_feature, num):
     return in_feature * out_feature > num
 
 
-feature_multiply_checker_32 = functools.partial(feature_multiply_checker, multiply=32)
+feature_multiply_checker_32 = functools.partial(feature_multiply_checker, in_feature_multiplier=32)
+
+feature_multiply_checker_marlin = functools.partial(feature_multiply_checker, in_feature_multiplier=128,
+                                                    out_feature_multiplier=256)
 
 feature_num_greater_checker_1024 = functools.partial(feature_num_greater_checker, num=1024)
 
@@ -101,11 +104,13 @@ BackendInfos['auto_round:qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, Fal
                                                   feature_checks=[],
                                                   convertable_format=["triton_zp+-1"])
 
-# BackendInfos['gptq:marlin'] = BackendInfo(device=["gpu"], sym=[True],
-#                                           packing_format="marlin",
-#                                           bits=[4], group_size=[-1, 32, 128],
-#                                           priority=5,
-#                                           feature_checks=[feature_multiply_checker_32])
+# BackendInfos['auto_round:marlin'] = BackendInfo(device=["gpu"], sym=[True],
+#                                                 packing_format="marlin",
+#                                                 bits=[4], group_size=[-1, 128],
+#                                                 priority=6,
+#                                                 feature_checks=[feature_multiply_checker_marlin],
+#                                                 alias=["marlin", "auto_gptq:marlin", "auto_round:gptq:marlin",
+#                                                        "auto_round:auto_gptq:marlin"])
 
 BackendInfos['auto_round:hpu'] = BackendInfo(device=["hpu"], sym=[True, False],
                                              packing_format="hpu",
@@ -165,6 +170,13 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         else:  ## auto_round must in the end
             import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits_autoround
             return qlinear_qbits_autoround.QuantLinear
+    if "marlin" in backend:
+        from transformers.utils.versions import require_version
+        require_version("gptqmodel",
+                        "marlin format requires gptqmodel to be installed, `pip install -v gptqmodel --no-build-isolation `")
+        from \
+            gptqmodel.nn_modules.qlinear.qlinear_marlin_inference import MarlinInferenceQuantLinear
+        return MarlinInferenceQuantLinear
 
     if "hpu" in backend:
         try:
@@ -192,9 +204,69 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
 
     if "auto_round" in backend:
         if "exllamav2" in backend:
+            import auto_round_extension.cuda.qlinear_exllamav2
             return auto_round_extension.cuda.qlinear_exllamav2.QuantLinear
         else:
+            import auto_round_extension.cuda.qlinear_tritonv2
             return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
+
+
+def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
+    use_triton = False
+    disable_exllamav2 = False
+    disable_exllamav1 = False
+    disable_marlin = True
+    use_qigen = False
+    use_tritonv2 = False
+    if "qigen" in backend:
+        use_qigen = True
+    elif "triton" in backend:
+        use_triton = True
+    elif "tritonv2" in backend:
+        use_triton = False
+        use_tritonv2 = True
+    elif "marlin" in backend:
+        use_triton = False
+        disable_marlin = False
+    elif "exllamav2" in backend:
+        use_triton = False
+        disable_exllamav2 = False
+        disable_marlin = True
+    elif "exllamav1" in backend:
+        use_triton = False
+        disable_marlin = True
+    elif "cuda" in backend:
+        use_triton = False
+        disable_marlin = True
+        disable_exllamav2 = True
+        disable_exllamav1 = True
+    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
+    version = get_library_version("auto_gptq")
+    from packaging.version import Version
+    if Version(version) <= Version("0.7.1"):
+        QuantLinear = dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            disable_marlin=disable_marlin
+        )
+    else:
+        QuantLinear = dynamically_import_QuantLinear(  # pylint: disable=E1123
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            use_marlin=not disable_marlin,
+            use_tritonv2=use_tritonv2
+        )
+    return QuantLinear
 
 
 def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_features, out_features):

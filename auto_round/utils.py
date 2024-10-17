@@ -757,62 +757,6 @@ def is_autoround_exllamav2_available():
     return res
 
 
-def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
-    use_triton = False
-    disable_exllamav2 = False
-    disable_exllamav1 = False
-    disable_marlin = True
-    use_qigen = False
-    use_tritonv2 = False
-    if "qigen" in backend:
-        use_qigen = True
-    elif "triton" in backend:
-        use_triton = True
-    elif "tritonv2" in backend:
-        use_triton = False
-        use_tritonv2 = True
-    elif "marlin" in backend:
-        use_triton = False
-        disable_marlin = False
-    elif "exllamav2" in backend:
-        use_triton = False
-        disable_exllamav2 = False
-        disable_marlin = True
-    elif "exllamav1" in backend:
-        use_triton = False
-        disable_marlin = True
-    elif "cuda" in backend:
-        use_triton = False
-        disable_marlin = True
-        disable_exllamav2 = True
-        disable_exllamav1 = True
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
-    version = get_library_version("auto_gptq")
-    from packaging.version import Version
-    if Version(version) <= Version("0.7.1"):
-        QuantLinear = dynamically_import_QuantLinear(
-            use_triton=use_triton,
-            desc_act=False,
-            group_size=group_size,
-            bits=bits,
-            disable_exllama=disable_exllamav1,
-            disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen,
-            disable_marlin=disable_marlin
-        )
-    else:
-        QuantLinear = dynamically_import_QuantLinear(  # pylint: disable=E1123
-            use_triton=use_triton,
-            desc_act=False,
-            group_size=group_size,
-            bits=bits,
-            disable_exllama=disable_exllamav1,
-            disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen,
-            use_marlin=not disable_marlin,
-            use_tritonv2=use_tritonv2
-        )
-    return QuantLinear
 
 
 def is_hpu_supported():  # pragma: no cover

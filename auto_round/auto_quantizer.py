@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import gc
 # coding=utf-8
 # Copyright 2023 HuggingFace Inc. team and GPTQ and AutoGPTQ authors.
 #
@@ -48,7 +48,9 @@ from auto_round.backend import get_layer_backend, dynamic_import_inference_linea
 import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
 import auto_round_extension.qbits.qlinear_qbits_gptq as qlinear_qbits_gptq
 from auto_round.backend import BackendInfos
+from transformers.utils.versions import require_version
 from enum import Enum
+from tqdm import tqdm
 import copy
 import re
 
@@ -404,7 +406,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
         if "auto" == target_backend.split(':')[0]:
             target_backend = target_backend[4:]  ##remove auto
-            if target_backend[0] == ":":
+            if len(target_backend) >= 1 and target_backend[0] == ":":
                 target_backend = target_backend[1:]
 
         ##remove device info from target_backend
@@ -414,6 +416,9 @@ class AutoRoundQuantizer(HfQuantizer):
         orig_backend = self.find_backend(orig_backend)
         if target_backend == "":
             target_backend = orig_backend
+
+        self.need_marlin_repacking = False
+        self.need_check_marlin = False
 
         for layer_name in layer_configs.keys():
             config = layer_configs[layer_name]
@@ -435,11 +440,24 @@ class AutoRoundQuantizer(HfQuantizer):
             elif isinstance(layer, Conv1D):  ##TODO need to have a check
                 in_features = layer.weight.shape[0]
                 out_features = layer.weight.shape[1]
+            else:
+                continue
 
-            layer_backend = get_layer_backend(target_device, target_backend, orig_backend, bits, group_size, sym,
-                                              in_features, out_features)
+            if "marlin" in target_backend and "marlin" not in orig_backend:
+                ##need repack
+                assert sym == True, "marlin only supports symmetric quantization"
+                assert target_device == "cuda", "marlin only supports cuda quantization"
+                self.need_marlin_repacking = True
+                ##using orig backend to load the layer then replace
+                layer_backend = orig_backend
+
+            else:
+                target_backend = self.find_backend(target_backend) ## TODO move out if have supported marlin
+                layer_backend = get_layer_backend(target_device, target_backend, orig_backend, bits, group_size, sym,
+                                                  in_features, out_features)
 
             QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym)
+
 
             layer_device = get_device(layer)
 
@@ -451,6 +469,13 @@ class AutoRoundQuantizer(HfQuantizer):
                     group_size,
                     init_only=True
                 )
+            # elif "marlin" in layer_backend:
+            #     new_layer = QuantLinear(bits, group_size, desc_act=False, sym=True, infeatures=in_features,
+            #                             outfeatures=out_features, bias=layer.bias is not None)
+            #     new_layer.B = new_layer.qweight
+            #     delattr(new_layer, "qweight")
+            #     new_layer.s = new_layer.scales
+            #     delattr(new_layer, "scales")
             else:
                 try:
                     new_layer = QuantLinear(  # pylint: disable=E1123
@@ -485,6 +510,58 @@ class AutoRoundQuantizer(HfQuantizer):
                 dep_check = False
         return model
 
+    def repack_marlin(self, model):
+        message = "Repacking to Marlin format"
+        for n, m in tqdm(model.named_modules(), desc=message, total=len(list(model.named_modules()))):
+            if m.__class__.__name__ == "QuantLinear":
+                from gptqmodel.nn_modules.qlinear.qlinear_marlin_inference import MarlinInferenceQuantLinear, \
+                    marlin_permute_scales, marlin_make_workspace
+
+                with torch.device("meta"):
+                    new_module = MarlinInferenceQuantLinear(
+                        bits=4,
+                        group_size=m.group_size,
+                        sym=True,
+                        desc_act=False,
+                        infeatures=m.infeatures,
+                        outfeatures=m.outfeatures,
+                        bias=m.bias is not None,
+                    )
+                device = m.qweight.device
+                import gptqmodel_marlin_cuda_inference
+                new_module.g_idx = torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device),
+                                                      requires_grad=False)
+                new_module.g_idx_sort_indices = torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device),
+                                                                   requires_grad=False)
+                new_module.zp = torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device),
+                                                   requires_grad=False)
+                new_module.bias = m.bias
+
+                marlin_qweight = gptqmodel_marlin_cuda_inference.gptq_marlin_repack(
+                    m.qweight,
+                    new_module.g_idx_sort_indices,
+                    m.infeatures,
+                    m.outfeatures,
+                    m.bits)
+                new_module.qweight.resize_(marlin_qweight.shape)
+                new_module.qweight = nn.Parameter(marlin_qweight, requires_grad=False)
+
+                marlin_scales = marlin_permute_scales(
+                    m.scales,
+                    size_k=m.infeatures,
+                    size_n=m.outfeatures,
+                    group_size=m.group_size)
+
+                new_module.scales.resize_(marlin_scales.shape)
+                new_module.scales = nn.Parameter(marlin_scales, requires_grad=False)
+
+                new_module.workspace = marlin_make_workspace(  ##Todo mv this to post init?
+                    new_module.outfeatures, device)
+
+                set_module(model, n, new_module)
+                torch.cuda.empty_cache()
+                gc.collect()
+
     def post_init_model(self, model):
         """Post-initialization that require device information, for example buffers initialization on device.
 
@@ -497,6 +574,11 @@ class AutoRoundQuantizer(HfQuantizer):
             pass
 
         model.quantize_config = StoreAttr()
+        if self.need_marlin_repacking:
+            require_version("gptqmodel",
+                            "marlin format requires gptqmodel to be installed, `pip install -v gptqmodel --no-build-isolation `")
+            self.repack_marlin(model)
+
         model = autoround_post_init(model)
         # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits. 
         model = self.qbits_post_init(model)
