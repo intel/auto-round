@@ -34,7 +34,7 @@ def DataFormating(raw_data, image_folder=None, model_type='qwen'):
                 sentence['value'] = sentence['value'].strip()
                 if 'qwen2' in model_type: # for Qwen2-vl
                     replace_token = '<|vision_start|><|image_pad|><|vision_end|>'
-                if 'mllama' in model_type:
+                elif 'mllama' in model_type:
                     replace_token = '<|image|>'
                 else:
                     replace_img = os.path.join(image_folder, os.path.basename(source["image"]))
@@ -422,7 +422,7 @@ if __name__ == '__main__':
     model_type = config.model_type
     if "mllama" in model_type:
         from transformers import MllamaForConditionalGeneration
-        model = MllamaForConditionalGeneration.from_pretrained(args.model_name, 
+        model = MllamaForConditionalGeneration.from_pretrained(args.model_name, attn_implementation="eager",
                                                                trust_remote_code=not args.disable_trust_remote_code) # torch_dtype=torch.bfloat16
         processor = AutoProcessor.from_pretrained(args.model_name)
         tokenizer.processor = processor
@@ -534,17 +534,17 @@ if __name__ == '__main__':
     for gpu_format in gpu_formats:
         if "round" in gpu_format:
             eval_folder = f'{export_dir}-round'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace, processor=processor)
         elif "gptq" in gpu_format:
             eval_folder = f'{export_dir}-gpu'
-            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
+            autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace, processor=processor)
 
     if 'xpu' in deployment_device:
         autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
-                                 device="xpu")
+                                 device="xpu", processor=processor)
     if "cpu" in deployment_device:
-        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
+        autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace, processor=processor)
     if "fake" in deployment_device:
         model = model.to("cpu")
         model.save_pretrained(output_dir)
@@ -577,6 +577,7 @@ if __name__ == '__main__':
                     batch_size=args.eval_bs,
                     device=str(torch_device)
                 )
+
 
 
 

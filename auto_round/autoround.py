@@ -720,8 +720,8 @@ class AutoRound(object):
                                 self.inputs[name][key].extend(list(torch.split(alibi.to("cpu"), 1, dim=0)))
                             else:
                                 self.inputs[name][key] = list(torch.split(alibi.to("cpu"), 1, dim=0))
-                    elif "position_ids" in key or 'cache_position' in key:
-                        if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
+                    elif "position_ids" in key or 'cache_position' in key or 'position_embeddings' in key:
+                        if self.train_bs == 1 and self.not_share_position_ids_flag:
                             if key not in self.inputs[name].keys():
                                 self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
                             else:
@@ -1104,7 +1104,7 @@ class AutoRound(object):
                 input_others[key] = input_others[key].to(tmp_dtype)
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
-                    input_others[key][i].to(tmp_dtype)
+                    to_dtype(input_others[key][i], tmp_dtype)
         pbar = tqdm(range(0, len(block_names), nblocks))
         for i in pbar:
             if nblocks == 1:
@@ -1619,5 +1619,6 @@ class AutoAdamRound(AutoOPTRound):
             optimizer=optimizer,
             **kwargs,
         )
+
 
 

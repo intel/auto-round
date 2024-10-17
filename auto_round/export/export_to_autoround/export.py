@@ -200,6 +200,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     quantization_config["quant_method"] = "intel/auto-round"
 
     quantization_config["backend"] = backend
+    tokenizer = kwargs.get("tokenizer", None)
+    processor = kwargs.get("processor", None)
     extra_config = {}
     for layer_name in layer_config:
         if layer_name not in layer_names_in_block and layer_config[layer_name]["bits"] <= 8:  ##lm head
@@ -235,13 +237,17 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         model.config.quantization_config = quantization_config
     if output_dir is None:
         return model
-    tokenizer = kwargs["tokenizer"]
+    
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
+
+    if processor is not None:
+        processor.save_pretrained(output_dir)
     save(model, output_dir, safe_serialization=safe_serialization)
+
     return model
 
 
@@ -271,3 +277,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

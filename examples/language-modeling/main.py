@@ -448,11 +448,21 @@ if __name__ == '__main__':
         model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
         user_model = None
         if args.act_bits <= 8:
-            user_model = model.to(device_str)
+            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                from accelerate.big_modeling import dispatch_model
 
-        res = simple_evaluate(model="hf", model_args=model_args,
-                              tasks=tasks,
-                              batch_size=args.eval_bs, user_model=user_model)
+                dispatch_model(model, model.hf_device_map)
+                user_model = model
+            else:
+                user_model = model.to(device_str)
+            if args.eval_bs == "auto":
+                args.eval_bs = 16
+            from auto_round.eval.evaluation import  simple_evaluate_user_model
+            res = simple_evaluate_user_model(user_model, tokenizer,tasks=tasks,batch_size=args.eval_bs)
+        else:
+            res = simple_evaluate(model="hf", model_args=model_args,
+                                  tasks=tasks,
+                                  batch_size=args.eval_bs)
         from lm_eval.utils import make_table
 
         print(make_table(res))

@@ -121,7 +121,8 @@ def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
     enable_minmax_tuning = kwargs["enable_minmax_tuning"]
     enable_quanted_input = kwargs["enable_quanted_input"]
     scale_dtype = kwargs["scale_dtype"]
-    tokenizer = kwargs["tokenizer"]
+    tokenizer = kwargs.get("tokenizer", None)
+    processor = kwargs.get("processor", None)
 
     compressed_model = pack_model(inplace=inplace, **kwargs)
     if output_dir is None:
@@ -149,6 +150,8 @@ def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
         compressed_model.save_pretrained(output_dir, safe_serialization=True)
         if tokenizer is not None:
             tokenizer.save_pretrained(output_dir)
+        if processor is not None:
+            processor.save_pretrained(output_dir)
         logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
     except IOError as e:  # pragma: no cover
         logger.error("Fail to save configure file and weights due to {}.".format(e))
@@ -250,5 +253,6 @@ def pack_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
     return compressed_model
+
 
 
