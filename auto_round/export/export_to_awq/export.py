@@ -91,11 +91,14 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     enable_minmax_tuning = kwargs["enable_minmax_tuning"]
     enable_quanted_input = kwargs["enable_quanted_input"]
     scale_dtype = kwargs["scale_dtype"]
-    tokenizer = kwargs["tokenizer"]
+    tokenizer = kwargs.get("tokenizer", None)
+    processor = kwargs.get("processor", None)
 
     logger.info("Saving quantized model to auto_awq format")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
+    if processor is not None:
+        processor.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
     modules_to_not_convert = []
     if inplace:
@@ -250,3 +253,4 @@ def get_module_name(model, module_to_find):
         if module is module_to_find:
             return name
     return None
+
