@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import gc
+
 # coding=utf-8
 # Copyright 2023 HuggingFace Inc. team and GPTQ and AutoGPTQ authors.
 #
@@ -26,6 +26,7 @@ import gc
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import gc
 import importlib.util
 import warnings
 from dataclasses import dataclass
@@ -606,7 +607,7 @@ class AutoRoundQuantizer(HfQuantizer):
         for n, m in tqdm(model.named_modules(), desc=message, total=len(list(model.named_modules()))):
             if m.__class__.__name__ == "QuantLinear":
                 try:
-                    from gptqmodel.nn_modules.qlinear.qlinear_marlin_inference import ( # pylint: disable=E0401
+                    from gptqmodel.nn_modules.qlinear.qlinear_marlin_inference import (  # pylint: disable=E0401
                         MarlinInferenceQuantLinear,
                         marlin_permute_scales,
                         marlin_make_workspace
@@ -627,7 +628,7 @@ class AutoRoundQuantizer(HfQuantizer):
                     )
 
                 device = m.qweight.device
-                import gptqmodel_marlin_cuda_inference # pylint: disable=E0401
+                import gptqmodel_marlin_cuda_inference  # pylint: disable=E0401
 
                 # Initialize the necessary parameters for the new module.
                 new_module.g_idx = torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device),
@@ -639,7 +640,7 @@ class AutoRoundQuantizer(HfQuantizer):
                 new_module.bias = m.bias
 
                 # Repack the quantized weight for the Marlin format.
-                marlin_qweight = gptqmodel_marlin_cuda_inference.gptq_marlin_repack( # pylint: disable=E0401
+                marlin_qweight = gptqmodel_marlin_cuda_inference.gptq_marlin_repack(  # pylint: disable=E0401
                     m.qweight,
                     new_module.g_idx_sort_indices,
                     m.infeatures,
@@ -686,7 +687,8 @@ class AutoRoundQuantizer(HfQuantizer):
         model.quantize_config = StoreAttr()
         if self.need_marlin_repacking:
             require_version("gptqmodel",
-                            "marlin format requires gptqmodel to be installed, `pip install -v gptqmodel --no-build-isolation `")
+                            "marlin format requires gptqmodel to be installed, "
+                            "`pip install -v gptqmodel --no-build-isolation `")
             self.repack_marlin(model)
 
         model = autoround_post_init(model)

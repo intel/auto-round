@@ -94,7 +94,7 @@ BackendInfos['gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              priority=5,
                                              feature_checks=[feature_multiply_checker_32],
                                              alias=["auto_round:gptq:exllamav2", "auto_round:auto_gptq:exllamav2",
-                                                    'gptq', 'auto_gptq',"auto_round:gptq", "auto_round:auto_gptq"]
+                                                    'gptq', 'auto_gptq', "auto_round:gptq", "auto_round:auto_gptq"]
                                              )
 
 BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
@@ -109,7 +109,7 @@ BackendInfos['awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##ac
                                        bits=[4], group_size=None,
                                        priority=4, feature_checks=[feature_num_greater_checker_1024],
                                        alias=["auto_awq:gemm", "auto_round:awq:gemm", "auto_round:auto_awq:gemm", "awq",
-                                              "auto_awq","auto_round:awq", "aut_round:auto_awq"])
+                                              "auto_awq", "auto_round:awq", "aut_round:auto_awq"])
 
 BackendInfos['auto_round:qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
                                                packing_format="qbits",
@@ -252,7 +252,8 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
             "gptqmodel",
             "marlin format requires gptqmodel to be installed, `pip install -v gptqmodel --no-build-isolation`"
         )
-        from gptqmodel.nn_modules.qlinear.qlinear_marlin_inference import MarlinInferenceQuantLinear # pylint: disable=E0401
+        from gptqmodel.nn_modules.qlinear.qlinear_marlin_inference import \
+            MarlinInferenceQuantLinear  # pylint: disable=E0401
         return MarlinInferenceQuantLinear
 
     if "hpu" in backend:
@@ -275,7 +276,8 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         try:
             from awq.modules.linear import WQLinear_GEMM  # pylint: disable=E0401
         except ImportError:
-            raise ImportError("autoawq is required. Please install it by 'pip install autoawq' to support auto_awq format.")
+            raise ImportError(
+                "autoawq is required. Please install it by 'pip install autoawq' to support auto_awq format.")
         return WQLinear_GEMM
 
     if "auto_round" in backend:
@@ -285,6 +287,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         else:
             import auto_round_extension.cuda.qlinear_tritonv2
             return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
+
 
 def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     """Returns the appropriate QuantLinear class based on backend configuration.
@@ -372,6 +375,7 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
 
     return QuantLinear
 
+
 def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_features, out_features):
     """Selects the most suitable backend for the layer based on compatibility and priority.
 
@@ -428,7 +432,8 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
         raise ValueError(f"None of the backends support this layer")
 
     # Sort the compatible backends by priority and return the one with the highest priority
-    supported_backends = sorted(supported_backends, key=lambda support_backend: BackendInfos[support_backend].priority, reverse=True)
+    supported_backends = sorted(supported_backends, key=lambda support_backend: BackendInfos[support_backend].priority,
+                                reverse=True)
 
     return supported_backends[0]
 
