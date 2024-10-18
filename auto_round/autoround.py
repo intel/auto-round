@@ -1633,7 +1633,6 @@ class AutoMLLMRound(AutoRound):
             group_size: int = 128,
             sym: bool = False,
             layer_config: dict = None,
-            enable_full_range: bool = False,  ##for symmetric, TODO support later
             batch_size: int = 8,
             amp: bool = True,
             device: str = None,
@@ -1667,6 +1666,17 @@ class AutoMLLMRound(AutoRound):
             enable_norm_bias_tuning: bool = False,
             **kwargs,
     ):
+        if quant_block_list is None:
+            quant_block_list = get_multimodal_block_names(model, quant_vision)
+        self.images = images
+        self.template = template
+        self.quant_vision = quant_vision
+        if self.template is None:
+            self.template = model.config.model_type
+        assert dataset is not None, "dataset should not be None"
+        if isinstance(dataset, str):
+            dataset = get_mllm_dataloader(self.template, tokenizer, dataset, images, seqlen, batch_size)
+        
         super(AutoMLLMRound, self).__init__(
             model=model,
             tokenizer=tokenizer,
@@ -1674,7 +1684,6 @@ class AutoMLLMRound(AutoRound):
             group_size=group_size,
             sym=sym,
             layer_config=layer_config,
-            enable_full_range=enable_full_range,
             batch_size=batch_size,
             amp=amp,
             device=device,
@@ -1705,13 +1714,5 @@ class AutoMLLMRound(AutoRound):
             quant_block_list=quant_block_list,
             **kwargs,
         )
-        self.images = images
-        self.template = template
-        self.quant_vision = quant_vision
-        if self.template is None:
-            self.template = self.model.config.model_type
-        assert self.dataset is not None, "dataset should not be None"
-        if isinstance(self.dataset, str):
-            self.dataset = get_mllm_dataloader(self.template, tokenizer, dataset, images, seqlen, batch_size)
         
-        self.quant_block_list = get_multimodal_block_names(self.model, quant_vision)
+        
