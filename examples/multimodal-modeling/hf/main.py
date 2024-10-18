@@ -174,7 +174,7 @@ def main():
     model_name = args.model_name
 
     from auto_round.mllm import load_mllm
-    model, tokenizer = load_mllm(model_name, device_map="auto", torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code)
+    model, tokenizer, processor = load_mllm(model_name, device_map="auto", torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code)
 
     from auto_round import AutoMLLMRound
 
@@ -242,7 +242,7 @@ def main():
         inplace = False if len(format_list) > 1 else True
         for format_ in format_list:
             eval_folder = f'{export_dir}-{format_}'
-            autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
+            autoround.save_quantized(eval_folder, format=format_, inplace=inplace, processor=processor)
     else:
         deployment_device = args.deployment_device.split(',')
         gpu_formats = []
