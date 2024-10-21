@@ -155,11 +155,17 @@ def setup_parser():
                         help="List of Layers to maintain original data type")
 
     # ======================= VLM =======================
+    parser.add_argument("--mllm", action='store_true',
+                        help="To determine whether use multimodel-llm mode.")
+
     parser.add_argument("--quant_vision", action='store_true',
                         help="To determine whether the quantization should handle vision component.")
 
-    parser.add_argument("--dataset_dir", default="", type=str,
-                        help="Dataset dir for storing images/audio/videos. By default, it will search in the relative path.")
+    parser.add_argument("--extra_data_dir", default="", type=str,
+                        help="Dataset dir for storing images/audio/videos. "
+                        "Can be a dir path or multiple dir path with format as "
+                        "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
+                        "By default, it will search in the relative path.")
     
     parser.add_argument("--template", default=None, type=str,
                             help="The template for building training dataset. It can be a custom one.")
@@ -388,7 +394,7 @@ def tune_mllm(args):
     if args.act_bits <= 8 and args.deployment_device != "fake":
         assert False, "only support fake mode for activation quantization currently"
     
-    model_name = args.model_name
+    model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     print(model_name, flush=True)
@@ -401,7 +407,6 @@ def tune_mllm(args):
         torch_dtype = torch.bfloat16
     
     torch.manual_seed(1234)
-    model_name = args.model_name
 
     # load_model
     from auto_round.mllm import load_mllm
@@ -447,8 +452,8 @@ def tune_mllm(args):
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
     
-    autoround = round(model, tokenizer, dataset=args.question_path, dataset_dir=args.dataset_dir,
-                      bits=args.bits, group_size=args.group_size, sym=args.sym, batch_size=args.train_bs,
+    autoround = round(model, tokenizer, dataset=args.dataset, extra_data_dir=args.extra_data_dir,
+                      bits=args.bits, group_size=args.group_size, sym=not args.asym, batch_size=1,
                       seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
                       amp=not args.disable_amp, nsamples=args.nsamples,
@@ -479,6 +484,8 @@ def run():
         args.eval_bs = "auto"
     if args.eval:
         eval(args)
+    elif args.mllm:
+        tune_mllm(args)
     else:
         tune(args)
 
