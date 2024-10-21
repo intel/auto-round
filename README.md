@@ -58,14 +58,14 @@ pip install auto-round
 
 ### Basic Usage ((Gaudi2/CPU/GPU))
 
-A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.
-Alternatively, you can use ```auto-round``` instead of ```auto_round```.
+A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
+Alternatively, you can use ```auto_round``` instead of ```auto-round```.
 
 ```bash
-auto_round --model facebook/opt-125m \
+auto-round --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --format auto_round \ ## auto_gptq
+    --format auto_round \
     --disable_eval \
     --output_dir ./tmp_autoround
 ```
@@ -76,7 +76,7 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
   ```bash
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-  auto_round --model facebook/opt-125m \
+  auto-round --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
     --nsamples 512 \
@@ -87,7 +87,7 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
   ```bash
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-  auto_round --model facebook/opt-125m \
+  auto-round --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
     --nsamples 128 \
@@ -239,7 +239,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 ```bash
 ## version > 0.3.0
-auto_round --model saved_quantized_model \
+auto-round --model saved_quantized_model \
     --eval \
     --task lambada_openai \
     --eval_bs 1
