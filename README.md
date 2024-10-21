@@ -5,7 +5,7 @@ AutoRound
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.8%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.3-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.3.1-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-blue)](https://github.com/intel/auto-round/blob/main/LICENSE)
 ---
 <div align="left">
@@ -56,6 +56,70 @@ pip install auto-round
 
 ## Model Quantization
 
+### Basic Usage ((Gaudi2/CPU/GPU))
+
+A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.
+Alternatively, you can use ```auto-round``` instead of ```auto_round```.
+
+```bash
+auto_round --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --format auto_round \ ## auto_gptq
+    --disable_eval \
+    --output_dir ./tmp_autoround
+```
+
+We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
+<details>
+  <summary>Other Recipes</summary>
+
+  ```bash
+## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+  auto_round --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --nsamples 512 \
+    --iters 1000 \
+    --low_gpu_mem_usage \
+    --disable_eval 
+  ```
+
+  ```bash
+## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
+  auto_round --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --nsamples 128 \
+    --iters 200 \
+    --seqlen 512 \
+    --batch_size 4 \
+    --disable_eval 
+  ```
+
+</details>
+
+#### Formats
+
+**AutoRound Format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
+inference. [2,4]
+bits are supported. It also benefits
+from the Marlin kernel, which can boost inference performance notably.However, it has not yet gained widespread
+community adoption. For CUDA support, you will need to
+install from the source.
+
+**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
+community, [2,3,4,8] bits are supported, for 3 bits, pip install auto-gptq first before quantization. It also benefits
+from the Marlin kernel, which can boost inference performance notably. However, **the
+asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
+models.
+Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
+
+**AutoAWQ Format**(>0.3.0): This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
+within the community, only 4-bits quantization is supported. It features
+specialized layer fusion tailored for Llama models.
+
+
 ### API Usage (Gaudi2/CPU/GPU)
 
 ```python
@@ -67,18 +131,18 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 from auto_round import AutoRound
 
-bits, group_size = 4, 128
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size)
+bits, group_size, sym = 4, 128, True
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
 
 ## the best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-# autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size)
+# autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
 
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-# autoround = AutoRound(model, tokenizer, nsamples=128, iters=200, seqlen=512, batch_size=4, bits=bits, group_size=group_size)
+# autoround = AutoRound(model, tokenizer, nsamples=128, iters=200, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym )
 
 autoround.quantize()
 output_dir = "./tmp_autoround"
-## format= 'auto_round'(default in version>0.3.0), 'auto_gptq'(default in version<=0.3.0), 'auto_awq'
+## format= 'auto_round'(default in version>0.3.0), 'auto_gptq', 'auto_awq'
 autoround.save_quantized(output_dir, format='auto_round', inplace=True) 
 ```
 
@@ -134,86 +198,12 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 </details>
 
-### Basic Usage (version > 0.3.0)
 
-A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.
-Alternatively, you can use ```auto-round``` instead of ```auto_round```.
-
-```bash
-auto_round --model facebook/opt-125m \
-    --bits 4 \
-    --group_size 128 \
-    --format auto_round \
-    --disable_eval \
-    --output_dir ./tmp_autoround
-```
-
-We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
-<details>
-  <summary>Other Recipes</summary>
-
-  ```bash
-## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-  auto_round --model facebook/opt-125m \
-    --bits 4 \
-    --group_size 128 \
-    --nsamples 512 \
-    --iters 1000 \
-    --low_gpu_mem_usage \
-    --disable_eval 
-  ```
-
-  ```bash
-## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-  auto_round --model facebook/opt-125m \
-    --bits 4 \
-    --group_size 128 \
-    --nsamples 128 \
-    --iters 200 \
-    --seqlen 512 \
-    --batch_size 4 \
-    --disable_eval 
-  ```
-
-</details>
-
-#### Formats
-
-**AutoRound Format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
-inference. [2,4]
-bits are supported. It also benefits
-from the Marlin kernel, which can boost inference performance notably.However, it has not yet gained widespread
-community adoption. For CUDA support, you will need to
-install from the source.
-
-**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
-community, [2,3,4,8] bits are supported, for 3 bits, pip install auto-gptq first before quantization. It also benefits
-from the Marlin kernel, which can boost inference performance notably. However, **the
-asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
-models.
-Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
-
-**AutoAWQ Format**(>0.3.0): This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
-within the community, only 4-bits quantization is supported. It features
-specialized layer fusion tailored for Llama models.
 
 ## Model Inference
 
 Please run the quantization code first
 
-### AutoGPTQ/AutoAWQ format
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map="auto")
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-text = "There is a girl who likes adventure,"
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-```
 
 ### AutoRound format
 
@@ -222,38 +212,21 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
-**CUDA**: pip install auto-gptq for sym quantization(tuning needs auto-round 0.30+), for asym quantization, need to install auto-round from source
+**CUDA**: no extra operations for sym quantization, for asym quantization, need to install auto-round from source
 
-#### CPU/HPU/CUDA on 0.3.0+
+#### CPU/HPU/CUDA 
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRoundConfig
 
-backend = "auto"  ##cpu, hpu, cuda, cuda:marlin('pip install -v gptqmodel --no-build-isolation')
+backend = "auto"  ##cpu, hpu, cuda, cuda:marlin(supported in auto_round>0.3.1 'pip install -v gptqmodel --no-build-isolation')
 quantization_config = AutoRoundConfig(
     backend=backend
 )
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
                                              device_map=backend.split(':')[0], quantization_config=quantization_config)
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-text = "There is a girl who likes adventure,"
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-```
-
-#### CPU/HPU/CUDA on 0.3.0
-
-**CUDA**:  need to install auto-round from source
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round.auto_quantizer import AutoHfQuantizer  ## must import
-
-quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map="auto")
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -273,6 +246,21 @@ auto_round --model saved_quantized_model \
 ```
 
 </details>
+
+
+### AutoGPTQ/AutoAWQ format
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+quantized_model_path = "./tmp_autoround"
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+                                             device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+```
 
 ## Support List
 
