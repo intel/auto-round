@@ -29,7 +29,8 @@ more accuracy data and recipes across various models.
 
 * [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
   configuration. This approach is typically better or comparable to asymmetric quantization and significantly
-  outperforms other symmetric variants, especially at low bit-widths like 2-bit. And,no need to compile from source to run
+  outperforms other symmetric variants, especially at low bit-widths like 2-bit. And,no need to compile from source to
+  run
   AutoRound format anymore.
 * [2024/09] AutoRound format supports several LVM models, check out the
   examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
@@ -101,7 +102,7 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
 #### Formats
 
-**AutoRound Format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
+**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
 inference. [2,4]
 bits are supported. It also benefits
 from the Marlin kernel, which can boost inference performance notably.However, it has not yet gained widespread
@@ -115,10 +116,10 @@ asymmetric kernel has issues** that can cause considerable accuracy drops, parti
 models.
 Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
 
-**AutoAWQ Format**(>0.3.0): This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
+**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
+adopted
 within the community, only 4-bits quantization is supported. It features
 specialized layer fusion tailored for Llama models.
-
 
 ### API Usage (Gaudi2/CPU/GPU)
 
@@ -198,12 +199,9 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 </details>
 
-
-
 ## Model Inference
 
 Please run the quantization code first
-
 
 ### AutoRound format
 
@@ -214,7 +212,7 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
 **CUDA**: no extra operations for sym quantization, for asym quantization, need to install auto-round from source
 
-#### CPU/HPU/CUDA 
+#### CPU/HPU/CUDA
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -238,7 +236,6 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
   <summary>Evaluation</summary>
 
 ```bash
-## version > 0.3.0
 auto-round --model saved_quantized_model \
     --eval \
     --task lambada_openai \
@@ -246,7 +243,6 @@ auto-round --model saved_quantized_model \
 ```
 
 </details>
-
 
 ### AutoGPTQ/AutoAWQ format
 
