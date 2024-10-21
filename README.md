@@ -205,7 +205,7 @@ Please run the quantization code first
 
 ### AutoRound format
 
-**CPU**: pip install intel-extension-for-transformers
+**CPU**: pip install intel-extension-for-transformers, auto_round version >0.3.1
 
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
