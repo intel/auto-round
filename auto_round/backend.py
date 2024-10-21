@@ -380,7 +380,8 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
     """Selects the most suitable backend for the layer based on compatibility and priority.
 
     This function first checks if the specified backend supports the layer with the provided configuration.
-    If not, it iterates through other available backends, checking compatibility and returning the one with the highest priority.
+    If not, it iterates through other available backends,
+    checking compatibility and returning the one with the highest priority.
 
     Args:
         device (str):
@@ -411,7 +412,8 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
             If no compatible backend is found for the given layer configuration.
     """
     # Check if the provided backend is in BackendInfos
-    assert backend in BackendInfos.keys(), f"Unsupported backend {backend}, please set it to `auto` to try automatic selection"
+    assert backend in BackendInfos.keys(), \
+        f"Unsupported backend {backend}, please set it to `auto` to try automatic selection"
 
     packing_format = BackendInfos[orig_backend].packing_format
 
