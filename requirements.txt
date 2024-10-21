@@ -7,7 +7,7 @@ transformers<=4.45.2
 triton
 numpy < 2.0
 threadpoolctl
-lm-eval==0.4.4
+lm-eval>=0.4.2,<=0.4.5
 tqdm
 packaging
 auto-gptq>=0.7.1
