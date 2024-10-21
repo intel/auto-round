@@ -158,8 +158,8 @@ def setup_parser():
     parser.add_argument("--quant_vision", action='store_true',
                         help="To determine whether the quantization should handle vision component.")
 
-    parser.add_argument("--images", default="coco", type=str,
-                        help="The dataset for quantization training. It can be a custom one.")
+    parser.add_argument("--dataset_dir", default="", type=str,
+                        help="Dataset dir for storing images/audio/videos. By default, it will search in the relative path.")
     
     parser.add_argument("--template", default=None, type=str,
                             help="The template for building training dataset. It can be a custom one.")
@@ -445,7 +445,7 @@ def tune_mllm(args):
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
     
-    autoround = round(model, tokenizer, dataset=args.question_path, images=args.image_path,
+    autoround = round(model, tokenizer, dataset=args.question_path, dataset_dir=args.dataset_dir,
                       bits=args.bits, group_size=args.group_size, sym=args.sym, batch_size=args.train_bs,
                       seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,

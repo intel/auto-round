@@ -217,7 +217,7 @@ def main():
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
         
-    autoround = round(model, tokenizer, dataset=args.question_path, images=args.image_path,
+    autoround = round(model, tokenizer, dataset=args.question_path, dataset_dir=args.image_path,
                       bits=args.bits, group_size=args.group_size, sym=args.sym, batch_size=args.train_bs,
                       seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,

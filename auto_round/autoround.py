@@ -1638,7 +1638,7 @@ class AutoMLLMRound(AutoRound):
             device: str = None,
             lr_scheduler=None,
             dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = None,
-            images: Union[str, torch.utils.data.DataLoader] = None,
+            dataset_dir: Union[str, torch.utils.data.DataLoader] = None,
             template: Union[str, Template] = None,
             quant_vision: bool = False,
             enable_quanted_input: bool = True,
@@ -1668,14 +1668,14 @@ class AutoMLLMRound(AutoRound):
     ):
         if quant_block_list is None:
             quant_block_list = get_multimodal_block_names(model, quant_vision)
-        self.images = images
+        self.dataset_dir = dataset_dir
         self.template = template
         self.quant_vision = quant_vision
         if self.template is None:
             self.template = model.config.model_type
         assert dataset is not None, "dataset should not be None"
         if isinstance(dataset, str):
-            dataset = get_mllm_dataloader(self.template, tokenizer, dataset, images, seqlen, batch_size)
+            dataset = get_mllm_dataloader(self.template, tokenizer, dataset, dataset_dir, seqlen, batch_size)
         
         super(AutoMLLMRound, self).__init__(
             model=model,

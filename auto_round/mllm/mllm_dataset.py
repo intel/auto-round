@@ -132,7 +132,7 @@ def vlm_encode(sources, template: "Template"):
 class LlavaDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
-    def __init__(self, model_type_or_template, tokenzier, dataset_path, image_path, max_len) -> None:
+    def __init__(self, model_type_or_template, tokenzier, dataset_path, dataset_dir, max_len) -> None:
         super().__init__()
         if isinstance(model_type_or_template, str):
             assert model_type_or_template in TEMPLATES, f"{model_type_or_template} is not supported"
@@ -145,7 +145,7 @@ class LlavaDataset(Dataset):
             raise TypeError
         self.tokenizer = tokenzier
         self.questions = json.load(open(dataset_path, "r"))
-        self.image_path = image_path
+        self.dataset_dir = dataset_dir
         self.max_len = max_len
         self.role_mapping = {"human": "user", "gpt": "assistant"}
         self.cached_data_dict = {}
@@ -168,7 +168,7 @@ class LlavaDataset(Dataset):
         else:
             text = self.tokenizer.decode(self.tokenizer(text).input_ids[:self.max_len])
 
-        image = Image.open(os.path.join(self.image_path, os.path.basename(self.questions[i]["image"]))) 
+        image = Image.open(os.path.join(self.dataset_dir, os.path.basename(self.questions[i]["image"]))) 
         ret = self.tokenizer.processor(
             text=text,
                 images=image,
@@ -201,7 +201,7 @@ def get_mllm_dataloader(
         template_or_path,
         tokenizer, 
         dataset_path,
-        image_path,
+        dataset_dir,
         seqlen=512, 
         bs=1, 
 ):
@@ -210,7 +210,7 @@ def get_mllm_dataloader(
     else:
         model_type_or_template = template_or_path
     dataset = LlavaDataset(
-        model_type_or_template, tokenizer, dataset_path, image_path, 
+        model_type_or_template, tokenizer, dataset_path, dataset_dir, 
         max_len=min(seqlen, tokenizer.model_max_length))
     
     dataloader_params = {
