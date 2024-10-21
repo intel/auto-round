@@ -9,9 +9,8 @@ python3 main.py \
 --bits 4 \
 --group_size 128 \
 --iters 200 \
---deployment_device 'fake,cpu' \
---scale_dtype 'fp32' \
---eval_bs 32 \
+--format 'auto_round,auto_gptq' \
+--eval_bs 16 \
 --output_dir "./tmp_autoround"
 
 
