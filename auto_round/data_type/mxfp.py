@@ -61,6 +61,7 @@ def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **
         KeyError: If `data_type` is not found in `MXFP_FORMAT_CACHE`.
     """
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
+    orig_dtype = tensor.dtype
     shared_exp, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
     if isinstance(max_scale, torch.Tensor):
         shared_exp *= (max_scale.unsqueeze(dim=-1))
@@ -74,6 +75,10 @@ def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **
     shared_exp = floor_ste(shared_exp)
     shared_exp[shared_exp > scale_emax] = scale_emax  ##changed Nan
     shared_exp[shared_exp < -scale_emax] = -scale_emax
+    if (shared_exp.dtype == torch.float16 and (torch.any(shared_exp > 15) or torch.any(shared_exp < -24))) or (
+            shared_exp.dtype == torch.bfloat16 and torch.any((shared_exp < -126))):
+        tensor = tensor.to(torch.float32)
+        shared_exp = shared_exp.to(torch.float32)
     tensor = tensor / (2 ** shared_exp)
     is_mx_fp4 = data_type == "mx_fp4" or ("mx_fp" in data_type and bits == 4)
     multiply = 2 if is_mx_fp4 else 1  ## 2 is a tricky setting
@@ -108,7 +113,7 @@ def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **
 
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = tensor * (2 ** shared_exp)
-    return tensor, shared_exp, None
+    return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
 
 for key in MXFP_FORMAT_CACHE.keys():

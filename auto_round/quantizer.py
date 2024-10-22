@@ -107,7 +107,7 @@ class WrapperWALayer(torch.nn.Module):
                                self.orig_layer.group_size,
                                scale_dtype=self.orig_layer.scale_dtype,
                                q_scale_thresh=self.orig_layer.q_scale_thresh,
-                               data_type=self.orig_layer.data_type)
+                               data_type=self.orig_layer.act_data_type)
         return self.orig_layer.forward(x)
 
 
@@ -234,7 +234,7 @@ class WrapperLinear(torch.nn.Module):
         self.scale_dtype = self.orig_layer.scale_dtype
         self.sym = self.orig_layer.sym
         self.data_type = self.orig_layer.data_type
-        self.weight_quant_func, self.data_type = get_quant_func(self.data_type, self.bits, self.sym)
+        self.weight_quant_func, self.data_type = get_quant_func(self.orig_layer.data_type, self.bits, self.sym)
         self.act_bits = self.orig_layer.act_bits
         self.act_group_size = self.orig_layer.act_group_size
         self.act_sym = self.orig_layer.act_sym
@@ -243,7 +243,7 @@ class WrapperLinear(torch.nn.Module):
         self.params = {}
 
         if self.act_quant:
-            self.act_quant_func, _ = get_quant_func(self.data_type, self.act_bits, self.act_sym)
+            self.act_quant_func, self.act_data_type = get_quant_func(self.orig_layer.data_type, self.act_bits, self.act_sym)
 
         self.q_scale_thresh = 1e-5
 
@@ -337,6 +337,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.data_type = self.data_type
         if self.act_quant:
+            self.orig_layer.act_data_type = self.act_data_type
             self.orig_layer.act_quant_func = self.act_quant_func
             wrapper_layer = WrapperWALayer(self.orig_layer)
             return wrapper_layer
@@ -371,7 +372,7 @@ class WrapperLinear(torch.nn.Module):
         if self.act_quant:
             x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
                                    scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
-                                   data_type=self.data_type)
+                                   data_type=self.act_data_type)
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
         if bias is not None and bias.device.type == 'meta':
@@ -418,9 +419,9 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.act_sym = self.orig_layer.act_sym
         self.act_dynamic = self.orig_layer.act_dynamic
         self.act_quant = self.act_bits <= 8
-        self.weight_quant_func, self.data_type = get_quant_func(self.data_type, self.bits, self.sym)
+        self.weight_quant_func, self.data_type = get_quant_func(self.orig_layer.data_type, self.bits, self.sym)
         if self.act_quant:
-            self.act_quant_func, _ = get_quant_func(self.data_type, self.act_bits, self.act_sym)
+            self.act_quant_func, self.act_data_type = get_quant_func(self.orig_layer.data_type, self.act_bits, self.act_sym)
 
         self.q_scale_thresh = 1e-5
         weight_dtype = torch.float32
@@ -521,6 +522,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.orig_layer.data_type = self.data_type
         if self.act_quant:
             self.orig_layer.act_quant_func = self.act_quant_func
+            self.orig_layer.act_data_type = self.act_data_type
             wrapper_layer = WrapperWALayer(self.orig_layer)
             return wrapper_layer
         if hasattr(self.orig_layer, 'update'):
@@ -548,7 +550,7 @@ class WrapperTransformerConv1d(torch.nn.Module):
         if self.act_quant:
             x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
                                    scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
-                                   data_type=self.data_type)
+                                   data_type=self.act_data_type)
         bias = self.orig_layer.bias
         if self.enable_norm_bias_tuning:
             bias, _, _ = quant_tensor(self.bias_quant_func, bias, self.bias_bits, self.bias_group_size, self.bias_v,
