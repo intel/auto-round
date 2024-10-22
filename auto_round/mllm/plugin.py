@@ -1,0 +1,115 @@
+import torch
+from transformers.data.data_collator import default_data_collator
+
+PLUGINS = {}
+
+def regist_plugin(name):
+    def register(plugin):
+        PLUGINS[name] = plugin
+        return plugin
+    return register
+
+@regist_plugin("basic")
+class BasicPlugin:
+    def __init__(self):
+        pass
+
+    def get_input(
+            model,
+            tokenizer,
+            text,
+            images,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+            **kwargs):
+        ret = tokenizer.processor(
+            text=text,
+            images=images,
+            padding=padding,
+            truncation=truncation,
+            return_tensors=return_tensors,
+            # videos = None
+        )
+        for key in ret:
+            ret[key] = ret[key][0]
+        return ret
+
+    @staticmethod
+    def data_collator(batch):
+        return default_data_collator(batch)
+
+@regist_plugin("qwen2_vl")
+class Qwen2VLPlugin(BasicPlugin):
+    def get_input(model, tokenizer, text, images, padding=True, truncation=True, return_tensors="pt", **kwargs):
+        ret = tokenizer.processor(
+            text=text,
+            images=images,
+            padding=padding,
+            truncation=truncation,
+            return_tensors=return_tensors,
+            # videos = None
+        )
+        for key in ret:
+            if key == "pixel_values":
+                continue
+            ret[key] = ret[key][0]
+        return ret
+
+
+@regist_plugin("cogvlm2")
+class CogVLM2Plugin(BasicPlugin):
+    def get_input(model, tokenizer, text, images, max_length=2048, **kwargs):
+        input_data = model.build_conversation_input_ids(
+                tokenizer,
+                query=text,
+                history=None,
+                images=[images],
+                template_version='base'
+            )
+        def pad_to_len(unpadded_tensor, pad_to_length, pad_value=0):
+            current_length = len(unpadded_tensor)
+            if current_length >= pad_to_length:
+                return unpadded_tensor[:pad_to_length]
+            return torch.cat(
+                (unpadded_tensor,
+                 torch.full([pad_to_length - current_length],
+                            fill_value=pad_value,
+                            dtype=unpadded_tensor.dtype,
+                            device=unpadded_tensor.device)), dim=0)
+        input_data['input_ids'] = pad_to_len(
+            input_data['input_ids'],
+            max_length,
+            pad_value=128002,
+        )
+
+        input_data['attention_mask'] = pad_to_len(
+            input_data['attention_mask'],
+            max_length,
+            pad_value=0
+        )
+        input_data['token_type_ids'] = pad_to_len(
+            input_data['token_type_ids'],
+            max_length,
+            pad_value=0
+        )
+
+        input_data['labels'] = pad_to_len(
+            input_data['labels'],
+            max_length,
+            pad_value=-100
+        )
+        return input_data
+    
+    @staticmethod
+    def data_collator(batch):
+        batched_data = {}
+        for key in batch[0].keys():
+            if isinstance(batch[0][key], list):
+                batched_data[key] = [batch_item[key] for batch_item in batch]
+            elif isinstance(batch[0][key], torch.Tensor):
+                batched_data[key] = torch.stack([item[key] for item in batch])
+            else:
+                raise ValueError("Unsupported datatype in custom collate_fn")
+
+        return batched_data

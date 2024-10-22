@@ -1675,7 +1675,7 @@ class AutoMLLMRound(AutoRound):
             self.template = model.config.model_type
         assert dataset is not None, "dataset should not be None"
         if isinstance(dataset, str):
-            dataset = get_mllm_dataloader(self.template, tokenizer, dataset, extra_data_dir, seqlen, batch_size)
+            dataset = get_mllm_dataloader(self.template, model, tokenizer, dataset, extra_data_dir, seqlen, batch_size)
         
         super(AutoMLLMRound, self).__init__(
             model=model,

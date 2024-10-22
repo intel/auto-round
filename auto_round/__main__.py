@@ -463,7 +463,6 @@ def tune_mllm(args):
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       quant_vision=args.quant_vision)
     model, _ = autoround.quantize()
-    model_name = args.model_name.rstrip("/")
 
     model.eval()
     if args.device != "cpu":

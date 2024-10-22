@@ -6,5 +6,5 @@
     "format_observation": "<|im_start|>tool\n{{content}}<|im_end|>\n<|im_start|>assistant\n",
     "format_separator": "\n",
     "default_system": "You are a helpful assistant.",
-    "replace_tokens": ["<image>", "<|vision_start|><|image_pad|><|vision_end|>"]
-}
+    "replace_tokens": ["<image>", "<|vision_start|><|image_pad|><|vision_end|>"],
+    "plugin": "qwen2_vl" }

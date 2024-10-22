@@ -11,11 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
 
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer, AutoConfig
 
+
 def load_mllm(pretrained_model_name_or_path, trust_remote_code=False, **kwargs):
-    config = AutoConfig.from_pretrained(pretrained_model_name_or_path)
+    if "cogvlm2" in pretrained_model_name_or_path:
+        trust_remote_code = True
+    config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path)
     processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
     tokenizer.processor = processor
@@ -23,10 +27,32 @@ def load_mllm(pretrained_model_name_or_path, trust_remote_code=False, **kwargs):
 
     if "qwen2_vl" in model_type:
         from transformers import Qwen2VLForConditionalGeneration
-        model = Qwen2VLForConditionalGeneration.from_pretrained(pretrained_model_name_or_path, **kwargs)
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            pretrained_model_name_or_path, trust_remote_code=trust_remote_code, **kwargs)
     elif "mllama" in model_type:
         from transformers import MllamaForConditionalGeneration
-        model = MllamaForConditionalGeneration.from_pretrained(pretrained_model_name_or_path, attn_implementation="eager", **kwargs)
+        model = MllamaForConditionalGeneration.from_pretrained(
+            pretrained_model_name_or_path, trust_remote_code=trust_remote_code, attn_implementation="eager", **kwargs)
     else:
-        model = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path, **kwargs)
+        model = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path, trust_remote_code=trust_remote_code, **kwargs)
+
+    if "cogvlm2" in pretrained_model_name_or_path:
+        model.config.model_type = "cogvlm2"
+
     return model, tokenizer, processor
+
+
+def _extract_data_dir(dir_path):
+    if os.path.isdir(dir_path):
+        return dir_path
+    else:
+        result = {}
+        dir_path = dir_path.split(",")
+        for _path in dir_path:
+            k, v = _path.split('=')
+            if k in ['image', 'video', 'audio']:
+                result[k] = v
+        return result
+
+
