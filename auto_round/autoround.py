@@ -15,9 +15,6 @@
 import os
 import torch
 import transformers
-
-torch.use_deterministic_algorithms(True, warn_only=True)
-
 import copy
 import time
 from typing import Optional, Union
@@ -25,7 +22,7 @@ from typing import Optional, Union
 from transformers import set_seed
 from torch import autocast
 from tqdm import tqdm
-from .calib_dataset import get_dataloader
+
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
     WrapperTransformerConv1d
 from .special_model_handler import (check_hidden_state_dim,
@@ -488,8 +485,10 @@ class AutoRound(object):
             nsamples (int): The number of samples to use for calibration.
             bs (int): The number of samples to use for calibration
         """
+        from .calib_dataset import get_dataloader
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
+
             # slow here
             self.dataloader = get_dataloader(
                 self.tokenizer,
