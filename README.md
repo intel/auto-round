@@ -26,20 +26,17 @@ more accuracy data and recipes across various models.
 <div align="left">
 
 ## What's New
-
+* [2024/10] AutoRound has been integrated to [torch/ao](https://github.com/pytorch/ao), check out their [release note](https://github.com/pytorch/ao/releases/tag/v0.6.1)
 * [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
-  configuration. This approach is typically better or comparable to asymmetric quantization and significantly
-  outperforms other symmetric variants, especially at low bit-widths like 2-bit. And,no need to compile from source to
-  run
-  AutoRound format anymore.
+  configuration. This configuration is typically better or comparable to asymmetric quantization and significantly
+  outperforms other symmetric variants, especially at low bit-widths like 2-bit.
 * [2024/09] AutoRound format supports several LVM models, check out the
   examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
 * [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
   to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
 * [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters (for 2-bit
   and W4A4), activation quantization, and the mx_fp data type.
-* [2024/07] Important change: the default value of nsamples has been changed from 512 to 128 to reduce the memory
-  usages, which may cause a slight accuracy drop in some scenarios
+
 
 ## Installation
 
@@ -105,12 +102,11 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 **AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
 inference. [2,4]
 bits are supported. It also benefits
-from the Marlin kernel, which can boost inference performance notably.However, it has not yet gained widespread
-community adoption. For CUDA support, you will need to
-install from the source.
+from the Marlin kernel, which can boost inference performance notably. However, it has not yet gained widespread
+community adoption.
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
-community, [2,3,4,8] bits are supported, for 3 bits, pip install auto-gptq first before quantization. It also benefits
+community, [2,3,4,8] bits are supported. It also benefits
 from the Marlin kernel, which can boost inference performance notably. However, **the
 asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
 models.
