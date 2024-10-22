@@ -243,7 +243,8 @@ class WrapperLinear(torch.nn.Module):
         self.params = {}
 
         if self.act_quant:
-            self.act_quant_func, self.act_data_type = get_quant_func(self.orig_layer.data_type, self.act_bits, self.act_sym)
+            self.act_quant_func, self.act_data_type = get_quant_func(self.orig_layer.data_type, self.act_bits,
+                                                                     self.act_sym)
 
         self.q_scale_thresh = 1e-5
 
@@ -421,7 +422,8 @@ class WrapperTransformerConv1d(torch.nn.Module):
         self.act_quant = self.act_bits <= 8
         self.weight_quant_func, self.data_type = get_quant_func(self.orig_layer.data_type, self.bits, self.sym)
         if self.act_quant:
-            self.act_quant_func, self.act_data_type = get_quant_func(self.orig_layer.data_type, self.act_bits, self.act_sym)
+            self.act_quant_func, self.act_data_type = get_quant_func(self.orig_layer.data_type, self.act_bits,
+                                                                     self.act_sym)
 
         self.q_scale_thresh = 1e-5
         weight_dtype = torch.float32
