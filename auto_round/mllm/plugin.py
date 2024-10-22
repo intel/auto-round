@@ -82,7 +82,6 @@ class CogVLM2Plugin(BasicPlugin):
             max_length,
             pad_value=128002,
         )
-
         input_data['attention_mask'] = pad_to_len(
             input_data['attention_mask'],
             max_length,
@@ -93,12 +92,12 @@ class CogVLM2Plugin(BasicPlugin):
             max_length,
             pad_value=0
         )
-
-        input_data['labels'] = pad_to_len(
-            input_data['labels'],
-            max_length,
-            pad_value=-100
-        )
+        if input_data['labels']: 
+            input_data['labels'] = pad_to_len(
+                input_data['labels'],
+                max_length,
+                pad_value=-100
+            )
         return input_data
     
     @staticmethod
@@ -109,7 +108,6 @@ class CogVLM2Plugin(BasicPlugin):
                 batched_data[key] = [batch_item[key] for batch_item in batch]
             elif isinstance(batch[0][key], torch.Tensor):
                 batched_data[key] = torch.stack([item[key] for item in batch])
-            else:
-                raise ValueError("Unsupported datatype in custom collate_fn")
-
+            # else:
+            #     raise ValueError("Unsupported datatype in custom collate_fn")
         return batched_data
