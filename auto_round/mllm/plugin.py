@@ -27,12 +27,13 @@ class BasicPlugin:
             max_length=None,
             **kwargs):
 
-        token_length = len(tokenizer(text).input_ids)
-        if token_length < max_length:
-            if tokenizer.pad_token:
-                text += tokenizer.pad_token * (max_length - token_length)
-        else:
-            text = tokenizer.decode(tokenizer(text).input_ids[:max_length])
+        if max_length:
+            token_length = len(tokenizer(text).input_ids)
+            if token_length < max_length:
+                if tokenizer.pad_token:
+                    text += tokenizer.pad_token * (max_length - token_length)
+            else:
+                text = tokenizer.decode(tokenizer(text).input_ids[:max_length])
 
         ret = tokenizer.processor(
             text=text,
@@ -56,7 +57,25 @@ class BasicPlugin:
 
 @regist_plugin("qwen2_vl")
 class Qwen2VLPlugin(BasicPlugin):
-    def get_input(model, tokenizer, text, images, padding=True, truncation=True, return_tensors="pt", **kwargs):
+    def get_input(
+            model,
+            tokenizer,
+            text,
+            images,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+            max_length=None,
+            **kwargs):
+
+        if max_length:
+            token_length = len(tokenizer(text).input_ids)
+            if token_length < max_length:
+                if tokenizer.pad_token:
+                    text += tokenizer.pad_token * (max_length - token_length)
+            else:
+                text = tokenizer.decode(tokenizer(text).input_ids[:max_length])
+
         ret = tokenizer.processor(
             text=text,
             images=images,
