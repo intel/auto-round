@@ -490,6 +490,7 @@ class AutoRound(object):
             nsamples (int): The number of samples to use for calibration.
             bs (int): The number of samples to use for calibration
         """
+        breakpoint()
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
             # slow here
@@ -538,7 +539,6 @@ class AutoRound(object):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            self.model(**data_new)
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)

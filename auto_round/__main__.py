@@ -384,19 +384,22 @@ def eval(args):
 
 
 def tune_mllm(args):
-    if args.act_bits <= 8:
+    if args.format is None:
+        args.format = "auto_round"
+        
+    if "auto_gptq" in args.format and args.asym is True:
         print(
-            "Warning, activation quantization is an experiment feature")
+            "warning: The auto_gptq kernel has issues with asymmetric quantization. "
+            "It is recommended to use sym quantization or --format='auto_round'")
     
-    if args.act_bits <= 8 and args.deployment_device != "fake":
-        assert False, "only support fake mode for activation quantization currently"
+    if "marlin" in args.format and args.asym is True:
+        assert False, "marlin backend only supports sym quantization, please remove --asym"
     
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
-    print(model_name, flush=True)
+    logger.info(f"start to quantize {model_name}")
 
-    from auto_round.utils import detect_device
 
     device_str = detect_device(args.device)
     torch_dtype = "auto"
