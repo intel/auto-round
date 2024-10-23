@@ -534,11 +534,11 @@ class AutoRound(object):
                 for key in data.keys():
                     data_new[key] = to_device(data[key], self.model.device)
                     if key == 'images':
-                        data_new[key] = to_dtype(data[key], self.model.dtype)
+                        data_new[key] = to_dtype(data_new[key], self.model.dtype)
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-
+            self.model(**data_new)
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)

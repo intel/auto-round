@@ -15,7 +15,7 @@
 import os
 import json
 from typing import Dict
-from enum import Enum, unique
+
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -34,45 +34,22 @@ def register_dataset(name):
         return dataset
     return register
 
-@unique
-class Role(str, Enum):
-    USER = "user"
-    ASSISTANT = "assistant"
-    SYSTEM = "system"
-    FUNCTION = "function"
-    OBSERVATION = "observation"
-
-
-def fill_content(target, **kwargs):
-    for name, value in kwargs.items():
-        target = target.replace("{{" + name + "}}", value, 1)
-    return target
-
-
-def mllm_encode(sources, template: "Template"):
-    element = ""
-    for i, source in enumerate(sources):
-        if i == 0:
-            element += fill_content(template.format_system, content=template.default_system)
-        # if i > 0 and i % 2 ==0:
-        #     element += fill_content(template.format_separator)
-        
-        if source['role'] == Role.USER.value:
-            element += fill_content(template.format_user, content=source["content"])
-        elif source['role'] == Role.ASSISTANT.value:
-            element += fill_content(template.format_assistant, content=source["content"])
-        elif source['role'] == Role.OBSERVATION.value:
-            element += fill_content(template.format_observation, content=source["content"])
-        elif source['role'] == Role.FUNCTION.value:
-            element += fill_content(template.format_function, content=source["content"])
-    return element
-
 
 @register_dataset("llava")
 class LlavaDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
-    def __init__(self, model_type_or_template, model, tokenzier, dataset_path, extra_data_dir, max_length) -> None:
+    def __init__(
+            self,
+            model_type_or_template,
+            model,
+            tokenzier,
+            dataset_path,
+            extra_data_dir,
+            max_length,
+            padding=True,
+            truncation=True,
+            ) -> None:
         super().__init__()
         if isinstance(model_type_or_template, str):
             assert model_type_or_template in TEMPLATES, f"{model_type_or_template} is not supported"
@@ -86,6 +63,8 @@ class LlavaDataset(Dataset):
             raise TypeError
         self.tokenizer = tokenzier
         self.questions = json.load(open(dataset_path, "r"))
+        self.padding = padding
+        self.truncation = truncation
         self.extra_data_dir = extra_data_dir
         self.max_length = max_length
         self.role_mapping = {"human": "user", "gpt": "assistant"}
@@ -101,27 +80,21 @@ class LlavaDataset(Dataset):
 
         text = self.questions[i]["conversations"]
         text = self.covert_conversations(text)
-        text = mllm_encode(text, self.template)
 
-        token_length = len(self.tokenizer(text).input_ids)
-        if token_length < self.max_length:
-            if self.tokenizer.pad_token:
-                text += self.tokenizer.pad_token * (self.max_length - token_length)
-        else:
-            text = self.tokenizer.decode(self.tokenizer(text).input_ids[:self.max_length])
+        text = self.template._encode(text)
 
         image_fold = _extract_data_dir(self.extra_data_dir)
         if isinstance(image_fold, dict):
             image_fold = image_fold['image']
-        image = Image.open(os.path.join(image_fold, os.path.basename(self.questions[i]["image"]))) 
+        image = self.template.plugin.image_processor(os.path.join(image_fold, os.path.basename(self.questions[i]["image"])))
 
         ret = self.template.plugin.get_input(
             self.model,
             self.tokenizer,
             text=text, 
             images=image,
-            padding=True,
-            truncation=True,
+            padding=self.padding,
+            truncation=self.truncation,
             return_tensors="pt",
             max_length = self.max_length
            )
@@ -139,7 +112,6 @@ class LlavaDataset(Dataset):
                 "content": content
             })
         return new_data
-
 
 
 def get_mllm_dataloader(

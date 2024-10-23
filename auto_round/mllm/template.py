@@ -2,10 +2,26 @@ import os
 import json
 from dataclasses import dataclass
 from typing import Dict, Optional, List, Union, Sequence
+from enum import Enum, unique
+
 
 from .plugin import BasicPlugin, PLUGINS
 
 TEMPLATES: Dict[str, "Template"] = {}
+
+def fill_content(target, **kwargs):
+    for name, value in kwargs.items():
+        target = target.replace("{{" + name + "}}", value, 1)
+    return target
+
+
+@unique
+class Role(str, Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+    FUNCTION = "function"
+    OBSERVATION = "observation"
 
 @dataclass
 class Template:
@@ -20,6 +36,24 @@ class Template:
     replace_tokens: List[tuple]
     plugin: "BasicPlugin"
 
+    def _encode(self, sources):
+        element = ""
+        for i, source in enumerate(sources):
+            if i == 0:
+                element += fill_content(self.format_system, content=self.default_system)
+            # if i > 0 and i % 2 ==0:
+            #     element += fill_content(self.format_separator)
+            
+            if source['role'] == Role.USER.value:
+                element += fill_content(self.format_user, content=source["content"])
+            elif source['role'] == Role.ASSISTANT.value:
+                element += fill_content(self.format_assistant, content=source["content"])
+            elif source['role'] == Role.OBSERVATION.value:
+                element += fill_content(self.format_observation, content=source["content"])
+            elif source['role'] == Role.FUNCTION.value:
+                element += fill_content(self.format_function, content=source["content"])
+        return element
+    
 
 def _register_template(
     model_type: str,

@@ -388,9 +388,6 @@ def tune_mllm(args):
         print(
             "Warning, activation quantization is an experiment feature")
     
-    if "marlin" in args.format and args.sym == False:
-        assert False, "marlin backend only supports sym quantization, please set --sym"
-
     if args.act_bits <= 8 and args.deployment_device != "fake":
         assert False, "only support fake mode for activation quantization currently"
     
