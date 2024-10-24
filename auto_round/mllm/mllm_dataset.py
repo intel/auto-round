@@ -41,7 +41,7 @@ class LlavaDataset(Dataset):
 
     def __init__(
             self,
-            model_type_or_template,
+            template,
             model,
             tokenzier,
             dataset_path,
@@ -51,16 +51,9 @@ class LlavaDataset(Dataset):
             truncation=True,
             ) -> None:
         super().__init__()
-        if isinstance(model_type_or_template, str):
-            assert model_type_or_template in TEMPLATES, f"{model_type_or_template} is not supported"
-            self.model = model
-            self.model_type = model_type_or_template
-            self.template = TEMPLATES[model_type_or_template]
-        elif isinstance(model_type_or_template, Template):
-            self.model_type = model_type_or_template.model_type
-            self.template = model_type_or_template
-        else:
-            raise TypeError
+        self.model = model
+        self.model_type = template.model_type
+        self.template = template
         self.tokenizer = tokenzier
         self.questions = json.load(open(dataset_path, "r"))
         self.padding = padding
@@ -115,7 +108,7 @@ class LlavaDataset(Dataset):
 
 
 def get_mllm_dataloader(
-        template_or_path,
+        template,
         model,
         tokenizer, 
         dataset_path,
@@ -123,12 +116,9 @@ def get_mllm_dataloader(
         seqlen=512, 
         bs=1, 
 ):
-    if os.path.isfile(template_or_path):
-        model_type_or_template = load_template(template_or_path)
-    else:
-        model_type_or_template = template_or_path
+    assert isinstance(template, Template)
     dataset = MLLM_DATASET['llava'](
-        model_type_or_template, model, tokenizer, dataset_path, extra_data_dir, 
+        template, model, tokenizer, dataset_path, extra_data_dir, 
         max_length=min(seqlen, tokenizer.model_max_length))
     
     dataloader_params = {

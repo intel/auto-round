@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Dict, Optional, List, Union, Sequence
 from enum import Enum, unique
 
+from ..utils import logger
+
 
 from .plugin import BasicPlugin, PLUGINS
 
@@ -74,7 +76,6 @@ def _register_template(
     default_format_function = ""
     default_format_observation = ""
     default_format_separator = "\n"
-    default_replace_tokens = []
     TEMPLATES[model_type] = template_class(
         model_type = model_type,
         format_user = format_user or default_format_user,
@@ -84,7 +85,7 @@ def _register_template(
         format_observation = format_observation or default_format_observation,
         format_separator = format_separator or default_format_separator,
         default_system = default_system,
-        replace_tokens = replace_tokens or default_replace_tokens,
+        replace_tokens = replace_tokens,
         plugin = plugin
     )
     return TEMPLATES[model_type]
@@ -94,7 +95,7 @@ def load_template(path: str):
     data = json.load(open(path, "r"))
     if "model_type" not in data:
         data["model_type"] = "user_define"
-    if "replace_tokens" in data:
+    if "replace_tokens" in data and data["replace_tokens"] is not None:
         assert len(data["replace_tokens"]) % 2 == 0, \
             "the format of replace_tokens should be [old_tag1, replace_tag1, old_tag2, replace_tag2]"
         temp = []
@@ -117,3 +118,15 @@ def _load_preset_template():
         load_template(os.path.join(dir_path, file_name))
 
 _load_preset_template()
+
+
+def get_template(template_or_path: str):
+    if os.path.isfile(template_or_path):
+        template = load_template(template_or_path)
+    else:
+        if template_or_path in TEMPLATES:
+            template = TEMPLATES[template_or_path]
+        else:
+            logger.warning(f"Unable to recognize {template_or_path}, using default template instead.")
+            template = TEMPLATES["default"]
+    return template

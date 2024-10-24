@@ -8,7 +8,7 @@ import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoOPTRound, AutoAdamRound
+from auto_round import AutoRoundOPT, AutoRoundAdam
 
 
 class LLMDataLoader:
@@ -35,7 +35,7 @@ class TestAutoRound(unittest.TestCase):
 
     def test_default(self):
         bits, group_size, sym = 4, 128, False
-        autoround = AutoOPTRound(
+        autoround = AutoRoundOPT(
             self.model,
             self.tokenizer,
             bits=bits,
@@ -54,7 +54,7 @@ class TestAutoRound(unittest.TestCase):
         from auto_round.utils import get_multimodal_block_names
         llm_block_names = get_multimodal_block_names(self.model, quant_vision=True)
         bits, group_size, sym, batch_size = 4, 128, False, 20
-        adamround = AutoAdamRound(
+        adamround = AutoRoundAdam(
             self.model,
             self.tokenizer,
             bits=bits,

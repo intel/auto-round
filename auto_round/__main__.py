@@ -239,7 +239,7 @@ def tune(args):
                 trust_remote_code=not args.disable_trust_remote_code
             )
 
-    from auto_round import AutoRound, AutoAdamRound
+    from auto_round import AutoRound, AutoRoundAdam
 
     model = model.eval()
     # align with GPTQ to eval ppl
@@ -269,7 +269,7 @@ def tune(args):
 
     round = AutoRound
     if args.adam:
-        round = AutoAdamRound
+        round = AutoRoundAdam
 
     layer_config = {}
     for n, m in model.named_modules():
@@ -412,12 +412,12 @@ def tune_mllm(args):
     from auto_round.mllm import load_mllm
     model, tokenizer, processor = load_mllm(model_name, device_map="auto", torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code)
 
-    from auto_round import AutoMLLMRound
+    from auto_round import AutoRoundMLLM
 
     model = model.eval()
     seqlen = args.seqlen
 
-    round = AutoMLLMRound
+    round = AutoRoundMLLM
     layer_config = {}
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
