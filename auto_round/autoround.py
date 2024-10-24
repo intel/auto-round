@@ -569,7 +569,7 @@ class AutoRound(object):
         # torch.cuda.empty_cache()
 
     @torch.no_grad()
-    def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=[], last_cache_name=None):
+    def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
         """Attempts to cache intermediate data on GPU, if failed, then using CPU.
 
         Args:
@@ -584,6 +584,8 @@ class AutoRound(object):
         Raises:
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
+        if layer_names is None:
+            layer_names = []
         try:
             if not self.model.device.type == "meta":
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
@@ -610,7 +612,7 @@ class AutoRound(object):
         return all_inputs
 
     @torch.no_grad()
-    def cache_inter_data(self, block_names, nsamples, layer_names=[], last_cache_name=None):
+    def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
         """Save the inputs of block_name for calibration.
 
         This method temporarily replaces the forward method of the model to capture
@@ -627,6 +629,8 @@ class AutoRound(object):
         Returns:
             dict: A dictionary containing the inputs for the specified block.
         """
+        if layer_names is None:
+            layer_names = []
         self.inputs = {}
         self.to_cached_layers = block_names + layer_names
         tmp_dtype = None

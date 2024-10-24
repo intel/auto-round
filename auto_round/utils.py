@@ -403,12 +403,9 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
         input_ids = to_device(input_ids, device)
         input_others = to_device(input_others, device)
     input_tuple = input_others.pop("positional_inputs", None)
-    if "alibi" in input_others.keys():
-        alibi = input_others.pop("alibi")
-        if alibi is not None:
-            alibi = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
-        input_others["alibi"] = alibi
-
+    if "alibi" in input_others.keys() and input_others["alibi"] is not None:
+        alibi = input_others["alibi"]
+        input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
     if amp:
         with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
             output = block(input_ids, *input_tuple, **input_others)
