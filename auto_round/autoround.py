@@ -153,12 +153,14 @@ class AutoRound(object):
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
-        self.low_cpu_mem_usage = low_cpu_mem_usage
+        self.seed = seed
+        set_seed(self.seed)
         assert not unsupport_meta_device(model), (
             "autoround does not support for params on meta device by transformers` interfaces,"
             "please do not using device_map='auto' in model loading, "
             "or follow examples/language-modeling/main.py to enable low_cpu_mem_usage")
-        self.model = model.eval()
+
+        ## important tuning hype-parameters
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -166,36 +168,37 @@ class AutoRound(object):
         self.nblocks = nblocks
         self.bits = bits
         self.enable_norm_bias_tuning = enable_norm_bias_tuning
-        if self.enable_norm_bias_tuning is None:
-            if self.bits == 2:
-                self.enable_norm_bias_tuning = True
-            else:
-                self.enable_norm_bias_tuning = False
         self.group_size = group_size
         self.sym = sym
         self.low_gpu_mem_usage = low_gpu_mem_usage
-        self.data_type = data_type
-        self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
+        self.low_cpu_mem_usage = low_cpu_mem_usage
         self.layer_config = {} if layer_config is None else layer_config
-        self.seed = seed
-        set_seed(self.seed)
-        self.tokenizer = tokenizer
         self.seqlen = seqlen
         self.train_bs = batch_size
         self.nblocks = nblocks
+        self.dataset = dataset
+        self.iters = iters
+        if self.iters <= 0:
+            logger.warning("iters must be positive, reset it to 200")
+            self.iters = 200
+        self.lr = lr or (1.0 / self.iters)  ##must after iter setting
+        self.minmax_lr = minmax_lr or self.lr
+
+        ##activation
+        self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
+        self.act_bits = act_bits if not (act_bits is None) else self.bits
+        self.act_sym = act_sym if not (act_sym is None) else self.sym
+        self.act_dynamic = act_dynamic
+
+        self.data_type = data_type
+        self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
+        self.model = model.eval()
+        self.tokenizer = tokenizer
         self.device = detect_device(device)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-        self.dataset = dataset
-
-        self.iters = iters
         self.quant_block_list = quant_block_list
-        if self.iters <= 0:
-            logger.warning("iters must be positive, reset it to 200")
-            self.iters = 200
-        self.lr = lr or (1.0 / self.iters)
-        self.minmax_lr = minmax_lr or self.lr
 
         self.sampler = sampler
         self.gradient_accumulate_steps = gradient_accumulate_steps
@@ -203,14 +206,10 @@ class AutoRound(object):
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
         self.optimizer = self.get_optimizer(None)
-        self.share_attention_mask_flag = None
-        self.hidden_dim_flag = None
+        self.share_attention_mask_flag = None  ##TODO remove it later
         self.infer_bs_coeff = 1
-        self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
-        self.act_bits = act_bits if not (act_bits is None) else self.bits
-        self.act_sym = act_sym if not (act_sym is None) else self.sym
-        self.act_dynamic = act_dynamic
-        self.set_layerwise_config(self.layer_config)
+
+        self.set_layerwise_config(self.layer_config)  ##better place in the end
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
         logger.info(f"using {self.model.dtype} for quantization tuning")
@@ -728,8 +727,8 @@ class AutoRound(object):
                                 self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
                         elif key not in self.inputs[name].keys():
                             self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
-                                    if self.not_share_position_ids_flag \
-                                    else to_device(kwargs[key], device=torch.device("cpu"))
+                                if self.not_share_position_ids_flag \
+                                else to_device(kwargs[key], device=torch.device("cpu"))
                         elif kwargs[key] is not None and self.not_share_position_ids_flag:
                             self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif 'rotary_pos_emb' in key or 'cu_seqlens' in key:
@@ -746,7 +745,7 @@ class AutoRound(object):
                             self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif key not in self.inputs[name].keys():
                         self.inputs[name][key] = to_device(kwargs[key], device=torch.device("cpu"))
-                    
+
             if name == self.last_cache_name:
                 raise NotImplementedError
             else:
@@ -1177,7 +1176,7 @@ class AutoRound(object):
                 " particularly for 2-bit quantization and smaller models."
                 " We recommend exporting to either the AutoAWQ format (4 bits) or "
                 "the AutoRound format (2 bits) to enhance performance."
-             )
+            )
         if "awq" in format and not self.bits == 4:
             raise ValueError("The AWQ format only supports W4 quantization ")
 
@@ -1620,6 +1619,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer=optimizer,
             **kwargs,
         )
-
-
-
