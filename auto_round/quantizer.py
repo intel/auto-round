@@ -46,7 +46,7 @@ def reshape_tensor(v, group_size=-1):
 
 def quant_tensor(
         quant_func, data, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-        weight_min=None, weight_max=None, q_scale_thresh=1e-5, data_type="int",
+        weight_min=None, weight_max=None, q_scale_thresh=1e-5, **kwargs,
 ):
     """Quantizes and dequantizes weight, handing the group size issue .
 
@@ -70,7 +70,7 @@ def quant_tensor(
     if group_size == -1 or data.shape[1] < group_size:
         data, scale, zp = quant_func(data, bits, v=v, min_scale=min_scale, max_scale=max_scale,
                                      scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
-                                     q_scale_thresh=q_scale_thresh, data_type=data_type)
+                                     q_scale_thresh=q_scale_thresh, **kwargs)
         data = data.reshape(orig_shape)
         return data, scale, zp
 
@@ -78,7 +78,7 @@ def quant_tensor(
         data = data.reshape(-1, group_size)
         data, scale, zp = quant_func(data, bits, v=v, min_scale=min_scale, max_scale=max_scale,
                                      scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
-                                     q_scale_thresh=q_scale_thresh, data_type=data_type)
+                                     q_scale_thresh=q_scale_thresh, **kwargs)
         data = data.reshape(orig_shape)
         return data, scale, zp
 
@@ -89,7 +89,7 @@ def quant_tensor(
         data_new = data_new.reshape(-1, group_size)
         data_new, scale, zp = quant_func(data_new, bits, v=v, min_scale=min_scale,
                                          max_scale=max_scale, scale_dtype=scale_dtype, weight_min=weight_min,
-                                         weight_max=weight_max, q_scale_thresh=q_scale_thresh, data_type=data_type)
+                                         weight_max=weight_max, q_scale_thresh=q_scale_thresh, **kwargs)
         data_new = data_new.reshape(tmp_shape[0], -1)
         data_new = data_new[:, :-pad_len]
         data_new = data_new.reshape(orig_shape)

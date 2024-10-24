@@ -63,7 +63,7 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
 @register_dtype("int_asym")
 def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
                       weight_min=None, weight_max=None, q_scale_thresh=0.0, **kwargs):
-    """Quantize and de-quantize weight asymmetrically. full range, credict goes to llamacpp community
+    """Quantize and de-quantize weight asymmetrically.
 
     Args:
         weight: Tensor containing the weight to be quantized
@@ -106,7 +106,7 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
 @register_dtype("int_sym_gptq")
 def quant_tensor_sym_gptq(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, weight_min=None,
                      weight_max=None, q_scale_thresh=0.0, **kwargs):
-    """Quantize and de-quantize weight asymmetrically. full range, credict goes to llamacpp community
+    """Quantize and de-quantize weight asymmetrically.
 
     Args:
         weight: Tensor containing the weight to be quantized
