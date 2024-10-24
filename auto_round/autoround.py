@@ -47,7 +47,7 @@ from .utils import (
     to_dtype,
     get_layer_names_in_block,
     mv_module_from_gpu,
-    unsupport_meta_device, detect_device_count,
+    unsupport_meta_device, detect_device_count, clear_memory,
 )
 
 from .low_cpu_mem.utils import get_layers_before_block
@@ -289,7 +289,7 @@ class AutoRound(object):
                     self.train_bs = total_samples
                     logger.warning(f"force the train batch size to {total_samples}")
 
-            torch.cuda.empty_cache()
+            clear_memory()
             self.quant_blocks(
                 self.model,
                 inputs,
@@ -380,7 +380,7 @@ class AutoRound(object):
                     self.model)  ##self.model.hf_device_map has not been changed
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-        torch.cuda.empty_cache()
+        clear_memory()
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
@@ -391,7 +391,7 @@ class AutoRound(object):
                 layer_input[i] = None
                 if q_layer_input is not None:
                     q_layer_input[i] = None
-            torch.cuda.empty_cache()
+            clear_memory()
 
     def set_layerwise_config(self, layer_config):
         """Sets the layer-wise configuration based on the provided layer_config.
@@ -468,7 +468,7 @@ class AutoRound(object):
             else:
                 output.extend(list(torch.split(tmp_output, 1, dim=self.input_dim)))
         if self.low_gpu_mem_usage:
-            torch.cuda.empty_cache()
+            clear_memory()
 
         return output
 
@@ -566,7 +566,7 @@ class AutoRound(object):
         if self.low_cpu_mem_usage:
             for n, m in embed_layers:
                 m = m.to("meta")
-        # torch.cuda.empty_cache()
+
 
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
@@ -596,7 +596,7 @@ class AutoRound(object):
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
             self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-            torch.cuda.empty_cache()
+            clear_memory()
         except:
             logger.info("switch to cpu to cache inputs")
             if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 8:
@@ -605,7 +605,7 @@ class AutoRound(object):
                                f" for optimal performance during calibration when enabling lm-head quantization. "
                                f"Otherwise, the process may be significantly slower.")
             self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-            torch.cuda.empty_cache()
+            clear_memory()
             all_inputs = self.cache_inter_data(
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
@@ -1054,17 +1054,13 @@ class AutoRound(object):
                 cache_device=self.cache_device
             )
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
-            for i in range(len(input_ids)):
-                input_ids[i] = None
-            torch.cuda.empty_cache()
+            clear_memory(input_ids)
 
             return q_outputs, output
 
         else:
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
-            for i in range(len(input_ids)):
-                input_ids[i] = None
-            torch.cuda.empty_cache()
+            clear_memory(input_ids)
             return None, output
 
     def quant_blocks(
@@ -1088,13 +1084,13 @@ class AutoRound(object):
         None
         """
         q_input = None
-        torch.cuda.empty_cache()
+        clear_memory()
         for n, m in model.named_parameters():
             m.requires_grad_(False)
         input_ids = inputs["input_ids"]
         inputs.pop("input_ids", None)
         input_others = inputs
-        torch.cuda.empty_cache()
+        clear_memory()
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
         ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
@@ -1140,7 +1136,7 @@ class AutoRound(object):
         del input_others
         del inputs
 
-        torch.cuda.empty_cache()
+        clear_memory()
 
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.
