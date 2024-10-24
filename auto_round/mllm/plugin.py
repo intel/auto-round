@@ -96,7 +96,6 @@ class CogVLM2Plugin(BasicPlugin):
     def get_input(
             model, tokenizer, text, images, max_length=2048, 
             padding=True, truncation=True, **kwargs):
-        breakpoint()
         padding_len = 2303
         max_length += padding_len
         input_data = model.build_conversation_input_ids(
@@ -143,12 +142,6 @@ class CogVLM2Plugin(BasicPlugin):
                 max_length,
                 pad_value=-100
             )
-        input_data = {
-            'input_ids': input_data['input_ids'].unsqueeze(0),
-            'token_type_ids': input_data['token_type_ids'].unsqueeze(0),
-            'attention_mask': input_data['attention_mask'].unsqueeze(0),
-            'images': [[input_data['images'][0]]] if input_data['images'] is not None else None,
-        }
         return input_data
     
     @staticmethod

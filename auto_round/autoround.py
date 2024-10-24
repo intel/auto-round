@@ -548,7 +548,7 @@ class AutoRound(object):
             except NotImplementedError:
                 pass
             except Exception as error:
-                logger.error(error)
+                raise error
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
             if total_cnt >= nsamples:
                 break
@@ -597,18 +597,21 @@ class AutoRound(object):
             )
             self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             torch.cuda.empty_cache()
-        except:
-            logger.info("switch to cpu to cache inputs")
-            if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 8:
-                logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
-                               f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
-                               f" for optimal performance during calibration when enabling lm-head quantization. "
-                               f"Otherwise, the process may be significantly slower.")
-            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-            torch.cuda.empty_cache()
-            all_inputs = self.cache_inter_data(
-                block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
-            )
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e):
+                logger.info("switch to cpu to cache inputs")
+                if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 8:
+                    logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
+                                f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
+                                f" for optimal performance during calibration when enabling lm-head quantization. "
+                                f"Otherwise, the process may be significantly slower.")
+                self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+                torch.cuda.empty_cache()
+                all_inputs = self.cache_inter_data(
+                    block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
+                )
+            else:
+                raise
         return all_inputs
 
     @torch.no_grad()
