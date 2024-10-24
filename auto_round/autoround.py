@@ -280,8 +280,9 @@ class AutoRound(object):
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
-            self.inputs = None
-            del self.inputs
+
+            clear_memory(self.inputs)
+
             if "input_ids" in inputs.keys():
                 total_samples = len(inputs["input_ids"])
                 self.n_samples = total_samples
@@ -289,7 +290,7 @@ class AutoRound(object):
                     self.train_bs = total_samples
                     logger.warning(f"force the train batch size to {total_samples}")
 
-            clear_memory()
+
             self.quant_blocks(
                 self.model,
                 inputs,
@@ -387,11 +388,8 @@ class AutoRound(object):
             q_layer_input = q_layer_inputs[layer_name] if enable_quanted_input else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
             self.quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
-            for i in range(len(layer_input)):
-                layer_input[i] = None
-                if q_layer_input is not None:
-                    q_layer_input[i] = None
-            clear_memory()
+            del layer_input
+            clear_memory(q_layer_input)
 
     def set_layerwise_config(self, layer_config):
         """Sets the layer-wise configuration based on the provided layer_config.
@@ -1453,8 +1451,6 @@ class AutoOPTRound(AutoRound):
             **kwargs,
         )
 
-        if layer_config is None:
-            layer_config = {}
         self.optimizer = self.get_optimizer(optimizer)
 
     def get_optimizer(self, optimizer):
