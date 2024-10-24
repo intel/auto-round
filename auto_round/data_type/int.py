@@ -13,14 +13,14 @@
 # limitations under the License.
 
 import torch
-from .utils import floor_ste, round_ste
-from auto_round.data_type.register import register_dtype, QUANT_FUNC_WITH_DTYPE
+from .utils import  round_ste
+from auto_round.data_type.register import register_dtype
 
 
 @register_dtype("int_sym")
 def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, weight_min=None,
                      weight_max=None, q_scale_thresh=0.0, **kwargs):
-    """Quantizes and dequantizes weight asymmetrically. full range, credict goes to llamacpp community
+    """Quantize and de-quantize weight asymmetrically. full range, credict goes to llamacpp community
 
     Args:
         weight: Tensor containing the weight to be quantized
@@ -30,9 +30,11 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
         max_scale: Maximum scale coefficient for weight
         weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
         weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
+        scale_dtype: the dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
+        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
 
     Returns:
-        Quantized and dequantized weight, scale, zero-point
+        Quantized and de-quantized weight, scale, zero-point
     """
     maxq = torch.tensor(2 ** (bits - 1))
     if weight_min is None or weight_max is None:
@@ -41,13 +43,11 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
     else:
         wmin_tmp = weight_min
         wmax_tmp = weight_max
-    if isinstance(min_scale, torch.Tensor):
-        wmin = wmin_tmp * min_scale
-        wmax = wmax_tmp * max_scale
-    else:
-        wmin = wmin_tmp
-        wmax = wmax_tmp
-    max_v = (2 * (torch.abs(wmax) < torch.abs(wmin)).int() - 1) * torch.max(torch.abs(wmax), torch.abs(wmin))
+
+    wmin_abs = -wmin_tmp * min_scale
+    wmax_abs = wmax_tmp * max_scale
+
+    max_v = (2 * (wmax_abs< wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
 
     scale = (max_v / maxq).to(scale_dtype)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
@@ -63,7 +63,7 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
 @register_dtype("int_asym")
 def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
                       weight_min=None, weight_max=None, q_scale_thresh=0.0, **kwargs):
-    """Quantizes and dequantizes weight asymmetrically.
+    """Quantize and de-quantize weight asymmetrically. full range, credict goes to llamacpp community
 
     Args:
         weight: Tensor containing the weight to be quantized
@@ -73,9 +73,11 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
         max_scale: Maximum scale coefficient for weight
         weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
         weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
+        scale_dtype: the dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
+        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
 
     Returns:
-        Quantized and dequantized weight, scale, zero-point
+        Quantized and de-quantized weight, scale, zero-point
     """
     maxq = torch.tensor(2 ** bits - 1)
     if weight_min is None or weight_max is None:
@@ -104,7 +106,7 @@ def quant_tensor_asym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_d
 @register_dtype("int_sym_gptq")
 def quant_tensor_sym_gptq(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16, weight_min=None,
                      weight_max=None, q_scale_thresh=0.0, **kwargs):
-    """Quantizes and dequantizes weight symmetrically.
+    """Quantize and de-quantize weight asymmetrically. full range, credict goes to llamacpp community
 
     Args:
         weight: Tensor containing the weight to be quantized
@@ -114,9 +116,11 @@ def quant_tensor_sym_gptq(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, sca
         max_scale: Maximum scale coefficient for weight
         weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
         weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
+        scale_dtype: the dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
+        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
 
     Returns:
-        Quantized and dequantized weight, scale, zero-point
+        Quantized and de-quantized weight, scale, zero-point
     """
     maxq = torch.tensor(2 ** bits - 1)
     if weight_min is None or weight_max is None:
@@ -152,7 +156,7 @@ def quant_tensor_sym_gptq(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, sca
 
 def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
                                weight_min=None, weight_max=None, q_scale_thresh=0.0, **kwargs):
-    """Quantizes and dequantizes weight asymmetrically without rounding, this is mainly for tuning bias, norm.
+    """Quantize and de-quantize weight asymmetrically without rounding, this is mainly for tuning bias, norm.
 
     Args:
         weight: Tensor containing the weight to be quantized
@@ -162,9 +166,11 @@ def quant_tensor_asym_wo_round(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0
         max_scale: Maximum scale coefficient for weight
         weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
         weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
+        scale_dtype: the dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
+        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
 
     Returns:
-        Quantized and dequantized weight, scale, zero-point
+        Quantized and de-quantize weight, scale, zero-point
     """
     maxq = torch.tensor(2 ** bits - 1)
     if weight_min is None or weight_max is None:

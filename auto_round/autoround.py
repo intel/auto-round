@@ -468,7 +468,8 @@ class AutoRound(object):
                 output.append(tmp_output)
             else:
                 output.extend(list(torch.split(tmp_output, 1, dim=self.input_dim)))
-        torch.cuda.empty_cache()
+        if self.low_gpu_mem_usage:
+            torch.cuda.empty_cache()
 
         return output
 
@@ -849,6 +850,7 @@ class AutoRound(object):
         pick_samples = train_bs * gradient_accumulate_steps
         if self.sampler != "rand":
             whole_indices = torch.randperm(nsamples)[:pick_samples]
+        total_loss = 0
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
@@ -891,7 +893,7 @@ class AutoRound(object):
                 best_params = collect_best_params(wrapper_linear)
 
             if not self.not_use_best_mse:
-                if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+                if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
             self.step(scaler, optimizer, lr_schedule)
 
@@ -902,7 +904,7 @@ class AutoRound(object):
             best_iter = last_best_iter
         with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
-        layer = mv_module_from_gpu(layer, self.low_cpu_mem_usage)
+        mv_module_from_gpu(layer, self.low_cpu_mem_usage)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
@@ -973,6 +975,7 @@ class AutoRound(object):
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
+        total_loss = 0
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
@@ -1022,7 +1025,7 @@ class AutoRound(object):
                 best_params = collect_best_params(block)
 
             if not self.not_use_best_mse:
-                if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+                if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
             self.step(scaler, optimizer, lr_schedule)
 
@@ -1047,7 +1050,7 @@ class AutoRound(object):
                 block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
                 cache_device=self.cache_device
             )
-            block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
+            mv_module_from_gpu(block, self.low_cpu_mem_usage)
             for i in range(len(input_ids)):
                 input_ids[i] = None
             torch.cuda.empty_cache()
@@ -1055,7 +1058,7 @@ class AutoRound(object):
             return q_outputs, output
 
         else:
-            block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
+            mv_module_from_gpu(block, self.low_cpu_mem_usage)
             for i in range(len(input_ids)):
                 input_ids[i] = None
             torch.cuda.empty_cache()
@@ -1127,7 +1130,6 @@ class AutoRound(object):
                 device=device,
             )
 
-            torch.cuda.empty_cache()
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
 
         del q_input
