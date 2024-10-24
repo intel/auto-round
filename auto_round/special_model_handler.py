@@ -13,31 +13,9 @@
 # limitations under the License.
 
 import torch
-
-share_attention_mask_tuple = ("baichuan",)
+import json
 special_states_dim_tuple = ("chatglm",)
-not_share_position_ids_tuple = ("llava", "phi3_v", "qwen2_vl",)
-not_share_rotary_pos_emb_tuple = ("qwen2_vl",)
-def check_share_attention_mask(model, hidden_states, attention_mask=None, **kwargs):
-    """Checks if the attention mask states of the hidden states are shared in the model.
-
-    Args:
-        hidden_states (torch.Tensor): The hidden states of the model.
-        attention_mask (torch.Tensor, optional): The attention mask tensor. Defaults to None.
-        **kwargs: Additional keyword arguments.
-
-    Returns:
-        bool: True if attention mask is shared in the model, False otherwise.
-    """
-    if attention_mask is None or not isinstance(hidden_states, torch.Tensor):
-        return False
-    is_special = False
-    for key in share_attention_mask_tuple:
-        if hasattr(model, "config") and key in model.config.model_type:
-            is_special = True
-            break
-    return bool(is_special and attention_mask.shape[0] != hidden_states.shape[0])
-
+shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
 
 def check_hidden_state_dim(model, positional_args):
     """Checks the dimensionality of the hidden states.
@@ -56,20 +34,16 @@ def check_hidden_state_dim(model, positional_args):
     return int(is_special and positional_args is not None)
 
 
-def check_not_share_position_ids(model, **kwargs):
-    is_special = False
-    for key in not_share_position_ids_tuple:
-        if hasattr(model, "config") and key in model.config.model_type:
-            is_special = True
-            break
-    return bool(is_special)
-
-
-def check_not_share_rotary_pos_emb(model, **kwargs):
-    is_special = False
-    for key in not_share_rotary_pos_emb_tuple:
-        if hasattr(model, "config") and key in model.config.model_type:
-            is_special = True
-            break
-    return bool(is_special)
-
+def get_cache_data(batch_size, data, data_name):
+    new_data = data
+    if batch_size <= 1:
+        return new_data
+    if data_name in shareable_keywords:
+        return None
+    if "alibi" in data_name:
+        if isinstance(data, torch.Tensor):
+            alibi = data
+            alibi = alibi.reshape(batch_size, -1, alibi.shape[1], alibi.shape[2])
+            new_data = alibi
+    return new_data
+                

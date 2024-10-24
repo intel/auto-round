@@ -29,6 +29,7 @@ from torch.amp import autocast
 from functools import lru_cache
 from packaging import version
 
+from .special_model_handler import shareable_keywords
 
 @lru_cache(None)
 def warning_once(self, msg: str):
@@ -347,9 +348,7 @@ def collect_best_params(block):
 
 @torch.no_grad()
 def sampling_inputs(input_ids, input_others, indices, seqlen,
-                    share_attention_mask_flag=False,
-                    not_share_position_ids_flag=False,
-                    not_share_rotary_pos_emb_flag=False, input_dim=0):
+                    input_dim=0):
     """Samples inputs based on the given indices and sequence length.
 
     Args:
@@ -366,19 +365,20 @@ def sampling_inputs(input_ids, input_others, indices, seqlen,
     current_input_ids = torch.cat(current_input_ids, dim=input_dim)
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
-        if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key) \
-                or (not_share_position_ids_flag and ("position_ids" in key or \
-                    "cache_position" in key or "position_embeddings" in key)) \
-                or (not_share_rotary_pos_emb_flag and ("rotary_pos_emb" in key or 'cu_seqlens' in key)) \
-                or "cross_attention_states" in key:
+        if "positional_inputs" in key:
+            continue
+        if (key not in shareable_keywords or len(indices) == 1) \
+                and not isinstance(input_others[key], (str, bool, type(None))):
             current_input_others[key] = None
             if input_others[key] is not None:
                 current_input_others[key] = [input_others[key][i] for i in indices]
-                if not isinstance(current_input_others[key], torch.Tensor):
-                    if len(current_input_others[key]) == 1:
-                        current_input_others[key] = current_input_others[key][0]
-                    else:
+                if len(indices) == 1:
+                    current_input_others[key] = current_input_others[key][0]
+                else:
+                    try:
                         current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+                    except TypeError as err:
+                        logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
         else:
             current_input_others[key] = input_others[key]
 
@@ -868,3 +868,4 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             use_marlin=not disable_marlin,
         )
     return QuantLinear
+

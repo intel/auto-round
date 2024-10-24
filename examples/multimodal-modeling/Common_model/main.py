@@ -420,6 +420,7 @@ if __name__ == '__main__':
     questions = json.load(open(args.question_file, "r"))
     config = transformers.AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     model_type = config.model_type
+    processor = None
     if "mllama" in model_type:
         from transformers import MllamaForConditionalGeneration
         model = MllamaForConditionalGeneration.from_pretrained(args.model_name, attn_implementation="eager",

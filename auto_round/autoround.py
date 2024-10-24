@@ -18,7 +18,7 @@ import transformers
 import copy
 import time
 from typing import Optional, Union
-
+import json
 from transformers import set_seed
 from torch import autocast
 from tqdm import tqdm
@@ -26,9 +26,8 @@ from tqdm import tqdm
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
     WrapperTransformerConv1d
 from .special_model_handler import (check_hidden_state_dim,
-                                    check_share_attention_mask,
-                                    check_not_share_position_ids,
-                                    check_not_share_rotary_pos_emb)
+                                    shareable_keywords,
+                                    get_cache_data)
 from .utils import (
     CpuInfo,
     block_forward,
@@ -203,8 +202,7 @@ class AutoRound(object):
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
         self.optimizer = self.get_optimizer(None)
-        self.share_attention_mask_flag = None
-        self.hidden_dim_flag = None
+        self.input_dim = None
         self.infer_bs_coeff = 1
         self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
         self.act_bits = act_bits if not (act_bits is None) else self.bits
@@ -456,18 +454,12 @@ class AutoRound(object):
                 input_others,
                 indices,
                 self.seqlen,
-                self.share_attention_mask_flag,
-                self.not_share_position_ids_flag,
-                self.not_share_rotary_pos_emb_flag,
                 self.input_dim
             )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
-            if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
-                output.append(tmp_output)
-            else:
-                output.extend(list(torch.split(tmp_output, 1, dim=self.input_dim)))
+            output.extend(list(torch.split(tmp_output, 1, dim=self.input_dim)))
         torch.cuda.empty_cache()
 
         return output
@@ -673,23 +665,14 @@ class AutoRound(object):
             Returns:
                 NotImplementedError: Getting the first layer inputs and then raise the error to save runtime.
             """
-            if self.share_attention_mask_flag is None:
+            if self.input_dim is None:
                 self.input_dim = check_hidden_state_dim(self.model, positional_args)
-                self.share_attention_mask_flag = check_share_attention_mask(self.model, hidden_states, **kwargs)
-                self.not_share_position_ids_flag = check_not_share_position_ids(self.model, **kwargs)
-                self.not_share_rotary_pos_emb_flag = check_not_share_rotary_pos_emb(self.model, **kwargs)
             if name in self.inputs:
-                if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
-                    self.inputs[name]["input_ids"].append(hidden_states.to("cpu"))
-                else:
-                    self.inputs[name]["input_ids"].extend(
+                self.inputs[name]["input_ids"].extend(
                         list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim)))
             else:
                 self.inputs[name] = {}
-                if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
-                    self.inputs[name]["input_ids"] = [hidden_states.to("cpu")]
-                else:
-                    self.inputs[name]["input_ids"] = list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim))
+                self.inputs[name]["input_ids"] = list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim))
 
             if "positional_inputs" not in self.inputs[name]:
                 self.inputs[name]["positional_inputs"] = []
@@ -698,53 +681,32 @@ class AutoRound(object):
 
             for key in kwargs.keys():
                 if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) \
-                        or isinstance(kwargs[key], tuple) \
-                        or (key == "alibi") or (key == "attention_mask"):
-                    if "attention_mask" in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = None
-                        if kwargs[key] is not None:
-                            if (not self.share_attention_mask_flag) and self.inputs[name][key] is not None:
-                                self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
-                            else:
-                                self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0))
-                    elif "alibi" in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = None
-                        if isinstance(kwargs[key], torch.Tensor):
-                            alibi = kwargs[key]
-                            batch = kwargs["attention_mask"].shape[0]
-                            alibi = alibi.reshape(batch, -1, alibi.shape[1], alibi.shape[2])
-                            if (not self.share_attention_mask_flag) and self.inputs[name][key] is not None:
-                                self.inputs[name][key].extend(list(torch.split(alibi.to("cpu"), 1, dim=0)))
-                            else:
-                                self.inputs[name][key] = list(torch.split(alibi.to("cpu"), 1, dim=0))
-                    elif "position_ids" in key or 'cache_position' in key or 'position_embeddings' in key:
-                        if self.train_bs == 1 and self.not_share_position_ids_flag:
-                            if key not in self.inputs[name].keys():
-                                self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
-                            else:
-                                self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
-                        elif key not in self.inputs[name].keys():
-                            self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
-                                    if self.not_share_position_ids_flag \
-                                    else to_device(kwargs[key], device=torch.device("cpu"))
-                        elif kwargs[key] is not None and self.not_share_position_ids_flag:
-                            self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
-                    elif 'rotary_pos_emb' in key or 'cu_seqlens' in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))] \
-                                if self.not_share_rotary_pos_emb_flag \
-                                else to_device(kwargs[key], device=torch.device("cpu"))
-                        elif kwargs[key] is not None and self.not_share_rotary_pos_emb_flag:
-                            self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
-                    elif "cross_attention_states" in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
+                        or isinstance(kwargs[key], tuple):
+                        # or (key == "alibi") or (key == "attention_mask"):
+                    if key not in self.inputs[name].keys(): # initilization
+                        data = to_device(kwargs[key], device=torch.device("cpu"))
+                        if data is None or (self.train_bs > 1 and key in shareable_keywords):
+                            self.inputs[name][key] = data
+                            continue
+                        if self.train_bs <= 1:
+                            self.inputs[name][key] = [data]
                         else:
-                            self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
-                    elif key not in self.inputs[name].keys():
-                        self.inputs[name][key] = to_device(kwargs[key], device=torch.device("cpu"))
+                            data = get_cache_data(self.train_bs, data, key)
+                            self.inputs[name][key] = list(torch.split(data, 1, dim=0))
+                    else: # append cache inputs
+                        new_data = get_cache_data(self.train_bs, kwargs[key], key)
+                        if new_data is None: # shareable args or NoneType
+                            continue
+                        new_data = to_device(new_data, device=torch.device("cpu"))
+                        if self.train_bs <= 1:
+                            self.inputs[name][key].append(new_data)
+                        else:
+                            self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=0)))
+                elif isinstance(kwargs[key], (str, bool, type(None))) and 'use_cache' not in key:
+                    if key not in self.inputs[name].keys():
+                        self.inputs[name][key] = kwargs[key]
+                else:
+                    pass # Parameters not to be cached
                     
             if name == self.last_cache_name:
                 raise NotImplementedError
@@ -984,9 +946,6 @@ class AutoRound(object):
                     input_others,
                     indices,
                     seqlen=self.seqlen,
-                    share_attention_mask_flag=self.share_attention_mask_flag,
-                    not_share_position_ids_flag=self.not_share_position_ids_flag,
-                    not_share_rotary_pos_emb_flag=self.not_share_rotary_pos_emb_flag,
                     input_dim=self.input_dim,
                 )
 
@@ -1618,6 +1577,7 @@ class AutoAdamRound(AutoOPTRound):
             optimizer=optimizer,
             **kwargs,
         )
+
 
 
 
