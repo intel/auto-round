@@ -135,7 +135,6 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         qzeros = qzeros.astype(np.int32)
         self.qzeros = torch.from_numpy(qzeros)
 
-        delattr(self, "g_idx")
 
 
 __all__ = ["QuantLinear"]

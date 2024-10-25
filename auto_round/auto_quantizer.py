@@ -48,6 +48,8 @@ from auto_round.backend import get_layer_backend, dynamic_import_inference_linea
 
 import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
 import auto_round_extension.qbits.qlinear_qbits_gptq as qlinear_qbits_gptq
+import auto_round_extension.ipex.qlinear_ipex_gptq as qlinear_ipex_gptq
+import auto_round_extension.ipex.qlinear_ipex_awq as qlinear_ipex_awq
 from auto_round.backend import BackendInfos
 from transformers.utils.versions import require_version
 from enum import Enum
@@ -399,9 +401,10 @@ class AutoRoundQuantizer(HfQuantizer):
         target_device = self.detect_device(quantization_config.target_backend, quantization_config.backend)
 
         if hasattr(quantization_config, "backend"):  # pragma: no cover
-            if "hpu" == target_device and model.dtype != torch.bfloat16:
-                logger.info("Change the dtype to `bfloat16` as HPU does not support float16")
+            if ("hpu" == target_device or "cpu" == target_device)and model.dtype != torch.bfloat16:
+                logger.info(f"Change the dtype to `bfloat16` as {target_device.upper()} does not support float16")
                 model = model.to(torch.bfloat16)
+
 
         bits = quantization_config.bits
         group_size = quantization_config.group_size
@@ -576,7 +579,7 @@ class AutoRoundQuantizer(HfQuantizer):
             new_layer.device = layer_device
             set_module(module, layer_name, new_layer)
 
-    def qbits_post_init(self, model):
+    def cpu_post_init(self, model):
         dep_check = True
         for layer in model.modules():
             if isinstance(layer, (qlinear_qbits.QuantLinear, qlinear_qbits_gptq.QuantLinear)):
@@ -584,6 +587,9 @@ class AutoRoundQuantizer(HfQuantizer):
                     layer.req_check()
                 layer.post_init()
                 dep_check = False
+            if isinstance(layer,(qlinear_ipex_gptq.QuantLinear, qlinear_ipex_awq.QuantLinear)):
+                layer.post_init()
+
         return model
 
     def repack_marlin(self, model):
@@ -693,7 +699,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
         model = autoround_post_init(model)
         # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits. 
-        model = self.qbits_post_init(model)
+        model = self.cpu_post_init(model)
 
         return model
 

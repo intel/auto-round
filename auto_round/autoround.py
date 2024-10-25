@@ -515,7 +515,7 @@ class AutoRound(object):
             elif isinstance(data, str):
                 if self.tokenizer is None:
                     logger.error("please provide tokenizer for string input")
-                    exit()
+                    exit(-1)
                 data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
                 data_new = {}
                 for key in data.keys():
@@ -553,7 +553,7 @@ class AutoRound(object):
                 f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
                 f"dataset or decease the sequence length"
             )
-            exit()
+            exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantification. "
@@ -1166,7 +1166,7 @@ class AutoRound(object):
         format = format.split(":")[0]
         if format not in EXPORT_FORMAT:
             logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
-            exit()
+            exit(-1)
         save_quantized_as_format = EXPORT_FORMAT.get(format)
         if "gptq" in format and not self.sym:
             logger.warning(
@@ -1252,7 +1252,7 @@ class AutoRound(object):
             layer = get_module(self.model, key)
             if layer is None:
                 logger.error(f"could not find layer {key} in the model, exit...")
-                exit()
+                exit(-1)
             if isinstance(layer, tuple(self.supported_types)) and check_to_quantized(self.layer_config[key]):
                 layer_names.append(key)
 
