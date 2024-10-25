@@ -584,7 +584,7 @@ class AutoRoundQuantizer(HfQuantizer):
         dep_check = True
         message = "Repacking to CPU format"
 
-        for n, layer in tqdm(model.named_modules(), desc=message, total=len(list(model.named_modules()))): ##not exit correctly
+        for n, layer in tqdm(model.named_modules(), desc=message, total=len(list(model.named_modules())), leave=True): ##not exit correctly
             if isinstance(layer, (qlinear_qbits.QuantLinear, qlinear_qbits_gptq.QuantLinear)):
                 if dep_check:
                     layer.req_check()
