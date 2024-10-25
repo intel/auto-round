@@ -399,6 +399,7 @@ class AutoRoundQuantizer(HfQuantizer):
             quantization_config.target_backend = quantization_config.backend
 
         target_device = self.detect_device(quantization_config.target_backend, quantization_config.backend)
+        self.target_device = target_device
 
         if hasattr(quantization_config, "backend"):  # pragma: no cover
             if ("hpu" == target_device or "cpu" == target_device)and model.dtype != torch.bfloat16:
@@ -581,7 +582,9 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def cpu_post_init(self, model):
         dep_check = True
-        for layer in model.modules():
+        message = "Repacking to CPU format"
+
+        for n, layer in tqdm(model.named_modules(), desc=message, total=len(list(model.named_modules()))): ##not exit correctly
             if isinstance(layer, (qlinear_qbits.QuantLinear, qlinear_qbits_gptq.QuantLinear)):
                 if dep_check:
                     layer.req_check()
@@ -698,8 +701,9 @@ class AutoRoundQuantizer(HfQuantizer):
             self.repack_marlin(model)
 
         model = autoround_post_init(model)
-        # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits. 
-        model = self.cpu_post_init(model)
+        # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits.
+        if self.target_device == "cpu":
+            model = self.cpu_post_init(model)
 
         return model
 

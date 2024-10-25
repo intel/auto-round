@@ -132,7 +132,7 @@ class QuantLinear(nn.Module):
                 }
                 ipex_qconfig_mapping = ipex.quantization.get_weight_only_quant_qconfig_mapping(
                     weight_dtype=weight_dtype[4],
-                    lowp_mode=compute_dtype["int8"],
+                    lowp_mode=compute_dtype["bf16"],
                     act_quant_mode=ipex.quantization.WoqActQuantMode.PER_IC_BLOCK,
                     group_size=self.group_size,
                 )
