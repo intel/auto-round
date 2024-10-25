@@ -60,7 +60,8 @@ A user guide detailing the full list of supported arguments is provided by calli
 Alternatively, you can use ```auto_round``` instead of ```auto-round```.
 
 ```bash
-auto-round --model facebook/opt-125m \
+CUDA_VISIBLE_DEVICES=0 auto-round \
+    --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
     --format auto_round \
@@ -74,7 +75,8 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
   ```bash
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-  auto-round --model facebook/opt-125m \
+CUDA_VISIBLE_DEVICES=0 auto-round \
+    --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
     --nsamples 512 \
@@ -85,7 +87,8 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
   ```bash
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-  auto-round --model facebook/opt-125m \
+CUDA_VISIBLE_DEVICES=0 auto-round \
+    --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
     --nsamples 128 \
