@@ -29,8 +29,7 @@ from auto_round.eval.evaluation import simple_evaluate
 from auto_round.utils import detect_device, get_library_version, detect_device_count
 from auto_round.utils import logger
 
-
-def setup_parser():
+def _basic_parser():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -43,24 +42,15 @@ def setup_parser():
     parser.add_argument("--bits", default=4, type=int,
                         help="number of  bits")
 
-    parser.add_argument("--group_size", default=128, type=int,
-                        help="group size")
-
-    parser.add_argument("--batch_size", default=8, type=int,
-                        help="train batch size")
-
     parser.add_argument("--eval_bs", default=None, type=int,
                         help="eval batch size")
 
     parser.add_argument("--device", default="auto", type=str,
                         help="The device to be used for tuning. The default is set to auto/None,"
                              "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
-
+    
     parser.add_argument("--asym", action='store_true',
                         help=" asym quantization")
-
-    parser.add_argument("--iters", default=200, type=int,
-                        help=" iters")
 
     parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
                         help="The dataset for quantization training. It can be a custom one.")
@@ -76,20 +66,14 @@ def setup_parser():
 
     parser.add_argument("--adam", action='store_true',
                         help="adam")
-
-    parser.add_argument("--seqlen", default=2048, type=int,
-                        help="sequence length")
-
+    
     parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
 
     parser.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
 
-    parser.add_argument("--nsamples", default=128, type=int,
-                        help="number of samples")
-
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
                         help="lower gpu memory but 50%-100% slower")
-
+    
     parser.add_argument("--format", default=None, type=str,
                         help="The format in which to save the model. "
                              "The options are 'auto_round', 'auto_round:gptq','auto_round:awq',"
@@ -169,10 +153,76 @@ def setup_parser():
     
     parser.add_argument("--template", default=None, type=str,
                             help="The template for building training dataset. It can be a custom one.")
+    
+    return parser
+
+
+def setup_parser():
+    parser = _basic_parser()
+
+    parser.add_argument("--group_size", default=128, type=int,
+                        help="group size")
+
+    parser.add_argument("--batch_size", default=8, type=int,
+                        help="train batch size")
+
+    parser.add_argument("--iters", default=200, type=int,
+                        help=" iters")
+
+    parser.add_argument("--seqlen", default=2048, type=int,
+                        help="sequence length")
+
+    parser.add_argument("--nsamples", default=128, type=int,
+                        help="number of samples")
+
 
     args = parser.parse_args()
     return args
 
+def setup_best_parser():
+    parser = _basic_parser()
+
+    parser.add_argument("--group_size", default=128, type=int,
+                        help="group size")
+
+    parser.add_argument("--batch_size", default=8, type=int,
+                        help="train batch size")
+
+    parser.add_argument("--iters", default=1000, type=int,
+                        help=" iters")
+
+    parser.add_argument("--seqlen", default=2048, type=int,
+                        help="sequence length")
+
+    parser.add_argument("--nsamples", default=512, type=int,
+                        help="number of samples")
+
+    args = parser.parse_args()
+    args.low_gpu_mem_usage = True
+
+    return args
+
+def setup_fast_parser():
+    parser = _basic_parser()
+
+    parser.add_argument("--group_size", default=128, type=int,
+                        help="group size")
+
+    parser.add_argument("--batch_size", default=4, type=int,
+                        help="train batch size")
+
+    parser.add_argument("--iters", default=200, type=int,
+                        help=" iters")
+
+    parser.add_argument("--seqlen", default=512, type=int,
+                        help="sequence length")
+
+    parser.add_argument("--nsamples", default=128, type=int,
+                        help="number of samples")
+
+    args = parser.parse_args()
+
+    return args
 
 def tune(args):
     tasks = args.tasks
@@ -487,6 +537,14 @@ def run():
         tune_mllm(args)
     else:
         tune(args)
+
+def run_best():
+    args = setup_best_parser()
+    tune(args)
+
+def run_fast():
+    args = setup_fast_parser()
+    tune(args)
 
 
 def run_mllm():
