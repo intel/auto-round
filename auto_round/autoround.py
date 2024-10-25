@@ -47,7 +47,7 @@ from .utils import (
     to_dtype,
     get_layer_names_in_block,
     mv_module_from_gpu,
-    unsupport_meta_device, detect_device_count,
+    unsupport_meta_device, detect_device_count, clear_memory,
 )
 
 from .low_cpu_mem.utils import get_layers_before_block
@@ -153,12 +153,14 @@ class AutoRound(object):
     ):
         self.quantized = False
         self.model_orig_dtype = model.dtype
-        self.low_cpu_mem_usage = low_cpu_mem_usage
+        self.seed = seed
+        set_seed(self.seed)
         assert not unsupport_meta_device(model), (
             "autoround does not support for params on meta device by transformers` interfaces,"
             "please do not using device_map='auto' in model loading, "
             "or follow examples/language-modeling/main.py to enable low_cpu_mem_usage")
-        self.model = model.eval()
+
+        ## important tuning hype-parameters
         self.amp = amp
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -166,36 +168,37 @@ class AutoRound(object):
         self.nblocks = nblocks
         self.bits = bits
         self.enable_norm_bias_tuning = enable_norm_bias_tuning
-        if self.enable_norm_bias_tuning is None:
-            if self.bits == 2:
-                self.enable_norm_bias_tuning = True
-            else:
-                self.enable_norm_bias_tuning = False
         self.group_size = group_size
         self.sym = sym
         self.low_gpu_mem_usage = low_gpu_mem_usage
-        self.data_type = data_type
-        self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
+        self.low_cpu_mem_usage = low_cpu_mem_usage
         self.layer_config = {} if layer_config is None else layer_config
-        self.seed = seed
-        set_seed(self.seed)
-        self.tokenizer = tokenizer
         self.seqlen = seqlen
         self.train_bs = batch_size
         self.nblocks = nblocks
+        self.dataset = dataset
+        self.iters = iters
+        if self.iters <= 0:
+            logger.warning("iters must be positive, reset it to 200")
+            self.iters = 200
+        self.lr = lr or (1.0 / self.iters)  ##must after iter setting
+        self.minmax_lr = minmax_lr or self.lr
+
+        ##activation
+        self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
+        self.act_bits = act_bits if not (act_bits is None) else self.bits
+        self.act_sym = act_sym if not (act_sym is None) else self.sym
+        self.act_dynamic = act_dynamic
+
+        self.data_type = data_type
+        self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
+        self.model = model.eval()
+        self.tokenizer = tokenizer
         self.device = detect_device(device)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-        self.dataset = dataset
-
-        self.iters = iters
         self.quant_block_list = quant_block_list
-        if self.iters <= 0:
-            logger.warning("iters must be positive, reset it to 200")
-            self.iters = 200
-        self.lr = lr or (1.0 / self.iters)
-        self.minmax_lr = minmax_lr or self.lr
 
         self.sampler = sampler
         self.gradient_accumulate_steps = gradient_accumulate_steps
@@ -203,14 +206,10 @@ class AutoRound(object):
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
         self.optimizer = self.get_optimizer(None)
-        self.share_attention_mask_flag = None
-        self.hidden_dim_flag = None
+        self.share_attention_mask_flag = None  ##TODO remove it later
         self.infer_bs_coeff = 1
-        self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
-        self.act_bits = act_bits if not (act_bits is None) else self.bits
-        self.act_sym = act_sym if not (act_sym is None) else self.sym
-        self.act_dynamic = act_dynamic
-        self.set_layerwise_config(self.layer_config)
+
+        self.set_layerwise_config(self.layer_config)  ##better place in the end
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
         logger.info(f"using {self.model.dtype} for quantization tuning")
@@ -281,8 +280,9 @@ class AutoRound(object):
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
-            self.inputs = None
-            del self.inputs
+
+            clear_memory(self.inputs)
+
             if "input_ids" in inputs.keys():
                 total_samples = len(inputs["input_ids"])
                 self.n_samples = total_samples
@@ -290,7 +290,7 @@ class AutoRound(object):
                     self.train_bs = total_samples
                     logger.warning(f"force the train batch size to {total_samples}")
 
-            torch.cuda.empty_cache()
+
             self.quant_blocks(
                 self.model,
                 inputs,
@@ -381,18 +381,15 @@ class AutoRound(object):
                     self.model)  ##self.model.hf_device_map has not been changed
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-        torch.cuda.empty_cache()
+        clear_memory()
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
             q_layer_input = q_layer_inputs[layer_name] if enable_quanted_input else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
             self.quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
-            for i in range(len(layer_input)):
-                layer_input[i] = None
-                if q_layer_input is not None:
-                    q_layer_input[i] = None
-            torch.cuda.empty_cache()
+            del layer_input
+            clear_memory(q_layer_input)
 
     def set_layerwise_config(self, layer_config):
         """Sets the layer-wise configuration based on the provided layer_config.
@@ -468,7 +465,8 @@ class AutoRound(object):
                 output.append(tmp_output)
             else:
                 output.extend(list(torch.split(tmp_output, 1, dim=self.input_dim)))
-        torch.cuda.empty_cache()
+        if self.low_gpu_mem_usage:
+            clear_memory()
 
         return output
 
@@ -566,10 +564,10 @@ class AutoRound(object):
         if self.low_cpu_mem_usage:
             for n, m in embed_layers:
                 m = m.to("meta")
-        # torch.cuda.empty_cache()
+
 
     @torch.no_grad()
-    def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=[], last_cache_name=None):
+    def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
         """Attempts to cache intermediate data on GPU, if failed, then using CPU.
 
         Args:
@@ -584,6 +582,8 @@ class AutoRound(object):
         Raises:
             Exception: If caching on GPU fails, switches to CPU and caches there.
         """
+        if layer_names is None:
+            layer_names = []
         try:
             if not self.model.device.type == "meta":
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
@@ -594,7 +594,7 @@ class AutoRound(object):
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
             self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-            torch.cuda.empty_cache()
+            clear_memory()
         except:
             logger.info("switch to cpu to cache inputs")
             if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 8:
@@ -603,14 +603,14 @@ class AutoRound(object):
                                f" for optimal performance during calibration when enabling lm-head quantization. "
                                f"Otherwise, the process may be significantly slower.")
             self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-            torch.cuda.empty_cache()
+            clear_memory()
             all_inputs = self.cache_inter_data(
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
         return all_inputs
 
     @torch.no_grad()
-    def cache_inter_data(self, block_names, nsamples, layer_names=[], last_cache_name=None):
+    def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
         """Save the inputs of block_name for calibration.
 
         This method temporarily replaces the forward method of the model to capture
@@ -627,6 +627,8 @@ class AutoRound(object):
         Returns:
             dict: A dictionary containing the inputs for the specified block.
         """
+        if layer_names is None:
+            layer_names = []
         self.inputs = {}
         self.to_cached_layers = block_names + layer_names
         tmp_dtype = None
@@ -727,8 +729,8 @@ class AutoRound(object):
                                 self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
                         elif key not in self.inputs[name].keys():
                             self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
-                                    if self.not_share_position_ids_flag \
-                                    else to_device(kwargs[key], device=torch.device("cpu"))
+                                if self.not_share_position_ids_flag \
+                                else to_device(kwargs[key], device=torch.device("cpu"))
                         elif kwargs[key] is not None and self.not_share_position_ids_flag:
                             self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif 'rotary_pos_emb' in key or 'cu_seqlens' in key:
@@ -745,7 +747,7 @@ class AutoRound(object):
                             self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
                     elif key not in self.inputs[name].keys():
                         self.inputs[name][key] = to_device(kwargs[key], device=torch.device("cpu"))
-                    
+
             if name == self.last_cache_name:
                 raise NotImplementedError
             else:
@@ -849,6 +851,7 @@ class AutoRound(object):
         pick_samples = train_bs * gradient_accumulate_steps
         if self.sampler != "rand":
             whole_indices = torch.randperm(nsamples)[:pick_samples]
+        total_loss = 0
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
@@ -891,7 +894,7 @@ class AutoRound(object):
                 best_params = collect_best_params(wrapper_linear)
 
             if not self.not_use_best_mse:
-                if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+                if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
             self.step(scaler, optimizer, lr_schedule)
 
@@ -902,7 +905,7 @@ class AutoRound(object):
             best_iter = last_best_iter
         with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
-        layer = mv_module_from_gpu(layer, self.low_cpu_mem_usage)
+        mv_module_from_gpu(layer, self.low_cpu_mem_usage)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
@@ -973,6 +976,7 @@ class AutoRound(object):
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
+        total_loss = 0
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
@@ -1022,7 +1026,7 @@ class AutoRound(object):
                 best_params = collect_best_params(block)
 
             if not self.not_use_best_mse:
-                if self.dynamic_max_gap > 0 and i - last_best_iter >= self.dynamic_max_gap:
+                if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
             self.step(scaler, optimizer, lr_schedule)
 
@@ -1047,18 +1051,14 @@ class AutoRound(object):
                 block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
                 cache_device=self.cache_device
             )
-            block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
-            for i in range(len(input_ids)):
-                input_ids[i] = None
-            torch.cuda.empty_cache()
+            mv_module_from_gpu(block, self.low_cpu_mem_usage)
+            clear_memory(input_ids)
 
             return q_outputs, output
 
         else:
-            block = mv_module_from_gpu(block, self.low_cpu_mem_usage)
-            for i in range(len(input_ids)):
-                input_ids[i] = None
-            torch.cuda.empty_cache()
+            mv_module_from_gpu(block, self.low_cpu_mem_usage)
+            clear_memory(input_ids)
             return None, output
 
     def quant_blocks(
@@ -1082,13 +1082,13 @@ class AutoRound(object):
         None
         """
         q_input = None
-        torch.cuda.empty_cache()
+        clear_memory()
         for n, m in model.named_parameters():
             m.requires_grad_(False)
         input_ids = inputs["input_ids"]
         inputs.pop("input_ids", None)
         input_others = inputs
-        torch.cuda.empty_cache()
+        clear_memory()
         input_ids = to_device(input_ids, self.cache_device)
         input_others = to_device(input_others, self.cache_device)
         ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
@@ -1127,7 +1127,6 @@ class AutoRound(object):
                 device=device,
             )
 
-            torch.cuda.empty_cache()
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
 
         del q_input
@@ -1135,7 +1134,7 @@ class AutoRound(object):
         del input_others
         del inputs
 
-        torch.cuda.empty_cache()
+        clear_memory()
 
     def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
         """Save the quantized model to the specified output directory in the specified format.
@@ -1175,7 +1174,7 @@ class AutoRound(object):
                 " particularly for 2-bit quantization and smaller models."
                 " We recommend exporting to either the AutoAWQ format (4 bits) or "
                 "the AutoRound format (2 bits) to enhance performance."
-             )
+            )
         if "awq" in format and not self.bits == 4:
             raise ValueError("The AWQ format only supports W4 quantization ")
 
@@ -1452,8 +1451,6 @@ class AutoOPTRound(AutoRound):
             **kwargs,
         )
 
-        if layer_config is None:
-            layer_config = {}
         self.optimizer = self.get_optimizer(optimizer)
 
     def get_optimizer(self, optimizer):
@@ -1618,6 +1615,3 @@ class AutoAdamRound(AutoOPTRound):
             optimizer=optimizer,
             **kwargs,
         )
-
-
-

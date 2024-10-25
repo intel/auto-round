@@ -28,7 +28,7 @@ from torch.amp import autocast
 
 from functools import lru_cache
 from packaging import version
-
+import gc
 
 @lru_cache(None)
 def warning_once(self, msg: str):
@@ -368,7 +368,7 @@ def sampling_inputs(input_ids, input_others, indices, seqlen,
     for key in input_others.keys():
         if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key) \
                 or (not_share_position_ids_flag and ("position_ids" in key or \
-                    "cache_position" in key or "position_embeddings" in key)) \
+                                                     "cache_position" in key or "position_embeddings" in key)) \
                 or (not_share_rotary_pos_emb_flag and ("rotary_pos_emb" in key or 'cu_seqlens' in key)) \
                 or "cross_attention_states" in key:
             current_input_others[key] = None
@@ -403,23 +403,14 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
         input_ids = to_device(input_ids, device)
         input_others = to_device(input_others, device)
     input_tuple = input_others.pop("positional_inputs", None)
-    if "alibi" in input_others.keys():
-        alibi = input_others.pop("alibi")
-        if alibi is not None:
-            alibi = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
-        if amp:
-            with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
-                output = block(
-                    input_ids, alibi=alibi, *input_tuple, **input_others
-                )  ##TODO is this correct for all models with alibi?
-        else:
-            output = block(input_ids, alibi=alibi, *input_tuple, **input_others)
-    else:
-        if amp:
-            with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
-                output = block(input_ids, *input_tuple, **input_others)
-        else:
+    if "alibi" in input_others.keys() and input_others["alibi"] is not None:
+        alibi = input_others["alibi"]
+        input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
+    if amp:
+        with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
             output = block(input_ids, *input_tuple, **input_others)
+    else:
+        output = block(input_ids, *input_tuple, **input_others)
     if isinstance(output, list) or isinstance(output, tuple):
         output = output[0]
     return output
@@ -761,8 +752,6 @@ def is_autoround_exllamav2_available():
     return res
 
 
-
-
 def is_hpu_supported():  # pragma: no cover
     try:
         import subprocess
@@ -868,3 +857,10 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
             use_marlin=not disable_marlin,
         )
     return QuantLinear
+
+
+def clear_memory(tensor=None):
+    if tensor is not None:
+        del tensor
+    gc.collect()
+    torch.cuda.empty_cache()

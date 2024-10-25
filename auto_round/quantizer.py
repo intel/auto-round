@@ -132,8 +132,7 @@ class WrapperLayerNorm(torch.nn.Module):
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
                 self.group_size),
             requires_grad=True)
-        self.params = {}
-        self.params["v"] = self.v
+        self.params = {"v": self.v}
         from auto_round.data_type.int import quant_tensor_asym_wo_round
         self.quant_func = quant_tensor_asym_wo_round
 
