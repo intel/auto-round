@@ -11,14 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import os
 
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer, AutoConfig
 
 
-def load_mllm(pretrained_model_name_or_path, trust_remote_code=False, **kwargs):
-    if "cogvlm2" in pretrained_model_name_or_path:
-        trust_remote_code = True
+def load_mllm(pretrained_model_name_or_path, **kwargs):
+    """Load MLLMs.
+    Args:
+        pretrained_model_name_or_path (str): The name or path of the pretrained model.
+        kwargs: Variable number of keyword arguments.
+    """
+    trust_remote_code = True
+    if "trust_remote_code" in kwargs:
+        trust_remote_code = kwargs["trust_remote_code"]
     config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path)
     processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)

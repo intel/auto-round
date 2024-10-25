@@ -19,16 +19,25 @@ from typing import Dict
 
 import torch
 from torch.utils.data import Dataset, DataLoader
-from PIL import Image
-from transformers.data.data_collator import default_data_collator
 
 from .utils import _extract_data_dir
-from .template import Template, TEMPLATES, load_template
+from .template import Template
 
 
 MLLM_DATASET : Dict[str, Dataset] = {}
 
 def register_dataset(name):
+    """Class decorator to register a DATASET subclass to the registry.
+
+    Decorator function used before a Pattern subclass.
+
+    Args:
+        name: A string. Define the dataset type.
+
+    Returns:
+        cls: The class of register.
+    """
+    
     def register(dataset):
         MLLM_DATASET[name] = dataset
         return dataset
@@ -111,15 +120,44 @@ def get_mllm_dataloader(
         template,
         model,
         tokenizer, 
-        dataset_path,
+        dataset,
         extra_data_dir,
         seqlen=512, 
         bs=1, 
+        split=None,
+        apply_template=None,
 ):
+    """Generate a DataLoader for calibration using specified parameters.
+
+    Args:
+        template (Template): The template to specify process for different mllms.
+        model (Model): The model to quantized.
+        tokenizer (Tokenizer): The tokenizer to use for tokenization.
+        Dataset_name (str): The name or path of the dataset.
+        extra_data_dir (str): The path for extra data such as images, audio or videos.
+        seqlen (int): The exact sequence length. samples < seqlen will be dropped,
+                      samples longer than seqlen will be truncated
+        bs (int, optional): The batch size. Defaults to 4.
+        split (str, optional): The data split to use. Defaults to None.
+        apply_template: Whether to apply chat template in tokenization.
+    
+    Returns:
+        DataLoader: The DataLoader for the calibrated datasets.
+    """
     assert isinstance(template, Template)
-    dataset = MLLM_DATASET['llava'](
-        template, model, tokenizer, dataset_path, extra_data_dir, 
-        max_length=min(seqlen, tokenizer.model_max_length))
+
+    if isinstance(dataset, str):
+        if os.path.isfile(dataset):
+            dataset = MLLM_DATASET['llava'](
+                template, model, tokenizer, dataset, extra_data_dir, 
+                max_length=min(seqlen, tokenizer.model_max_length))
+        else:
+            from datasets import load_dataset
+            from ..calib_dataset import get_tokenizer_function
+            dataset = load_dataset(dataset, split=split)
+            tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_template=apply_template)
+            dataset = dataset.map(tokenizer_function, batched=True)
+
     
     dataloader_params = {
         "batch_size": bs,

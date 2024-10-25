@@ -1,3 +1,17 @@
+# Copyright (c) 2024 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from typing import Optional, Union
 
 import torch
@@ -13,6 +27,48 @@ from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
 
 class AutoRoundMLLM(AutoRound):
+    """Class for automatic rounding-based quantization with MLLMs.
+    
+    Args:
+        model: The PyTorch model to be quantized.
+        tokenizer: An optional tokenizer for processing input data.
+        bits (int): Number of bits for quantization (default is 4).
+        group_size (int): Size of the quantization group (default is 128).
+        sym (bool): Whether sym to be used (default is True).
+        layer_config (dict): Configuration for weight quantization (default is None).
+        batch_size (int): Batch size for training (default is 8).
+        amp (bool): Whether to use automatic mixed precision (default is True).
+        device: The device to be used for training (default is "auto").
+        lr_scheduler: The learning rate scheduler to be used.
+        dataset: The path or name of the calib dataset.
+        extra_data_dir: The path of extra data such as images, audio and videos.
+        template: The path or name of template used to specify process for different MLLMs.
+        quant_nontext_module: Whether to quantize nontext module.
+        enable_quanted_input (bool): Whether to use quantized input data (default is True).
+        enable_minmax_tuning (bool): Whether to enable min-max tuning (default is True).
+        lr (float): The learning rate (default is 0.005).
+        minmax_lr (float): The learning rate for min-max tuning (default is None).
+        low_gpu_mem_usage (bool): Whether to use low GPU memory (default is False).
+        low_cpu_mem_usage (bool): Whether to use low CPU memory (default is False).
+        iters (int): Number of iterations (default is 200).
+        seqlen (int): Length of the sequence.
+        nsamples (int): Number of samples (default is 128).
+        sampler (str): The sampling method (default is "rand").
+        seed (int): The random seed (default is 42).
+        nblocks (int): Number of blocks (default is 1).
+        gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
+        not_use_best_mse (bool): Whether to use mean squared error (default is False).
+        dynamic_max_gap (int): The dynamic maximum gap (default is -1).
+        data_type (str): The data type to be used (default is "int").
+        scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
+                           have different choices.
+        act_bits (int): Number of bits for activation quantization. Default is 32.
+        act_group_size (int): Group size for activation quantization. Default is None.
+        act_sym (bool): Whether to use symmetric activation quantization. Default is None.
+        act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
+        quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
+        **kwargs: Additional keyword arguments.
+    """
     def __init__(
             self,
             model,
@@ -105,6 +161,17 @@ class AutoRoundMLLM(AutoRound):
         
 
     def calib(self, nsamples, bs):
+        """Perform calibration for quantization.
+
+        This method calibrates the model for quantization by processing a specified
+        number of samples from the calibration dataset. It ensures that the data is
+        properly formatted and feeds it to the model. If the number of samples processed
+        is less than the specified number, it logs a warning. If no samples are processed,
+        it logs an error and exits.
+        Args:
+            nsamples (int): The number of samples to use for calibration.
+            bs (int): The number of samples to use for calibration
+        """
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
             self.dataloader = get_mllm_dataloader(
