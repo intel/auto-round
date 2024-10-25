@@ -44,7 +44,7 @@ def quant_tensor_sym(weight, bits=4, v=0, min_scale=1.0, max_scale=1.0, scale_dt
         wmin_tmp = weight_min
         wmax_tmp = weight_max
 
-    wmin_abs = -(wmin_tmp * min_scale)
+    wmin_abs = -(wmin_tmp * min_scale)   # pylint: disable=E1130
     wmax_abs = wmax_tmp * max_scale
 
     max_v = (2 * (wmax_abs < wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
