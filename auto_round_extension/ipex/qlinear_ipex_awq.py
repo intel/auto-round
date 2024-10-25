@@ -15,7 +15,7 @@ class QuantLinear(nn.Module):
         self.group_size = group_size if group_size != -1 else in_features
         self.scale_dtype = torch.float32
 
-        # quick sanity check (make sure aligment)
+        # quick sanity check (make sure alignment)
         assert self.in_features % self.group_size == 0
         assert out_features % (32 // self.w_bit) == 0
         self.pack_num = 32 // self.w_bit
