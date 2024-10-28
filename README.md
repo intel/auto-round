@@ -204,7 +204,7 @@ Please run the quantization code first
 
 ### AutoRound format
 
-**CPU**: pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip install intel-extension-for-transformers, auto_round version >0.3.1
+**CPU**: **auto_round version >0.3.1**, pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip install intel-extension-for-transformers, 
 
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
