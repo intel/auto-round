@@ -39,6 +39,7 @@ class BasicPlugin:
             truncation=True,
             return_tensors="pt",
             max_length=None,
+            squeeze=True,
             **kwargs):
 
         if max_length:
@@ -57,8 +58,9 @@ class BasicPlugin:
             return_tensors=return_tensors,
             # videos = None
         )
-        for key in ret:
-            ret[key] = ret[key][0]
+        if squeeze:
+            for key in ret:
+                ret[key] = ret[key][0]
         return ret
 
     @staticmethod
@@ -80,6 +82,7 @@ class Qwen2VLPlugin(BasicPlugin):
             truncation=True,
             return_tensors="pt",
             max_length=None,
+            squeeze=True,
             **kwargs):
 
         if max_length:
@@ -98,10 +101,11 @@ class Qwen2VLPlugin(BasicPlugin):
             return_tensors=return_tensors,
             # videos = None
         )
-        for key in ret:
-            if key == "pixel_values":
-                continue
-            ret[key] = ret[key][0]
+        if squeeze:
+            for key in ret:
+                if key == "pixel_values":
+                    continue
+                ret[key] = ret[key][0]
         return ret
 
 
@@ -109,7 +113,7 @@ class Qwen2VLPlugin(BasicPlugin):
 class CogVLM2Plugin(BasicPlugin):
     def get_input(
             model, tokenizer, text, images, max_length=2048, 
-            padding=True, truncation=True, **kwargs):
+            padding=True, truncation=True, squeeze=True, **kwargs):
         padding_len = 2303
         max_length += padding_len
         input_data = model.build_conversation_input_ids(

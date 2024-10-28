@@ -15,4 +15,4 @@
 from .mllm_dataset import get_mllm_dataloader
 from .template import Template, get_template, TEMPLATES
 from .utils import load_mllm
-from .mllm_autoround import AutoRoundMLLM
+from .autoround_mllm import AutoRoundMLLM

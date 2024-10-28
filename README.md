@@ -4,7 +4,7 @@ AutoRound
 ===========================
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
-[![python](https://img.shields.io/badge/python-3.8%2B-blue)](https://github.com/intel/auto-round)
+[![python](https://img.shields.io/badge/python-3.9%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.3-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-blue)](https://github.com/intel/auto-round/blob/main/LICENSE)
 ---

@@ -37,7 +37,7 @@ def register_dataset(name):
     Returns:
         cls: The class of register.
     """
-    
+
     def register(dataset):
         MLLM_DATASET[name] = dataset
         return dataset

@@ -20,6 +20,7 @@ from ..utils import (
     logger,
     to_device,
     to_dtype,
+    get_multimodal_block_names
 )
 from ..autoround import AutoRound
 from .template import get_template, Template
@@ -195,24 +196,25 @@ class AutoRoundMLLM(AutoRound):
                 if self.tokenizer is None:
                     logger.error("please provide tokenizer for string input")
                     exit()
-                data = self.template._encode(data)
+                # data = self.template._encode(data)
                 data = self.template.plugin.get_input(
                     self.model,
                     self.tokenizer,
                     text=data,
                     images=None,
                     max_length=self.seqlen,
+                    squeeze=False,
                     )
-                input_ids = data_new["input_ids"]
                 data_new = {}
                 for key in data.keys():
                     data_new[key] = data[key].to(self.device)
+                input_ids = data_new["input_ids"]
             elif isinstance(data, dict) and all([isinstance(v, str) for v in data.values()]):
                 text = data['text']
                 text = self.template._encode(data)
                 image = None
                 if "image" in data:
-                    image = self.template.plugin.image_processor("image")
+                    image = self.template.plugin.image_processor(data["image"])
                 data = self.template.plugin.get_input(
                     self.model,
                     self.tokenizer,
