@@ -587,7 +587,7 @@ class AutoRoundQuantizer(HfQuantizer):
             layers.append((n,m))
 
         for n, layer in tqdm(layers, desc=message, total=len(layers),
-                             leave=True):  ##not exit correctly
+                             leave=True):
             if isinstance(layer, (qlinear_qbits.QuantLinear, qlinear_qbits_gptq.QuantLinear)):
                 if dep_check:
                     layer.req_check()
