@@ -402,10 +402,9 @@ class AutoRoundQuantizer(HfQuantizer):
         self.target_device = target_device
 
         if hasattr(quantization_config, "backend"):  # pragma: no cover
-            if ("hpu" == target_device or "cpu" == target_device)and model.dtype != torch.bfloat16:
+            if ("hpu" == target_device or "cpu" == target_device) and model.dtype != torch.bfloat16:
                 logger.info(f"Change the dtype to `bfloat16` as {target_device.upper()} does not support float16")
                 model = model.to(torch.bfloat16)
-
 
         bits = quantization_config.bits
         group_size = quantization_config.group_size
@@ -584,13 +583,14 @@ class AutoRoundQuantizer(HfQuantizer):
         dep_check = True
         message = "Repacking to CPU format"
 
-        for n, layer in tqdm(model.named_modules(), desc=message, total=len(list(model.named_modules())), leave=True): ##not exit correctly
+        for n, layer in tqdm(model.named_modules(), desc=message, total=len(list(model.named_modules())),
+                             leave=True):  ##not exit correctly
             if isinstance(layer, (qlinear_qbits.QuantLinear, qlinear_qbits_gptq.QuantLinear)):
                 if dep_check:
                     layer.req_check()
                 layer.post_init()
                 dep_check = False
-            if isinstance(layer,(qlinear_ipex_gptq.QuantLinear, qlinear_ipex_awq.QuantLinear)):
+            if isinstance(layer, (qlinear_ipex_gptq.QuantLinear, qlinear_ipex_awq.QuantLinear)):
                 layer.post_init()
 
         return model
