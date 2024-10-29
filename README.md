@@ -54,7 +54,7 @@ pip install auto-round
 
 ## Model Quantization
 
-### Basic Usage ((Gaudi2/CPU/GPU))
+### Basic Usage (Gaudi2/CPU/GPU)
 
 A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
 Alternatively, you can use ```auto_round``` instead of ```auto-round```.
