@@ -582,9 +582,12 @@ class AutoRoundQuantizer(HfQuantizer):
     def cpu_post_init(self, model):
         dep_check = True
         message = "Repacking to CPU format"
+        layers = [] ## ipex post_init  will add one more layer
+        for n,m in  model.named_modules():
+            layers.append((n,m))
 
-        for n, layer in tqdm(model.named_modules(), desc=message, total=len(list(model.named_modules())),
-                             leave=True):  ##not exit correctly
+        for n, layer in tqdm(layers, desc=message, total=len(layers),
+                             leave=True):
             if isinstance(layer, (qlinear_qbits.QuantLinear, qlinear_qbits_gptq.QuantLinear)):
                 if dep_check:
                     layer.req_check()
