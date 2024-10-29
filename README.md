@@ -5,7 +5,7 @@ AutoRound
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.3-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.3.1-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-blue)](https://github.com/intel/auto-round/blob/main/LICENSE)
 ---
 <div align="left">
@@ -26,19 +26,17 @@ more accuracy data and recipes across various models.
 <div align="left">
 
 ## What's New
-
+* [2024/10] AutoRound has been integrated to [torch/ao](https://github.com/pytorch/ao), check out their [release note](https://github.com/pytorch/ao/releases/tag/v0.6.1)
 * [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
-  configuration. This approach is typically better or comparable to asymmetric quantization and significantly
-  outperforms other symmetric variants, especially at low bit-widths like 2-bit. And,no need to compile from source to run
-  AutoRound format anymore.
+  configuration. This configuration is typically better or comparable to asymmetric quantization and significantly
+  outperforms other symmetric variants, especially at low bit-widths like 2-bit.
 * [2024/09] AutoRound format supports several LVM models, check out the
   examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
 * [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
   to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
 * [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters (for 2-bit
   and W4A4), activation quantization, and the mx_fp data type.
-* [2024/07] Important change: the default value of nsamples has been changed from 512 to 128 to reduce the memory
-  usages, which may cause a slight accuracy drop in some scenarios
+
 
 ## Installation
 
@@ -56,6 +54,72 @@ pip install auto-round
 
 ## Model Quantization
 
+### Basic Usage ((Gaudi2/CPU/GPU))
+
+A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
+Alternatively, you can use ```auto_round``` instead of ```auto-round```.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 auto-round \
+    --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --format auto_round \
+    --disable_eval \
+    --output_dir ./tmp_autoround
+```
+
+We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
+<details>
+  <summary>Other Recipes</summary>
+
+  ```bash
+## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+CUDA_VISIBLE_DEVICES=0 auto-round \
+    --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --nsamples 512 \
+    --iters 1000 \
+    --low_gpu_mem_usage \
+    --disable_eval 
+  ```
+
+  ```bash
+## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
+CUDA_VISIBLE_DEVICES=0 auto-round \
+    --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --nsamples 128 \
+    --iters 200 \
+    --seqlen 512 \
+    --batch_size 4 \
+    --disable_eval 
+  ```
+
+</details>
+
+#### Formats
+
+**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
+inference. [2,4]
+bits are supported. It also benefits
+from the Marlin kernel, which can boost inference performance notably. However, it has not yet gained widespread
+community adoption.
+
+**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
+community, [2,3,4,8] bits are supported. It also benefits
+from the Marlin kernel, which can boost inference performance notably. However, **the
+asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
+models.
+Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
+
+**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
+adopted
+within the community, only 4-bits quantization is supported. It features
+specialized layer fusion tailored for Llama models.
+
 ### API Usage (Gaudi2/CPU/GPU)
 
 ```python
@@ -67,18 +131,18 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 from auto_round import AutoRound
 
-bits, group_size = 4, 128
-autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size)
+bits, group_size, sym = 4, 128, True
+autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
 
 ## the best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-# autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size)
+# autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
 
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-# autoround = AutoRound(model, tokenizer, nsamples=128, iters=200, seqlen=512, batch_size=4, bits=bits, group_size=group_size)
+# autoround = AutoRound(model, tokenizer, nsamples=128, iters=200, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym )
 
 autoround.quantize()
 output_dir = "./tmp_autoround"
-## format= 'auto_round'(default in version>0.3.0), 'auto_gptq'(default in version<=0.3.0), 'auto_awq'
+## format= 'auto_round'(default in version>0.3.0), 'auto_gptq', 'auto_awq'
 autoround.save_quantized(output_dir, format='auto_round', inplace=True) 
 ```
 
@@ -134,72 +198,50 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 </details>
 
-### Basic Usage (version > 0.3.0)
-
-A user guide detailing the full list of supported arguments is provided by calling ```auto_round -h``` on the terminal.
-Alternatively, you can use ```auto-round``` instead of ```auto_round```.
-
-```bash
-auto_round --model facebook/opt-125m \
-    --bits 4 \
-    --group_size 128 \
-    --format auto_round \
-    --disable_eval \
-    --output_dir ./tmp_autoround
-```
-
-We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
-<details>
-  <summary>Other Recipes</summary>
-
-  ```bash
-## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-  auto_round --model facebook/opt-125m \
-    --bits 4 \
-    --group_size 128 \
-    --nsamples 512 \
-    --iters 1000 \
-    --low_gpu_mem_usage \
-    --disable_eval 
-  ```
-
-  ```bash
-## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-  auto_round --model facebook/opt-125m \
-    --bits 4 \
-    --group_size 128 \
-    --nsamples 128 \
-    --iters 200 \
-    --seqlen 512 \
-    --batch_size 4 \
-    --disable_eval 
-  ```
-
-</details>
-
-#### Formats
-
-**AutoRound Format**：This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
-inference. [2,4]
-bits are supported. It also benefits
-from the Marlin kernel, which can boost inference performance notably.However, it has not yet gained widespread
-community adoption. For CUDA support, you will need to
-install from the source.
-
-**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
-community, [2,3,4,8] bits are supported, for 3 bits, pip install auto-gptq first before quantization. It also benefits
-from the Marlin kernel, which can boost inference performance notably. However, **the
-asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
-models.
-Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
-
-**AutoAWQ Format**(>0.3.0): This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely adopted
-within the community, only 4-bits quantization is supported. It features
-specialized layer fusion tailored for Llama models.
-
 ## Model Inference
 
 Please run the quantization code first
+
+### AutoRound format
+
+**CPU**: **auto_round version >0.3.1**, pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip install intel-extension-for-transformers, 
+
+**HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
+in [Gaudi Guide](https://docs.habana.ai/en/latest/).
+
+**CUDA**: no extra operations for sym quantization, for asym quantization, need to install auto-round from source
+
+#### CPU/HPU/CUDA
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRoundConfig
+
+backend = "auto"  ##cpu, hpu, cuda, cuda:marlin(supported in auto_round>0.3.1 and 'pip install -v gptqmodel --no-build-isolation')
+quantization_config = AutoRoundConfig(
+    backend=backend
+)
+quantized_model_path = "./tmp_autoround"
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+                                             device_map=backend.split(':')[0], quantization_config=quantization_config)
+tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+```
+
+<br>
+<details>
+  <summary>Evaluation</summary>
+
+```bash
+auto-round --model saved_quantized_model \
+    --eval \
+    --task lambada_openai \
+    --eval_bs 1
+```
+
+</details>
 
 ### AutoGPTQ/AutoAWQ format
 
@@ -215,65 +257,6 @@ inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
-### AutoRound format
-
-**CPU**: pip install intel-extension-for-transformers
-
-**HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
-in [Gaudi Guide](https://docs.habana.ai/en/latest/).
-
-**CUDA**: pip install auto-gptq for sym quantization(tuning needs auto-round 0.30+), for asym quantization, need to install auto-round from source
-
-#### CPU/HPU/CUDA on 0.3.0+
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRoundConfig
-
-backend = "auto"  ##cpu, hpu, cuda, cuda:marlin('pip install -v gptqmodel --no-build-isolation')
-quantization_config = AutoRoundConfig(
-    backend=backend
-)
-quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map=backend.split(':')[0], quantization_config=quantization_config)
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-text = "There is a girl who likes adventure,"
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-```
-
-#### CPU/HPU/CUDA on 0.3.0
-
-**CUDA**:  need to install auto-round from source
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round.auto_quantizer import AutoHfQuantizer  ## must import
-
-quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map="auto")
-tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-text = "There is a girl who likes adventure,"
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-```
-
-<br>
-<details>
-  <summary>Evaluation</summary>
-
-```bash
-## version > 0.3.0
-auto_round --model saved_quantized_model \
-    --eval \
-    --task lambada_openai \
-    --eval_bs 1
-```
-
-</details>
-
 ## Support List
 
 AutoRound supports basically all the major large language models.
@@ -288,8 +271,8 @@ release most of the models ourselves.
 | meta-llama/Meta-Llama-3.1-8B-Instruct  | [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-asym), [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-sym), [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-8B-Instruct-int4-inc) |
 | meta-llama/Meta-Llama-3.1-8B           | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-autoround-gptq-4bit-sym)                                                                                                                                                                                                            |
 | Qwen/Qwen-VL                           | [accuracy](./examples/multimodal-modeling/Qwen-VL/README.md), [recipe](./examples/multimodal-modeling/Qwen-VL/run_autoround.sh)                                                                                                                                                                                           
-| Qwen/Qwen2-7B                          | [model-autoround-int4](https://huggingface.co/Intel/Qwen2-7B-int4-inc)                                                                                                                                                                                                                                                    |
-| Qwen/Qwen2-57B-A14B-Instruct           | [model-autoround-int4](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc)                                                                                                                                                                                                                                     |
+| Qwen/Qwen2-7B                          | [model-autoround-sym-int4](https://huggingface.co/Intel/Qwen2-7B-int4-inc), [model-autogptq-sym-int4](https://huggingface.co/Intel/Qwen2-7B-int4-inc)                                                                                                                                                                     |
+| Qwen/Qwen2-57B-A14B-Instruct           | [model-autoround-sym-int4](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc),[model-autogptq-sym-int4](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc)                                                                                                                                        |
 | 01-ai/Yi-1.5-9B                        | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/Yi-1.5-9B-4bit-gptq-autoround)                                                                                                                                                                                                                                |
 | 01-ai/Yi-1.5-9B-Chat                   | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/Yi-1.5-9B-Chat-4bit-gptq-autoround)                                                                                                                                                                                                                           |
 | Intel/neural-chat-7b-v3-3              | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc)                                                                                                                                                                                                                                          |
@@ -299,7 +282,7 @@ release most of the models ourselves.
 | google/gemma-2b                        | [model-autogptq-int4](https://huggingface.co/Intel/gemma-2b-int4-inc)                                                                                                                                                                                                                                                     |
 | tiiuae/falcon-7b                       | [model-autogptq-int4-G64](https://huggingface.co/Intel/falcon-7b-int4-inc)                                                                                                                                                                                                                                                |
 | sapienzanlp/modello-italia-9b          | [model-fbaldassarri-autogptq-int4*](https://huggingface.co/fbaldassarri/modello-italia-9b-autoround-w4g128-cpu)                                                                                                                                                                                                           |
-| microsoft/phi-2                        | [model-autogptq-sym-int4](https://huggingface.co/Intel/phi-2-int4-inc)                                                                                                                                                                                                                                                    |
+| microsoft/phi-2                        | [model-autoround-sym-int4](https://huggingface.co/Intel/phi-2-int4-inc) [model-autogptq-sym-int4](https://huggingface.co/Intel/phi-2-int4-inc)                                                                                                                                                                            |
 | microsoft/Phi-3.5-mini-instruct        | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Phi-3.5-Mini-instruct-AutoRound-4bit)                                                                                                                                                                                                                 |
 | microsoft/Phi-3-vision-128k-instruct   | [recipe](./examples/multimodal-modeling/Phi-3-vision/run_autoround.sh)                                                                                                                                                                                                                                                    
 | mistralai/Mistral-7B-Instruct-v0.2     | [accuracy](./docs/Mistral-7B-Instruct-v0.2-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-Instruct-v0.2.sh),  [example](./examples/language-modeling/)                                                                                                                                                 |

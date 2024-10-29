@@ -16,6 +16,8 @@ import json
 import random
 
 import torch
+
+torch.use_deterministic_algorithms(True, warn_only=True)
 from torch.utils.data import DataLoader
 
 from .utils import is_local_path, logger
@@ -58,7 +60,7 @@ def get_tokenizer_function(tokenizer, seqlen, apply_template=False):
         if not apply_template:
             example = tokenizer(examples["text"], truncation=True, max_length=seqlen)
         else:
-            from jinja2 import Template # pylint: disable=E0401
+            from jinja2 import Template  # pylint: disable=E0401
             chat_template = tokenizer.chat_template if tokenizer.chat_template is not None \
                 else tokenizer.default_chat_template
             template = Template(chat_template)
@@ -66,7 +68,7 @@ def get_tokenizer_function(tokenizer, seqlen, apply_template=False):
             for text in examples["text"]:
                 message = [{"role": "user", "content": text}]
                 rendered_message = template.render(messages=message, add_generation_prompt=True, \
-                    bos_token=tokenizer.bos_token)
+                                                   bos_token=tokenizer.bos_token)
                 rendered_messages.append(rendered_message)
             example = tokenizer(rendered_messages, truncation=True, max_length=seqlen)
         return example
@@ -103,11 +105,11 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
 
 @register_dataset("madao33/new-title-chinese")
 def get_new_chinese_title_dataset(
-        tokenizer, 
-        seqlen, 
-        dataset_name="madao33/new-title-chinese", 
-        split=None, 
-        seed=42, 
+        tokenizer,
+        seqlen,
+        dataset_name="madao33/new-title-chinese",
+        split=None,
+        seed=42,
         apply_template=False
 ):
     """Returns a dataloader for the specified dataset and split.
@@ -148,7 +150,7 @@ def get_new_chinese_title_dataset(
                 for text in examples["text"]:
                     message = [{"role": "user", "content": text}]
                     rendered_message = template.render(messages=message, add_generation_prompt=True, \
-                        bos_token=tokenizer.bos_token)
+                                                       bos_token=tokenizer.bos_token)
                     rendered_messages.append(rendered_message)
                 example = tokenizer(rendered_messages, truncation=True, max_length=seqlen)
             return example
@@ -267,12 +269,12 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
 
 
 def get_dataloader(
-        tokenizer, 
-        seqlen, 
-        dataset_name="NeelNanda/pile-10k", 
-        seed=42, 
-        bs=8, 
-        nsamples=512, 
+        tokenizer,
+        seqlen,
+        dataset_name="NeelNanda/pile-10k",
+        seed=42,
+        bs=8,
+        nsamples=512,
 ):
     """Generate a DataLoader for calibration using specified parameters.
 
@@ -293,6 +295,7 @@ def get_dataloader(
     """
 
     dataset_names = dataset_name.split(",")
+
     def filter_func(example):
         if isinstance(example["input_ids"], list):
             example["input_ids"] = torch.tensor(example["input_ids"])
@@ -316,7 +319,7 @@ def get_dataloader(
                 input_id = input_id[1:]
                 os_cnt, have_bos = os_cnt + 1, True
             if input_id[-1] == eos_token_id:
-                input_id = input_id[:-1] 
+                input_id = input_id[:-1]
                 os_cnt, have_eos = os_cnt + 1, True
 
             if buffer_input_id.shape[-1] + input_id.shape[-1] + os_cnt > seqlen:
@@ -326,7 +329,7 @@ def get_dataloader(
                     input_id_to_append = [torch.tensor([bos_token_id])] + input_id_to_append
                 if have_eos:
                     input_id_to_append.append(torch.tensor([eos_token_id]))
-                
+
                 concat_input_ids.append(torch.cat(input_id_to_append).to(torch.int64))
                 attention_mask_list.append(attention_mask)
                 buffer_input_id = input_id[idx_keep:]
@@ -405,7 +408,7 @@ def get_dataloader(
         name = dataset_names[i].split(':')[0]
         if name not in data_lens:
             target_cnt = (nsamples - cnt) // (len(datasets) - len(data_lens)) if data_lens \
-                else (nsamples - cnt) // (len(datasets) - i) 
+                else (nsamples - cnt) // (len(datasets) - i)
             target_cnt = min(target_cnt, len(datasets[i]))
             cnt += target_cnt
         else:
@@ -447,4 +450,3 @@ def get_dataloader(
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
-
