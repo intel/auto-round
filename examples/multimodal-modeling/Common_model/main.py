@@ -423,7 +423,7 @@ if __name__ == '__main__':
     processor = None
     if "mllama" in model_type:
         from transformers import MllamaForConditionalGeneration
-        model = MllamaForConditionalGeneration.from_pretrained(args.model_name, attn_implementation="eager",
+        model = MllamaForConditionalGeneration.from_pretrained(args.model_name,
                                                                trust_remote_code=not args.disable_trust_remote_code) # torch_dtype=torch.bfloat16
         processor = AutoProcessor.from_pretrained(args.model_name)
         tokenizer.processor = processor

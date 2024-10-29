@@ -654,7 +654,7 @@ class AutoRound(object):
             function: The forward function.
         """
 
-        def forward(m, hidden_states, *positional_args, **kwargs):
+        def forward(m, hidden_states=None, *positional_args, **kwargs):
             """Rewrite forward function, process and collect input data.
 
             Args:
@@ -667,12 +667,11 @@ class AutoRound(object):
             """
             if self.input_dim is None:
                 self.input_dim = check_hidden_state_dim(self.model, positional_args)
-            if name in self.inputs:
-                self.inputs[name]["input_ids"].extend(
-                        list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim)))
-            else:
+            if name not in self.inputs:
                 self.inputs[name] = {}
-                self.inputs[name]["input_ids"] = list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim))
+                
+            if hidden_states is not None:
+                kwargs['hidden_states'] = hidden_states
 
             if "positional_inputs" not in self.inputs[name]:
                 self.inputs[name]["positional_inputs"] = []
@@ -682,8 +681,7 @@ class AutoRound(object):
             for key in kwargs.keys():
                 if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) \
                         or isinstance(kwargs[key], tuple):
-                        # or (key == "alibi") or (key == "attention_mask"):
-                    if key not in self.inputs[name].keys(): # initialization
+                    if key not in self.inputs[name].keys(): # initilization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
                         if data is None or (self.train_bs > 1 and key in shareable_keywords):
                             self.inputs[name][key] = data
@@ -702,16 +700,22 @@ class AutoRound(object):
                             self.inputs[name][key].append(new_data)
                         else:
                             self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=0)))
-                elif isinstance(kwargs[key], (str, bool, type(None))) and 'use_cache' not in key:
+                elif 'use_cache' in key:
+                    self.inputs[name][key] = False
+                elif isinstance(kwargs[key], (str, bool, type(None))):
                     if key not in self.inputs[name].keys():
                         self.inputs[name][key] = kwargs[key]
                 else:
                     pass # Parameters not to be cached
-                    
+            
             if name == self.last_cache_name:
                 raise NotImplementedError
             else:
-                return m.orig_forward(hidden_states, *positional_args, **kwargs)
+                if hidden_states is not None:
+                    kwargs.pop('hidden_states')
+                    return m.orig_forward(hidden_states, *positional_args, **kwargs)
+                else:
+                    return m.orig_forward(*positional_args, **kwargs)
 
         return forward
 
@@ -1044,8 +1048,13 @@ class AutoRound(object):
         torch.cuda.empty_cache()
         for n, m in model.named_parameters():
             m.requires_grad_(False)
-        input_ids = inputs["input_ids"]
-        inputs.pop("input_ids", None)
+        keys = inputs.keys()
+        input_id_str = [key for key in keys if 'hidden_state' in key]
+        if len(input_id_str) != 1:
+            raise RuntimeError("hidden_states arg dismatch error")
+        input_ids = inputs.pop(input_id_str[0], None)
+        # input_ids = inputs["input_ids"]
+        # inputs.pop("input_ids", None)
         input_others = inputs
         torch.cuda.empty_cache()
         input_ids = to_device(input_ids, self.cache_device)
