@@ -137,7 +137,7 @@ BackendInfos['auto_round:qbits'] = BackendInfo(device=["cpu"], sym=[True, False]
                                                requirements=["intel-extension-for-transformers"])
 
 BackendInfos['auto_round:qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
-                                                  packing_format="qbits",
+                                                  packing_format="qbits_zp+-1",
                                                   bits=[2, 4, 8], group_size=None,
                                                   priority=0 if "intel" in get_cpu_manufacturer() else 5,
                                                   feature_checks=[],

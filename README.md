@@ -57,14 +57,14 @@ pip install auto-round
 ### Basic Usage (Gaudi2/CPU/GPU)
 
 A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
-Alternatively, you can use ```auto_round``` instead of ```auto-round```.
+Alternatively, you can use ```auto_round``` instead of ```auto-round```. Set the format you want in `format` and multiple formats exporting has been supported. 
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 auto-round \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --format auto_round \
+    --format "auto_round,auto_gptq" \
     --disable_eval \
     --output_dir ./tmp_autoround
 ```
