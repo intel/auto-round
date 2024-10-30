@@ -29,136 +29,132 @@ from auto_round.eval.evaluation import simple_evaluate
 from auto_round.utils import detect_device, get_library_version, detect_device_count
 from auto_round.utils import logger
 
-def _basic_parser():
-    parser = argparse.ArgumentParser()
+class BasicArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super().__init__( *args, **kwargs)
+        self.add_argument("--model", default="facebook/opt-125m", help="model name or path")
 
-    parser.add_argument(
-        "--model", default="facebook/opt-125m"
-    )
-
-    parser.add_argument('--eval', action='store_true',
+        self.add_argument('--eval', action='store_true',
                         help="whether to use eval only mode.")
 
-    parser.add_argument("--bits", default=4, type=int,
-                        help="number of  bits")
+        self.add_argument("--bits", default=4, type=int,
+                            help="number of  bits")
 
-    parser.add_argument("--eval_bs", default=None, type=int,
-                        help="eval batch size")
+        self.add_argument("--eval_bs", default=None, type=int,
+                            help="eval batch size")
 
-    parser.add_argument("--device", default="auto", type=str,
-                        help="The device to be used for tuning. The default is set to auto/None,"
-                             "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
+        self.add_argument("--device", default="auto", type=str,
+                            help="The device to be used for tuning. The default is set to auto/None,"
+                                "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
     
-    parser.add_argument("--asym", action='store_true',
-                        help=" asym quantization")
+        self.add_argument("--asym", action='store_true',
+                            help=" asym quantization")
 
-    parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
-                        help="The dataset for quantization training. It can be a custom one.")
+        self.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
+                            help="The dataset for quantization training. It can be a custom one.")
 
-    parser.add_argument("--lr", default=None, type=float,
-                        help="learning rate, if None, it will be set to 1.0/iters automatically")
+        self.add_argument("--lr", default=None, type=float,
+                            help="learning rate, if None, it will be set to 1.0/iters automatically")
 
-    parser.add_argument("--minmax_lr", default=None, type=float,
-                        help="minmax learning rate, if None,it will beset to be the same with lr")
+        self.add_argument("--minmax_lr", default=None, type=float,
+                            help="minmax learning rate, if None,it will beset to be the same with lr")
 
-    parser.add_argument("--seed", default=42, type=int,
-                        help="seed")
+        self.add_argument("--seed", default=42, type=int,
+                            help="seed")
 
-    parser.add_argument("--adam", action='store_true',
-                        help="adam")
-    
-    parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
+        self.add_argument("--adam", action='store_true',
+                            help="adam")
+        
+        self.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
 
-    parser.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
+        self.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
 
-    parser.add_argument("--low_gpu_mem_usage", action='store_true',
-                        help="lower gpu memory but 50%-100% slower")
-    
-    parser.add_argument("--format", default=None, type=str,
-                        help="The format in which to save the model. "
-                             "The options are 'auto_round', 'auto_round:gptq','auto_round:awq',"
-                             " 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
-                             "default to 'auto_round."
-                        )
+        self.add_argument("--low_gpu_mem_usage", action='store_true',
+                            help="lower gpu memory usage but 50-100% slower")
+        
+        self.add_argument("--format", default=None, type=str,
+                            help="The format in which to save the model. "
+                                "The options are 'auto_round', 'auto_round:gptq','auto_round:awq',"
+                                " 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
+                                "default to 'auto_round."
+                            )
 
-    parser.add_argument("--data_type", default='int',
-                        help="data type for tuning, 'int', 'mx_fp' and etc.")
+        self.add_argument("--data_type", default='int',
+                            help="data type for tuning, 'int', 'mx_fp' and etc.")
 
-    parser.add_argument("--scale_dtype", default='fp16',
-                        help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
+        self.add_argument("--scale_dtype", default='fp16',
+                            help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
-    parser.add_argument("--tasks",
-                        default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                                "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
-                        help="lm-eval tasks for lm_eval version 0.4")
+        self.add_argument("--tasks",
+                            default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
+                                    "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
+                            help="lm-eval tasks for lm_eval version 0.4")
 
-    parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
-                        help="Where to store the final model.")
+        self.add_argument("--output_dir", default="./tmp_autoround", type=str,
+                            help="Where to store the final model.")
 
-    parser.add_argument("--disable_eval", action='store_true',
-                        help="Whether to do lm-eval evaluation after tuning.")
+        self.add_argument("--disable_eval", action='store_true',
+                            help="Whether to do lm-eval evaluation after tuning.")
 
-    parser.add_argument("--disable_amp", action='store_true',
-                        help="disable amp")
+        self.add_argument("--disable_amp", action='store_true',
+                            help="disable amp")
 
-    parser.add_argument("--disable_minmax_tuning", action='store_true',
-                        help="whether disable enable weight minmax tuning")
+        self.add_argument("--disable_minmax_tuning", action='store_true',
+                            help="whether disable enable weight minmax tuning")
 
-    parser.add_argument("--enable_norm_bias_tuning", action='store_true',
-                        help="whether enable norm bias tuning")
+        self.add_argument("--enable_norm_bias_tuning", action='store_true',
+                            help="whether enable norm bias tuning")
 
-    parser.add_argument("--disable_trust_remote_code", action='store_true',
-                        help="Whether to disable trust_remote_code")
+        self.add_argument("--disable_trust_remote_code", action='store_true',
+                            help="Whether to disable trust_remote_code")
 
-    parser.add_argument("--disable_quanted_input", action='store_true',
-                        help="whether to disuse the output of quantized block to tune the next block")
+        self.add_argument("--disable_quanted_input", action='store_true',
+                            help="whether to disuse the output of quantized block to tune the next block")
 
-    parser.add_argument("--quant_lm_head", action='store_true',
-                        help="quant_lm_head")
+        self.add_argument("--quant_lm_head", action='store_true',
+                            help="quant_lm_head")
 
-    parser.add_argument("--low_cpu_mem_mode", default=0, type=int,
-                        help="Choose which low cpu memory mode to use. "
-                             "Can significantly reduce cpu memory footprint but cost more time."
-                             "1 means choose block-wise mode, load the weights of each block"
-                             " from disk when tuning and release the memory of the block after tuning."
-                             "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
-                             " minimum memory consumption and also slowest running speed."
-                             "others means not use low cpu memory. Default to 0, not use low cpu memory.")
+        self.add_argument("--low_cpu_mem_mode", default=0, type=int,
+                            help="Choose which low cpu memory mode to use. "
+                                "Can significantly reduce cpu memory footprint but cost more time."
+                                "1 means choose block-wise mode, load the weights of each block"
+                                " from disk when tuning and release the memory of the block after tuning."
+                                "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
+                                " minimum memory consumption and also slowest running speed."
+                                "others means not use low cpu memory. Default to 0, not use low cpu memory.")
 
-    parser.add_argument("--low_cpu_mem_tmp_dir", default=None, type=str,
-                        help="temp work space to store the temporary files "
-                             "when using low cpu memory mode. Will remove after tuning.")
+        self.add_argument("--low_cpu_mem_tmp_dir", default=None, type=str,
+                            help="temp work space to store the temporary files "
+                                "when using low cpu memory mode. Will remove after tuning.")
 
-    parser.add_argument("--model_dtype", default=None, type=str,
-                        help="force to convert the dtype, some backends supports fp16 dtype better")
+        self.add_argument("--model_dtype", default=None, type=str,
+                            help="force to convert the dtype, some backends supports fp16 dtype better")
 
-    parser.add_argument("--act_bits", default=32, type=int,
-                        help="activation bits")
+        self.add_argument("--act_bits", default=32, type=int,
+                            help="activation bits")
 
-    parser.add_argument("--fp_layers_list", default="", type=str,
-                        help="List of Layers to maintain original data type")
+        self.add_argument("--fp_layers_list", default="", type=str,
+                            help="List of Layers to maintain original data type")
 
-    # ======================= VLM =======================
-    parser.add_argument("--mllm", action='store_true',
-                        help="To determine whether use multimodel-llm mode.")
+        ## ======================= VLM =======================
+        self.add_argument("--mllm", action='store_true',
+                            help="To determine whether use multimodel-llm mode.")
 
-    parser.add_argument("--quant_vision", action='store_true',
-                        help="To determine whether the quantization should handle vision component.")
+        self.add_argument("--quant_vision", action='store_true',
+                            help="To determine whether the quantization should handle vision component.")
 
-    parser.add_argument("--extra_data_dir", default="", type=str,
-                        help="Dataset dir for storing images/audio/videos. "
-                        "Can be a dir path or multiple dir path with format as "
-                        "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
-                        "By default, it will search in the relative path.")
-    
-    parser.add_argument("--template", default=None, type=str,
-                            help="The template for building training dataset. It can be a custom one.")
-    
-    return parser
+        self.add_argument("--extra_data_dir", default="", type=str,
+                            help="Dataset dir for storing images/audio/videos. "
+                            "Can be a dir path or multiple dir path with format as "
+                            "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
+                            "By default, it will search in the relative path.")
+        
+        self.add_argument("--template", default=None, type=str,
+                                help="The template for building training dataset. It can be a custom one.")
 
 
 def setup_parser():
-    parser = _basic_parser()
+    parser = BasicArgumentParser()
 
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
@@ -175,12 +171,11 @@ def setup_parser():
     parser.add_argument("--nsamples", default=128, type=int,
                         help="number of samples")
 
-
     args = parser.parse_args()
     return args
 
 def setup_best_parser():
-    parser = _basic_parser()
+    parser = BasicArgumentParser()
 
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
@@ -203,7 +198,7 @@ def setup_best_parser():
     return args
 
 def setup_fast_parser():
-    parser = _basic_parser()
+    parser = BasicArgumentParser()
 
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
