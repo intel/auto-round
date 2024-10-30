@@ -277,7 +277,7 @@ if __name__ == '__main__':
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--train_bs", default=1, type=int,
+    parser.add_argument("--batch_size", default=1, type=int,
                         help="train batch size")
 
     parser.add_argument("--eval_bs", default=4, type=int,
@@ -288,7 +288,7 @@ if __name__ == '__main__':
                              "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
 
     parser.add_argument("--sym", action='store_true',
-                        help=" sym quantization")
+                        help="sym quantization")
 
     parser.add_argument("--iters", default=200, type=int,
                         help=" iters")
@@ -339,6 +339,9 @@ if __name__ == '__main__':
 
     parser.add_argument("--disable_trust_remote_code", action='store_true',
                         help="Whether to disable trust_remote_code")
+    
+    parser.add_argument("--not_use_best_mse", action='store_true',
+                        help="To determine whether the quantization should handle vision component.")
 
     parser.add_argument("--disable_quanted_input", action='store_true',
                         help="whether to disuse the output of quantized block to tune the next block")
@@ -381,8 +384,8 @@ if __name__ == '__main__':
     if args.act_bits <= 8 and args.deployment_device != "fake":
         assert False, "only support fake mode for activation quantization currently"
         
-    if "marlin" in args.deployment_device and args.sym == False:
-        assert False, "marlin backend only supports sym quantization, please set --sym"
+    if "marlin" in args.deployment_device and args.asym == True:
+        assert False, "marlin backend only supports sym quantization, please enable --sym"
         
     model_name = args.model_name
     if model_name[-1] == "/":
@@ -449,7 +452,7 @@ if __name__ == '__main__':
     raw_data = DataFormating(questions, args.image_folder, model_type=model_type)
     dataset = LazySupervisedDataset(raw_data, tokenizer,
                                     max_len=min(args.seqlen, tokenizer.model_max_length), image_folder=args.image_folder)
-    dataloader = get_train_dataloader(dataset, model, data_collator=default_collator, train_batch_size=args.train_bs)
+    dataloader = get_train_dataloader(dataset, model, data_collator=default_collator, train_batch_size=args.batch_size)
     
     from auto_round import (AutoRound,
                             AutoAdamRound)
@@ -498,10 +501,10 @@ if __name__ == '__main__':
         
     quant_block_list = get_multimodal_block_names(model, args.quant_vision)
     
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
+    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.batch_size,
                       dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
-                      amp=not args.disable_amp, nsamples=args.nsamples,
+                      amp=not args.disable_amp, nsamples=args.nsamples, not_use_best_mse=args.not_use_best_mse,
                       low_gpu_mem_usage=args.low_gpu_mem_usage, device=device_str,
                       seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
@@ -578,7 +581,5 @@ if __name__ == '__main__':
                     batch_size=args.eval_bs,
                     device=str(torch_device)
                 )
-
-
 
 

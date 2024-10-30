@@ -40,7 +40,7 @@ if __name__ == '__main__':
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--train_bs", default=8, type=int,
+    parser.add_argument("--batch_size", default=8, type=int,
                         help="train batch size")
 
     parser.add_argument("--eval_bs", default=None, type=int,
@@ -323,7 +323,7 @@ if __name__ == '__main__':
             error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
             raise EnvironmentError(error_message)
 
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=not args.asym, batch_size=args.train_bs,
+    autoround = round(model, tokenizer, args.bits, args.group_size, sym=not args.asym, batch_size=args.batch_size,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
                       amp=not args.disable_amp, nsamples=args.nsamples,
@@ -466,3 +466,4 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
+

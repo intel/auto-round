@@ -28,8 +28,8 @@ from torch.amp import autocast
 
 from functools import lru_cache
 from packaging import version
-from .special_model_handler import shareable_keywords
 import gc
+from .special_model_handler import shareable_keywords
 
 @lru_cache(None)
 def warning_once(self, msg: str):
