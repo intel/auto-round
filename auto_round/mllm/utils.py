@@ -37,6 +37,6 @@ def fetch_image(path_or_url):
     elif path_or_url.startwith("http://") or path_or_url.startwith("https://"):
         image_obj = Image.open(requests.get(path_or_url, stream=True).raw)
     else:
-        raise TypeError(f"{path_or_url} neigher a path or url.")
+        raise TypeError(f"{path_or_url} neither a path or url.")
 
     return image_obj
