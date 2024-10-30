@@ -1052,7 +1052,7 @@ class AutoRound(object):
         keys = inputs.keys()
         input_id_str = [key for key in keys if 'hidden_state' in key]
         if len(input_id_str) != 1:
-            raise RuntimeError("hidden_states arg dismatch error")
+            raise RuntimeError("hidden_states arg mismatch error")
         input_ids = inputs.pop(input_id_str[0], None)
         # input_ids = inputs["input_ids"]
         # inputs.pop("input_ids", None)
