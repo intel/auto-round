@@ -466,15 +466,14 @@ def tune_mllm(args):
     model_type = config.model_type
     if "qwen2_vl" in model_type:
         from transformers import Qwen2VLForConditionalGeneration
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_name, trust_remote_code=not args.disable_trust_remote_code)
+        cls = Qwen2VLForConditionalGeneration
     elif "mllama" in model_type:
         from transformers import MllamaForConditionalGeneration
-        model = MllamaForConditionalGeneration.from_pretrained(
-            model_name, trust_remote_code=not args.disable_trust_remote_code, attn_implementation="eager")
+        cls = MllamaForConditionalGeneration
     else:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name, trust_remote_code=not args.disable_trust_remote_code)
+        cls = AutoModelForCausalLM
+    model = cls.from_pretrained(
+        model_name, trust_remote_code=not args.disable_trust_remote_code)
 
     if "cogvlm2" in model_name:
         model.config.model_type = "cogvlm2"

@@ -209,16 +209,21 @@ class AutoRoundMLLM(AutoRound):
                 for key in data.keys():
                     data_new[key] = data[key].to(self.device)
                 input_ids = data_new["input_ids"]
-            elif isinstance(data, dict) and all([isinstance(v, str) for v in data.values()]):
+            elif isinstance(data, dict) and "text" in data.keys():
                 text = data['text']
-                text = self.template._encode(data)
+                input_text = ''
+                if isinstance(text, (list, tuple)):
+                    for i in text:
+                        input_text += self.template._encode(data)
+                else:
+                    input_text = self.template._encode(data)
                 image = None
                 if "image" in data:
                     image = self.template.processor.image_processor(data["image"])
                 data = self.template.processor.get_input(
                     self.model,
                     self.tokenizer,
-                    text=text,
+                    text=input_text,
                     images=image,
                     max_length=self.seqlen,
                     )
