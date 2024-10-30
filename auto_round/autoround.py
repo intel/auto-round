@@ -18,7 +18,6 @@ import transformers
 import copy
 import time
 from typing import Optional, Union
-import json
 from transformers import set_seed
 from torch import autocast
 from tqdm import tqdm

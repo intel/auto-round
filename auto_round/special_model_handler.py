@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import torch
-import json
 special_states_dim_tuple = ("chatglm",) # input_dim is not the default dimension 0
 shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
 mllm_special_model = ("llava", "qwen2-vl", "phi3_v", "mllama") # Limitations on batch_size
