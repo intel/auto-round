@@ -54,16 +54,17 @@ pip install auto-round
 
 ## Model Quantization
 
-### Basic Usage ((Gaudi2/CPU/GPU))
+### Basic Usage (Gaudi2/CPU/GPU)
 
 A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
-Alternatively, you can use ```auto_round``` instead of ```auto-round```.
+Alternatively, you can use ```auto_round``` instead of ```auto-round```. Set the format you want in `format` and multiple formats exporting has been supported. 
 
 ```bash
-auto-round --model facebook/opt-125m \
+CUDA_VISIBLE_DEVICES=0 auto-round \
+    --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --format auto_round \
+    --format "auto_round,auto_gptq" \
     --disable_eval \
     --output_dir ./tmp_autoround
 ```
@@ -74,7 +75,8 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
   ```bash
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-  auto-round --model facebook/opt-125m \
+CUDA_VISIBLE_DEVICES=0 auto-round \
+    --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
     --nsamples 512 \
@@ -85,7 +87,8 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
   ```bash
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-  auto-round --model facebook/opt-125m \
+CUDA_VISIBLE_DEVICES=0 auto-round \
+    --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
     --nsamples 128 \
@@ -201,7 +204,7 @@ Please run the quantization code first
 
 ### AutoRound format
 
-**CPU**: pip install intel-extension-for-transformers, auto_round version >0.3.1
+**CPU**: **auto_round version >0.3.1**, pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip install intel-extension-for-transformers, 
 
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
@@ -214,7 +217,7 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRoundConfig
 
-backend = "auto"  ##cpu, hpu, cuda, cuda:marlin(supported in auto_round>0.3.1 'pip install -v gptqmodel --no-build-isolation')
+backend = "auto"  ##cpu, hpu, cuda, cuda:marlin(supported in auto_round>0.3.1 and 'pip install -v gptqmodel --no-build-isolation')
 quantization_config = AutoRoundConfig(
     backend=backend
 )
