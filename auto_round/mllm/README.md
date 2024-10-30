@@ -9,7 +9,7 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
 tokenizer.processor = processor
 model = Qwen2VLForConditionalGeneration.from_pretrained(
-    model_name, trust_remote_code=True, device_map="auto") 
+    model_name, trust_remote_code=True) 
 dataset = "/path/to/llava.json"
 extra_data_dir = "/path/to/images/dir" 
 
