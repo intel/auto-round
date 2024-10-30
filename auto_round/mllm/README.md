@@ -37,7 +37,7 @@ For autoround MLLMs, using Template to customize different operations for differ
 ```
 The special token ```{{content}}``` is a placeholder to tell the preprocessor where to fill in the corresponding dialogue content.
 
-```format_*```: Add specific token to chat content depand on different role names.
+```format_*```: Add specific token to chat content depends on different role names.
 
 For example, the input conversations:<br>
  ```[{'role': 'user', 'value': '<image>\nWhat are the colors of the bus in the image?'}, {'role': 'assistant', 'value': 'The bus in the image is white and red.'}]```
