@@ -26,7 +26,6 @@ from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, Wrappe
     WrapperTransformerConv1d
 from .special_model_handler import (check_hidden_state_dim,
                                     shareable_keywords,
-                                    get_cache_data,
                                     special_model_init,
                                     reset_params,
                                     skip_keywards_hint,
@@ -49,7 +48,8 @@ from .utils import (
     to_dtype,
     get_layer_names_in_block,
     mv_module_from_gpu,
-    unsupport_meta_device, detect_device_count, clear_memory,
+    unsupport_meta_device,
+    detect_device_count, clear_memory
 )
 
 from .low_cpu_mem.utils import get_layers_before_block
@@ -176,7 +176,7 @@ class AutoRound(object):
         self.low_cpu_mem_usage = low_cpu_mem_usage
         self.layer_config = {} if layer_config is None else layer_config
         self.seqlen = seqlen
-        self.batch_size = batch_size
+        self.batch_size, self.gradient_accumulate_steps = batch_size, gradient_accumulate_steps
         self.nblocks = nblocks
         self.dataset = dataset
         self.iters = iters
@@ -203,7 +203,6 @@ class AutoRound(object):
         self.quant_block_list = quant_block_list
 
         self.sampler = sampler
-        self.gradient_accumulate_steps = gradient_accumulate_steps
         self.not_use_best_mse = not_use_best_mse
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
@@ -664,6 +663,30 @@ class AutoRound(object):
         Returns:
             function: The forward function.
         """
+            
+        def post_process_cache_data(batch_size, data, data_name):
+            """
+            Processes store data for batch handling, reshaping if necessary.
+
+            Args:
+                batch_size (int): The size of the batch.
+                data: The data value to store, potentially for caching.
+                data_name (str): Name of the data.
+
+            Returns:
+                Processed data or None
+            """
+            new_data = data
+            if batch_size <= 1:
+                return new_data
+            if data_name in shareable_keywords:
+                return None
+            if "alibi" in data_name:
+                if isinstance(data, torch.Tensor):
+                    alibi = data
+                    alibi = alibi.reshape(batch_size, -1, alibi.shape[1], alibi.shape[2])
+                    new_data = alibi
+            return new_data
 
         def forward(m, hidden_states=None, *positional_inputs, **kwargs):
             """Rewrite forward function, process and collect input data.
@@ -678,7 +701,7 @@ class AutoRound(object):
             """
             if name not in self.inputs:
                 self.inputs[name] = {}
-                self.batch_size = check_model_batch(self.model, self.batch_size)
+                check_model_batch(self.model, self.batch_size, self.gradient_accumulate_steps)
                 
             if self.input_dim is None:
                 self.input_dim = check_hidden_state_dim(self.model, positional_inputs)
@@ -698,10 +721,10 @@ class AutoRound(object):
                         if self.batch_size <= 1:
                             self.inputs[name][key] = [data]
                         else:
-                            data = get_cache_data(self.batch_size, data, key)
+                            data = post_process_cache_data(self.batch_size, data, key)
                             self.inputs[name][key] = list(torch.split(data, 1, dim=0))
                     else: # append cache inputs
-                        new_data = get_cache_data(self.batch_size, kwargs[key], key)
+                        new_data = post_process_cache_data(self.batch_size, kwargs[key], key)
                         if new_data is None: # shareable args or NoneType
                             continue
                         new_data = to_device(new_data, device=torch.device("cpu"))
@@ -721,10 +744,10 @@ class AutoRound(object):
             else:
                 if hidden_states is not None:
                     kwargs.pop('hidden_states')
-                    return m.orig_forward(hidden_states, *positional_args, **kwargs)
+                    return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
                 else:
                     #Currently only for Llama-3.2-Vision-Instruct Series
-                    return m.orig_forward(*positional_args, **kwargs)
+                    return m.orig_forward(*positional_inputs, **kwargs)
 
         return forward
 

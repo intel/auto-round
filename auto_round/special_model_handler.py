@@ -13,9 +13,10 @@
 # limitations under the License.
 
 import torch
+from collections import UserDict
 special_states_dim_tuple = ("chatglm",) # input_dim is not the default dimension 0
 shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
-mllm_special_model = ("llava", "qwen2-vl", "phi3_v", "mllama") # Limitations on batch_size
+mllms_with_limited_bs = ("llava", "qwen2-vl", "phi3_v", "mllama") # Limitations on batch_size
 
 
 def to_device(input, device=torch.device("cpu")):
@@ -106,44 +107,13 @@ def skip_keywards_hint(key):
         print(f"Please note that this '{key}' key is not currently used in quantization fine-tuning.")
         
 
-def check_model_batch(model, batch):
+def check_model_batch(model, batch_size, gradient_accumulate_steps):
     """
-    Checks model configuration to determine if it's necessary to limit bs to 1 to avoid potential input shape mismatches.
-
-    Args:
-        model: The model instance to check.
-        batch: Batch data to return or modify.
-
-    Returns:
-        int or original batch
+    Checks model configuration to determine if it's necessary to limit bs to avoid potential input shape mismatches.
     """
-    for key in mllm_special_model:
-        if hasattr(model, "config") and key in model.config.model_type:
-            return 1
-    return batch
-
-
-def get_cache_data(batch_size, data, data_name):
-    """
-    Processes store data for batch handling, reshaping if necessary.
-
-    Args:
-        batch_size (int): The size of the batch.
-        data: The data value to store, potentially for caching.
-        data_name (str): Name of the data.
-
-    Returns:
-        Processed data or None
-    """
-    new_data = data
-    if batch_size <= 1:
-        return new_data
-    if data_name in shareable_keywords:
-        return None
-    if "alibi" in data_name:
-        if isinstance(data, torch.Tensor):
-            alibi = data
-            alibi = alibi.reshape(batch_size, -1, alibi.shape[1], alibi.shape[2])
-            new_data = alibi
-    return new_data
+    for key in mllms_with_limited_bs:
+        if hasattr(model, "config") and key in model.config.model_type and batch_size != 1:
+            accumulate_steps = batch_size * gradient_accumulate_steps
+            raise RuntimeError("To avoid the tensor concat mismatch problem, please modify parameters to " \
+                    f"batch_size=1. As an alternative, you can set the gradient_accumulate_steps={accumulate_steps}")
                 
