@@ -88,9 +88,9 @@ class LlavaDataset(Dataset):
         image_fold = _extract_data_dir(self.extra_data_dir)
         if isinstance(image_fold, dict):
             image_fold = image_fold['image']
-        image = self.template.plugin.image_processor(os.path.join(image_fold, os.path.basename(self.questions[i]["image"])))
+        image = self.template.processor.image_processor(os.path.join(image_fold, os.path.basename(self.questions[i]["image"])))
 
-        ret = self.template.plugin.get_input(
+        ret = self.template.processor.get_input(
             self.model,
             self.tokenizer,
             text=text, 
@@ -161,7 +161,7 @@ def get_mllm_dataloader(
     
     dataloader_params = {
         "batch_size": bs,
-        "collate_fn": dataset.template.plugin.data_collator
+        "collate_fn": dataset.template.processor.data_collator
     }
 
     return DataLoader(dataset, **dataloader_params)

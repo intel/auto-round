@@ -29,7 +29,7 @@ For autoround MLLMs, using Template to customize different operations for differ
     "format_separator": "\n",
     "default_system": "You are a helpful assistant.",
     "replace_tokens": ["<image>", "<|vision_start|><|image_pad|><|vision_end|>"],
-    "plugin": "qwen2_vl" }
+    "processor": "qwen2_vl" }
 ```
 The special token ```{{content}}``` is a placeholder to tell the preprocessor where to fill in the corresponding dialogue content.
 
@@ -41,5 +41,5 @@ For example, the input conversations:<br>
 Using the above template, the input will be converted to the specified format required by Qwen2-vl as below: <br>
  ```'<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>\nWhat are the colors of the bus in the image?<|im_end|>\n<|im_start|>assistant\nThe bus in the image is white and red.<|im_end|>\n<|im_start|>user\nWhat feature can be seen on the back of the bus?<|im_end|>\n<|im_start|>assistant\nThe back of the bus features an advertisement.<|im_end|>\n<|im_start|>user\nIs the bus driving down the street or pulled off to the side?<|im_end|>\n<|im_start|>assistant\nThe bus is driving down the street, which is crowded with people and other vehicles.<|im_end|>\n'```.
 
-## Plugin
-Plugin is callback interface for calling different processors, such as texts or images processors, for MLLMs. User can define own plugin and use registration function to declare. For more information, please refer to the relevant code in ```auto_round/mllm/plugin.py```.
+## Processor
+Processor is callback interface for calling different processors, such as texts or images processors, for MLLMs. User can define own processor and use registration function to declare. For more information, please refer to the relevant code in ```auto_round/mllm/processor.py```.

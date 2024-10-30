@@ -24,7 +24,6 @@ from torch import autocast
 from tqdm import tqdm
 import accelerate
 
-from .calib_dataset import get_dataloader
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
     WrapperTransformerConv1d
 from .special_model_handler import (check_hidden_state_dim,

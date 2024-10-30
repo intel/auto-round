@@ -3,5 +3,5 @@
     "format_user": "Question: {{content}} ",
     "format_assistant": "Answer: {{content}}\n",
     "replace_tokens": ["<image>\n", ""],
-    "plugin": "cogvlm2"
+    "processor": "cogvlm2"
 }

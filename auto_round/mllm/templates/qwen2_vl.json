@@ -7,5 +7,5 @@
     "format_separator": "\n",
     "default_system": "You are a helpful assistant.",
     "replace_tokens": ["<image>", "<|vision_start|><|image_pad|><|vision_end|>"],
-    "plugin": "qwen2_vl" 
+    "processor": "qwen2_vl" 
 }

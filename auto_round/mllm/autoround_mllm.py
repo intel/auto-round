@@ -197,7 +197,7 @@ class AutoRoundMLLM(AutoRound):
                     logger.error("please provide tokenizer for string input")
                     exit()
                 # data = self.template._encode(data)
-                data = self.template.plugin.get_input(
+                data = self.template.processor.get_input(
                     self.model,
                     self.tokenizer,
                     text=data,
@@ -214,8 +214,8 @@ class AutoRoundMLLM(AutoRound):
                 text = self.template._encode(data)
                 image = None
                 if "image" in data:
-                    image = self.template.plugin.image_processor(data["image"])
-                data = self.template.plugin.get_input(
+                    image = self.template.processor.image_processor(data["image"])
+                data = self.template.processor.get_input(
                     self.model,
                     self.tokenizer,
                     text=text,

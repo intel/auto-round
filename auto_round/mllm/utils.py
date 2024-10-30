@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import os
+import requests
 
+from PIL import Image
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer, AutoConfig
+
 
 
 def load_mllm(pretrained_model_name_or_path, **kwargs):
@@ -63,3 +66,12 @@ def _extract_data_dir(dir_path):
         return result
 
 
+def fetch_image(path_or_url):
+    if os.path.isfile(path_or_url):
+        image_obj = Image.open(path_or_url)
+    elif path_or_url.startwith("http://") or path_or_url.startwith("https://"):
+        image_obj = Image.open(requests.get(path_or_url, stream=True).raw)
+    else:
+        raise TypeError(f"{path_or_url} neigher a path or url.")
+
+    return image_obj

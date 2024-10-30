@@ -21,7 +21,7 @@ from enum import Enum, unique
 from ..utils import logger
 
 
-from .plugin import BasicPlugin, PLUGINS
+from .processor import BasicProcessor, PROCESSORS
 
 TEMPLATES: Dict[str, "Template"] = {}
 
@@ -50,7 +50,7 @@ class Template:
     format_separator: str
     default_system: str
     replace_tokens: List[tuple]
-    plugin: "BasicPlugin"
+    processor: "BasicProcessor"
 
     def _encode(self, sources):
         """Encodes formatted inputs to pairs of token ids."""
@@ -82,7 +82,7 @@ def _register_template(
     format_separator: Optional[str] = None,
     default_system: str = "",
     replace_tokens: List[tuple] = None,
-    plugin: "BasicPlugin" = PLUGINS["basic"]
+    processor: "BasicProcessor" = PROCESSORS["basic"]
 ):
     """Registers a chat template."""
     template_class = Template
@@ -102,7 +102,7 @@ def _register_template(
         format_separator = format_separator or default_format_separator,
         default_system = default_system,
         replace_tokens = replace_tokens,
-        plugin = plugin
+        processor = processor
     )
     return TEMPLATES[model_type]
 
@@ -119,10 +119,10 @@ def load_template(path: str):
         for i in range(0, len(data["replace_tokens"]), 2):
            temp.append((data["replace_tokens"][i], data["replace_tokens"][i+1])) 
         data["replace_tokens"] = temp
-    if "plugin" in data:
-        assert data["plugin"] in PLUGINS.keys(), \
-            "{} is not supported, current support: {}".format(data["plugin"], ",".join(PLUGINS.keys()))
-        data["plugin"] = PLUGINS[data["plugin"]]
+    if "processor" in data:
+        assert data["processor"] in PROCESSORS.keys(), \
+            "{} is not supported, current support: {}".format(data["processor"], ",".join(PROCESSORS.keys()))
+        data["processor"] = PROCESSORS[data["processor"]]
     template = _register_template(
         **data
     )

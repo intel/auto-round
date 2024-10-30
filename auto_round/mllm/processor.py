@@ -16,17 +16,18 @@ import torch
 from transformers.data.data_collator import default_data_collator
 
 from PIL import Image
+from .utils import fetch_image
 
-PLUGINS = {}
+PROCESSORS = {}
 
-def regist_plugin(name):
-    def register(plugin):
-        PLUGINS[name] = plugin
-        return plugin
+def regist_processor(name):
+    def register(processor):
+        PROCESSORS[name] = processor
+        return processor
     return register
 
-@regist_plugin("basic")
-class BasicPlugin:
+@regist_processor("basic")
+class BasicProcessor:
     def __init__(self):
         pass
 
@@ -68,11 +69,11 @@ class BasicPlugin:
         return default_data_collator(batch)
 
     @staticmethod 
-    def image_processor(image_path):
-        return Image.open(image_path)
+    def image_processor(image_path_or_url):
+        return fetch_image(image_path_or_url)
 
-@regist_plugin("qwen2_vl")
-class Qwen2VLPlugin(BasicPlugin):
+@regist_processor("qwen2_vl")
+class Qwen2VLProcessor(BasicProcessor):
     def get_input(
             model,
             tokenizer,
@@ -109,8 +110,8 @@ class Qwen2VLPlugin(BasicPlugin):
         return ret
 
 
-@regist_plugin("cogvlm2")
-class CogVLM2Plugin(BasicPlugin):
+@regist_processor("cogvlm2")
+class CogVLM2Processor(BasicProcessor):
     def get_input(
             model, tokenizer, text, images, max_length=2048, 
             padding=True, truncation=True, squeeze=True, **kwargs):
@@ -175,5 +176,5 @@ class CogVLM2Plugin(BasicPlugin):
         return batched_data
     
     @staticmethod
-    def image_processor(image_path):
-        return Image.open(image_path).convert('RGB')
+    def image_processor(image_path_or_url):
+        return fetch_image(image_path_or_url).convert('RGB')
