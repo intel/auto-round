@@ -1,11 +1,15 @@
 # AutoRound for MLLMs
 ## API Usage (Gaudi2/CPU/GPU)
 ```python
-from auto_round.mllm import load_mllm
 from auto_round import AutoRoundMLLM
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
 
 model_name = "Qwen/Qwen2-VL-2B-Instruct"
-model, tokenizer, processor = load_mllm(model_name, device_map="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+tokenizer.processor = processor
+model = Qwen2VLForConditionalGeneration.from_pretrained(
+    model_name, trust_remote_code=True, device_map="auto") 
 dataset = "/path/to/llava.json"
 extra_data_dir = "/path/to/images/dir" 
 

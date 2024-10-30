@@ -21,7 +21,7 @@ import transformers
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
 from lm_eval.utils import make_table  # pylint: disable=E0401
 
 from auto_round import AutoRoundConfig
@@ -459,8 +459,25 @@ def tune_mllm(args):
     torch.manual_seed(1234)
 
     # load_model
-    from auto_round.mllm import load_mllm
-    model, tokenizer, processor = load_mllm(model_name, device_map="auto", torch_dtype=torch_dtype, trust_remote_code=not args.disable_trust_remote_code)
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+    tokenizer.processor = processor
+    model_type = config.model_type
+    if "qwen2_vl" in model_type:
+        from transformers import Qwen2VLForConditionalGeneration
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            model_name, trust_remote_code=not args.disable_trust_remote_code)
+    elif "mllama" in model_type:
+        from transformers import MllamaForConditionalGeneration
+        model = MllamaForConditionalGeneration.from_pretrained(
+            model_name, trust_remote_code=not args.disable_trust_remote_code, attn_implementation="eager")
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, trust_remote_code=not args.disable_trust_remote_code)
+
+    if "cogvlm2" in model_name:
+        model.config.model_type = "cogvlm2"
 
     from auto_round import AutoRoundMLLM
 
@@ -473,14 +490,13 @@ def tune_mllm(args):
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                 layer_config[n] = {"bits": 32}
-                print(
-                    f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
+                logger.info(
+                   f"{n} will not be quantized due to its shape not being divisible by 32,"
+                    " resulting in an exporting issue to autogptq")
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():
         lm_head_layer_name = n
     if args.quant_lm_head:
-        from transformers import AutoConfig
-
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
         if config.tie_word_embeddings and hasattr(model, "_tied_weights_keys"):
             tied_keys = model._tied_weights_keys

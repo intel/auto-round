@@ -85,10 +85,15 @@ class LlavaDataset(Dataset):
 
         text = self.template._encode(text)
 
-        image_fold = _extract_data_dir(self.extra_data_dir)
-        if isinstance(image_fold, dict):
-            image_fold = image_fold['image']
-        image = self.template.processor.image_processor(os.path.join(image_fold, os.path.basename(self.questions[i]["image"])))
+        if self.extra_data_dir is not None:
+            image_fold = _extract_data_dir(self.extra_data_dir)
+            if isinstance(image_fold, dict):
+                image_fold = image_fold['image']
+            image_path = os.path.join(
+                image_fold, os.path.basename(self.questions[i]["image"]))
+        else:
+            image_path = self.questions[i]["image"]
+        image = self.template.processor.image_processor(image_path)
 
         ret = self.template.processor.get_input(
             self.model,

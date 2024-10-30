@@ -102,7 +102,7 @@ def _register_template(
         format_separator = format_separator or default_format_separator,
         default_system = default_system,
         replace_tokens = replace_tokens,
-        processor = processor
+        processor = processor()
     )
     return TEMPLATES[model_type]
 

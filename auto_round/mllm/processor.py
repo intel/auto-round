@@ -15,7 +15,6 @@
 import torch
 from transformers.data.data_collator import default_data_collator
 
-from PIL import Image
 from .utils import fetch_image
 
 PROCESSORS = {}
@@ -32,6 +31,7 @@ class BasicProcessor:
         pass
 
     def get_input(
+            self,
             model,
             tokenizer,
             text,
@@ -75,6 +75,7 @@ class BasicProcessor:
 @regist_processor("qwen2_vl")
 class Qwen2VLProcessor(BasicProcessor):
     def get_input(
+            self,
             model,
             tokenizer,
             text,
@@ -113,7 +114,7 @@ class Qwen2VLProcessor(BasicProcessor):
 @regist_processor("cogvlm2")
 class CogVLM2Processor(BasicProcessor):
     def get_input(
-            model, tokenizer, text, images, max_length=2048, 
+            self, model, tokenizer, text, images, max_length=2048, 
             padding=True, truncation=True, squeeze=True, **kwargs):
         padding_len = 2303
         max_length += padding_len
