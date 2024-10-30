@@ -684,7 +684,7 @@ class AutoRound(object):
             for key in kwargs.keys():
                 if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) \
                         or isinstance(kwargs[key], tuple):
-                    if key not in self.inputs[name].keys(): # initilization
+                    if key not in self.inputs[name].keys(): # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
                         if data is None or (self.train_bs > 1 and key in shareable_keywords):
                             self.inputs[name][key] = data
