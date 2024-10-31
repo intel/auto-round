@@ -23,7 +23,7 @@ from transformers import set_seed
 from torch import autocast
 from tqdm import tqdm
 import accelerate
-
+from packaging import version
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
     WrapperTransformerConv1d
 from .special_model_handler import (check_hidden_state_dim,
@@ -49,7 +49,7 @@ from .utils import (
     get_layer_names_in_block,
     mv_module_from_gpu,
     unsupport_meta_device, detect_device_count, clear_memory,
-    get_multimodal_block_names,
+    get_multimodal_block_names, get_library_version,
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -290,7 +290,6 @@ class AutoRound(object):
                     self.train_bs = total_samples
                     logger.warning(f"force the train batch size to {total_samples}")
 
-
             self.quant_blocks(
                 self.model,
                 inputs,
@@ -382,12 +381,17 @@ class AutoRound(object):
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
+        torch_version = get_library_version("torch")
+        if version.parse(torch_version) >= version.parse("2.5.99"):
+            quant_layer = torch.compile(self.quant_layer)
+        else:
+            quant_layer = self.quant_layer
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
             q_layer_input = q_layer_inputs[layer_name] if enable_quanted_input else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
-            self.quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
+            quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
             del layer_input
             clear_memory(q_layer_input)
 
@@ -564,7 +568,6 @@ class AutoRound(object):
             for n, m in embed_layers:
                 m = m.to("meta")
 
-
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
         """Attempts to cache intermediate data on GPU, if failed, then using CPU.
@@ -599,9 +602,9 @@ class AutoRound(object):
                 logger.info("switch to cpu to cache inputs")
                 if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 8:
                     logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
-                                f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
-                                f" for optimal performance during calibration when enabling lm-head quantization. "
-                                f"Otherwise, the process may be significantly slower.")
+                                   f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
+                                   f" for optimal performance during calibration when enabling lm-head quantization. "
+                                   f"Otherwise, the process may be significantly slower.")
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                 clear_memory()
                 all_inputs = self.cache_inter_data(
@@ -909,7 +912,7 @@ class AutoRound(object):
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
         mv_module_from_gpu(layer, self.low_cpu_mem_usage)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        logger.info(dump_info)
+        logger.debug(dump_info)
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
@@ -1049,6 +1052,7 @@ class AutoRound(object):
         if self.enable_quanted_input:
             if self.low_cpu_mem_usage:
                 block = block.to(device)
+            clear_memory()
             q_outputs = self.get_block_outputs(
                 block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
                 cache_device=self.cache_device
@@ -1106,6 +1110,13 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
+        from auto_round.utils import get_library_version
+        torch_version = get_library_version("torch")
+        if version.parse(torch_version) >= version.parse("2.5.99"):
+            quant_block = torch.compile(self.quant_block)
+        else:
+            quant_block = self.quant_block
+
         pbar = tqdm(range(0, len(block_names), nblocks))
         for i in pbar:
             if nblocks == 1:
@@ -1121,7 +1132,7 @@ class AutoRound(object):
             if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
                 m = m.to(device)
 
-            q_input, input_ids = self.quant_block(
+            q_input, input_ids = quant_block(
                 m,
                 input_ids,
                 input_others,

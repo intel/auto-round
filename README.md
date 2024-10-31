@@ -26,7 +26,9 @@ more accuracy data and recipes across various models.
 <div align="left">
 
 ## What's New
-* [2024/10] AutoRound has been integrated to [torch/ao](https://github.com/pytorch/ao), check out their [release note](https://github.com/pytorch/ao/releases/tag/v0.6.1)
+
+* [2024/10] AutoRound has been integrated to [torch/ao](https://github.com/pytorch/ao), check out
+  their [release note](https://github.com/pytorch/ao/releases/tag/v0.6.1)
 * [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
   configuration. This configuration is typically better or comparable to asymmetric quantization and significantly
   outperforms other symmetric variants, especially at low bit-widths like 2-bit.
@@ -36,7 +38,6 @@ more accuracy data and recipes across various models.
   to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
 * [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters (for 2-bit
   and W4A4), activation quantization, and the mx_fp data type.
-
 
 ## Installation
 
@@ -57,7 +58,8 @@ pip install auto-round
 ### Basic Usage (Gaudi2/CPU/GPU)
 
 A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
-Alternatively, you can use ```auto_round``` instead of ```auto-round```. Set the format you want in `format` and multiple formats exporting has been supported. 
+Alternatively, you can use ```auto_round``` instead of ```auto-round```. Set the format you want in `format` and
+multiple formats exporting has been supported.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 auto-round \
@@ -198,13 +200,36 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 </details>
 
+### Quantization Costs
+
+Testing was conducted on the Nvidia A100 80G using the nightly version of PyTorch 2.6.0.dev20241029+cu124. Please note
+that data
+loading and packing costs have been excluded from the evaluation. **We enable torch.compile for Torch 2.6, but not for
+2.5
+due to encountered issues.**
+
+To optimize GPU memory usage, in addition to activating `low_gpu_mem_usage`, you can set `gradient_accumulate_steps=8`
+and a
+`batch_size=1`, though this may increase tuning time.
+
+The 3B and 14B models were evaluated on Qwen 2.5, the 8X7B model is Mixtral, while the remaining models utilized LLaMA
+3.1.
+
+| Torch version/Config W4G128                                                                 | 3B            | 8B             | 14B            | 70B             | 8X7B           |
+|---------------------------------------------------------------------------------------------|---------------|----------------|----------------|-----------------|----------------|
+| 2.6  with torch compile                                                                     | 7min<br/>10GB | 12min<br/>18GB | 23min<br/>22GB | 120min<br/>42GB | 28min<br/>46GB |
+| 2.6  with torch compile <br/> low_gpu_mem_usage=True                                        | 12min<br/>6GB | 19min<br/>10GB | 33min<br/>11GB | 140min<br/>25GB | 38min<br/>36GB |
+| 2.6  with torch compile <br/> low_gpu_mem_usage=True <br/> gradient_accumulate_steps=8,bs=1 | 15min<br/>3GB | 25min<br/>6GB  | 45min<br/>7GB  | 187min<br/>19GB | 75min<br/>36GB |
+| 2.5  w/o torch compile                                                                      | 8min<br/>10GB | 16min<br/>20GB | 30min<br/>25GB | 140min<br/>49GB | 50min<br/>49GB |
+
 ## Model Inference
 
 Please run the quantization code first
 
 ### AutoRound format
 
-**CPU**: **auto_round version >0.3.1**, pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip install intel-extension-for-transformers, 
+**CPU**: **auto_round version >0.3.1**, pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip
+install intel-extension-for-transformers,
 
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
