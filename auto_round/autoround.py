@@ -283,7 +283,8 @@ class AutoRound(object):
             keys = inputs.keys()
             input_id_str = [key for key in keys if key.startswith('hidden_state')]
             if len(input_id_str) != 1:
-                raise RuntimeError("hidden_states arg mismatch error, Please check the input kwargs of block forward")
+                raise RuntimeError("hidden_states arg mismatch error," \
+                                   " please check the input kwargs of block forward for more details.")
             inputs["input_ids"] = inputs.pop(input_id_str[0], None)
             clear_memory(self.inputs)
 
@@ -727,7 +728,7 @@ class AutoRound(object):
                             self.inputs[name][key] = [data]
                         else:
                             data = post_process_cache_data(self.batch_size, data, key)
-                            self.inputs[name][key] = list(torch.split(data, 1, dim=0))
+                            self.inputs[name][key] = list(torch.split(data, 1, dim=self.input_dim))
                     else: # append cache inputs
                         new_data = post_process_cache_data(self.batch_size, kwargs[key], key)
                         if new_data is None: # shareable args or NoneType
@@ -736,7 +737,7 @@ class AutoRound(object):
                         if self.batch_size <= 1:
                             self.inputs[name][key].append(new_data)
                         else:
-                            self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=0)))
+                            self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=self.input_dim)))
                 elif isinstance(kwargs[key], (str, bool, type(None))):
                     if key not in self.inputs[name].keys():
                         self.inputs[name][key] = kwargs[key]
