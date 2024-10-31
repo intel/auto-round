@@ -283,7 +283,7 @@ class AutoRound(object):
             keys = inputs.keys()
             input_id_str = [key for key in keys if key.startswith('hidden_state')]
             if len(input_id_str) != 1:
-                raise RuntimeError("hidden_states arg mismatch error")
+                raise RuntimeError("hidden_states arg mismatch error, Please check the input kwargs of block forward")
             inputs["input_ids"] = inputs.pop(input_id_str[0], None)
             clear_memory(self.inputs)
 
