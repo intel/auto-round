@@ -743,7 +743,7 @@ class AutoRound(object):
                         self.inputs[name][key] = kwargs[key]
                 else:
                     # Parameters not to be cached
-                    skip_keywards_hint(key)
+                    logger.warning_once(skip_keywards_hint(key))
             reset_params(self.inputs[name])
             if name == self.last_cache_name:
                 raise NotImplementedError

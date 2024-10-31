@@ -104,7 +104,7 @@ def skip_keywards_hint(key):
     Prints a reminder if a key is not stored during quantization fine-tuning.
     """
     if 'past_key_value' not in key:
-        print(f"Please note that this '{key}' key is not currently used in quantization fine-tuning.")
+        return (f"Please note that this '{key}' key is not currently used in quantization fine-tuning.")
         
 
 def check_model_batch(model, batch_size, gradient_accumulate_steps):
