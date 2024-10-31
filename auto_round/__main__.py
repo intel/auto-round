@@ -45,7 +45,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--device", default="auto", type=str,
                             help="The device to be used for tuning. The default is set to auto/None,"
-                                "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
+                                "allowing for automatic detection."
+                                " Currently, device settings support CPU, GPU, and HPU.")
     
         self.add_argument("--asym", action='store_true',
                             help=" asym quantization")
@@ -468,7 +469,7 @@ def tune_mllm(args):
     else:
         cls = AutoModelForCausalLM
     model = cls.from_pretrained(
-        model_name, trust_remote_code=not args.disable_trust_remote_code)
+        model_name,trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype)
 
     if "cogvlm2" in model_name:
         model.config.model_type = "cogvlm2"
@@ -513,12 +514,11 @@ def tune_mllm(args):
               f"gpu")
     
     autoround = round(model, tokenizer, dataset=args.dataset, extra_data_dir=args.extra_data_dir,
-                      bits=args.bits, group_size=args.group_size, sym=not args.asym, batch_size=1,
-                      seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
-                      minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
-                      amp=not args.disable_amp, nsamples=args.nsamples,
-                      low_gpu_mem_usage=args.low_gpu_mem_usage, device=device_str,
-                      seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
+                      bits=args.bits, group_size=args.group_size, sym=not args.asym,
+                      batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters,
+                      lr=args.lr, minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
+                      amp=not args.disable_amp, nsamples=args.nsamples, low_gpu_mem_usage=args.low_gpu_mem_usage,
+                      device=device_str, seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       quant_vision=args.quant_vision)

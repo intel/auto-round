@@ -84,7 +84,6 @@ class LlavaDataset(Dataset):
         text = self.covert_conversations(text)
 
         text = self.template._encode(text)
-
         if self.extra_data_dir is not None:
             image_fold = _extract_data_dir(self.extra_data_dir)
             if isinstance(image_fold, dict):
