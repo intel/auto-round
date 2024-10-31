@@ -190,5 +190,7 @@ if __name__ == "__main__":
             "Topic :: Scientific/Engineering :: Artificial Intelligence",
             "License :: OSI Approved :: Apache Software License",
         ],
+        include_package_data=True,
+        package_data={"": ["mllm/templates/*.json"]},
         **additional_setup_kwargs
     )

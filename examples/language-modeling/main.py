@@ -246,7 +246,7 @@ if __name__ == '__main__':
             )
 
     from auto_round import (AutoRound,
-                            AutoAdamRound)
+                            AutoRoundAdam)
 
     model = model.eval()
 
@@ -282,7 +282,7 @@ if __name__ == '__main__':
 
     round = AutoRound
     if args.adam:
-        round = AutoAdamRound
+        round = AutoRoundAdam
 
     layer_config = {}
     for n, m in model.named_modules():

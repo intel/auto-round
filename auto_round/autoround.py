@@ -22,6 +22,7 @@ from typing import Optional, Union
 from transformers import set_seed
 from torch import autocast
 from tqdm import tqdm
+import accelerate
 
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
     WrapperTransformerConv1d
@@ -48,10 +49,9 @@ from .utils import (
     get_layer_names_in_block,
     mv_module_from_gpu,
     unsupport_meta_device, detect_device_count, clear_memory,
+    get_multimodal_block_names,
 )
-
 from .low_cpu_mem.utils import get_layers_before_block
-import accelerate
 
 
 class AutoRound(object):
@@ -529,11 +529,10 @@ class AutoRound(object):
                 for key in data.keys():
                     data_new[key] = to_device(data[key], self.model.device)
                     if key == 'images':
-                        data_new[key] = to_dtype(data[key], self.model.dtype)
+                        data_new[key] = to_dtype(data_new[key], self.model.dtype)
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
@@ -544,7 +543,7 @@ class AutoRound(object):
             except NotImplementedError:
                 pass
             except Exception as error:
-                logger.error(error)
+                raise error
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
             if total_cnt >= nsamples:
                 break
@@ -595,18 +594,21 @@ class AutoRound(object):
             )
             self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             clear_memory()
-        except:
-            logger.info("switch to cpu to cache inputs")
-            if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 8:
-                logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
-                               f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
-                               f" for optimal performance during calibration when enabling lm-head quantization. "
-                               f"Otherwise, the process may be significantly slower.")
-            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-            clear_memory()
-            all_inputs = self.cache_inter_data(
-                block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
-            )
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e):
+                logger.info("switch to cpu to cache inputs")
+                if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 8:
+                    logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
+                                f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
+                                f" for optimal performance during calibration when enabling lm-head quantization. "
+                                f"Otherwise, the process may be significantly slower.")
+                self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+                clear_memory()
+                all_inputs = self.cache_inter_data(
+                    block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
+                )
+            else:
+                raise
         return all_inputs
 
     @torch.no_grad()
@@ -1330,7 +1332,7 @@ class AutoRound(object):
         lr_schedule.step()
 
 
-class AutoOPTRound(AutoRound):
+class AutoRoundOPT(AutoRound):
     """Class for automatic rounding-based quantization with optimizers like adamw of a PyTorch model.
 
     Args:
@@ -1413,7 +1415,7 @@ class AutoOPTRound(AutoRound):
             optimizer="AdamW",
             **kwargs,
     ):
-        super(AutoOPTRound, self).__init__(
+        super(AutoRoundOPT, self).__init__(
             model=model,
             tokenizer=tokenizer,
             bits=bits,
@@ -1493,7 +1495,7 @@ class AutoOPTRound(AutoRound):
             htcore.mark_step()
 
 
-class AutoAdamRound(AutoOPTRound):
+class AutoRoundAdam(AutoRoundOPT):
     """Class for automatic rounding-based quantization with optimizers like adamw of a PyTorch model.
     The default lr has been changed.
 
@@ -1577,7 +1579,7 @@ class AutoAdamRound(AutoOPTRound):
             optimizer="AdamW",
             **kwargs,
     ):
-        super(AutoAdamRound, self).__init__(
+        super(AutoRoundAdam, self).__init__(
             model=model,
             tokenizer=tokenizer,
             bits=bits,
