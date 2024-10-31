@@ -455,7 +455,7 @@ if __name__ == '__main__':
     dataloader = get_train_dataloader(dataset, model, data_collator=default_collator, train_batch_size=args.batch_size)
     
     from auto_round import (AutoRound,
-                            AutoAdamRound)
+                            AutoRoundAdam)
     from auto_round.utils import get_multimodal_block_names
 
     model = model.eval()
@@ -463,7 +463,7 @@ if __name__ == '__main__':
 
     round = AutoRound
     if args.adam:
-        round = AutoAdamRound
+        round = AutoRoundAdam
 
     layer_config = {}
     for n, m in model.named_modules():

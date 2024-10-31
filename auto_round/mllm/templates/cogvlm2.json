@@ -1,0 +1,7 @@
+{
+    "model_type": "cogvlm2",
+    "format_user": "Question: {{content}} ",
+    "format_assistant": "Answer: {{content}}\n",
+    "replace_tokens": ["<image>\n", ""],
+    "processor": "cogvlm2"
+}
