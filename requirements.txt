@@ -3,7 +3,7 @@ datasets
 py-cpuinfo
 sentencepiece
 torch
-transformers<=4.45.2
+transformers
 triton
 numpy < 2.0
 threadpoolctl
