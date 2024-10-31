@@ -17,7 +17,7 @@ from collections import UserDict
 special_states_dim_tuple = ("chatglm",) # input_dim is not the default dimension 0
 shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
 mllms_with_limited_bs = ("llava", "qwen2-vl", "phi3_v", "mllama") # Limitations on batch_size
-
+skippable_cache_keys = ("past_key_value",)
 
 def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
@@ -103,9 +103,11 @@ def skip_keywards_hint(key):
     """
     Prints a reminder if a key is not stored during quantization fine-tuning.
     """
-    if 'past_key_value' not in key:
-        return (f"Please note that this '{key}' key is not currently used in quantization fine-tuning.")
-        
+    for cache_key in skippable_cache_keys:
+        if cache_key not in key:
+            return True
+    return False
+            
 
 def check_model_batch(model, batch_size, gradient_accumulate_steps):
     """

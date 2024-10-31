@@ -743,7 +743,9 @@ class AutoRound(object):
                         self.inputs[name][key] = kwargs[key]
                 else:
                     # Parameters not to be cached
-                    logger.warning_once(skip_keywards_hint(key))
+                    if skip_keywards_hint(key):
+                        logger.warning_once(f"Please note that this '{key}' key" \
+                                            " is not currently used in quantization fine-tuning.")
             reset_params(self.inputs[name])
             if name == self.last_cache_name:
                 raise NotImplementedError
