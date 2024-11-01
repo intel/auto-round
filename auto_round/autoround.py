@@ -708,10 +708,10 @@ class AutoRound(object):
             if name not in self.inputs:
                 self.inputs[name] = {}
                 check_model_batch(self.model, self.batch_size, self.gradient_accumulate_steps)
+                special_model_init(self.model, positional_inputs, self.inputs[name])
                 
             if self.input_dim is None:
                 self.input_dim = check_hidden_state_dim(self.model, positional_inputs)
-                special_model_init(self.model, positional_inputs, self.inputs[name])
                 
             if hidden_states is not None:
                 kwargs['hidden_states'] = hidden_states
