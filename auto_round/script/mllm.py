@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import os
-import re
 import argparse
 
 import torch
@@ -20,12 +20,9 @@ import transformers
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
-from lm_eval.utils import make_table  # pylint: disable=E0401
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoProcessor
 
-from auto_round import AutoRoundConfig
-from auto_round.eval.evaluation import simple_evaluate
-from auto_round.utils import detect_device, get_library_version, detect_device_count
+from auto_round.utils import detect_device
 from auto_round.utils import logger
 
 class BasicArgumentParser(argparse.ArgumentParser):
@@ -75,8 +72,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--format", default=None, type=str,
                             help="The format in which to save the model. "
                                 "The options are 'auto_round', 'auto_round:gptq','auto_round:awq',"
-                                " 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
-                                "default to 'auto_round."
+                                " and 'fake'.default to 'auto_round."
                             )
 
         self.add_argument("--data_type", default='int',
@@ -87,9 +83,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--output_dir", default="./tmp_autoround", type=str,
                             help="Where to store the final model.")
-
-        self.add_argument("--disable_eval", action='store_true',
-                            help="Whether to do lm-eval evaluation after tuning.")
 
         self.add_argument("--disable_amp", action='store_true',
                             help="disable amp")
@@ -132,7 +125,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
                             help="List of Layers to maintain original data type")
 
         ## ======================= VLM =======================
-        self.add_argument("--quant_vision", action='store_true',
+        self.add_argument("--quant_nontext_module", action='store_true',
                             help="To determine whether the quantization should handle vision component.")
 
         self.add_argument("--extra_data_dir", default="", type=str,
@@ -200,14 +193,6 @@ def tune(args):
     if args.format is None:
         args.format = "auto_round"
         
-    if "auto_gptq" in args.format and args.asym is True:
-        print(
-            "warning: The auto_gptq kernel has issues with asymmetric quantization. "
-            "It is recommended to use sym quantization or --format='auto_round'")
-    
-    if "marlin" in args.format and args.asym is True:
-        assert False, "marlin backend only supports sym quantization, please remove --asym"
-    
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
@@ -219,8 +204,6 @@ def tune(args):
     if "hpu" in device_str:
         torch_dtype = torch.bfloat16
     
-    torch.manual_seed(1234)
-
     # load_model
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -288,7 +271,7 @@ def tune(args):
                       device=device_str, seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
-                      quant_vision=args.quant_vision)
+                      quant_nontext_module=args.quant_nontext_module)
     model, _ = autoround.quantize()
 
     model.eval()

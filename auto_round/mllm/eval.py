@@ -12,12 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Copyright 2023 VLMEvalKit Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 import json
 import tabulate
 from functools import partial
 
 import pandas as pd
+from ..utils import logger, LazyImport
+vlmeval = LazyImport("vlmeval")
+
 from vlmeval.vlm import *
 from vlmeval.api import *
 from vlmeval.config import supported_VLM
@@ -28,8 +45,6 @@ from vlmeval.inference_mt import infer_data_job_mt
 from vlmeval.smp import listinstr, MMBenchOfficialServer
 from vlmeval.utils.result_transfer import MMMU_result_transfer, MMTBench_result_transfer
 
-
-from ..utils import logger
 
 MODEL_TYPE_TO_VLMEVAL_MODEL = {
     #model_name
@@ -79,7 +94,7 @@ def mllm_eval(
 
     model_name = pretrained_model_name_or_path
     if "/" in model_name:
-        model_name = model_name[-1] if model_name[-1] == "/" else model_name
+        model_name = model_name[:-1] if model_name[-1] == "/" else model_name
         model_name = model_name.split("/")[-1]
 
     if model_name in MODEL_TYPE_TO_VLMEVAL_MODEL:
@@ -90,7 +105,7 @@ def mllm_eval(
         for i in range(len(split_name), 0, -1):
             tmp = "-".join(split_name[0:i])
             if tmp in MODEL_TYPE_TO_VLMEVAL_MODEL:
-                model_type = model_name
+                model_type = tmp
                 break
         if model_type is None:
             from transformers import AutoConfig
