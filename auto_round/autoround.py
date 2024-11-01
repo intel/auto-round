@@ -1110,7 +1110,6 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
-        from auto_round.utils import get_library_version
         torch_version = get_library_version("torch")
         if version.parse(torch_version) >= version.parse("2.5.99"):
             quant_block = torch.compile(self.quant_block)
