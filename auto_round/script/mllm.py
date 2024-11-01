@@ -50,7 +50,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--asym", action='store_true',
                             help=" asym quantization")
 
-        self.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
+        self.add_argument("--dataset", required=True, type=str,
                             help="The dataset for quantization training. It can be a custom one.")
 
         self.add_argument("--lr", default=None, type=float,
@@ -181,7 +181,7 @@ def setup_parser():
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--batch_size", default=8, type=int,
+    parser.add_argument("--batch_size", default=1, type=int,
                         help="train batch size")
 
     parser.add_argument("--iters", default=200, type=int,
