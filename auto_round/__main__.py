@@ -141,7 +141,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--mllm", action='store_true',
                             help="To determine whether use multimodel-llm mode.")
 
-        self.add_argument("--quant_vision", action='store_true',
+        self.add_argument("--quant_nontext_module", action='store_true',
                             help="To determine whether the quantization should handle vision component.")
 
         self.add_argument("--extra_data_dir", default="", type=str,
@@ -521,7 +521,7 @@ def tune_mllm(args):
                       device=device_str, seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
-                      quant_vision=args.quant_vision)
+                      quant_nontext_module=args.quant_nontext_module)
     model, _ = autoround.quantize()
 
     model.eval()
@@ -564,3 +564,4 @@ def run_mllm():
 
 if __name__ == '__main__':
     run()
+

@@ -29,8 +29,8 @@ from .special_model_handler import (check_hidden_state_dim,
                                     shareable_keywords,
                                     special_model_init,
                                     reset_params,
-                                    skip_keywards_hint,
-                                    check_model_batch)
+                                    skip_keywards_hint
+                                    )
 from .utils import (
     CpuInfo,
     block_forward,
@@ -707,7 +707,6 @@ class AutoRound(object):
             """
             if name not in self.inputs:
                 self.inputs[name] = {}
-                check_model_batch(self.model, self.batch_size, self.gradient_accumulate_steps)
                 special_model_init(self.model, positional_inputs, self.inputs[name])
                 
             if self.input_dim is None:

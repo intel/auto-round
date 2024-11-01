@@ -109,13 +109,14 @@ def skip_keywards_hint(key):
     return False
             
 
-def check_model_batch(model, batch_size, gradient_accumulate_steps):
+def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps):
     """
     Checks model configuration to determine if it's necessary to limit bs to avoid potential input shape mismatches.
     """
     for key in mllms_with_limited_bs:
         if hasattr(model, "config") and key in model.config.model_type and batch_size != 1:
             accumulate_steps = batch_size * gradient_accumulate_steps
-            raise RuntimeError("To avoid the tensor concat mismatch problem, please modify parameters to " \
-                    f"batch_size=1. As an alternative, you can set the gradient_accumulate_steps={accumulate_steps}")
-                
+            print("To avoid the tensor concat mismatch problem, modified parameters to " \
+                    f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}")
+            return 1, accumulate_steps
+    return batch_size, gradient_accumulate_steps
