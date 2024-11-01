@@ -17,7 +17,6 @@ from vlmeval.utils.result_transfer import MMMU_result_transfer, MMTBench_result_
 
 from ..utils import logger
 
-# TODO
 MODEL_TYPE_TO_VLMEVAL_MODEL = {
     #model_name
     "Qwen-VL": dict(cls=QwenVL),
@@ -44,7 +43,7 @@ MODEL_TYPE_TO_VLMEVAL_MODEL = {
     "mllama": dict(cls=llama_vision),
 }
 
-def eval(
+def mllm_eval(
         pretrained_model_name_or_path: str,
         work_dir: str,
         dataset: list,
@@ -54,10 +53,10 @@ def eval(
         fps: float = -1,
         nframe: int = 8,
         rerun: bool = False,
-        nproc: int = 4,
         judge: bool = False,
         verbose: bool = False,
         mode: str = 'all',
+        ignore: bool = False
         ):
 
     model = None
@@ -66,14 +65,15 @@ def eval(
 
     model_name = pretrained_model_name_or_path
     if "/" in model_name:
-        model_name = model_name.rsplit("/").split("/")[-1]
+        model_name = model_name[-1] if model_name[-1] == "/" else model_name
+        model_name = model_name.split("/")[-1]
 
     if model_name in MODEL_TYPE_TO_VLMEVAL_MODEL:
         model_type = model_name
     else:
         model_type = None
         split_name = model_name.split("-")
-        for i in range(len(), 0, -1):
+        for i in range(len(split_name), 0, -1):
             tmp = "-".join(split_name[0:i])
             if tmp in MODEL_TYPE_TO_VLMEVAL_MODEL:
                 model_type = model_name
@@ -86,11 +86,11 @@ def eval(
                 model_type += "_chat"
 
     kwargs = MODEL_TYPE_TO_VLMEVAL_MODEL[model_type]
-    kwargs["model_path"] = model_name
+    kwargs["model_path"] = pretrained_model_name_or_path
     model_cls = kwargs.pop("cls")
     supported_VLM[model_name] = partial(model_cls, **kwargs)
 
-    pred_root = os.path.exist(work_dir, model_name)
+    pred_root = os.path.join(work_dir, model_name)
     os.makedirs(pred_root, exist_ok=True)
 
     for dataset_name in dataset:
@@ -153,7 +153,6 @@ def eval(
                     pack=pack,
                     verbose=verbose,
                     subtitle=use_subtitle,
-                    api_nproc=nproc,
                     fps=fps)
             elif dataset.TYPE == 'MT':
                 model = infer_data_job_mt(
@@ -162,7 +161,6 @@ def eval(
                     model_name=model_name,
                     dataset=dataset,
                     verbose=verbose,
-                    api_nproc=nproc,
                     ignore_failed=ignore)
             else:
                 model = infer_data_job(
@@ -171,12 +169,10 @@ def eval(
                     model_name=model_name,
                     dataset=dataset,
                     verbose=verbose,
-                    api_nproc=nproc,
                     ignore_failed=ignore)
         
             # Set the judge kwargs first before evaluation or dumping
             judge_kwargs = {
-                'nproc': nproc,
                 'verbose': verbose,
             }
             if judge is not None:
@@ -228,7 +224,7 @@ def eval(
                     )
                     continue
             
-            if mode = 'all':
+            if mode == 'all':
                 eval_results = dataset.evaluate(result_file, **judge_kwargs)
                 if eval_results is not None:
                     assert isinstance(eval_results, dict) or isinstance(eval_results, pd.DataFrame)
