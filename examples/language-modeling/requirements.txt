@@ -19,3 +19,6 @@ wandb
 py-cpuinfo
 numpy < 2.0
 threadpoolctl
+numexpr
+bitsandbytes # for baichuan Series 
+

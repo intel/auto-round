@@ -188,8 +188,7 @@ def get_layers_before_block(model):
     
     try:
         if model.device.type == 'meta':
-            target_device = 'meta'
-            
+            target_device = 'cpu'
         else:
             target_device = model.device
         input = {

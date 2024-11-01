@@ -68,8 +68,8 @@ def create_data_loader(dataset, batch_size=1, data_collator=None):
     data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=data_collator)
     return data_loader
 
-def save_tower(model, save_path, quant_vision: bool = False, max_shard_size: str = "5GB", safe_serialization: bool = True):
-    if not quant_vision:
+def save_tower(model, save_path, quant_nontext_module: bool = False, max_shard_size: str = "5GB", safe_serialization: bool = True):
+    if not quant_nontext_module:
         print("Won't save vision_tower since this part was not quantized.")
         return
     ori_path = save_path
@@ -113,7 +113,7 @@ if __name__ == '__main__':
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--train_bs", default=1, type=int,
+    parser.add_argument("--batch_size", default=1, type=int,
                         help="train batch size")
 
     parser.add_argument("--eval_bs", default=4, type=int,
@@ -194,7 +194,7 @@ if __name__ == '__main__':
     parser.add_argument("--is_multimodal", type=bool, default=True,
                         help="To determine whether the preprocessing should handle multimodal infomations.")
     
-    parser.add_argument("--quant_vision", action='store_true',
+    parser.add_argument("--quant_nontext_module", action='store_true',
                         help="To determine whether the quantization should handle vision component.")
     
     # ========== Calibration Datasets ============= 
@@ -300,7 +300,7 @@ if __name__ == '__main__':
     questions = json.load(open(args.question_file, "r"))
     dataset = CustomDataset(questions, args.image_folder, tokenizer, image_processor, args=args)
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
-    dataloader = create_data_loader(dataset, args.train_bs, data_collator)
+    dataloader = create_data_loader(dataset, args.batch_size, data_collator)
 
     round = AutoRound
     if args.adam:
@@ -340,9 +340,9 @@ if __name__ == '__main__':
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
         
-    quant_block_list = get_multimodal_block_names(model, args.quant_vision)
+    quant_block_list = get_multimodal_block_names(model, args.quant_nontext_module)
 
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
+    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.batch_size,
                       dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
                       amp=not args.disable_amp, nsamples=args.nsamples, layer_config=layer_config,
@@ -379,23 +379,23 @@ if __name__ == '__main__':
         if "round" in gpu_format:
             eval_folder = f'{export_dir}-round'
             compressed_model = autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-            save_tower(compressed_model, eval_folder, quant_vision=args.quant_vision)
+            save_tower(compressed_model, eval_folder, quant_nontext_module=args.quant_nontext_module)
         elif "gptq" in gpu_format:
             eval_folder = f'{export_dir}-gpu'
             compressed_model = autoround.save_quantized(eval_folder, format=gpu_format, use_triton=False, inplace=inplace)
-            save_tower(compressed_model, eval_folder, quant_vision=args.quant_vision)
+            save_tower(compressed_model, eval_folder, quant_nontext_module=args.quant_nontext_module)
     if 'xpu' in deployment_device:
         compressed_model = autoround.save_quantized(f'{export_dir}-xpu', format="itrex_xpu", use_triton=True, inplace=inplace,
                                  compression_dtype=torch.int8, compression_dim=0, use_optimum_format=False,
                                  device="xpu")
-        save_tower(compressed_model, eval_folder, quant_vision=args.quant_vision)
+        save_tower(compressed_model, eval_folder, quant_nontext_module=args.quant_nontext_module)
     if "cpu" in deployment_device:
         compressed_model = autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
-        save_tower(compressed_model, eval_folder, quant_vision=args.quant_vision)
+        save_tower(compressed_model, eval_folder, quant_nontext_module=args.quant_nontext_module)
     if "fake" in deployment_device:
         model = model.to("cpu")
         model.save_pretrained(output_dir)
-        save_tower(model, output_dir, quant_vision=args.quant_vision)
+        save_tower(model, output_dir, quant_nontext_module=args.quant_nontext_module)
         tokenizer.save_pretrained(output_dir)
         if eval_folder is None:
             eval_folder = output_dir
@@ -415,5 +415,6 @@ if __name__ == '__main__':
         )
         evaluator.run_evaluate(result_file = args.eval_result_file)
         evaluator.calculate_accuracy(result_file = args.eval_result_file)
+
 
 

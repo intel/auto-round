@@ -26,7 +26,7 @@ from ..autoround import AutoRound
 from .template import get_template, Template
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
-
+from ..special_model_handler import check_mllm_model_batch
 class AutoRoundMLLM(AutoRound):
     """Class for automatic rounding-based quantization with MLLMs.
     
@@ -119,6 +119,7 @@ class AutoRoundMLLM(AutoRound):
         if self.template is None:
             self.template = get_template(model.config.model_type)
         assert dataset is not None, "dataset should not be None"
+        batch_size, gradient_accumulate_steps = check_mllm_model_batch(model, batch_size, gradient_accumulate_steps)
         if isinstance(dataset, str):
             dataset = get_mllm_dataloader(self.template, model, tokenizer, dataset, extra_data_dir, seqlen, batch_size)
         

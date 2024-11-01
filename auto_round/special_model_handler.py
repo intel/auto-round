@@ -13,37 +13,48 @@
 # limitations under the License.
 
 import torch
+from collections import UserDict
+special_states_dim_tuple = ("chatglm",) # input_dim is not the default dimension 0
+shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
+mllms_with_limited_bs = ("llava", "qwen2-vl", "phi3_v", "mllama") # Limitations on batch_size
+skippable_cache_keys = ("past_key_value",)
 
-share_attention_mask_tuple = ("baichuan",)
-special_states_dim_tuple = ("chatglm",)
-not_share_position_ids_tuple = ("llava", "phi3_v", "qwen2_vl",)
-not_share_rotary_pos_emb_tuple = ("qwen2_vl",)
-def check_share_attention_mask(model, hidden_states, attention_mask=None, **kwargs):
-    """Checks if the attention mask states of the hidden states are shared in the model.
+def to_device(input, device=torch.device("cpu")):
+    """Moves input data to the specified device.
 
     Args:
-        hidden_states (torch.Tensor): The hidden states of the model.
-        attention_mask (torch.Tensor, optional): The attention mask tensor. Defaults to None.
-        **kwargs: Additional keyword arguments.
+    input: The input data to be moved.
+    device: The target device.
 
     Returns:
-        bool: True if attention mask is shared in the model, False otherwise.
+    The input data on the specified device.
     """
-    if attention_mask is None or not isinstance(hidden_states, torch.Tensor):
-        return False
-    is_special = False
-    for key in share_attention_mask_tuple:
-        if hasattr(model, "config") and key in model.config.model_type:
-            is_special = True
-            break
-    return bool(is_special and attention_mask.shape[0] != hidden_states.shape[0])
+    if input is None:
+        return None
+    if isinstance(input, torch.Tensor):
+        return input.to(device)
+    if isinstance(input, dict) or isinstance(input, UserDict):
+        for inp in input.keys():
+            input[inp] = to_device(input[inp], device)
+
+    elif isinstance(input, list) or isinstance(input, tuple):
+        if len(input) == 0:
+            return input
+        input_res = []
+        for inp in input:
+            input_res.append(to_device(inp, device))
+        if isinstance(input, tuple):
+            input_res = tuple(input_res)
+        input = input_res
+
+    return input
 
 
-def check_hidden_state_dim(model, positional_args):
-    """Checks the dimensionality of the hidden states.
+def check_hidden_state_dim(model, positional_inputs):
+    """Check the concatenable dimension of hidden states.
 
     Args:
-        positional_args: The positional arguments.
+        positional_inputs: The positional arguments.
 
     Returns:
         int: 1 if the model type is 'chatglm' and positional arguments are not None, 0 otherwise.
@@ -53,23 +64,59 @@ def check_hidden_state_dim(model, positional_args):
         if hasattr(model, "config") and key in model.config.model_type:
             is_special = True
             break
-    return int(is_special and positional_args is not None)
+    return int(is_special and positional_inputs is not None)
 
 
-def check_not_share_position_ids(model, **kwargs):
-    is_special = False
-    for key in not_share_position_ids_tuple:
-        if hasattr(model, "config") and key in model.config.model_type:
-            is_special = True
-            break
-    return bool(is_special)
+def special_model_init(model, positional_inputs, inputs):
+    """
+    Initializes special model inputs by adding positional inputs if missing.
+
+    Args:
+        model: The model instance being initialized.
+        positional_inputs (list): List of positional inputs to add to inputs.
+        inputs (dict): Dictionary of model inputs.
+    
+    Modifies:
+        inputs (dict): Adds "positional_inputs" key if not present.
+    """
+    if "positional_inputs" not in inputs: # for chatglm Series
+        inputs["positional_inputs"] = []
+    for idx, item in enumerate(positional_inputs):
+        inputs["positional_inputs"] = to_device(positional_inputs)
 
 
-def check_not_share_rotary_pos_emb(model, **kwargs):
-    is_special = False
-    for key in not_share_rotary_pos_emb_tuple:
-        if hasattr(model, "config") and key in model.config.model_type:
-            is_special = True
-            break
-    return bool(is_special)
+def reset_params(inputs):
+    """
+    Resets specific input parameters to avoid saving the key-value cache during fine-tuning.
+    
+    Args:
+        inputs (dict): Dictionary of model inputs.
+    
+    Modifies:
+        inputs (dict): Sets "use_cache" to False if the key is present.
+    """
+    if "use_cache" in inputs.keys(): # Not storing kv cache
+        inputs['use_cache'] = False
+        
 
+def skip_keywards_hint(key):
+    """
+    Prints a reminder if a key is not stored during quantization fine-tuning.
+    """
+    for cache_key in skippable_cache_keys:
+        if cache_key not in key:
+            return True
+    return False
+            
+
+def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps):
+    """
+    Checks model configuration to determine if it's necessary to limit bs to avoid potential input shape mismatches.
+    """
+    for key in mllms_with_limited_bs:
+        if hasattr(model, "config") and key in model.config.model_type and batch_size != 1:
+            accumulate_steps = batch_size * gradient_accumulate_steps
+            print("To avoid the tensor concat mismatch problem, modified parameters to " \
+                    f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}")
+            return 1, accumulate_steps
+    return batch_size, gradient_accumulate_steps
