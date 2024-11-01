@@ -162,7 +162,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
                           help="When mode set to 'all', will perform both inference and evaluation;"
                           " when set to 'infer' will only perform the inference.")
         self.add_argument('--eval_data_dir', type=str, default=None,
-                          help='path for VLMEvalKit to store the eval data. Defaul will store in ~/LMUData')
+                          help='path for VLMEvalKit to store the eval data. Default will store in ~/LMUData')
         # API Kwargs, Apply to API VLMs and Judge API LLMs
         self.add_argument('--retry', type=int, default=None, help='retry numbers for API VLMs')
         # Explicitly Set the Judge Model
