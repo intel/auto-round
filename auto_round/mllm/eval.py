@@ -13,18 +13,35 @@ from vlmeval.inference_video import infer_data_job_video
 from vlmeval.inference_mt import infer_data_job_mt
 from vlmeval.smp import listinstr, MMBenchOfficialServer
 from vlmeval.utils.result_transfer import MMMU_result_transfer, MMTBench_result_transfer
-from transformers import AutoConfig
+
 
 from ..utils import logger
 
 # TODO
 MODEL_TYPE_TO_VLMEVAL_MODEL = {
+    #model_name
+    "Qwen-VL": dict(cls=QwenVL),
+    "Qwen-VL-Chat": dict(cls=QwenVLChat),
+    "Qwen2-VL": dict(cls=Qwen2VLChat, min_pixels=1280*28*28, max_pixels=16384*28*28),
+    "Llama-3.2": dict(cls=llama_vision),
+    "Phi-3-vision": dict(cls=Phi3Vision),
+    "Phi-3.5-vision": dict(cls=Phi3_5Vision),
+    "llava_v1.5": dict(cls=LLaVA),
+    "llava_v1.6": dict(cls=LLaVA_Next),
+    "llava-onevision-qwen2": dict(cls=LLaVA_OneVision),
+    "cogvlm2": dict(cls=CogVlm),
+    "SliME": dict(cls=SliME),
+    "Eagle": dict(cls=Eagle),
+    "Molmo": dict(cls=molmo),
+
+    # config.model_type
     "qwen2_vl": dict(cls=Qwen2VLChat, min_pixels=1280*28*28, max_pixels=16384*28*28),
     "qwen": dict(cls=QwenVL),
     "qwen_chat": dict(cls=QwenVLChat),
     "llava": dict(cls=LLaVA),
     "llava_next": dict(cls=LLaVA_Next),
-    "phi3_v": dict(cls=Phi3Vision)
+    "phi3_v": dict(cls=Phi3Vision),
+    "mllama": dict(cls=llama_vision),
 }
 
 def eval(
@@ -51,10 +68,23 @@ def eval(
     if "/" in model_name:
         model_name = model_name.rsplit("/").split("/")[-1]
 
-    config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
-    model_type = config.model_type
-    if "chat" in model_name.lower():
-        model_type += "_chat"
+    if model_name in MODEL_TYPE_TO_VLMEVAL_MODEL:
+        model_type = model_name
+    else:
+        model_type = None
+        split_name = model_name.split("-")
+        for i in range(len(), 0, -1):
+            tmp = "-".join(split_name[0:i])
+            if tmp in MODEL_TYPE_TO_VLMEVAL_MODEL:
+                model_type = model_name
+                break
+        if model_type is None:
+            from transformers import AutoConfig
+            config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
+            model_type = config.model_type
+            if "chat" in model_name.lower():
+                model_type += "_chat"
+
     kwargs = MODEL_TYPE_TO_VLMEVAL_MODEL[model_type]
     kwargs["model_path"] = model_name
     model_cls = kwargs.pop("cls")
