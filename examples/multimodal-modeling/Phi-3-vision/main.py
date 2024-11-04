@@ -167,7 +167,7 @@ if __name__ == '__main__':
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--train_bs", default=1, type=int,
+    parser.add_argument("--batch_size", default=1, type=int,
                         help="train batch size")
 
     parser.add_argument("--eval_bs", default=4, type=int,
@@ -248,7 +248,7 @@ if __name__ == '__main__':
     parser.add_argument("--act_bits", default=32, type=int,
                     help="activation bits")
     
-    parser.add_argument("--quant_vision", action='store_true',
+    parser.add_argument("--quant_nontext_module", action='store_true',
                         help="To determine whether the quantization should handle vision component.")
     
     parser.add_argument("--enable_safe_serialization", action='store_true',
@@ -334,7 +334,7 @@ if __name__ == '__main__':
         data_path=args.question_file, processor=processor, data_args=data_args
     )
     data_collator = DataCollatorForSupervisedDataset(tokenizer=processor.tokenizer)
-    dataloader = create_data_loader(dataset, batch_size=args.train_bs, data_collator=data_collator)
+    dataloader = create_data_loader(dataset, batch_size=args.batch_size, data_collator=data_collator)
     
     from auto_round import (AutoRound,
                             AutoRoundAdam)
@@ -378,9 +378,9 @@ if __name__ == '__main__':
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
         
-    quant_block_list = get_multimodal_block_names(model, args.quant_vision)
+    quant_block_list = get_multimodal_block_names(model, args.quant_nontext_module)
     
-    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.train_bs,
+    autoround = round(model, tokenizer, args.bits, args.group_size, sym=args.sym, batch_size=args.batch_size,
                       dataset=dataloader, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
                       minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input, device=device_str,
                       amp=not args.disable_amp, nsamples=args.nsamples, layer_config=layer_config,
@@ -464,4 +464,5 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
+
 

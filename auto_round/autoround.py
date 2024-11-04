@@ -18,18 +18,19 @@ import transformers
 import copy
 import time
 from typing import Optional, Union
-
 from transformers import set_seed
 from torch import autocast
 from tqdm import tqdm
 import accelerate
-
+from packaging import version
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
     WrapperTransformerConv1d
 from .special_model_handler import (check_hidden_state_dim,
-                                    check_share_attention_mask,
-                                    check_not_share_position_ids,
-                                    check_not_share_rotary_pos_emb)
+                                    shareable_keywords,
+                                    special_model_init,
+                                    reset_params,
+                                    skip_keywards_hint
+                                    )
 from .utils import (
     CpuInfo,
     block_forward,
@@ -49,7 +50,7 @@ from .utils import (
     get_layer_names_in_block,
     mv_module_from_gpu,
     unsupport_meta_device, detect_device_count, clear_memory,
-    get_multimodal_block_names,
+    get_multimodal_block_names, get_library_version,
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -174,7 +175,7 @@ class AutoRound(object):
         self.low_cpu_mem_usage = low_cpu_mem_usage
         self.layer_config = {} if layer_config is None else layer_config
         self.seqlen = seqlen
-        self.train_bs = batch_size
+        self.batch_size, self.gradient_accumulate_steps = batch_size, gradient_accumulate_steps
         self.nblocks = nblocks
         self.dataset = dataset
         self.iters = iters
@@ -201,12 +202,11 @@ class AutoRound(object):
         self.quant_block_list = quant_block_list
 
         self.sampler = sampler
-        self.gradient_accumulate_steps = gradient_accumulate_steps
         self.not_use_best_mse = not_use_best_mse
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
         self.optimizer = self.get_optimizer(None)
-        self.share_attention_mask_flag = None  ##TODO remove it later
+        self.input_dim = None
         self.infer_bs_coeff = 1
 
         self.set_layerwise_config(self.layer_config)  ##better place in the end
@@ -230,7 +230,7 @@ class AutoRound(object):
         assert self.group_size == -1 or self.group_size >= 1, "only supports positive group_size or -1(per channel)"
         assert self.act_group_size == -1 or self.act_group_size >= 1, \
             "only supports positive group_size or -1(per channel)"
-        assert self.train_bs > 0, "batch size must be positive"
+        assert self.batch_size > 0, "batch size must be positive"
         assert self.iters > 0, "iters must be positive"
         assert self.seqlen > 0, "seqlen must be positive"
         assert self.nblocks > 0, "nblocks must be positive"
@@ -280,16 +280,20 @@ class AutoRound(object):
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
-
+            keys = inputs.keys()
+            input_id_str = [key for key in keys if key.startswith('hidden_state')]
+            if len(input_id_str) != 1:
+                raise RuntimeError("hidden_states arg mismatch error," \
+                                   " please check the input kwargs of block forward for more details.")
+            inputs["input_ids"] = inputs.pop(input_id_str[0], None)
             clear_memory(self.inputs)
 
             if "input_ids" in inputs.keys():
                 total_samples = len(inputs["input_ids"])
                 self.n_samples = total_samples
-                if total_samples < self.train_bs:
-                    self.train_bs = total_samples
+                if total_samples < self.batch_size:
+                    self.batch_size = total_samples
                     logger.warning(f"force the train batch size to {total_samples}")
-
 
             self.quant_blocks(
                 self.model,
@@ -382,12 +386,17 @@ class AutoRound(object):
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
+        torch_version = get_library_version("torch")
+        if version.parse(torch_version) >= version.parse("2.5.99"):
+            quant_layer = torch.compile(self.quant_layer)
+        else:
+            quant_layer = self.quant_layer
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
             q_layer_input = q_layer_inputs[layer_name] if enable_quanted_input else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
-            self.quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
+            quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
             del layer_input
             clear_memory(q_layer_input)
 
@@ -453,18 +462,12 @@ class AutoRound(object):
                 input_others,
                 indices,
                 self.seqlen,
-                self.share_attention_mask_flag,
-                self.not_share_position_ids_flag,
-                self.not_share_rotary_pos_emb_flag,
                 self.input_dim
             )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
-            if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
-                output.append(tmp_output)
-            else:
-                output.extend(list(torch.split(tmp_output, 1, dim=self.input_dim)))
+            output.extend(list(torch.split(tmp_output, 1, dim=self.input_dim)))
         if self.low_gpu_mem_usage:
             clear_memory()
 
@@ -542,6 +545,11 @@ class AutoRound(object):
                     self.model(**data_new)
             except NotImplementedError:
                 pass
+            except RuntimeError as error:
+                logger.warning("When quantization encounters tensor" \
+                        " shape mismatch error, you can try to avoid it with batch_size=1")
+                logger.error(error)
+                pass
             except Exception as error:
                 raise error
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
@@ -563,7 +571,6 @@ class AutoRound(object):
         if self.low_cpu_mem_usage:
             for n, m in embed_layers:
                 m = m.to("meta")
-
 
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
@@ -599,9 +606,9 @@ class AutoRound(object):
                 logger.info("switch to cpu to cache inputs")
                 if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 8:
                     logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
-                                f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
-                                f" for optimal performance during calibration when enabling lm-head quantization. "
-                                f"Otherwise, the process may be significantly slower.")
+                                   f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
+                                   f" for optimal performance during calibration when enabling lm-head quantization. "
+                                   f"Otherwise, the process may be significantly slower.")
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                 clear_memory()
                 all_inputs = self.cache_inter_data(
@@ -643,7 +650,7 @@ class AutoRound(object):
         if last_cache_name is None and len(block_names) + len(layer_names) == 1:
             self.last_cache_name = block_names[0] if len(block_names) == 1 else layer_names[0]
         # do not set last_cache_name for multimodal models
-        calib_bs = self.train_bs
+        calib_bs = self.batch_size
         self.hook_handles = []
         self._replace_forward()
         self.calib(nsamples, calib_bs)
@@ -665,95 +672,92 @@ class AutoRound(object):
         Returns:
             function: The forward function.
         """
+            
+        def post_process_cache_data(batch_size, data, data_name):
+            """
+            Processes store data for batch handling, reshaping if necessary.
 
-        def forward(m, hidden_states, *positional_args, **kwargs):
+            Args:
+                batch_size (int): The size of the batch.
+                data: The data value to store, potentially for caching.
+                data_name (str): Name of the data.
+
+            Returns:
+                Processed data or None
+            """
+            new_data = data
+            if batch_size <= 1:
+                return new_data
+            if data_name in shareable_keywords:
+                return None
+            if "alibi" in data_name:
+                if isinstance(data, torch.Tensor):
+                    alibi = data
+                    alibi = alibi.reshape(batch_size, -1, alibi.shape[1], alibi.shape[2])
+                    new_data = alibi
+            return new_data
+
+        def forward(m, hidden_states=None, *positional_inputs, **kwargs):
             """Rewrite forward function, process and collect input data.
 
             Args:
                 hidden_states (torch.Tensor): The hidden states tensor.
-                *positional_args: Variable number of positional arguments.
+                *positional_inputs: Variable number of positional arguments.
                 **kwargs: Variable number of keyword arguments.
 
             Returns:
                 NotImplementedError: Getting the first layer inputs and then raise the error to save runtime.
             """
-            if self.share_attention_mask_flag is None:
-                self.input_dim = check_hidden_state_dim(self.model, positional_args)
-                self.share_attention_mask_flag = check_share_attention_mask(self.model, hidden_states, **kwargs)
-                self.not_share_position_ids_flag = check_not_share_position_ids(self.model, **kwargs)
-                self.not_share_rotary_pos_emb_flag = check_not_share_rotary_pos_emb(self.model, **kwargs)
-            if name in self.inputs:
-                if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
-                    self.inputs[name]["input_ids"].append(hidden_states.to("cpu"))
-                else:
-                    self.inputs[name]["input_ids"].extend(
-                        list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim)))
-            else:
+            if name not in self.inputs:
                 self.inputs[name] = {}
-                if self.train_bs == 1 and self.not_share_rotary_pos_emb_flag:
-                    self.inputs[name]["input_ids"] = [hidden_states.to("cpu")]
-                else:
-                    self.inputs[name]["input_ids"] = list(torch.split(hidden_states.to("cpu"), 1, dim=self.input_dim))
-
-            if "positional_inputs" not in self.inputs[name]:
-                self.inputs[name]["positional_inputs"] = []
-            for idx, item in enumerate(positional_args):
-                self.inputs[name]["positional_inputs"] = to_device(positional_args)
+                special_model_init(self.model, positional_inputs, self.inputs[name])
+                
+            if self.input_dim is None:
+                self.input_dim = check_hidden_state_dim(self.model, positional_inputs)
+                
+            if hidden_states is not None:
+                kwargs['hidden_states'] = hidden_states
 
             for key in kwargs.keys():
                 if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) \
-                        or isinstance(kwargs[key], tuple) \
-                        or (key == "alibi") or (key == "attention_mask"):
-                    if "attention_mask" in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = None
-                        if kwargs[key] is not None:
-                            if (not self.share_attention_mask_flag) and self.inputs[name][key] is not None:
-                                self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
-                            else:
-                                self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0))
-                    elif "alibi" in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = None
-                        if isinstance(kwargs[key], torch.Tensor):
-                            alibi = kwargs[key]
-                            batch = kwargs["attention_mask"].shape[0]
-                            alibi = alibi.reshape(batch, -1, alibi.shape[1], alibi.shape[2])
-                            if (not self.share_attention_mask_flag) and self.inputs[name][key] is not None:
-                                self.inputs[name][key].extend(list(torch.split(alibi.to("cpu"), 1, dim=0)))
-                            else:
-                                self.inputs[name][key] = list(torch.split(alibi.to("cpu"), 1, dim=0))
-                    elif "position_ids" in key or 'cache_position' in key or 'position_embeddings' in key:
-                        if self.train_bs == 1 and self.not_share_position_ids_flag:
-                            if key not in self.inputs[name].keys():
-                                self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
-                            else:
-                                self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
-                        elif key not in self.inputs[name].keys():
-                            self.inputs[name][key] = list(torch.split(kwargs[key].to("cpu"), 1, dim=0)) \
-                                if self.not_share_position_ids_flag \
-                                else to_device(kwargs[key], device=torch.device("cpu"))
-                        elif kwargs[key] is not None and self.not_share_position_ids_flag:
-                            self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
-                    elif 'rotary_pos_emb' in key or 'cu_seqlens' in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))] \
-                                if self.not_share_rotary_pos_emb_flag \
-                                else to_device(kwargs[key], device=torch.device("cpu"))
-                        elif kwargs[key] is not None and self.not_share_rotary_pos_emb_flag:
-                            self.inputs[name][key].append(to_device(kwargs[key], device=torch.device("cpu")))
-                    elif "cross_attention_states" in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = [to_device(kwargs[key], device=torch.device("cpu"))]
+                        or isinstance(kwargs[key], tuple):
+                    if key not in self.inputs[name].keys(): # initialization
+                        data = to_device(kwargs[key], device=torch.device("cpu"))
+                        if data is None or (self.batch_size > 1 and key in shareable_keywords):
+                            self.inputs[name][key] = data
+                            continue
+                        if self.batch_size <= 1:
+                            self.inputs[name][key] = [data]
                         else:
-                            self.inputs[name][key].extend(list(torch.split(kwargs[key].to("cpu"), 1, dim=0)))
-                    elif key not in self.inputs[name].keys():
-                        self.inputs[name][key] = to_device(kwargs[key], device=torch.device("cpu"))
-
+                            data = post_process_cache_data(self.batch_size, data, key)
+                            self.inputs[name][key] = list(torch.split(data, 1, dim=self.input_dim))
+                    else: # append cache inputs
+                        new_data = post_process_cache_data(self.batch_size, kwargs[key], key)
+                        if new_data is None: # shareable args or NoneType
+                            continue
+                        new_data = to_device(new_data, device=torch.device("cpu"))
+                        if self.batch_size <= 1:
+                            self.inputs[name][key].append(new_data)
+                        else:
+                            self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=self.input_dim)))
+                elif isinstance(kwargs[key], (str, bool, type(None))):
+                    if key not in self.inputs[name].keys():
+                        self.inputs[name][key] = kwargs[key]
+                else:
+                    # Parameters not to be cached
+                    if skip_keywards_hint(key):
+                        logger.warning_once(f"Please note that this '{key}' key" \
+                                            " is not currently used in quantization fine-tuning.")
+            reset_params(self.inputs[name])
             if name == self.last_cache_name:
                 raise NotImplementedError
             else:
-                return m.orig_forward(hidden_states, *positional_args, **kwargs)
+                if hidden_states is not None:
+                    kwargs.pop('hidden_states')
+                    return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
+                else:
+                    #Currently only for Llama-3.2-Vision-Instruct Series
+                    return m.orig_forward(*positional_inputs, **kwargs)
 
         return forward
 
@@ -848,9 +852,10 @@ class AutoRound(object):
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         # best_v, best_min_scale, best_max_scale = torch.tensor(0), torch.tensor(1.0), torch.tensor(1.0)
-        gradient_accumulate_steps = self.train_bs  ##Force to low gpu
-        train_bs = 1  ##Force to low gpu
-        pick_samples = train_bs * gradient_accumulate_steps
+        gradient_accumulate_steps = self.batch_size  ##Force to low gpu
+        batch_size = 1  ##Force to low gpu
+        pick_samples = batch_size * gradient_accumulate_steps
+        pick_samples = min(nsamples, pick_samples)
         if self.sampler != "rand":
             whole_indices = torch.randperm(nsamples)[:pick_samples]
         total_loss = 0
@@ -859,7 +864,7 @@ class AutoRound(object):
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
             for tmp_step in range(gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * train_bs: (tmp_step + 1) * train_bs]
+                indices = whole_indices[tmp_step * batch_size: (tmp_step + 1) * batch_size]
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
@@ -909,7 +914,7 @@ class AutoRound(object):
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
         mv_module_from_gpu(layer, self.low_cpu_mem_usage)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        logger.info(dump_info)
+        logger.debug(dump_info)
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
@@ -925,7 +930,7 @@ class AutoRound(object):
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
 
-        output = self.get_block_outputs(block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
+        output = self.get_block_outputs(block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device,
                                         self.cache_device)
 
         if q_input is not None:
@@ -968,8 +973,9 @@ class AutoRound(object):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        pick_samples = self.train_bs * self.gradient_accumulate_steps
         nsamples = len(input_ids)
+        pick_samples = self.batch_size * self.gradient_accumulate_steps
+        pick_samples = min(nsamples, pick_samples)
         if self.sampler != "rand":
             whole_indices = torch.randperm(nsamples)[:pick_samples]
         last_best_iter = 0
@@ -984,15 +990,12 @@ class AutoRound(object):
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
             for tmp_step in range(self.gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * self.train_bs: (tmp_step + 1) * self.train_bs]
+                indices = whole_indices[tmp_step * self.batch_size: (tmp_step + 1) * self.batch_size]
                 current_input_ids, current_input_others = sampling_inputs(
                     input_ids,
                     input_others,
                     indices,
                     seqlen=self.seqlen,
-                    share_attention_mask_flag=self.share_attention_mask_flag,
-                    not_share_position_ids_flag=self.not_share_position_ids_flag,
-                    not_share_rotary_pos_emb_flag=self.not_share_rotary_pos_emb_flag,
                     input_dim=self.input_dim,
                 )
 
@@ -1049,8 +1052,9 @@ class AutoRound(object):
         if self.enable_quanted_input:
             if self.low_cpu_mem_usage:
                 block = block.to(device)
+            clear_memory()
             q_outputs = self.get_block_outputs(
-                block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
+                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device,
                 cache_device=self.cache_device
             )
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
@@ -1106,6 +1110,12 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
+        torch_version = get_library_version("torch")
+        if version.parse(torch_version) >= version.parse("2.5.99"):
+            quant_block = torch.compile(self.quant_block)
+        else:
+            quant_block = self.quant_block
+
         pbar = tqdm(range(0, len(block_names), nblocks))
         for i in pbar:
             if nblocks == 1:
@@ -1121,7 +1131,7 @@ class AutoRound(object):
             if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
                 m = m.to(device)
 
-            q_input, input_ids = self.quant_block(
+            q_input, input_ids = quant_block(
                 m,
                 input_ids,
                 input_others,
@@ -1189,7 +1199,7 @@ class AutoRound(object):
             "enable_minmax_tuning",
             "data_type",
             "seqlen",
-            "train_bs",
+            "batch_size",
             "scale_dtype",
             "lr",
             "minmax_lr",
@@ -1617,3 +1627,4 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer=optimizer,
             **kwargs,
         )
+
