@@ -29,7 +29,7 @@ from .special_model_handler import (check_hidden_state_dim,
                                     shareable_keywords,
                                     special_model_init,
                                     reset_params,
-                                    skip_keywards_hint
+                                    check_skippable_keywords
                                     )
 from .utils import (
     CpuInfo,
@@ -745,8 +745,8 @@ class AutoRound(object):
                         self.inputs[name][key] = kwargs[key]
                 else:
                     # Parameters not to be cached
-                    if skip_keywards_hint(key):
-                        logger.warning_once(f"Please note that this '{key}' key" \
+                    if check_skippable_keywords(key):
+                        logger.warning_once(f"Please note that '{key}' key" \
                                             " is not currently used in quantization fine-tuning.")
             reset_params(self.inputs[name])
             if name == self.last_cache_name:
