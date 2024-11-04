@@ -28,7 +28,6 @@
 
 import os
 import json
-import tabulate
 from functools import partial
 
 import pandas as pd
@@ -113,7 +112,7 @@ def mllm_eval(
     kwargs["model_path"] = pretrained_model_name_or_path
     model_cls = kwargs.pop("cls")
     model_cls = getattr(vlmeval.vlm, model_cls)
-    vlmeval.config.supported_VLM[model_name] = partial(model_cls, **kwargs)
+    vlmeval.config.supported_VLM[model_name] = partial(model_cls, verbose=verbose, **kwargs)
 
     pred_root = os.path.join(work_dir, model_name)
     os.makedirs(pred_root, exist_ok=True)
@@ -260,7 +259,11 @@ def mllm_eval(
                 elif isinstance(eval_results, pd.DataFrame):
                     if len(eval_results) < len(eval_results.columns):
                         eval_results = eval_results.T
-                    logger.info('\n' + tabulate(eval_results))
+                    try:
+                        import tabulate
+                        logger.info('\n' + tabulate.tabulate(eval_results))
+                    except:
+                        logger.info(eval_results.to_string())
         
         except Exception as e:
             logger.exception(f'Model {model_name} x Dataset {dataset_name} combination failed: {e}, '

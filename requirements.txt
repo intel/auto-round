@@ -12,4 +12,3 @@ tqdm
 packaging
 auto-gptq>=0.7.1
 pillow
-tabulate
