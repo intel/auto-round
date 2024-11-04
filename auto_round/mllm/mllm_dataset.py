@@ -83,7 +83,6 @@ class LlavaDataset(Dataset):
         text = self.questions[i]["conversations"]
         text = self.covert_conversations(text)
 
-        text = self.template._encode(text)
         if self.extra_data_dir is not None:
             image_fold = _extract_data_dir(self.extra_data_dir)
             if isinstance(image_fold, dict):
@@ -93,6 +92,8 @@ class LlavaDataset(Dataset):
         else:
             image_path = self.questions[i]["image"]
         image = self.template.processor.image_processor(image_path)
+
+        text = self.template._encode(text)
 
         ret = self.template.processor.get_input(
             self.model,
@@ -111,8 +112,9 @@ class LlavaDataset(Dataset):
         new_data = []
         for d in data:
             content = d["value"]
-            for old, new in self.template.replace_tokens:
-                content = content.replace(old, new)
+            if self.template.replace_tokens is not None:
+                for old, new in self.template.replace_tokens:
+                    content = content.replace(old, new)
             new_data.append({
                 "role": self.role_mapping.get(d["from"], d["from"]),
                 "content": content

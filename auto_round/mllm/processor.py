@@ -42,6 +42,18 @@ class BasicProcessor:
             max_length=None,
             squeeze=True,
             **kwargs):
+        
+        if isinstance(text, list):
+            for message in text:
+                if not ("role" in message and "content" in message):
+                    raise ValueError(
+                        "When passing chat dicts as input, each dict must have a 'role' and 'content' key.")
+            continue_final_message = text[-1]["role"] == "assistant"
+
+            # add_generation_prompt=True will add <|im_start|>assistant to the end
+            text = tokenizer.apply_chat_template(
+                text, tokenize=False, add_generation_prompt=not continue_final_message,
+                continue_final_message=continue_final_message,)
 
         if max_length:
             token_length = len(tokenizer(text).input_ids)
