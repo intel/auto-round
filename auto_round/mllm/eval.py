@@ -39,7 +39,7 @@ MODEL_TYPE_TO_VLMEVAL_MODEL = {
     #model_name
     "Qwen-VL": dict(cls="QwenVL"),
     "Qwen-VL-Chat": dict(cls="QwenVLChat"),
-    "Qwen2-VL": dict(cls="Qwen2VLChat", min_pixels=1280*28*28, max_pixels=16384*28*28),
+    "Qwen2-VL": dict(cls="Qwen2VLChat", min_pixels=1280*28*28, max_pixels=16384*28*28, verbose=False),
     "Llama-3.2": dict(cls="llama_vision"),
     "Phi-3-vision": dict(cls="Phi3Vision"),
     "Phi-3.5-vision": dict(cls="Phi3_5Vision"),
@@ -112,7 +112,9 @@ def mllm_eval(
     kwargs["model_path"] = pretrained_model_name_or_path
     model_cls = kwargs.pop("cls")
     model_cls = getattr(vlmeval.vlm, model_cls)
-    vlmeval.config.supported_VLM[model_name] = partial(model_cls, verbose=verbose, **kwargs)
+    if "verbose" in kwargs:
+        kwargs["verbose"] = verbose
+    vlmeval.config.supported_VLM[model_name] = partial(model_cls, **kwargs)
 
     pred_root = os.path.join(work_dir, model_name)
     os.makedirs(pred_root, exist_ok=True)
