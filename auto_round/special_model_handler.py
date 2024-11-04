@@ -99,7 +99,7 @@ def reset_params(inputs):
         inputs['use_cache'] = False
         
 
-def skip_keywards_hint(key):
+def check_skippable_keywords(key):
     """
     Prints a reminder if a key is not stored during quantization fine-tuning.
     """

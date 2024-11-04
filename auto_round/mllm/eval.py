@@ -160,8 +160,11 @@ def mllm_eval(
                 result_file = result_file.replace('.xlsx', '.tsv')
 
             if os.path.exists(result_file) and rerun:
-                for keyword in ['openai', 'gpt', 'auxmatch']:
-                    os.system(f'rm {pred_root}/{model_name}_{dataset_name}_{keyword}*')
+                import re
+                pattern = re.compile(f"{model_name}_{dataset_name}_[(openai)|(gpt)|(auxmatch)].*")
+                for file_name in os.listdir(pred_root):
+                    if pattern.match(file_name):
+                        os.remove(os.path.join(pred_root, file_name))
 
             if model is None:
                 model = model_name  # which is only a name
