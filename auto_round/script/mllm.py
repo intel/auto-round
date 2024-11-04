@@ -47,7 +47,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--asym", action='store_true',
                             help=" asym quantization")
 
-        self.add_argument("--dataset", required=True, type=str,
+        self.add_argument("--dataset", type=str, default=None,
                             help="The dataset for quantization training. It can be a custom one.")
 
         self.add_argument("--lr", default=None, type=float,
@@ -201,6 +201,7 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
+    assert args.dataset is not None, "dataset should not be None."
 
     device_str = detect_device(args.device)
     torch_dtype = "auto"
