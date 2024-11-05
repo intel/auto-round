@@ -164,7 +164,7 @@ def setup_parser():
     parser.add_argument("--batch_size", "--train_bs", default=8, type=int,
                         help="train batch size")
 
-    parser.add_argument("--iters","--iters", default=200, type=int,
+    parser.add_argument("--iters","--iter", default=200, type=int,
                         help=" iters")
 
     parser.add_argument("--seqlen", "--seq_len", default=2048, type=int,
