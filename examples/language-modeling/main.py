@@ -345,9 +345,9 @@ if __name__ == '__main__':
         torch.cuda.empty_cache()
 
     if model_name.split('/')[-1] == ".":
-        export_dir = args.output_dir + "/" + f"w{args.bits}g{args.group_size}"
+        export_dir = os.path.join(args.output_dir,  f"w{args.bits}g{args.group_size}")
     else:
-        export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
+        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
 
     eval_folder = None
     if args.format:
