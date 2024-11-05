@@ -25,12 +25,12 @@ import accelerate
 from packaging import version
 from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
     WrapperTransformerConv1d
-from .special_model_handler import (check_hidden_state_dim,
-                                    shareable_keywords,
-                                    special_model_init,
-                                    reset_params,
-                                    check_skippable_keywords
-                                    )
+from .special_model_handler import (
+    shareable_keywords,
+    special_model_init,
+    reset_params,
+    check_skippable_keywords
+)
 from .utils import (
     CpuInfo,
     block_forward,
@@ -249,6 +249,11 @@ class AutoRound(object):
 
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
+
+        if self.batch_size > self.nsamples:
+            logger.warning(
+                f"reset batch_size to nsamples({self.nsamples}) as batch_size({self.batch_size}) must be smaller than nsamples")
+            self.batch_size = self.nsamples
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
@@ -547,7 +552,7 @@ class AutoRound(object):
                 pass
             except RuntimeError as error:
                 logger.warning("When quantization encounters tensor" \
-                        " shape mismatch error, you can try to avoid it with batch_size=1")
+                               " shape mismatch error, you can try to avoid it with batch_size=1")
                 logger.error(error)
                 pass
             except Exception as error:
@@ -672,7 +677,7 @@ class AutoRound(object):
         Returns:
             function: The forward function.
         """
-            
+
         def post_process_cache_data(batch_size, data, data_name):
             """
             Processes store data for batch handling, reshaping if necessary.
@@ -711,17 +716,23 @@ class AutoRound(object):
             if name not in self.inputs:
                 self.inputs[name] = {}
                 special_model_init(self.model, positional_inputs, self.inputs[name])
-                
+
             if self.input_dim is None:
-                self.input_dim = check_hidden_state_dim(self.model, positional_inputs)
-                
+                self.input_dim = 0
+                if hidden_states is not None:
+                    if hidden_states.shape[0] > self.batch_size:
+                        self.input_dim = 1
+                        if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.batch_size:
+                            raise logger.warning(
+                                f"this model has not been supported, please raise an issue in https://github.com/intel/auto-round/issues or try to set the input dim to 0 or 1 by yourself ")
+
             if hidden_states is not None:
                 kwargs['hidden_states'] = hidden_states
 
             for key in kwargs.keys():
                 if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) \
                         or isinstance(kwargs[key], tuple):
-                    if key not in self.inputs[name].keys(): # initialization
+                    if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
                         if data is None or (self.batch_size > 1 and key in shareable_keywords):
                             self.inputs[name][key] = data
@@ -731,9 +742,9 @@ class AutoRound(object):
                         else:
                             data = post_process_cache_data(self.batch_size, data, key)
                             self.inputs[name][key] = list(torch.split(data, 1, dim=self.input_dim))
-                    else: # append cache inputs
+                    else:  # append cache inputs
                         new_data = post_process_cache_data(self.batch_size, kwargs[key], key)
-                        if new_data is None: # shareable args or NoneType
+                        if new_data is None:  # shareable args or NoneType
                             continue
                         new_data = to_device(new_data, device=torch.device("cpu"))
                         if self.batch_size <= 1:
@@ -756,7 +767,7 @@ class AutoRound(object):
                     kwargs.pop('hidden_states')
                     return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
                 else:
-                    #Currently only for Llama-3.2-Vision-Instruct Series
+                    # Currently only for Llama-3.2-Vision-Instruct Series
                     return m.orig_forward(*positional_inputs, **kwargs)
 
         return forward
@@ -1627,4 +1638,3 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer=optimizer,
             **kwargs,
         )
-

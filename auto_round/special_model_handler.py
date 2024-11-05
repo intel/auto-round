@@ -50,23 +50,6 @@ def to_device(input, device=torch.device("cpu")):
     return input
 
 
-def check_hidden_state_dim(model, positional_inputs):
-    """Check the concatenable dimension of hidden states.
-
-    Args:
-        positional_inputs: The positional arguments.
-
-    Returns:
-        int: 1 if the model type is 'chatglm' and positional arguments are not None, 0 otherwise.
-    """
-    is_special = False
-    for key in special_states_dim_tuple:
-        if hasattr(model, "config") and key in model.config.model_type:
-            is_special = True
-            break
-    return int(is_special and positional_inputs is not None)
-
-
 def special_model_init(model, positional_inputs, inputs):
     """
     Initializes special model inputs by adding positional inputs if missing.

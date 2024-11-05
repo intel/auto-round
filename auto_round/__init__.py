@@ -13,5 +13,8 @@
 # limitations under the License.
 from .autoround import AutoRound, AutoRoundAdam, AutoRoundOPT
 from .mllm import AutoRoundMLLM
-from .auto_quantizer import AutoHfQuantizer,AutoRoundConfig
+from auto_round.utils import LazyImport
+
+AutoHfQuantizer = LazyImport('auto_round.auto_quantizer.AutoHfQuantizer')
+AutoRoundConfig = LazyImport('auto_round.auto_quantizer.AutoRoundConfig')
 from .version import __version__
