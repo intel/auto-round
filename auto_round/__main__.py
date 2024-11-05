@@ -29,129 +29,130 @@ from auto_round.eval.evaluation import simple_evaluate
 from auto_round.utils import detect_device, get_library_version, detect_device_count
 from auto_round.utils import logger
 
+
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
-        super().__init__( *args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.add_argument("--model", default="facebook/opt-125m", help="model name or path")
 
         self.add_argument('--eval', action='store_true',
-                        help="whether to use eval only mode.")
+                          help="whether to use eval only mode.")
 
         self.add_argument("--bits", default=4, type=int,
-                            help="number of  bits")
+                          help="number of  bits")
 
         self.add_argument("--eval_bs", default=None, type=int,
-                            help="eval batch size")
+                          help="eval batch size")
 
         self.add_argument("--device", default="auto", type=str,
-                            help="The device to be used for tuning. The default is set to auto/None,"
-                                "allowing for automatic detection."
-                                " Currently, device settings support CPU, GPU, and HPU.")
-    
+                          help="The device to be used for tuning. The default is set to auto/None,"
+                               "allowing for automatic detection."
+                               " Currently, device settings support CPU, GPU, and HPU.")
+
         self.add_argument("--asym", action='store_true',
-                            help=" asym quantization")
+                          help=" asym quantization")
 
         self.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
-                            help="The dataset for quantization training. It can be a custom one.")
+                          help="The dataset for quantization training. It can be a custom one.")
 
         self.add_argument("--lr", default=None, type=float,
-                            help="learning rate, if None, it will be set to 1.0/iters automatically")
+                          help="learning rate, if None, it will be set to 1.0/iters automatically")
 
         self.add_argument("--minmax_lr", default=None, type=float,
-                            help="minmax learning rate, if None,it will beset to be the same with lr")
+                          help="minmax learning rate, if None,it will beset to be the same with lr")
 
         self.add_argument("--seed", default=42, type=int,
-                            help="seed")
+                          help="seed")
 
         self.add_argument("--adam", action='store_true',
-                            help="adam")
-        
+                          help="adam")
+
         self.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
 
         self.add_argument("--nblocks", default=1, type=int, help="num of blocks to tune together")
 
         self.add_argument("--low_gpu_mem_usage", action='store_true',
-                            help="lower gpu memory usage but 50-100% slower")
-        
+                          help="lower gpu memory usage but 50-100% slower")
+
         self.add_argument("--format", default=None, type=str,
-                            help="The format in which to save the model. "
-                                "The options are 'auto_round', 'auto_round:gptq','auto_round:awq',"
-                                " 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
-                                "default to 'auto_round."
-                            )
+                          help="The format in which to save the model. "
+                               "The options are 'auto_round', 'auto_round:gptq','auto_round:awq',"
+                               " 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
+                               "default to 'auto_round."
+                          )
 
         self.add_argument("--data_type", default='int',
-                            help="data type for tuning, 'int', 'mx_fp' and etc.")
+                          help="data type for tuning, 'int', 'mx_fp' and etc.")
 
         self.add_argument("--scale_dtype", default='fp16',
-                            help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
+                          help="which scale data type to use for quantization, 'fp16', 'fp32' or 'bf16'.")
 
         self.add_argument("--tasks",
-                            default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                                    "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
-                            help="lm-eval tasks for lm_eval version 0.4")
+                          default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
+                                  "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
+                          help="lm-eval tasks for lm_eval version 0.4")
 
         self.add_argument("--output_dir", default="./tmp_autoround", type=str,
-                            help="Where to store the final model.")
+                          help="Where to store the final model.")
 
         self.add_argument("--disable_eval", action='store_true',
-                            help="Whether to do lm-eval evaluation after tuning.")
+                          help="Whether to do lm-eval evaluation after tuning.")
 
         self.add_argument("--disable_amp", action='store_true',
-                            help="disable amp")
+                          help="disable amp")
 
         self.add_argument("--disable_minmax_tuning", action='store_true',
-                            help="whether disable enable weight minmax tuning")
+                          help="whether disable enable weight minmax tuning")
 
         self.add_argument("--enable_norm_bias_tuning", action='store_true',
-                            help="whether enable norm bias tuning")
+                          help="whether enable norm bias tuning")
 
         self.add_argument("--disable_trust_remote_code", action='store_true',
-                            help="Whether to disable trust_remote_code")
+                          help="Whether to disable trust_remote_code")
 
         self.add_argument("--disable_quanted_input", action='store_true',
-                            help="whether to disuse the output of quantized block to tune the next block")
+                          help="whether to disuse the output of quantized block to tune the next block")
 
         self.add_argument("--quant_lm_head", action='store_true',
-                            help="quant_lm_head")
+                          help="quant_lm_head")
 
         self.add_argument("--low_cpu_mem_mode", default=0, type=int,
-                            help="Choose which low cpu memory mode to use. "
-                                "Can significantly reduce cpu memory footprint but cost more time."
-                                "1 means choose block-wise mode, load the weights of each block"
-                                " from disk when tuning and release the memory of the block after tuning."
-                                "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
-                                " minimum memory consumption and also slowest running speed."
-                                "others means not use low cpu memory. Default to 0, not use low cpu memory.")
+                          help="Choose which low cpu memory mode to use. "
+                               "Can significantly reduce cpu memory footprint but cost more time."
+                               "1 means choose block-wise mode, load the weights of each block"
+                               " from disk when tuning and release the memory of the block after tuning."
+                               "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
+                               " minimum memory consumption and also slowest running speed."
+                               "others means not use low cpu memory. Default to 0, not use low cpu memory.")
 
         self.add_argument("--low_cpu_mem_tmp_dir", default=None, type=str,
-                            help="temp work space to store the temporary files "
-                                "when using low cpu memory mode. Will remove after tuning.")
+                          help="temp work space to store the temporary files "
+                               "when using low cpu memory mode. Will remove after tuning.")
 
         self.add_argument("--model_dtype", default=None, type=str,
-                            help="force to convert the dtype, some backends supports fp16 dtype better")
+                          help="force to convert the dtype, some backends supports fp16 dtype better")
 
-        self.add_argument("--act_bits", default=32, type=int,
-                            help="activation bits")
+        self.add_argument("--act_bits", default=16, type=int,
+                          help="activation bits")
 
         self.add_argument("--fp_layers_list", default="", type=str,
-                            help="List of Layers to maintain original data type")
+                          help="List of Layers to maintain original data type")
 
         ## ======================= VLM =======================
         self.add_argument("--mllm", action='store_true',
-                            help="To determine whether use multimodel-llm mode.")
+                          help="To determine whether use multimodel-llm mode.")
 
         self.add_argument("--quant_vision", action='store_true',
-                            help="To determine whether the quantization should handle vision component.")
+                          help="To determine whether the quantization should handle vision component.")
 
         self.add_argument("--extra_data_dir", default="", type=str,
-                            help="Dataset dir for storing images/audio/videos. "
-                            "Can be a dir path or multiple dir path with format as "
-                            "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
-                            "By default, it will search in the relative path.")
-        
+                          help="Dataset dir for storing images/audio/videos. "
+                               "Can be a dir path or multiple dir path with format as "
+                               "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
+                               "By default, it will search in the relative path.")
+
         self.add_argument("--template", default=None, type=str,
-                                help="The template for building training dataset. It can be a custom one.")
+                          help="The template for building training dataset. It can be a custom one.")
 
 
 def setup_parser():
@@ -174,6 +175,7 @@ def setup_parser():
 
     args = parser.parse_args()
     return args
+
 
 def setup_best_parser():
     parser = BasicArgumentParser()
@@ -198,6 +200,7 @@ def setup_best_parser():
 
     return args
 
+
 def setup_fast_parser():
     parser = BasicArgumentParser()
 
@@ -219,6 +222,7 @@ def setup_fast_parser():
     args = parser.parse_args()
 
     return args
+
 
 def tune(args):
     tasks = args.tasks
@@ -302,7 +306,6 @@ def tune(args):
         if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
             model = model.to(torch.bfloat16)
 
-
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
             logger.info(
@@ -321,7 +324,7 @@ def tune(args):
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                layer_config[n] = {"bits": 32}
+                layer_config[n] = {"bits": 16}
                 logger.info(
                     f"{n} will not be quantized due to its shape not being divisible by 32,"
                     " resulting in an exporting issue to autogptq")
@@ -331,7 +334,7 @@ def tune(args):
             if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
                 name = n.split('.')[-1]
                 if n in fp_layers_list or name in fp_layers_list:
-                    layer_config[n] = {"bits": 32}
+                    layer_config[n] = {"bits": 16}
                     logger.info(
                         f"{n} will not be quantized.")
     lm_head_layer_name = "lm_head"
@@ -375,7 +378,10 @@ def tune(args):
     if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
+    if model_name.split('/')[-1] == ".":
+        export_dir = args.output_dir + "/" + f"w{args.bits}g{args.group_size}"
+    else:
+        export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
 
     format_list = args.format.replace(' ', '').split(',')
     inplace = False if len(format_list) > 1 else True
@@ -432,26 +438,25 @@ def eval(args):
 def tune_mllm(args):
     if args.format is None:
         args.format = "auto_round"
-        
+
     if "auto_gptq" in args.format and args.asym is True:
         print(
             "warning: The auto_gptq kernel has issues with asymmetric quantization. "
             "It is recommended to use sym quantization or --format='auto_round'")
-    
+
     if "marlin" in args.format and args.asym is True:
         assert False, "marlin backend only supports sym quantization, please remove --asym"
-    
+
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-
     device_str = detect_device(args.device)
     torch_dtype = "auto"
     if "hpu" in device_str:
         torch_dtype = torch.bfloat16
-    
+
     torch.manual_seed(1234)
 
     # load_model
@@ -469,7 +474,7 @@ def tune_mllm(args):
     else:
         cls = AutoModelForCausalLM
     model = cls.from_pretrained(
-        model_name,trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype)
+        model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype)
 
     if "cogvlm2" in model_name:
         model.config.model_type = "cogvlm2"
@@ -484,9 +489,9 @@ def tune_mllm(args):
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                layer_config[n] = {"bits": 32}
+                layer_config[n] = {"bits": 16}
                 logger.info(
-                   f"{n} will not be quantized due to its shape not being divisible by 32,"
+                    f"{n} will not be quantized due to its shape not being divisible by 32,"
                     " resulting in an exporting issue to autogptq")
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():
@@ -512,7 +517,7 @@ def tune_mllm(args):
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
-    
+
     autoround = round(model, tokenizer, dataset=args.dataset, extra_data_dir=args.extra_data_dir,
                       bits=args.bits, group_size=args.group_size, sym=not args.asym,
                       batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters,
@@ -527,7 +532,7 @@ def tune_mllm(args):
     model.eval()
     if args.device != "cpu":
         torch.cuda.empty_cache()
-    
+
     export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
 
     format_list = args.format.replace(' ', '').split(',')
@@ -548,9 +553,11 @@ def run():
     else:
         tune(args)
 
+
 def run_best():
     args = setup_best_parser()
     tune(args)
+
 
 def run_fast():
     args = setup_fast_parser()
@@ -560,7 +567,7 @@ def run_fast():
 def run_mllm():
     args = setup_parser()
     tune_mllm(args)
-    
+
 
 if __name__ == '__main__':
     run()
