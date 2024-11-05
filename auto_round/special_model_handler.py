@@ -14,7 +14,6 @@
 
 import torch
 from collections import UserDict
-special_states_dim_tuple = ("chatglm",) # input_dim is not the default dimension 0
 shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
 mllms_with_limited_bs = ("llava", "qwen2-vl", "phi3_v", "mllama") # Limitations on batch_size
 skippable_cache_keys = ("past_key_value",)
