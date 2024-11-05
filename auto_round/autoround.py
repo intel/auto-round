@@ -289,8 +289,10 @@ class AutoRound(object):
             keys = inputs.keys()
             input_id_str = [key for key in keys if key.startswith('hidden_state')]
             if len(input_id_str) != 1:
-                raise RuntimeError("hidden_states arg mismatch error," \
-                                   " please check the input kwargs of block forward for more details.")
+                raise RuntimeError(f"hidden_states arg mismatch error,"
+                                   "please raise an issue in https://github.com/intel/auto-round/issues"
+                                   " or try to set the `batch_size` to 1 and "
+                                   "`gradient_accumulate_steps` to your current batch size.")
             inputs["input_ids"] = inputs.pop(input_id_str[0], None)
             clear_memory(self.inputs)
 
