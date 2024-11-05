@@ -51,9 +51,15 @@ class BasicProcessor:
             continue_final_message = text[-1]["role"] == "assistant"
 
             # add_generation_prompt=True will add <|im_start|>assistant to the end
-            text = tokenizer.apply_chat_template(
-                text, tokenize=False, add_generation_prompt=not continue_final_message,
-                continue_final_message=continue_final_message,)
+            try:
+                text = tokenizer.apply_chat_template(
+                    text, tokenize=False, add_generation_prompt=not continue_final_message,
+                    continue_final_message=continue_final_message,)
+            except:
+                raise NotImplementedError("current not support for non-instructed model.")
+
+            if text == '':
+                raise NotImplementedError("current not support for non-instructed model.")
 
         if max_length:
             token_length = len(tokenizer(text).input_ids)

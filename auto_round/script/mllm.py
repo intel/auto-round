@@ -47,7 +47,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--asym", action='store_true',
                             help=" asym quantization")
 
-        self.add_argument("--dataset", type=str, default=None,
+        self.add_argument("--dataset", type=str, default="llava",
                             help="The dataset for quantization training. It can be a custom one.")
 
         self.add_argument("--lr", default=None, type=float,
@@ -131,11 +131,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--quant_nontext_module", action='store_true',
                             help="To determine whether the quantization should handle vision component.")
 
-        self.add_argument("--extra_data_dir", default="", type=str,
+        self.add_argument("--extra_data_dir", default=None, type=str,
                             help="Dataset dir for storing images/audio/videos. "
                             "Can be a dir path or multiple dir path with format as "
                             "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
-                            "By default, it will search in the relative path.")
+                            "By default, it will search in the relative path, "
+                            "and if not find, will automatic download.")
         
         self.add_argument("--template", default=None, type=str,
                                 help="The template for building training dataset. It can be a custom one.")
@@ -224,7 +225,6 @@ def tune(args):
         cls = AutoModelForCausalLM
     model = cls.from_pretrained(
         model_name,trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype)
-
     if "cogvlm2" in model_name:
         model.config.model_type = "cogvlm2"
 
@@ -232,6 +232,12 @@ def tune(args):
 
     model = model.eval()
     seqlen = args.seqlen
+
+    if args.model_dtype != None:
+        if args.model_dtype == "float16" or args.model_dtype == "fp16":
+            model = model.to(torch.float16)
+        if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
+            model = model.to(torch.bfloat16)
 
     round = AutoRoundMLLM
     layer_config = {}
@@ -273,7 +279,7 @@ def tune(args):
                       lr=args.lr, minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
                       amp=not args.disable_amp, nsamples=args.nsamples, low_gpu_mem_usage=args.low_gpu_mem_usage,
                       device=device_str, seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, layer_config=layer_config,
+                      scale_dtype=args.scale_dtype, layer_config=layer_config, template=args.template,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       quant_nontext_module=args.quant_nontext_module, not_use_best_mse=args.not_use_best_mse)
     model, _ = autoround.quantize()
@@ -288,7 +294,13 @@ def tune(args):
     inplace = False if len(format_list) > 1 else True
     for format_ in format_list:
         eval_folder = f'{export_dir}-{format_}'
-        autoround.save_quantized(eval_folder, format=format_, inplace=inplace, processor=processor)
+        if not hasattr(processor, "chat_template"):
+            processor.chat_template = None
+        safe_serialization = True
+        if "phi3_v" in model_type:
+            safe_serialization = False
+        autoround.save_quantized(
+            eval_folder, format=format_, inplace=inplace, processor=processor, safe_serialization=safe_serialization)
 
 
 def eval(args):

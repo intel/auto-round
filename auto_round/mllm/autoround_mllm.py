@@ -115,9 +115,8 @@ class AutoRoundMLLM(AutoRound):
             quant_block_list = get_multimodal_block_names(model, quant_nontext_module)
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
-        self.template = template
-        if self.template is None:
-            self.template = get_template(model.config.model_type)
+        self.template = template if template is not None else model.config.model_type
+        self.template = get_template(self.template)
         assert dataset is not None, "dataset should not be None"
         batch_size, gradient_accumulate_steps = check_mllm_model_batch(model, batch_size, gradient_accumulate_steps)
         if isinstance(dataset, str):
