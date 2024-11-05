@@ -150,7 +150,7 @@ if __name__ == '__main__':
     parser.add_argument("--model_dtype", default=None, type=str,
                         help="force to convert the dtype, some backends supports fp16 dtype better")
 
-    parser.add_argument("--act_bits", default=32, type=int,
+    parser.add_argument("--act_bits", default=16, type=int,
                         help="activation bits")
 
     parser.add_argument("--fp_layers", default="", type=str,
@@ -288,7 +288,7 @@ if __name__ == '__main__':
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                layer_config[n] = {"bits": 32}
+                layer_config[n] = {"bits": 16}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
     fp_layers = args.fp_layers.split(",")
@@ -297,7 +297,7 @@ if __name__ == '__main__':
             if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
                 name = n.split('.')[-1]
                 if n in fp_layers or name in fp_layers:
-                    layer_config[n] = {"bits": 32}
+                    layer_config[n] = {"bits": 16}
                     print(
                         f"{n} will not be quantized.")
     lm_head_layer_name = "lm_head"
@@ -344,8 +344,10 @@ if __name__ == '__main__':
     if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
-    output_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}-qdq"
+    if model_name.split('/')[-1] == ".":
+        export_dir = args.output_dir + "/" + f"w{args.bits}g{args.group_size}"
+    else:
+        export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
 
     eval_folder = None
     if args.format:
@@ -382,6 +384,7 @@ if __name__ == '__main__':
         if "cpu" in deployment_device:
             autoround.save_quantized(output_dir=f'{export_dir}-cpu', format='itrex', inplace=inplace)
         if "fake" in deployment_device:
+            output_dir = f'{export_dir}-qdq'
             model = model.to("cpu")
             model.save_pretrained(output_dir)
             tokenizer.save_pretrained(output_dir)
@@ -415,29 +418,6 @@ if __name__ == '__main__':
 
     if isinstance(tasks, str):
         tasks = tasks.split(',')
-
-    if lm_eval_version < Version("0.4.2"):
-        if args.eval_bs is None:
-            args.eval_bs = 1
-        if use_eval_legacy:
-            if "mmlu" in tasks:
-                tmp_tasks = tasks
-                tasks = ["hendrycksTest-*" if x == "mmlu" else x for x in tmp_tasks]
-            if "truthfulqa_mc1" in tasks or "truthfulqa_mc2" in tasks:
-                tmp_tasks = tasks
-                tasks = ["truthfulqa_mc" if "truthfulqa_mc" in x else x for x in tmp_tasks]
-            seen = set()
-            tmp_tasks = tasks
-            tasks = [x for x in tmp_tasks if not (x in seen or seen.add(x))]
-
-        excel_name = f"{output_dir}_result.xlsx"
-        output_dir += "/"
-        print(excel_name, flush=True)
-        eval_model(
-            model_path=output_dir, tasks=tasks, dtype=dtype, limit=None,
-            eval_bs=args.eval_bs, use_accelerate=args.low_gpu_mem_usage,
-            device=torch_device, excel_file=excel_name,
-            trust_remote_code=not args.disable_trust_remote_code)
 
     if lm_eval_version >= Version("0.4.2"):
         if args.eval_bs is None:

@@ -145,7 +145,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--model_dtype", default=None, type=str,
                             help="force to convert the dtype, some backends supports fp16 dtype better")
 
-        self.add_argument("--act_bits", default=32, type=int,
+        self.add_argument("--act_bits", default=16, type=int,
                             help="activation bits")
 
         self.add_argument("--fp_layers_list", default="", type=str,
@@ -322,7 +322,7 @@ def tune(args):
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                layer_config[n] = {"bits": 32}
+                layer_config[n] = {"bits": 16}
                 logger.info(
                     f"{n} will not be quantized due to its shape not being divisible by 32,"
                     " resulting in an exporting issue to autogptq")
@@ -332,7 +332,7 @@ def tune(args):
             if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
                 name = n.split('.')[-1]
                 if n in fp_layers_list or name in fp_layers_list:
-                    layer_config[n] = {"bits": 32}
+                    layer_config[n] = {"bits": 16}
                     logger.info(
                         f"{n} will not be quantized.")
     lm_head_layer_name = "lm_head"
@@ -376,7 +376,11 @@ def tune(args):
     if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
+    if model_name.split('/')[-1] == ".":
+        export_dir = args.output_dir + "/" + f"w{args.bits}g{args.group_size}"
+    else:
+        export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
+
 
     format_list = args.format.replace(' ', '').split(',')
     inplace = False if len(format_list) > 1 else True
