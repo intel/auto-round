@@ -40,7 +40,7 @@ if __name__ == '__main__':
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--batch_size", default=8, type=int,
+    parser.add_argument("--batch_size", "--train_bs", default=8, type=int,
                         help="train batch size")
 
     parser.add_argument("--eval_bs", default=None, type=int,
@@ -53,7 +53,7 @@ if __name__ == '__main__':
     parser.add_argument("--asym", action='store_true',
                         help=" asym quantization")
 
-    parser.add_argument("--iters", default=200, type=int,
+    parser.add_argument("--iters", "--iter", default=200, type=int,
                         help=" iters")
 
     parser.add_argument("--dataset", default="NeelNanda/pile-10k", type=str,
@@ -77,7 +77,7 @@ if __name__ == '__main__':
     parser.add_argument("--adam", action='store_true',
                         help="adam")
 
-    parser.add_argument("--seqlen", default=2048, type=int,
+    parser.add_argument("--seqlen", "--seq_len", default=2048, type=int,
                         help="sequence length")
 
     parser.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
@@ -103,7 +103,7 @@ if __name__ == '__main__':
                              "default to 'auto_round."
                         )
 
-    parser.add_argument("--data_type", default='int',
+    parser.add_argument("--data_type", "--dtype",  default='int',
                         help="data type for tuning, 'int', 'mx_fp' and etc.")
 
     parser.add_argument("--scale_dtype", default='fp16',

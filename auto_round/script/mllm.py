@@ -75,7 +75,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
                                 " and 'fake'.default to 'auto_round."
                             )
 
-        self.add_argument("--data_type", default='int',
+        self.add_argument("--data_type", "--dtype", default='int',
                             help="data type for tuning, 'int', 'mx_fp' and etc.")
 
         self.add_argument("--scale_dtype", default='fp16',
@@ -177,13 +177,13 @@ def setup_parser():
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--batch_size", default=1, type=int,
+    parser.add_argument("--batch_size", "--train_bs", default=1, type=int,
                         help="train batch size")
 
-    parser.add_argument("--iters", default=200, type=int,
+    parser.add_argument("--iters", "--iter", default=200, type=int,
                         help=" iters")
 
-    parser.add_argument("--seqlen", default=2048, type=int,
+    parser.add_argument("--seqlen","--seq_len", default=2048, type=int,
                         help="sequence length")
 
     parser.add_argument("--nsamples", default=128, type=int,
