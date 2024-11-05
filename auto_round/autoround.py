@@ -727,7 +727,8 @@ class AutoRound(object):
                             logger.error(
                                 f"this model has not been supported, "
                                 f"please raise an issue in https://github.com/intel/auto-round/issues"
-                                f" or try to set the batch_size to 1 ")
+                                f" or try to set the `batch_size` to 1 and "
+                                f"`gradient_accumulate_steps` to your current batch size.")
                             exit(-1)
 
             if hidden_states is not None:
