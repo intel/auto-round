@@ -252,7 +252,8 @@ class AutoRound(object):
 
         if self.batch_size > self.nsamples:
             logger.warning(
-                f"reset batch_size to nsamples({self.nsamples}) as batch_size({self.batch_size}) must be smaller than nsamples")
+                f"reset batch_size to nsamples({self.nsamples}) "
+                f"as batch_size({self.batch_size}) must be smaller than nsamples")
             self.batch_size = self.nsamples
 
     def quantize(self):
@@ -723,8 +724,11 @@ class AutoRound(object):
                     if hidden_states.shape[0] > self.batch_size:
                         self.input_dim = 1
                         if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.batch_size:
-                            raise logger.warning(
-                                f"this model has not been supported, please raise an issue in https://github.com/intel/auto-round/issues or try to set the input dim to 0 or 1 by yourself ")
+                            logger.error(
+                                f"this model has not been supported, "
+                                f"please raise an issue in https://github.com/intel/auto-round/issues"
+                                f" or try to set the batch_size to 1 ")
+                            exit(-1)
 
             if hidden_states is not None:
                 kwargs['hidden_states'] = hidden_states
