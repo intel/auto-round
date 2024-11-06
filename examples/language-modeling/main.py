@@ -98,6 +98,9 @@ if __name__ == '__main__':
                              "default to 'auto_round', 'fake' indicating that it only performs fake quantization and won't be exported to any device.")
 
     parser.add_argument("--format", default=None, type=str,
+                        choices=["auto_round",  "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
+                                    "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin",  "auto_round:auto_awq",
+                                   "auto_round:awq", "auto_awq", "itrex", "iterx_xpu", "fake"],
                         help="The format in which to save the model. "
                              "The options are 'auto_round', 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
                              "default to 'auto_round."

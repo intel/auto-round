@@ -91,9 +91,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
                           help="lower gpu memory usage but 50-100% slower")
 
         self.add_argument("--format", default=None, type=str,
-                          choices=["auto_round", "auto_round:gptq", "auto_round:auto_gptq"
-                                                                    "auto_round:auto_awq", "auto_round:awq",
-                                   "auto_gptq", "auto_awq", "itrex", "iterx_xpu", "fake"],
+                          choices=["auto_round",  "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
+                                    "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin",  "auto_round:auto_awq",
+                                   "auto_round:awq", "auto_awq", "itrex", "iterx_xpu", "fake"],
                           help="The format in which to save the model. "
                                "The options are 'auto_round', 'auto_round:gptq','auto_round:awq',"
                                " 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
