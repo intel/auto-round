@@ -751,14 +751,10 @@ def is_autoround_exllamav2_available():
         res = False
     return res
 
-
+@lru_cache(None)
 def is_hpu_supported():  # pragma: no cover
     try:
-        import subprocess
         import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-        hqt_version = subprocess.check_output(['pip', 'show', \
-                                               'habana_quantization_toolkit']).decode().split('\n')[1].split(': ')[1]
-        assert (hqt_version >= "1.17")
     except ImportError as e:
         return False
     return True
@@ -859,11 +855,19 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     return QuantLinear
 
 
-def clear_memory(tensor=None):
+def _clear_memory_for_cpu_and_cuda(tensor=None):
     if tensor is not None:
         del tensor
     gc.collect()
     torch.cuda.empty_cache()
+
+
+def clear_memory(tensor=None):
+    if is_hpu_supported():
+        # hpu does not have empty_cache
+        return
+    else:
+        _clear_memory_for_cpu_and_cuda(tensor)
 
 
 # Copied from TorchAO
