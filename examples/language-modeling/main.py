@@ -340,7 +340,7 @@ if __name__ == '__main__':
     if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
-    if model_name.split('/').strip(".") == "":
+    if model_name.split('/')[-1].strip(".") == "":
         export_dir = os.path.join(args.output_dir,  f"w{args.bits}g{args.group_size}")
     else:
         export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
