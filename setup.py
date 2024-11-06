@@ -167,9 +167,43 @@ if BUILD_CUDA_EXT:
         "cmdclass": {'build_ext': cpp_extension.BuildExtension}
     }
 
+PKG_INSTALL_CFG = {
+    # overall installation config, pip install neural-compressor
+    "auto_round": {
+        "project_name": "auto_round",
+        "include_packages": find_packages(
+            include=["auto_round", "auto_round.*"],
+        ),
+        "install_requires": fetch_requirements("requirements.txt"),
+        "extras_require": {
+            "hpu": fetch_requirements("requirements-hpu.txt"),
+        },
+    },
+    "auto_round_hpu": {
+        "project_name": "auto_round_hpu",
+        "include_packages": find_packages(
+            include=["auto_round", "auto_round.*"],
+            exclude=[
+                "auto_round.export.export_to_autogptq",
+                "auto_round.export.export_to_awq",
+            ],
+        ),
+        "install_requires": fetch_requirements("requirements-hpu.txt"),
+    },
+}
+
 if __name__ == "__main__":
+    if "hpu" in sys.argv:
+        sys.argv.remove("hpu")
+        cfg_key = "auto_round_hpu"
+
+    project_name = PKG_INSTALL_CFG[cfg_key].get("project_name")
+    include_packages = PKG_INSTALL_CFG[cfg_key].get("include_packages", {})
+    install_requires = PKG_INSTALL_CFG[cfg_key].get("install_requires", [])
+    extras_require = PKG_INSTALL_CFG[cfg_key].get("extras_require", {})
+
     setup(
-        name="auto_round",
+        name=project_name,
         author="Intel AIPT Team",
         version=version,
         author_email="wenhua.cheng@intel.com, weiwei1.zhang@intel.com",
@@ -179,10 +213,11 @@ if __name__ == "__main__":
         keywords="quantization,auto-around,LLM,SignRound",
         license="Apache 2.0",
         url="https://github.com/intel/auto-round",
-        packages=find_packages(),
+        packages=include_packages,
         include_dirs=include_dirs,
         ##include_package_data=False,
-        install_requires=fetch_requirements("requirements.txt"),
+        install_requires=install_requires,
+        extras_require=extras_require,
         python_requires=">=3.7.0",
         classifiers=[
             "Intended Audience :: Science/Research",
@@ -192,5 +227,5 @@ if __name__ == "__main__":
         ],
         include_package_data=True,
         package_data={"": ["mllm/templates/*.json"]},
-        **additional_setup_kwargs
+        **additional_setup_kwargs,
     )
