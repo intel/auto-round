@@ -74,7 +74,7 @@ class AutoRound(object):
                        'group_size': 128,
                        'sym': True
                        'act_data_type': None,
-                       'act_bits': 32,
+                       'act_bits': 16,
                        'act_group_size': None,
                        'act_sym': None,
 
@@ -105,7 +105,7 @@ class AutoRound(object):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
-        act_bits (int): Number of bits for activation quantization. Default is 32.
+        act_bits (int): Number of bits for activation quantization. Default is 16.
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
@@ -144,7 +144,7 @@ class AutoRound(object):
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
-            act_bits: int = 32,
+            act_bits: int = 16,
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
@@ -354,7 +354,7 @@ class AutoRound(object):
                 self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
                     self.layer_config[n]["data_type"] = "bfloat"
-                self.layer_config[n]["bits"] = 32
+                self.layer_config[n]["bits"] = 16
                 self.layer_config[n]["group_size"] = None
                 self.layer_config[n]["sym"] = None
 
@@ -429,8 +429,8 @@ class AutoRound(object):
                 layer_config[n] = {}
                 for key in keys:
                     layer_config[n][key] = getattr(self, key)
-                layer_config[n]["bits"] = 32
-                layer_config[n]["act_bits"] = 32
+                layer_config[n]["bits"] = 16
+                layer_config[n]["act_bits"] = 16
 
             for key in keys:
                 setattr(m, key, layer_config[n][key])
@@ -1375,7 +1375,7 @@ class AutoRoundOPT(AutoRound):
         data_type (str): The data type to be used (default is "int").
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
-        act_bits (int): Number of bits for activation quantization. Default is 32.
+        act_bits (int): Number of bits for activation quantization. Default is 16.
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
@@ -1416,7 +1416,7 @@ class AutoRoundOPT(AutoRound):
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
-            act_bits: int = 32,
+            act_bits: int = 16,
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
@@ -1541,7 +1541,7 @@ class AutoRoundAdam(AutoRoundOPT):
         optimizer: string or object
         scale_dtype (str): The data type of quantization scale to be used (default is "float16"), different kernels
                            have different choices.
-        act_bits (int): Number of bits for activation quantization. Default is 32.
+        act_bits (int): Number of bits for activation quantization. Default is 16.
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
@@ -1580,7 +1580,7 @@ class AutoRoundAdam(AutoRoundOPT):
             dynamic_max_gap: int = -1,
             data_type: str = "int",
             scale_dtype: str = "fp16",
-            act_bits: int = 32,
+            act_bits: int = 16,
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
