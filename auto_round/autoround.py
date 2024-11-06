@@ -720,9 +720,9 @@ class AutoRound(object):
                 self.inputs[name] = {}
                 init_cache_for_special_model(self.model, positional_inputs, self.inputs[name])
 
-            if self.batch_dim is None:
+            if self.batch_dim is None :
                 self.batch_dim = 0
-                if hidden_states is not None:
+                if hidden_states is not None and self.batch_size>1:
                     if hidden_states.shape[0] > self.batch_size:
                         self.batch_dim = 1
                         if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.batch_size:
