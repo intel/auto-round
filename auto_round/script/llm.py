@@ -192,7 +192,7 @@ def setup_best_parser():
     parser.add_argument("--batch_size", "--train_bs", default=8, type=int,
                         help="train batch size")
 
-    parser.add_argument("--iters", default=1000, type=int,
+    parser.add_argument("--iters","--iter", default=1000, type=int,
                         help="iterations to tune each block")
 
     parser.add_argument("--seqlen", "--seq_len", default=2048, type=int,
