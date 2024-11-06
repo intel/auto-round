@@ -47,7 +47,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--asym", action='store_true',
                             help=" asym quantization")
 
-        self.add_argument("--dataset", type=str, default="llava",
+        self.add_argument("--dataset", type=str, default="llava_v1_5_mix665k",
                             help="The dataset for quantization training. It can be a custom one.")
 
         self.add_argument("--lr", default=None, type=float,
@@ -142,7 +142,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
                                 help="The template for building training dataset. It can be a custom one.")
         
         ## ======================= VLM eval=======================
-        self.add_argument("--tasks", type=str, default="COCO_VAL",
+        self.add_argument("--tasks", type=str,
+                          default="MMBench_DEV_CN_V11,MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE,MMMU_DEV_VAL,LLaVABench",
                           help="eval tasks for VLMEvalKit.")
         # Args that only apply to Video Dataset
         self.add_argument("--nframe", type=int, default=8,
@@ -305,7 +306,7 @@ def tune(args):
 
 def eval(args):
     if isinstance(args.tasks, str):
-        args.tasks = args.tasks.split(',')
+        args.tasks = args.tasks.replace(' ', '').split(',')
     from auto_round.mllm import mllm_eval
     mllm_eval(
         args.model,

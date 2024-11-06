@@ -125,7 +125,7 @@ def mllm_eval(
     os.makedirs(pred_root, exist_ok=True)
 
     st = time.time()
-    rt_file = open(f'{pred_root}/{model_name}_eval_cost.txt')
+    rt_file = open(f'{pred_root}/{model_name}_eval_cost.txt', 'w')
     for dataset_name in dataset:
         task_st = time.time()
         try:

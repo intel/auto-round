@@ -44,7 +44,7 @@ def register_dataset(name):
         return dataset
     return register
 
-_LLAVA_DATA_URL = ("https://huggingface.co/datasets/liuhaotian/"
+_LLAVA_V1_5_MIX665K_URL = ("https://huggingface.co/datasets/liuhaotian/"
                   "LLaVA-Instruct-150K/resolve/main/llava_v1_5_mix665k.json?download=true")
 _COCO_DATA_URL = "http://images.cocodataset.org/"
 
@@ -68,12 +68,15 @@ class LlavaDataset(Dataset):
         self.model_type = template.model_type
         self.template = template
         self.tokenizer = tokenzier
-        if dataset_path:
+        if os.path.exists(dataset_path):
             self.questions = json.load(open(dataset_path, "r"))
         else:
             import requests
             logger.info('the path of llava dataset is not provide, download from url...')
-            self.questions = requests.get(_LLAVA_DATA_URL, stream=True).json()
+            if dataset_path == 'llava_v1_5_mix665k':
+                self.questions = requests.get(_LLAVA_V1_5_MIX665K_URL, stream=True).json()
+            else:
+                raise KeyError(f"{dataset_path} is not support, please check.")
         self.padding = padding
         self.truncation = truncation
         self.extra_data_dir = extra_data_dir
@@ -170,9 +173,9 @@ def get_mllm_dataloader(
             dataset = MLLM_DATASET['llava'](
                 template, model, tokenizer, dataset, extra_data_dir, 
                 max_length=min(seqlen, tokenizer.model_max_length))
-        elif dataset in MLLM_DATASET.keys():
-            dataset = MLLM_DATASET[dataset](
-                template, model, tokenizer, None, extra_data_dir, 
+        elif "llava" in dataset:
+            dataset = MLLM_DATASET["llava"](
+                template, model, tokenizer, "llava_v1_5_mix665k", extra_data_dir, 
                 max_length=min(seqlen, tokenizer.model_max_length))
         else:
             from datasets import load_dataset

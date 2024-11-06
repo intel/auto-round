@@ -35,7 +35,6 @@ def _extract_data_dir(dir_path: str):
 
 
 def fetch_image(path_or_url):
-    breakpoint()
     if os.path.isfile(path_or_url):
         image_obj = Image.open(path_or_url)
     elif path_or_url.startswith("http://") or path_or_url.startswith("https://"):
