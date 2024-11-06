@@ -51,6 +51,7 @@ from .utils import (
     mv_module_from_gpu,
     unsupport_meta_device, detect_device_count, clear_memory,
     get_multimodal_block_names, get_library_version,
+    compile_func,
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -386,11 +387,7 @@ class AutoRound(object):
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
-        torch_version = get_library_version("torch")
-        if version.parse(torch_version) >= version.parse("2.5.99"):
-            quant_layer = torch.compile(self.quant_layer)
-        else:
-            quant_layer = self.quant_layer
+        quant_layer = compile_func(self.quant_layer)
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
@@ -1110,11 +1107,7 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
-        torch_version = get_library_version("torch")
-        if version.parse(torch_version) >= version.parse("2.5.99"):
-            quant_block = torch.compile(self.quant_block)
-        else:
-            quant_block = self.quant_block
+        quant_block = compile_func(self.quant_block, device)
 
         pbar = tqdm(range(0, len(block_names), nblocks))
         for i in pbar:

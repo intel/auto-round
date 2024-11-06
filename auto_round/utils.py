@@ -18,7 +18,7 @@ import os
 import sys
 import subprocess
 from collections import UserDict
-
+import re
 # for cpu usage
 import cpuinfo
 import numpy as np
@@ -865,3 +865,48 @@ def clear_memory(tensor=None):
     gc.collect()
     torch.cuda.empty_cache()
 
+
+# Copied from TorchAO
+def parse_version(version_string):
+    # Extract just the X.Y.Z part from the version string
+    match = re.match(r"(\d+\.\d+\.\d+)", version_string)
+    if match:
+        version = match.group(1)
+        return [int(x) for x in version.split(".")]
+    else:
+        raise ValueError(f"Invalid version string format: {version_string}")
+
+
+def compare_versions(v1, v2):
+    v1_parts = parse_version(v1)
+    v2_parts = parse_version(v2)
+    return (v1_parts > v2_parts) - (v1_parts < v2_parts)
+
+
+def torch_version_at_least(min_version):
+    return compare_versions(torch.__version__, min_version) >= 0
+
+
+TORCH_VERSION_AT_LEAST_2_6 = torch_version_at_least("2.6.0")
+TORCH_VERSION_AT_LEAST_2_5 = torch_version_at_least("2.5.0")
+TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
+
+
+def compile_func_on_hpu(func):
+    if TORCH_VERSION_AT_LEAST_2_4:
+        return torch.compile(func, backend="hpu_backend")
+    return func
+
+
+def compile_func_on_cuda_or_cpu(func):
+    if TORCH_VERSION_AT_LEAST_2_6:
+        return torch.compile(func)
+    else:
+        return func
+
+
+def compile_func(fun, device):
+    if "hpu" in str(device):
+        return compile_func_on_hpu(fun, device)
+    else:
+        return compile_func_on_cuda_or_cpu(fun, device)
