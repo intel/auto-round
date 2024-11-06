@@ -143,7 +143,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         
         ## ======================= VLM eval=======================
         self.add_argument("--tasks", type=str,
-                          default="MMBench_DEV_CN_V11,MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE,MMMU_DEV_VAL,LLaVABench",
+                          default="MMBench_DEV_CN_V11,MMBench_DEV_EN_V11,ScienceQA_VAL,"
+                          "TextVQA_VAL,POPE,MMMU_DEV_VAL,LLaVABench",
                           help="eval tasks for VLMEvalKit.")
         # Args that only apply to Video Dataset
         self.add_argument("--nframe", type=int, default=8,
