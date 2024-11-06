@@ -146,7 +146,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--model_dtype", default=None, type=str,
                             help="force to convert the dtype, some backends supports fp16 dtype better")
 
-        self.add_argument("--act_bits", default=32, type=int,
+        self.add_argument("--act_bits", default=16, type=int,
                             help="activation bits")
 
         self.add_argument("--fp_layers_list", default="", type=str,
@@ -377,7 +377,11 @@ def tune(args):
     if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}"
+    if model_name.split('/')[-1] == ".":
+        export_dir = os.path.join(args.output_dir,  f"w{args.bits}g{args.group_size}")
+    else:
+        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
+
 
     format_list = args.format.replace(' ', '').split(',')
     inplace = False if len(format_list) > 1 else True
