@@ -282,7 +282,10 @@ def tune(args):
     if args.device != "cpu":
         torch.cuda.empty_cache()
     
-    export_dir = args.output_dir + "/" + model_name.split('/')[-1] + f"-autoround-w{args.bits}g{args.group_size}"
+    if model_name.split('/')[-1] == ".":
+        export_dir = os.path.join(args.output_dir,  f"w{args.bits}g{args.group_size}")
+    else:
+        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
 
     format_list = args.format.replace(' ', '').split(',')
     inplace = False if len(format_list) > 1 else True
