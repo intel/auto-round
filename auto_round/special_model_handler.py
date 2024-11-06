@@ -49,7 +49,7 @@ def to_device(input, device=torch.device("cpu")):
     return input
 
 
-def special_model_init(model, positional_inputs, inputs):
+def init_cache_for_special_model(model, positional_inputs, inputs):
     """
     Initializes special model inputs by adding positional inputs if missing.
 

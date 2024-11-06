@@ -27,7 +27,7 @@ from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, Wrappe
     WrapperTransformerConv1d
 from .special_model_handler import (
     shareable_keywords,
-    special_model_init,
+    init_cache_for_special_model,
     reset_params,
     check_skippable_keywords
 )
@@ -718,7 +718,7 @@ class AutoRound(object):
             """
             if name not in self.inputs:
                 self.inputs[name] = {}
-                special_model_init(self.model, positional_inputs, self.inputs[name])
+                init_cache_for_special_model(self.model, positional_inputs, self.inputs[name])
 
             if self.batch_dim is None:
                 self.batch_dim = 0
