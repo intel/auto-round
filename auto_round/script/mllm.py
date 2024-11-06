@@ -74,9 +74,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--format", default="auto_round", type=str,
                           choices=["auto_round", "auto_round:gptq", "auto_round:auto_gptq", "auto_round:awq",
-                                   "auto_round:auto_awq"],
+                                   "auto_round:auto_awq", "fake"],
                           help="The format in which to save the model. "
-                               "The options are 'auto_round', 'auto_round:gptq','auto_round:awq',"
+                               "The options are 'auto_round', 'auto_round:gptq','auto_round:awq'"
                                " and 'fake'.default to 'auto_round."
                           )
 
