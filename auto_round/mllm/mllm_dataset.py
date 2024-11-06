@@ -105,7 +105,7 @@ class LlavaDataset(Dataset):
             image_path = self.questions[i]["image"]
             if not os.path.exists(image_path):
                 image_path = self.questions[i]["image"].replace('coco/', _COCO_DATA_URL)
-        image = self.template.processor.image_processor(image_path)
+        # image = self.template.processor.image_processor(image_path)
 
         text = self.template._encode(text)
 
@@ -113,7 +113,7 @@ class LlavaDataset(Dataset):
             self.model,
             self.tokenizer,
             text=text, 
-            images=image,
+            images=image_path,
             padding=self.padding,
             truncation=self.truncation,
             return_tensors="pt",

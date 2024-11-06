@@ -50,16 +50,16 @@ class BasicProcessor:
                         "When passing chat dicts as input, each dict must have a 'role' and 'content' key.")
             continue_final_message = text[-1]["role"] == "assistant"
 
-            # add_generation_prompt=True will add <|im_start|>assistant to the end
-            try:
-                text = tokenizer.apply_chat_template(
-                    text, tokenize=False, add_generation_prompt=not continue_final_message,
-                    continue_final_message=continue_final_message,)
-            except:
-                raise NotImplementedError("current not support for non-instructed model.")
+        # add_generation_prompt=True will add <|im_start|>assistant to the end
+        try:
+            text = tokenizer.apply_chat_template(
+                text, tokenize=False, add_generation_prompt=not continue_final_message,
+                continue_final_message=continue_final_message,)
+        except:
+            raise NotImplementedError("current not support for non-instructed model.")
 
-            if text == '':
-                raise NotImplementedError("current not support for non-instructed model.")
+        if text == '':
+            raise NotImplementedError("current not support for non-instructed model.")
 
         if max_length:
             token_length = len(tokenizer(text).input_ids)
@@ -68,6 +68,9 @@ class BasicProcessor:
                     text += tokenizer.pad_token * (max_length - token_length)
             else:
                 text = tokenizer.decode(tokenizer(text).input_ids[:max_length])
+        
+        if images is not None:
+            images = self.image_processor(images)
 
         ret = tokenizer.processor(
             text=text,
@@ -113,6 +116,9 @@ class Qwen2VLProcessor(BasicProcessor):
             else:
                 text = tokenizer.decode(tokenizer(text).input_ids[:max_length])
 
+        if images is not None:
+            images = self.image_processor(images)
+
         ret = tokenizer.processor(
             text=text,
             images=images,
@@ -134,6 +140,10 @@ class CogVLM2Processor(BasicProcessor):
     def get_input(
             self, model, tokenizer, text, images, max_length=2048, 
             padding=True, truncation=True, squeeze=True, **kwargs):
+        
+        if images is not None:
+            images = self.image_processor(images)
+
         padding_len = 2303
         max_length += padding_len
         input_data = model.build_conversation_input_ids(
@@ -197,3 +207,31 @@ class CogVLM2Processor(BasicProcessor):
     @staticmethod
     def image_processor(image_path_or_url):
         return fetch_image(image_path_or_url).convert('RGB')
+
+
+@regist_processor("llava")
+class LlavaProcessor(BasicProcessor):
+    from llava.train.train import preprocess, preprocess_multimodal, DataCollatorForSupervisedDataset
+
+    def get_input(
+            self, model, tokenizer, text, images, padding=True, truncation=True,
+            return_tensors="pt", max_length=None, squeeze=True, **kwargs):
+        
+        if images is not None:
+            images = fetch_image(images).convert('RGB')
+            images = image_processor.preprocess(images, return_tensors='pt')['pixel_values'][0]
+
+        input_data = preprocess_multimodala(text)
+        ret = preprocess(input_data, tokenizer, has_image=(images is not None))
+
+        if squeeze:
+            for key in ret:
+                ret[key] = ret[key][0]
+        ret['image'] = images
+        return ret
+    
+    # @staticmethod
+    # def image_processor(image_processor, image_path_or_url):
+    #     image = fetch_image(image_path_or_url).convert('RGB')
+    #     image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+    #     return image

@@ -212,23 +212,29 @@ def tune(args):
         torch_dtype = torch.bfloat16
     
     # load_model
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-    tokenizer.processor = processor
-    model_type = config.model_type
-    if "qwen2_vl" in model_type:
-        from transformers import Qwen2VLForConditionalGeneration
-        cls = Qwen2VLForConditionalGeneration
-    elif "mllama" in model_type:
-        from transformers import MllamaForConditionalGeneration
-        cls = MllamaForConditionalGeneration
+    if "llava" in model_name:
+        from llava.model.builder import load_pretrained_model
+        tokenizer, model, image_processor, _ = load_pretrained_model(model_name, model_base=None, model_name=model_name,
+            torch_dtype=torch_dtype)
+        processor = None
     else:
-        cls = AutoModelForCausalLM
-    model = cls.from_pretrained(
-        model_name,trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype)
-    if "cogvlm2" in model_name:
-        model.config.model_type = "cogvlm2"
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        tokenizer.processor = processor
+        model_type = config.model_type
+        if "qwen2_vl" in model_type:
+            from transformers import Qwen2VLForConditionalGeneration
+            cls = Qwen2VLForConditionalGeneration
+        elif "mllama" in model_type:
+            from transformers import MllamaForConditionalGeneration
+            cls = MllamaForConditionalGeneration
+        else:
+            cls = AutoModelForCausalLM
+        model = cls.from_pretrained(
+            model_name,trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype)
+        if "cogvlm2" in model_name:
+            model.config.model_type = "cogvlm2"
 
     from auto_round import AutoRoundMLLM
 
