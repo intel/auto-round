@@ -318,10 +318,6 @@ if __name__ == '__main__':
                     break
     if args.quant_lm_head:
         layer_config[lm_head_layer_name] = {"bits": args.bits}
-        transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
-        if transformers_version[0] == 4 and transformers_version[1] < 38:
-            error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
-            raise EnvironmentError(error_message)
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=not args.asym, batch_size=args.batch_size,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
@@ -344,7 +340,7 @@ if __name__ == '__main__':
     if "cpu" not in device_str:
         torch.cuda.empty_cache()
 
-    if model_name.split('/')[-1] == ".":
+    if model_name.split('/').strip(".") == "":
         export_dir = os.path.join(args.output_dir,  f"w{args.bits}g{args.group_size}")
     else:
         export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
