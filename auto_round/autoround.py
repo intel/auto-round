@@ -980,15 +980,29 @@ class AutoRound(object):
             whole_indices = torch.randperm(nsamples)[:pick_samples]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
-        mse_loss = torch.nn.MSELoss().to(device)
+        num_elm = 1
+        mse_reduction = "mean"
+        if self.gradient_accumulate_steps != 1:
+            mse_reduction = "sum"
+        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
         total_loss = 0
+
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
+                ##we assume the block input and output shape is same
+                current_input_ids, current_input_others = sampling_inputs(
+                    input_ids,
+                    input_others,
+                    whole_indices,
+                    seqlen=self.seqlen,
+                    input_dim=self.input_dim,
+                )
+                num_elm = sum(id.numel() for id in current_input_ids)
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size: (tmp_step + 1) * self.batch_size]
                 current_input_ids, current_input_others = sampling_inputs(
@@ -1015,7 +1029,7 @@ class AutoRound(object):
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
 
-                total_loss += loss.item() / self.gradient_accumulate_steps
+                total_loss += loss.item() / num_elm
                 self.scale_loss_and_backward(scaler, loss)
             if i == 0:
                 init_loss = total_loss
