@@ -28,7 +28,7 @@ from auto_round.utils import logger
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__( *args, **kwargs)
-        self.add_argument("--model", default="facebook/opt-125m", help="model name or path")
+        self.add_argument("--model",  "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path")
 
         self.add_argument('--eval', action='store_true',
                         help="whether to use eval only mode.")

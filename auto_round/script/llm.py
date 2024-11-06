@@ -46,7 +46,7 @@ from auto_round.utils import logger
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__( *args, **kwargs)
-        self.add_argument("--model", default="facebook/opt-125m", help="model name or path")
+        self.add_argument("--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path")
 
         self.add_argument('--eval', action='store_true',
                         help="whether to use eval only mode.")
@@ -87,7 +87,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--low_gpu_mem_usage", action='store_true',
                             help="lower gpu memory usage but 50-100% slower")
         
-        self.add_argument("--format", default=None, type=str,
+        self.add_argument("--format", default=None, type=str, choices=["auto_round","auto_round:gptq","auto_round:auto_gptq"
+                                                                       "auto_round:auto_awq","auto_round:awq","auto_gptq","auto_awq", "itrex","iterx_xpu","fake"],
                             help="The format in which to save the model. "
                                 "The options are 'auto_round', 'auto_round:gptq','auto_round:awq',"
                                 " 'auto_gptq', 'auto_awq', 'itrex', 'itrex_xpu' and 'fake'."
@@ -322,7 +323,7 @@ def tune(args):
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                layer_config[n] = {"bits": 32}
+                layer_config[n] = {"bits": 16}
                 logger.info(
                     f"{n} will not be quantized due to its shape not being divisible by 32,"
                     " resulting in an exporting issue to autogptq")
@@ -332,7 +333,7 @@ def tune(args):
             if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
                 name = n.split('.')[-1]
                 if n in fp_layers_list or name in fp_layers_list:
-                    layer_config[n] = {"bits": 32}
+                    layer_config[n] = {"bits": 16}
                     logger.info(
                         f"{n} will not be quantized.")
     lm_head_layer_name = "lm_head"

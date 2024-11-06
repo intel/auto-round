@@ -31,7 +31,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 if __name__ == '__main__':
 
     parser.add_argument(
-        "--model_name", default="facebook/opt-125m"
+        "--model_name", "--model", "--model_name_or_path", default="facebook/opt-125m"
     )
 
     parser.add_argument("--bits", default=4, type=int,
@@ -103,7 +103,7 @@ if __name__ == '__main__':
                              "default to 'auto_round."
                         )
 
-    parser.add_argument("--data_type", "--dtype",  default='int',
+    parser.add_argument("--data_type", "--dtype", default='int',
                         help="data type for tuning, 'int', 'mx_fp' and etc.")
 
     parser.add_argument("--scale_dtype", default='fp16',
@@ -457,8 +457,9 @@ if __name__ == '__main__':
                 user_model = model.to(device_str)
             if args.eval_bs == "auto":
                 args.eval_bs = 16
-            from auto_round.eval.evaluation import  simple_evaluate_user_model
-            res = simple_evaluate_user_model(user_model, tokenizer,tasks=tasks,batch_size=args.eval_bs)
+            from auto_round.eval.evaluation import simple_evaluate_user_model
+
+            res = simple_evaluate_user_model(user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs)
         else:
             res = simple_evaluate(model="hf", model_args=model_args,
                                   tasks=tasks,
@@ -466,4 +467,3 @@ if __name__ == '__main__':
         from lm_eval.utils import make_table
 
         print(make_table(res))
-

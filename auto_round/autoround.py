@@ -206,7 +206,7 @@ class AutoRound(object):
         self.dynamic_max_gap = dynamic_max_gap
         self.lr_scheduler = lr_scheduler
         self.optimizer = self.get_optimizer(None)
-        self.input_dim = None
+        self.batch_dim = None
         self.infer_bs_coeff = 1
 
         self.set_layerwise_config(self.layer_config)  ##better place in the end
@@ -470,12 +470,12 @@ class AutoRound(object):
                 input_others,
                 indices,
                 self.seqlen,
-                self.input_dim
+                self.batch_dim
             )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
-            output.extend(list(torch.split(tmp_output, 1, dim=self.input_dim)))
+            output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
         if self.low_gpu_mem_usage:
             clear_memory()
 
@@ -720,11 +720,11 @@ class AutoRound(object):
                 self.inputs[name] = {}
                 special_model_init(self.model, positional_inputs, self.inputs[name])
 
-            if self.input_dim is None:
-                self.input_dim = 0
+            if self.batch_dim is None:
+                self.batch_dim = 0
                 if hidden_states is not None:
                     if hidden_states.shape[0] > self.batch_size:
-                        self.input_dim = 1
+                        self.batch_dim = 1
                         if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.batch_size:
                             logger.error(
                                 f"this model has not been supported, "
@@ -748,7 +748,7 @@ class AutoRound(object):
                             self.inputs[name][key] = [data]
                         else:
                             data = post_process_cache_data(self.batch_size, data, key)
-                            self.inputs[name][key] = list(torch.split(data, 1, dim=self.input_dim))
+                            self.inputs[name][key] = list(torch.split(data, 1, dim=self.batch_dim))
                     else:  # append cache inputs
                         new_data = post_process_cache_data(self.batch_size, kwargs[key], key)
                         if new_data is None:  # shareable args or NoneType
@@ -757,7 +757,7 @@ class AutoRound(object):
                         if self.batch_size <= 1:
                             self.inputs[name][key].append(new_data)
                         else:
-                            self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=self.input_dim)))
+                            self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=self.batch_dim)))
                 elif isinstance(kwargs[key], (str, bool, type(None))):
                     if key not in self.inputs[name].keys():
                         self.inputs[name][key] = kwargs[key]
@@ -1014,11 +1014,11 @@ class AutoRound(object):
                     input_others,
                     indices,
                     seqlen=self.seqlen,
-                    input_dim=self.input_dim,
+                    batch_dim=self.batch_dim,
                 )
 
                 current_output = [output[x] for x in indices]
-                current_output = torch.cat(current_output, dim=self.input_dim)
+                current_output = torch.cat(current_output, dim=self.batch_dim)
 
                 current_output = to_device(current_output, device)
 
