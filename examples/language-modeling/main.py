@@ -88,17 +88,13 @@ if __name__ == '__main__':
                         help="number of samples")
 
     parser.add_argument("--low_gpu_mem_usage", action='store_true',
-                      help="offload intermediate features to cpu")
+                        help="offload intermediate features to cpu")
 
     parser.add_argument("--enable_minmax_tuning", action='store_true',
                         help="enable_minmax_tuning is deprecated")
 
-
-    parser.add_argument("--format", default=None, type=str,
-                        choices=["auto_round",  "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
-                                    "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin",  "auto_round:auto_awq",
-                                   "auto_round:awq", "auto_awq", "itrex", "iterx_xpu", "fake"],
-                        help="The format in which to save the model. "
+    parser.add_argument("--format", default="auto_round", type=str,
+                        help="the format  to save the quantized model"
                         )
 
     parser.add_argument("--data_type", "--dtype", default='int',
@@ -169,6 +165,17 @@ if __name__ == '__main__':
     if args.act_bits <= 8:
         print(
             "Warning, activation quantization is an experiment feature")
+
+    if args.format is None:
+        args.format = "auto_round"
+    supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
+                         "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
+                         "auto_round:awq", "auto_awq", "itrex", "iterx_xpu", "fake"]
+    formats = args.format.replace(' ', '').split(",")
+    for format in formats:
+        if format not in supported_formats:
+            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+
 
     tasks = args.tasks
     use_eval_legacy = False
@@ -300,6 +307,11 @@ if __name__ == '__main__':
                     break
     if args.quant_lm_head:
         layer_config[lm_head_layer_name] = {"bits": args.bits}
+        for format in formats:
+            if "auto_round" not in format:
+                auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
+                raise ValueError(
+                    f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
 
     autoround = round(model, tokenizer, args.bits, args.group_size, sym=not args.asym, batch_size=args.batch_size,
                       dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
@@ -323,7 +335,7 @@ if __name__ == '__main__':
         torch.cuda.empty_cache()
 
     if model_name.split('/')[-1].strip(".") == "":
-        export_dir = os.path.join(args.output_dir,  f"w{args.bits}g{args.group_size}")
+        export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
     else:
         export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
 
