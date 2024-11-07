@@ -18,7 +18,8 @@ quantization_config = AutoRoundConfig(
     backend=backend
 )
 model = AutoModelForCausalLM.from_pretrained(quantized_model_dir,
-                                             device_map=backend.split(':')[0],                                                        torch_dtype=torch.float16,
+                                             device_map=backend.split(':')[0],                                                        
+                                             torch_dtype=torch.float16,
                                              quantization_config=quantization_config,
                                              trust_remote_code=True
                                             ).eval()
