@@ -3,7 +3,7 @@ datasets
 py-cpuinfo
 sentencepiece
 torch
-transformers
+transformers>=4.38
 triton
 numpy < 2.0
 threadpoolctl
@@ -12,3 +12,5 @@ tqdm
 packaging
 auto-gptq>=0.7.1
 pillow
+numba
+tbb

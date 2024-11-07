@@ -9,7 +9,7 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.utils import is_hpu_available
+
 
 
 class LLMDataLoader:
@@ -20,10 +20,9 @@ class LLMDataLoader:
         for i in range(2):
             yield torch.ones([1, 10], dtype=torch.long)
 
-
-def is_auto_gptq_available():
+def is_hpu_supported():
     try:
-        import auto_gptq
+        import habana_frameworks.torch.core as htcore # pylint: disable=E0401
     except ImportError as e:
         return False
     return True
@@ -41,11 +40,14 @@ class TestAutoRound(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
-    
-    
-    @unittest.skipIf(not is_auto_gptq_available(), "AutoGPTQ is not available")
-    @unittest.skipIf(not is_hpu_available(), "HPU is not available")
+
     def test_autogptq_format_hpu_inference(self):
+        if not is_hpu_supported():
+            return
+        try:
+            import auto_gptq
+        except:
+            return
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,
@@ -72,8 +74,10 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @unittest.skipIf(not is_hpu_available(), "HPU is not available")
+
     def test_autoround_format_hpu_inference(self):
+        if not is_hpu_supported():
+            return
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,

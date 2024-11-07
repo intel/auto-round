@@ -348,7 +348,7 @@ def collect_best_params(block):
 
 @torch.no_grad()
 def sampling_inputs(input_ids, input_others, indices, seqlen,
-                    input_dim=0):
+                    batch_dim=0):
     """Samples inputs based on the given indices and sequence length.
 
     Args:
@@ -362,7 +362,7 @@ def sampling_inputs(input_ids, input_others, indices, seqlen,
     current_input_others: The sampled other input data.
     """
     current_input_ids = [input_ids[i] for i in indices]
-    current_input_ids = torch.cat(current_input_ids, dim=input_dim)
+    current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
         if "positional_inputs" in key:
@@ -865,10 +865,3 @@ def clear_memory(tensor=None):
     gc.collect()
     torch.cuda.empty_cache()
 
-@lru_cache(None)
-def is_hpu_available():
-    try:
-        import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-        return True
-    except ImportError:
-        return False
