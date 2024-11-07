@@ -51,6 +51,7 @@ from .utils import (
     mv_module_from_gpu,
     unsupport_meta_device, detect_device_count, clear_memory,
     get_multimodal_block_names, get_library_version,
+    compile_func,
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -392,11 +393,8 @@ class AutoRound(object):
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
-        torch_version = get_library_version("torch")
-        if version.parse(torch_version) >= version.parse("2.5.99"):
-            quant_layer = torch.compile(self.quant_layer)
-        else:
-            quant_layer = self.quant_layer
+        device = next(self.model.parameters()).device
+        quant_layer = compile_func(self.quant_layer, device)
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
@@ -875,10 +873,22 @@ class AutoRound(object):
         if self.sampler != "rand":
             whole_indices = torch.randperm(nsamples)[:pick_samples]
         total_loss = 0
+        num_elm = 1
+        mse_reduction = "mean"
+        if gradient_accumulate_steps != 1:
+            mse_reduction = "sum"
+        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
+                if gradient_accumulate_steps != 1:
+                    if q_inputs is not None:
+                        current_input = [q_inputs[i] for i in whole_indices]
+                    else:
+                        current_input = [inputs[i] for i in whole_indices]
+                    num_elm = sum(id.numel() for id in current_input)
             for tmp_step in range(gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * batch_size: (tmp_step + 1) * batch_size]
                 if q_inputs is not None:
@@ -902,7 +912,7 @@ class AutoRound(object):
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
-                total_loss += loss.item() / gradient_accumulate_steps
+                total_loss += loss.item() / num_elm
 
                 self.scale_loss_and_backward(scaler, loss)
             if i == 0:
@@ -996,15 +1006,24 @@ class AutoRound(object):
             whole_indices = torch.randperm(nsamples)[:pick_samples]
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
-        mse_loss = torch.nn.MSELoss().to(device)
+        num_elm = 1
+        mse_reduction = "mean"
+        if self.gradient_accumulate_steps != 1:
+            mse_reduction = "sum"
+        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
         total_loss = 0
+
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
+                ##we assume the block input and output shape is same
+                if self.gradient_accumulate_steps!=1:
+                    current_input_ids = [input_ids[i] for i in whole_indices]
+                    num_elm = sum(id.numel() for id in current_input_ids)
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size: (tmp_step + 1) * self.batch_size]
                 current_input_ids, current_input_others = sampling_inputs(
@@ -1031,7 +1050,7 @@ class AutoRound(object):
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
 
-                total_loss += loss.item() / self.gradient_accumulate_steps
+                total_loss += loss.item() / num_elm
                 self.scale_loss_and_backward(scaler, loss)
             if i == 0:
                 init_loss = total_loss
@@ -1126,11 +1145,7 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
-        torch_version = get_library_version("torch")
-        if version.parse(torch_version) >= version.parse("2.5.99"):
-            quant_block = torch.compile(self.quant_block)
-        else:
-            quant_block = self.quant_block
+        quant_block = compile_func(self.quant_block, device)
 
         pbar = tqdm(range(0, len(block_names), nblocks))
         for i in pbar:
