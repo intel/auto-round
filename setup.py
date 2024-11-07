@@ -209,6 +209,7 @@ if __name__ == "__main__":
     # There are two ways to install hpu-only package:
     # 1. pip install setup.py hpu.
     # 2. Within the gaudi docker where the HPU is available, we install the hpu package by default.
+    cfg_key = "auto_round"
     if "hpu" in sys.argv:
         sys.argv.remove("hpu")
         cfg_key = "auto_round_hpu"
