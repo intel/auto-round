@@ -123,8 +123,6 @@ class AutoRoundMLLM(AutoRound):
         self.template = get_template(self.template, tokenizer, image_processor)
         assert dataset is not None, "dataset should not be None"
         batch_size, gradient_accumulate_steps = check_mllm_model_batch(model, batch_size, gradient_accumulate_steps)
-        if isinstance(dataset, str):
-            dataset = get_mllm_dataloader(self.template, model, tokenizer, dataset, extra_data_dir, seqlen, batch_size)
         
         super(AutoRoundMLLM, self).__init__(
             model=model,
