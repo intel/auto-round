@@ -187,6 +187,7 @@ def get_mllm_dataloader(
     
     dataloader_params = {
         "batch_size": bs,
+        "shuffle": True,
         "collate_fn": dataset.template.processor.data_collator
     }
 
