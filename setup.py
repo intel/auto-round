@@ -3,7 +3,7 @@ from io import open
 import os
 from setuptools import find_packages, setup
 import sys
-
+from functools import lru_cache
 os.environ["CC"] = "g++"
 os.environ["CXX"] = "g++"
 try:
@@ -18,6 +18,19 @@ version = __version__
 
 BUILD_CUDA_EXT = int(os.environ.get('BUILD_CUDA_EXT', '1')) == 1
 PYPI_RELEASE = os.environ.get('PYPI_RELEASE', None)
+BUILD_HPU_ONLY = os.environ.get('BUILD_HPU_ONLY', '0') == '1'
+
+@lru_cache(None)
+def is_hpu_available():
+    try:
+        import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+        return True
+    except ImportError:
+        return False
+
+if is_hpu_available():
+    # When HPU is available, we build HPU only by default
+    BUILD_HPU_ONLY = True
 
 def is_cpu_env():
     try:
@@ -193,8 +206,13 @@ PKG_INSTALL_CFG = {
 }
 
 if __name__ == "__main__":
+    # There are two ways to install hpu-only package:
+    # 1. pip install setup.py hpu.
+    # 2. Within the gaudi docker where the HPU is available, we install the hpu package by default.
     if "hpu" in sys.argv:
         sys.argv.remove("hpu")
+        cfg_key = "auto_round_hpu"
+    if BUILD_HPU_ONLY:
         cfg_key = "auto_round_hpu"
 
     project_name = PKG_INSTALL_CFG[cfg_key].get("project_name")

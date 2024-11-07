@@ -46,10 +46,11 @@ from auto_round.utils import get_module, set_module, is_hpu_supported
 
 from auto_round.backend import get_layer_backend, dynamic_import_inference_linear
 
-import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits
-import auto_round_extension.qbits.qlinear_qbits_gptq as qlinear_qbits_gptq
-import auto_round_extension.ipex.qlinear_ipex_gptq as qlinear_ipex_gptq
-import auto_round_extension.ipex.qlinear_ipex_awq as qlinear_ipex_awq
+from auto_round.utils import LazyImport
+qlinear_qbits = LazyImport("auto_round_extension.qbits.qlinear_qbits")
+qlinear_qbits_gptq = LazyImport("auto_round_extension.qbits.qlinear_qbits_gptq")
+qlinear_ipex_gptq = LazyImport("auto_round_extension.ipex.qlinear_ipex_gptq")
+qlinear_ipex_awq = LazyImport("auto_round_extension.ipex.qlinear_ipex_awq")
 from auto_round.backend import BackendInfos
 from transformers.utils.versions import require_version
 from enum import Enum
@@ -109,9 +110,6 @@ def is_auto_round_available():
                 f" but only version above {AUTOROUND_MINIMUM_VERSION} are supported"
             )
 
-
-if is_auto_round_available():
-    from auto_round_extension.cuda.post_init import autoround_post_init
 
 
 #
@@ -702,7 +700,7 @@ class AutoRoundQuantizer(HfQuantizer):
                             "marlin format requires gptqmodel to be installed, "
                             "`pip install -v gptqmodel --no-build-isolation `")
             self.repack_marlin(model)
-
+        from auto_round_extension.cuda.post_init import autoround_post_init
         model = autoround_post_init(model)
         # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits.
         if self.target_device == "cpu":

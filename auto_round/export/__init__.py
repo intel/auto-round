@@ -13,8 +13,10 @@
 # limitations under the License.
 
 from .register import EXPORT_FORMAT
-from auto_round.export.export_to_autogptq.export import save_quantized_as_autogptq
-from .export_to_itrex import save_quantized_as_itrex, QuantConfig
-from .export_to_autoround.export import save_quantized_as_autoround
-from .export_to_awq.export import save_quantized_as_autoawq
+from auto_round.utils import LazyImport
+save_quantized_as_autogptq = LazyImport("auto_round.export.export_to_autogptq.export.save_quantized_as_autogptq")
+save_quantized_as_itrex = LazyImport("auto_round.export.export_to_itrex.export.save_quantized_as_itrex")
+QuantConfig = LazyImport("auto_round.export.export_to_itrex.config.QuantConfig")
+save_quantized_as_autoround = LazyImport("auto_round.export.export_to_autoround.export.save_quantized_as_autoround")
+save_quantized_as_autoawq = LazyImport("auto_round.export.export_to_awq.export.save_quantized_as_autoawq")
 
