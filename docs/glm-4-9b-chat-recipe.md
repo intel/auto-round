@@ -104,7 +104,8 @@ auto-round \
 --iter 1000 \
 --nsamples 512 \
 --disable_eval \
---format "auto_round,auto_gptq"
+--format "auto_round,auto_gptq" \
+--model_dtype "fp16" \
 --output_dir "./tmp_autoround"
 ```
 
