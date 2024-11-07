@@ -1016,7 +1016,7 @@ class AutoRound(object):
                     input_others,
                     whole_indices,
                     seqlen=self.seqlen,
-                    input_dim=self.input_dim,
+                    batch_dim=self.batch_dim,
                 )
                 num_elm = sum(id.numel() for id in current_input_ids)
             for tmp_step in range(self.gradient_accumulate_steps):
