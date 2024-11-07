@@ -379,7 +379,7 @@ def sampling_inputs(input_ids, input_others, indices, seqlen,
                 else:
                     try:
                         current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-                    except Exception as err:
+                    except TypeError as err:
                         logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
         else:
             current_input_others[key] = input_others[key]
