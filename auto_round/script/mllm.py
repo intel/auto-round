@@ -272,10 +272,12 @@ def tune(args):
                     break
     if args.quant_lm_head:
         layer_config[lm_head_layer_name] = {"bits": args.bits}
-        transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
-        if transformers_version[0] == 4 and transformers_version[1] < 38:
-            error_message = "Please upgrade transformers>=4.38.0 to support lm-head quantization."
-            raise EnvironmentError(error_message)
+        for format in formats:
+            if "auto_round" not in format:
+                auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
+                raise ValueError(
+                    f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
+
 
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
