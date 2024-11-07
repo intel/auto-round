@@ -14,7 +14,6 @@
 
 import torch
 from collections import UserDict
-special_states_dim_tuple = ("chatglm",) # input_dim is not the default dimension 0
 shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
 mllms_with_limited_bs = ("llava", "qwen2-vl", "phi3_v", "mllama") # Limitations on batch_size
 skippable_cache_keys = ("past_key_value",)
@@ -50,24 +49,7 @@ def to_device(input, device=torch.device("cpu")):
     return input
 
 
-def check_hidden_state_dim(model, positional_inputs):
-    """Check the concatenable dimension of hidden states.
-
-    Args:
-        positional_inputs: The positional arguments.
-
-    Returns:
-        int: 1 if the model type is 'chatglm' and positional arguments are not None, 0 otherwise.
-    """
-    is_special = False
-    for key in special_states_dim_tuple:
-        if hasattr(model, "config") and key in model.config.model_type:
-            is_special = True
-            break
-    return int(is_special and positional_inputs is not None)
-
-
-def special_model_init(model, positional_inputs, inputs):
+def init_cache_for_special_model(model, positional_inputs, inputs):
     """
     Initializes special model inputs by adding positional inputs if missing.
 
