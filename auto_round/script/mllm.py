@@ -245,6 +245,8 @@ def tune(args):
     from auto_round import AutoRoundMLLM
 
     model = model.eval()
+    for n,m in model.named_modules():
+        print(n)
     seqlen = args.seqlen
 
     round = AutoRoundMLLM
