@@ -75,8 +75,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
                           help="offload intermediate features to cpu")
 
         self.add_argument("--format", default="auto_round", type=str,
-                          choices=["auto_round", "auto_round:gptq", "auto_round:auto_gptq", "auto_round:awq",
-                                   "auto_round:auto_awq", "fake"],
                           help="the format to save the model"
                           )
 
@@ -133,7 +131,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--not_use_best_mse", action='store_true',
                           help="whether to use the iter of best mes loss in the tuning phase")
-
 
         ## ======================= VLM =======================
         self.add_argument("--quant_nontext_module", action='store_true',
@@ -205,6 +202,13 @@ def setup_parser():
 def tune(args):
     if args.format is None:
         args.format = "auto_round"
+    supported_formats = ["auto_round", "auto_round:gptq", "auto_round:auto_gptq",
+                         "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
+                         "auto_round:awq"]
+    formats = args.format.replace(' ', '').split(",")
+    for format in formats:
+        if format not in supported_formats:
+            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
 
     model_name = args.model
     if model_name[-1] == "/":

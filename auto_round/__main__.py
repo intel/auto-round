@@ -14,7 +14,7 @@
 import sys
 
 def run():
-    from .script.llm import setup_parser, tune, eval
+    from auto_round.script.llm import setup_parser, tune, eval
     args = setup_parser()
     if args.eval:
         eval(args)
@@ -22,18 +22,18 @@ def run():
         tune(args)
 
 def run_best():
-    from .script.llm import setup_best_parser, tune
+    from auto_round.script.llm import setup_best_parser, tune
     args = setup_best_parser()
     tune(args)
 
 def run_fast():
-    from .script.llm import setup_fast_parser, tune
+    from auto_round.script.llm import setup_fast_parser, tune
     args = setup_fast_parser()
     tune(args)
 
 
 def run_mllm():
-    from .script.mllm import setup_parser, tune, eval
+    from auto_round.script.mllm import setup_parser, tune, eval
     args = setup_parser()
     if args.eval:
         eval(args)

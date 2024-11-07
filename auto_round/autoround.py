@@ -875,10 +875,22 @@ class AutoRound(object):
         if self.sampler != "rand":
             whole_indices = torch.randperm(nsamples)[:pick_samples]
         total_loss = 0
+        num_elm = 1
+        mse_reduction = "mean"
+        if gradient_accumulate_steps != 1:
+            mse_reduction = "sum"
+        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+
         for i in range(self.iters):
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
+                if gradient_accumulate_steps != 1:
+                    if q_inputs is not None:
+                        current_input = [q_inputs[i] for i in whole_indices]
+                    else:
+                        current_input = [inputs[i] for i in whole_indices]
+                    num_elm = sum(id.numel() for id in current_input)
             for tmp_step in range(gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * batch_size: (tmp_step + 1) * batch_size]
                 if q_inputs is not None:
@@ -902,7 +914,7 @@ class AutoRound(object):
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
-                total_loss += loss.item() / gradient_accumulate_steps
+                total_loss += loss.item() / num_elm
 
                 self.scale_loss_and_backward(scaler, loss)
             if i == 0:
@@ -1011,14 +1023,9 @@ class AutoRound(object):
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
                 ##we assume the block input and output shape is same
-                current_input_ids, current_input_others = sampling_inputs(
-                    input_ids,
-                    input_others,
-                    whole_indices,
-                    seqlen=self.seqlen,
-                    batch_dim=self.batch_dim,
-                )
-                num_elm = sum(id.numel() for id in current_input_ids)
+                if self.gradient_accumulate_steps!=1:
+                    current_input_ids = [input_ids[i] for i in whole_indices]
+                    num_elm = sum(id.numel() for id in current_input_ids)
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size: (tmp_step + 1) * self.batch_size]
                 current_input_ids, current_input_others = sampling_inputs(

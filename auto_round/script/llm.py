@@ -91,10 +91,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--low_gpu_mem_usage", action='store_true',
                           help="offload intermediate features to cpu")
 
-        self.add_argument("--format", default=None, type=str,
-                          choices=["auto_round", "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
-                                   "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
-                                   "auto_round:awq", "auto_awq", "itrex", "iterx_xpu", "fake"],
+        self.add_argument("--format", default="auto_round", type=str,
                           help="the format to save the model"
                           )
 
@@ -192,7 +189,7 @@ def setup_best_parser():
     parser.add_argument("--batch_size", "--train_bs", default=8, type=int,
                         help="train batch size")
 
-    parser.add_argument("--iters","--iter", default=1000, type=int,
+    parser.add_argument("--iters", "--iter", default=1000, type=int,
                         help="iterations to tune each block")
 
     parser.add_argument("--seqlen", "--seq_len", default=2048, type=int,
@@ -234,6 +231,14 @@ def tune(args):
     tasks = args.tasks
     if args.format is None:
         args.format = "auto_round"
+    supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
+                         "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
+                         "auto_round:awq", "auto_awq", "itrex", "iterx_xpu", "fake"]
+    formats =  args.format.replace(' ', '').split(",")
+    for format in formats:
+        if format not in supported_formats:
+            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+
     if "auto_gptq" in args.format and args.asym is True:
         print(
             "warning: The auto_gptq kernel has issues with asymmetric quantization. "

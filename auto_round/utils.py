@@ -362,10 +362,9 @@ def sampling_inputs(input_ids, input_others, indices, seqlen,
     current_input_others: The sampled other input data.
     """
     current_input_ids = [input_ids[i] for i in indices]
-    try:
-        current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
-    except:
-        pass
+
+    current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
+
     current_input_others = {"positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
         if "positional_inputs" in key:

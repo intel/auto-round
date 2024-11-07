@@ -94,11 +94,8 @@ if __name__ == '__main__':
                         help="enable_minmax_tuning is deprecated")
 
 
-    parser.add_argument("--format", default=None, type=str,
-                        choices=["auto_round",  "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
-                                    "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin",  "auto_round:auto_awq",
-                                   "auto_round:awq", "auto_awq", "itrex", "iterx_xpu", "fake"],
-                        help="The format in which to save the model. "
+    parser.add_argument("--format", default="auto_round", type=str,
+                        help="the format  to save the quantized model"
                         )
 
     parser.add_argument("--data_type", "--dtype", default='int',
@@ -169,6 +166,16 @@ if __name__ == '__main__':
     if args.act_bits <= 8:
         print(
             "Warning, activation quantization is an experiment feature")
+
+    if args.format is None:
+        args.format = "auto_round"
+    supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
+                         "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
+                         "auto_round:awq", "auto_awq", "itrex", "iterx_xpu", "fake"]
+    formats =  args.format.replace(' ', '').split(",")
+    for format in formats:
+        if format not in supported_formats:
+            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
 
     tasks = args.tasks
     use_eval_legacy = False
