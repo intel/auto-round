@@ -141,7 +141,7 @@ def _load_preset_template():
 _load_preset_template()
 
 
-def get_template(template_or_path: str):
+def get_template(template_or_path: str, tokenizer=None, image_processor=None):
     """Get template by template name or from a json file.
 
     Args:
@@ -159,4 +159,7 @@ def get_template(template_or_path: str):
         else:
             logger.warning(f"Unable to recognize {template_or_path}, using default template instead.")
             template = TEMPLATES["default"]
+
+    template.processor.post_init(tokenizer=tokenizer, image_processor=image_processor)
+
     return template

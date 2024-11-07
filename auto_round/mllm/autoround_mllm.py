@@ -76,6 +76,7 @@ class AutoRoundMLLM(AutoRound):
             self,
             model,
             tokenizer,
+            image_processor = None,
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
@@ -118,7 +119,7 @@ class AutoRoundMLLM(AutoRound):
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
         self.template = template if template is not None else model.config.model_type
-        self.template = get_template(self.template)
+        self.template = get_template(self.template, tokenizer, image_processor)
         assert dataset is not None, "dataset should not be None"
         batch_size, gradient_accumulate_steps = check_mllm_model_batch(model, batch_size, gradient_accumulate_steps)
         if isinstance(dataset, str):

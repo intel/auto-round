@@ -29,11 +29,15 @@ def regist_processor(name):
 class BasicProcessor:
     def __init__(self):
         pass
+    
+    def post_init(self, tokenizer, image_processor=None):
+        self.tokenizer = tokenizer
+        if image_processor is not None:
+            self.image_processor = image_processor
 
     def get_input(
             self,
             model,
-            tokenizer,
             text,
             images,
             padding=True,
@@ -52,7 +56,7 @@ class BasicProcessor:
 
         # add_generation_prompt=True will add <|im_start|>assistant to the end
         try:
-            text = tokenizer.apply_chat_template(
+            text = self.tokenizer.apply_chat_template(
                 text, tokenize=False, add_generation_prompt=not continue_final_message,
                 continue_final_message=continue_final_message,)
         except:
@@ -62,17 +66,17 @@ class BasicProcessor:
             raise NotImplementedError("current not support for non-instructed model.")
 
         if max_length:
-            token_length = len(tokenizer(text).input_ids)
+            token_length = len(self.tokenizer(text).input_ids)
             if token_length < max_length:
-                if tokenizer.pad_token:
-                    text += tokenizer.pad_token * (max_length - token_length)
+                if self.tokenizer.pad_token:
+                    text += self.tokenizer.pad_token * (max_length - token_length)
             else:
-                text = tokenizer.decode(tokenizer(text).input_ids[:max_length])
+                text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
         
         if images is not None:
             images = self.image_processor(images)
 
-        ret = tokenizer.processor(
+        ret = self.tokenizer.processor(
             text=text,
             images=images,
             padding=padding,
@@ -81,8 +85,7 @@ class BasicProcessor:
             # videos = None
         )
         if squeeze:
-            for key in ret:
-                ret[key] = ret[key][0]
+            ret = self.squeeze_result(ret)
         return ret
 
     @staticmethod
@@ -92,54 +95,28 @@ class BasicProcessor:
     @staticmethod 
     def image_processor(image_path_or_url):
         return fetch_image(image_path_or_url)
+    
+    @staticmethod
+    def squeeze_result(ret):
+        for key in ret:
+            ret[key] = ret[key][0]
+        return ret
 
 @regist_processor("qwen2_vl")
 class Qwen2VLProcessor(BasicProcessor):
-    def get_input(
-            self,
-            model,
-            tokenizer,
-            text,
-            images,
-            padding=True,
-            truncation=True,
-            return_tensors="pt",
-            max_length=None,
-            squeeze=True,
-            **kwargs):
-
-        if max_length:
-            token_length = len(tokenizer(text).input_ids)
-            if token_length < max_length:
-                if tokenizer.pad_token:
-                    text += tokenizer.pad_token * (max_length - token_length)
-            else:
-                text = tokenizer.decode(tokenizer(text).input_ids[:max_length])
-
-        if images is not None:
-            images = self.image_processor(images)
-
-        ret = tokenizer.processor(
-            text=text,
-            images=images,
-            padding=padding,
-            truncation=truncation,
-            return_tensors=return_tensors,
-            # videos = None
-        )
-        if squeeze:
-            for key in ret:
-                if key == "pixel_values":
+    @staticmethod
+    def squeeze_result(ret):
+        for key in ret:
+            if key == "pixel_values":
                     continue
-                ret[key] = ret[key][0]
+            ret[key] = ret[key][0]
         return ret
-
 
 @regist_processor("cogvlm2")
 class CogVLM2Processor(BasicProcessor):
     def get_input(
-            self, model, tokenizer, text, images, max_length=2048, 
-            padding=True, truncation=True, squeeze=True, **kwargs):
+            self, model, text, images,
+            max_length=2048, padding=True, truncation=True, squeeze=True, **kwargs):
         
         if images is not None:
             images = self.image_processor(images)
@@ -147,7 +124,7 @@ class CogVLM2Processor(BasicProcessor):
         padding_len = 2303
         max_length += padding_len
         input_data = model.build_conversation_input_ids(
-                tokenizer,
+                self.tokenizer,
                 query=text,
                 history=None,
                 images=[images],
@@ -209,29 +186,35 @@ class CogVLM2Processor(BasicProcessor):
         return fetch_image(image_path_or_url).convert('RGB')
 
 
+from llava.train.train import preprocess, preprocess_multimodal, DataCollatorForSupervisedDataset
 @regist_processor("llava")
 class LlavaProcessor(BasicProcessor):
-    from llava.train.train import preprocess, preprocess_multimodal, DataCollatorForSupervisedDataset
+    def post_init(self, tokenizer, image_processor):
+        self.tokenizer = tokenizer
+        assert image_processor is not None, "for llava model, image_processor should not be None"
+        self.image_processor = image_processor
+        self.collator_func = DataCollatorForSupervisedDataset(tokenizer=self.tokenizer)
+
 
     def get_input(
-            self, model, tokenizer, text, images, padding=True, truncation=True,
+            self, model, text, images, padding=True, truncation=True,
             return_tensors="pt", max_length=None, squeeze=True, **kwargs):
         
         if images is not None:
             images = fetch_image(images).convert('RGB')
-            images = image_processor.preprocess(images, return_tensors='pt')['pixel_values'][0]
+            images = self.image_processor.preprocess(images, return_tensors='pt')['pixel_values'][0]
 
-        input_data = preprocess_multimodala(text)
-        ret = preprocess(input_data, tokenizer, has_image=(images is not None))
+        class DataArgs:
+            is_multimodal = True
+            mm_use_im_start_end = False
+        input_data = preprocess_multimodal([text], DataArgs())
+        ret = preprocess(input_data, self.tokenizer, has_image=(images is not None))
 
         if squeeze:
-            for key in ret:
-                ret[key] = ret[key][0]
+            ret = self.squeeze_result(ret)
         ret['image'] = images
+
         return ret
     
-    # @staticmethod
-    # def image_processor(image_processor, image_path_or_url):
-    #     image = fetch_image(image_path_or_url).convert('RGB')
-    #     image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-    #     return image
+    def data_collator(self, batch):
+        return self.collator_func(batch)

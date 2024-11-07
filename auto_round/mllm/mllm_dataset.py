@@ -58,8 +58,9 @@ class LlavaDataset(Dataset):
             model,
             tokenzier,
             dataset_path,
-            extra_data_dir,
-            max_length,
+            image_processor=None,
+            extra_data_dir=None,
+            max_length=None,
             padding=True,
             truncation=True,
             ) -> None:
@@ -68,6 +69,7 @@ class LlavaDataset(Dataset):
         self.model_type = template.model_type
         self.template = template
         self.tokenizer = tokenzier
+        self.image_processor = image_processor
         if os.path.exists(dataset_path):
             self.questions = json.load(open(dataset_path, "r"))
         else:
@@ -93,7 +95,8 @@ class LlavaDataset(Dataset):
             return self.cached_data_dict[i]
 
         text = self.questions[i]["conversations"]
-        text = self.covert_conversations(text)
+        if self.template.model_type != "llava":
+            text = self.covert_conversations(text)
 
         if self.extra_data_dir is not None:
             image_fold = _extract_data_dir(self.extra_data_dir)
@@ -111,7 +114,6 @@ class LlavaDataset(Dataset):
 
         ret = self.template.processor.get_input(
             self.model,
-            self.tokenizer,
             text=text, 
             images=image_path,
             padding=self.padding,
