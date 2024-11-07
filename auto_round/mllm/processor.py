@@ -40,10 +40,7 @@ class BasicProcessor:
             model,
             text,
             images,
-            padding=True,
-            truncation=True,
             return_tensors="pt",
-            max_length=None,
             squeeze=True,
             **kwargs):
         
@@ -54,33 +51,23 @@ class BasicProcessor:
                         "When passing chat dicts as input, each dict must have a 'role' and 'content' key.")
             continue_final_message = text[-1]["role"] == "assistant"
 
-        # add_generation_prompt=True will add <|im_start|>assistant to the end
-        try:
-            text = self.tokenizer.apply_chat_template(
-                text, tokenize=False, add_generation_prompt=not continue_final_message,
-                continue_final_message=continue_final_message,)
-        except:
-            raise NotImplementedError("current not support for non-instructed model.")
+            # add_generation_prompt=True will add <|im_start|>assistant to the end
+            try:
+                text = self.tokenizer.apply_chat_template(
+                    text, tokenize=False, add_generation_prompt=not continue_final_message,
+                    continue_final_message=continue_final_message,)
+            except:
+                raise NotImplementedError("current not support for non-instructed model.")
 
-        if text == '':
-            raise NotImplementedError("current not support for non-instructed model.")
+            if text == '':
+                raise NotImplementedError("current not support for non-instructed model.")
 
-        if max_length:
-            token_length = len(self.tokenizer(text).input_ids)
-            if token_length < max_length:
-                if self.tokenizer.pad_token:
-                    text += self.tokenizer.pad_token * (max_length - token_length)
-            else:
-                text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
-        
         if images is not None:
             images = self.image_processor(images)
 
         ret = self.tokenizer.processor(
             text=text,
             images=images,
-            padding=padding,
-            truncation=truncation,
             return_tensors=return_tensors,
             # videos = None
         )
@@ -116,13 +103,16 @@ class Qwen2VLProcessor(BasicProcessor):
 class CogVLM2Processor(BasicProcessor):
     def get_input(
             self, model, text, images,
-            max_length=2048, padding=True, truncation=True, squeeze=True, **kwargs):
+            squeeze=True, **kwargs):
         
         if images is not None:
             images = self.image_processor(images)
 
         padding_len = 2303
+        max_length = 0
         max_length += padding_len
+        truncation = False
+        padding = False
         input_data = model.build_conversation_input_ids(
                 self.tokenizer,
                 query=text,
@@ -186,14 +176,16 @@ class CogVLM2Processor(BasicProcessor):
         return fetch_image(image_path_or_url).convert('RGB')
 
 
-from llava.train.train import preprocess, preprocess_multimodal, DataCollatorForSupervisedDataset
+from ..utils import LazyImport
+llava_train = LazyImport("llava.train.train")
+
 @regist_processor("llava")
 class LlavaProcessor(BasicProcessor):
     def post_init(self, tokenizer, image_processor):
         self.tokenizer = tokenizer
         assert image_processor is not None, "for llava model, image_processor should not be None"
         self.image_processor = image_processor
-        self.collator_func = DataCollatorForSupervisedDataset(tokenizer=self.tokenizer)
+        self.collator_func = llava_train.DataCollatorForSupervisedDataset(tokenizer=self.tokenizer)
 
 
     def get_input(
@@ -207,8 +199,8 @@ class LlavaProcessor(BasicProcessor):
         class DataArgs:
             is_multimodal = True
             mm_use_im_start_end = False
-        input_data = preprocess_multimodal([text], DataArgs())
-        ret = preprocess(input_data, self.tokenizer, has_image=(images is not None))
+        input_data = llava_train.preprocess_multimodal([text], DataArgs())
+        ret = llava_train.preprocess(input_data, self.tokenizer, has_image=(images is not None))
 
         if squeeze:
             ret = self.squeeze_result(ret)

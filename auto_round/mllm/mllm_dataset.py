@@ -58,7 +58,6 @@ class LlavaDataset(Dataset):
             model,
             tokenzier,
             dataset_path,
-            image_processor=None,
             extra_data_dir=None,
             max_length=None,
             padding=True,
@@ -69,7 +68,6 @@ class LlavaDataset(Dataset):
         self.model_type = template.model_type
         self.template = template
         self.tokenizer = tokenzier
-        self.image_processor = image_processor
         if os.path.exists(dataset_path):
             self.questions = json.load(open(dataset_path, "r"))
         else:

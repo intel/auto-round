@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from typing import Optional, Union
+from tqdm import tqdm
 
 import torch
 
@@ -86,7 +87,7 @@ class AutoRoundMLLM(AutoRound):
             device: str = None,
             lr_scheduler=None,
             dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = None,
-            extra_data_dir: Union[str, torch.utils.data.DataLoader] = None,
+            extra_data_dir: str = None,
             template: Union[str, Template] = None,
             quant_nontext_module: bool = False,
             enable_quanted_input: bool = True,
@@ -189,7 +190,7 @@ class AutoRoundMLLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to(self.device)
 
-        for data in self.dataloader:
+        for data in tqdm(self.dataloader, desc="calib", total=nsamples):
             if data is None:
                 continue  
             if isinstance(data, torch.Tensor):
@@ -245,9 +246,6 @@ class AutoRoundMLLM(AutoRound):
                         data_new[key] = to_dtype(data_new[key], self.model.dtype)
                 input_ids = data_new["input_ids"]
 
-            if input_ids.shape[-1] < self.seqlen:
-                continue
-
             try:
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
@@ -260,7 +258,7 @@ class AutoRoundMLLM(AutoRound):
             except Exception as error:
                 raise error
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
-            if total_cnt >= nsamples:
+            if total_cnt > nsamples:
                 break
         if total_cnt == 0:
             logger.error(
