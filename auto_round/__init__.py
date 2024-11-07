@@ -11,9 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from .autoround import AutoRound, AutoRoundAdam, AutoRoundOPT
 from .mllm import AutoRoundMLLM
-from auto_round.utils import LazyImport
-
-from .auto_quantizer import AutoHfQuantizer,AutoRoundConfig
+from .auto_quantizer import AutoHfQuantizer, AutoRoundConfig
 from .version import __version__

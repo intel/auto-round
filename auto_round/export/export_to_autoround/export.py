@@ -221,8 +221,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             if len(neq_keys) > 0:
                 extra_config[layer_name] = {}
             for key in neq_keys:
-                if layer_config[layer_name][key] is not None:
-                    extra_config[layer_name][key] = layer_config[layer_name][key]
+                extra_config[layer_name][key] = layer_config[layer_name][key]
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
