@@ -884,8 +884,14 @@ TORCH_VERSION_AT_LEAST_2_5 = torch_version_at_least("2.5.0")
 TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
 
+def check_hpu_compile_mode():
+    assert os.environ["PT_HPU_LAZY_MODE"] == "0", "Please set `PT_HPU_LAZY_MODE=0` to use HPU compile mode"
+    # Note: this is a temporary solution, will be removed in the future
+    assert os.environ["PT_ENABLE_INT64_SUPPORT"] == "1", "Please set `PT_ENABLE_INT64_SUPPORT=1` to use HPU compile mode"
+
 def compile_func_on_hpu(func):
     if TORCH_VERSION_AT_LEAST_2_4:
+        check_hpu_compile_mode()
         return torch.compile(func, backend="hpu_backend")
     return func
 
