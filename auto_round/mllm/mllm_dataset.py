@@ -19,6 +19,7 @@ from typing import Dict
 
 import torch
 from torch.utils.data import Dataset, DataLoader
+from transformers import set_seed
 
 from .utils import _extract_data_dir
 from .template import Template
@@ -146,6 +147,7 @@ def get_mllm_dataloader(
         bs=1, 
         split=None,
         apply_template=None,
+        seed=42,
 ):
     """Generate a DataLoader for calibration using specified parameters.
 
@@ -185,6 +187,7 @@ def get_mllm_dataloader(
             dataset = dataset.map(tokenizer_function, batched=True)
 
     
+    set_seed(seed)
     dataloader_params = {
         "batch_size": bs,
         "shuffle": True,
