@@ -885,9 +885,14 @@ TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
 
 def check_hpu_compile_mode():
-    assert os.environ["PT_HPU_LAZY_MODE"] == "0", "Please set `PT_HPU_LAZY_MODE=0` to use HPU compile mode"
+    assert (
+        os.environ["PT_HPU_LAZY_MODE"] == "0"
+    ), "Please set `PT_HPU_LAZY_MODE=0` to use HPU compile mode"
     # Note: this is a temporary solution, will be removed in the future
-    assert os.environ["PT_ENABLE_INT64_SUPPORT"] == "1", "Please set `PT_ENABLE_INT64_SUPPORT=1` to use HPU compile mode"
+    assert (
+        os.environ["PT_ENABLE_INT64_SUPPORT"] == "1"
+    ), "Please set `PT_ENABLE_INT64_SUPPORT=1` to use HPU compile mode"
+
 
 def compile_func_on_hpu(func):
     if TORCH_VERSION_AT_LEAST_2_4:
@@ -905,6 +910,6 @@ def compile_func_on_cuda_or_cpu(func):
 
 def compile_func(fun, device):
     if "hpu" in str(device):
-        return compile_func_on_hpu(fun, device)
+        return compile_func_on_hpu(fun)
     else:
-        return compile_func_on_cuda_or_cpu(fun, device)
+        return compile_func_on_cuda_or_cpu(fun)

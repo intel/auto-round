@@ -387,7 +387,8 @@ class AutoRound(object):
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
-        quant_layer = compile_func(self.quant_layer)
+        device = next(self.model.parameters()).device
+        quant_layer = compile_func(self.quant_layer, device)
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
