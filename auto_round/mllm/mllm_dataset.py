@@ -84,6 +84,14 @@ class LlavaDataset(Dataset):
         self.max_length = max_length
         self.role_mapping = {"human": "user", "gpt": "assistant"}
         self.cached_data_dict = {}
+
+        self.image_fold = None
+        if extra_data_dir is not None:
+            image_fold = _extract_data_dir(self.extra_data_dir)
+            if isinstance(image_fold, dict):
+                image_fold = image_fold['image']
+            self.image_fold = image_fold
+
     
 
     def __len__(self):
@@ -97,12 +105,9 @@ class LlavaDataset(Dataset):
         if self.template.model_type != "llava":
             text = self.covert_conversations(text)
 
-        if self.extra_data_dir is not None:
-            image_fold = _extract_data_dir(self.extra_data_dir)
-            if isinstance(image_fold, dict):
-                image_fold = image_fold['image']
+        if self.image_fold is not None:
             image_path = os.path.join(
-                image_fold, os.path.basename(self.questions[i]["image"]))
+                self.image_fold, os.path.basename(self.questions[i]["image"]))
         else:
             image_path = self.questions[i]["image"]
             if not os.path.exists(image_path):
