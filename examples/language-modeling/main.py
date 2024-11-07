@@ -170,7 +170,7 @@ if __name__ == '__main__':
         args.format = "auto_round"
     supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
                          "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
-                         "auto_round:awq", "auto_awq", "itrex", "iterx_xpu", "fake"]
+                         "auto_round:awq", "auto_gptq:marlin", "itrex", "iterx_xpu", "fake"]
     formats = args.format.replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:

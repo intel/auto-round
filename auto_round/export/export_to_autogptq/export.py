@@ -52,6 +52,13 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
 from auto_round.utils import get_autogptq_packing_qlinear
 
+BLOCK_PATTERNS = [  ## copy from transformers optimum
+    "transformer.h",
+    "model.decoder.layers",
+    "gpt_neox.layers",
+    "model.layers",
+]
+
 
 def pack_layer(name, model, layer_config, backend, pbar):
     with tctl.threadpool_limits(limits=1):
@@ -124,10 +131,21 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     if processor is not None:
         processor.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
+    quantization_config = kwargs["serialization_dict"]
     if bool(quant_block_list):
         all_blocks = quant_block_list
+        flattened_list = [item for sublist in all_blocks for item in sublist]
+        common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
+        if common_prefix not in BLOCK_PATTERNS:
+            logger.error(f"auto-gptq format may not support loading this quantized model")
+            quantization_config['block_name_to_quantize'] = common_prefix
     else:
         all_blocks = get_block_names(model)
+        flattened_list = [item for sublist in all_blocks for item in sublist]
+        common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
+        if common_prefix not in BLOCK_PATTERNS:
+            quantization_config['block_name_to_quantize'] = common_prefix
+
     all_to_quantized = True
     modules_in_block_to_quantize = []
     for block_names in all_blocks:
@@ -162,7 +180,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
                 pass
     if output_dir is None:
         return model
-    quantization_config = kwargs["serialization_dict"]
+
     quantization_config["quant_method"] = "gptq"
     quantization_config.pop("dataset", None)  ## pile-10k is not supported in gptq
     quantization_config["desc_act"] = False  ## for autogptq API
@@ -203,4 +221,3 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
