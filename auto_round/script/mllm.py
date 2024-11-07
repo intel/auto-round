@@ -205,6 +205,10 @@ def tune(args):
     supported_formats = ["auto_round", "auto_round:gptq", "auto_round:auto_gptq",
                          "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
                          "auto_round:awq"]
+    if not args.quant_nontext_module:
+        supported_formats.append("auto_gptq")
+
+
     formats = args.format.replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
@@ -245,8 +249,6 @@ def tune(args):
     from auto_round import AutoRoundMLLM
 
     model = model.eval()
-    for n,m in model.named_modules():
-        print(n)
     seqlen = args.seqlen
 
     round = AutoRoundMLLM
