@@ -471,7 +471,10 @@ class AutoRound(object):
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
-            output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
+            if self.batch_size == 1:
+                output.append(tmp_output)
+            else:
+                output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
         if self.low_gpu_mem_usage:
             clear_memory()
 
@@ -716,7 +719,7 @@ class AutoRound(object):
                 self.inputs[name] = {}
                 init_cache_for_special_model(self.model, positional_inputs, self.inputs[name])
 
-            if self.batch_dim is None :
+            if self.batch_dim is None:
                 self.batch_dim = 0
                 if hidden_states is not None and self.batch_size>1:
                     if hidden_states.shape[0] > self.batch_size:
@@ -1658,3 +1661,4 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer=optimizer,
             **kwargs,
         )
+
