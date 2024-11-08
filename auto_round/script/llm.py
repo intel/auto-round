@@ -425,6 +425,7 @@ def tune(args):
 
     if not args.disable_eval:
         logger.info(f"Using lm-eval version {lm_eval_version}")
+
         model_args = f"pretrained={eval_folder}"
         model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
         if args.act_bits <= 8:
@@ -440,6 +441,8 @@ def tune(args):
             from auto_round.eval.evaluation import simple_evaluate_user_model
             res = simple_evaluate_user_model(user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs)
         else:
+            if use_auto_mapping:
+                model_args += ",parallelize=True"
             res = simple_evaluate(model="hf", model_args=model_args,
                                   tasks=tasks,
                                   batch_size=args.eval_bs)
