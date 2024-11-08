@@ -264,7 +264,7 @@ class AutoRound(object):
         Returns:
         The quantized model and layer configurations.
         """
-        # logger.info("cache block input")
+
         if bool(self.quant_block_list):
             all_blocks = self.quant_block_list
         else:
@@ -280,10 +280,12 @@ class AutoRound(object):
         layer_names = self.get_quantized_layer_names_outside_blocks()
         self.start_time = time.time()
         all_first_block_names = [block[0] for block in all_blocks]
+        logger.info("start calibration")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        logger.info("calibration done")
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
@@ -611,10 +613,12 @@ class AutoRound(object):
         except RuntimeError as e:
             if "CUDA out of memory" in str(e):
                 logger.info("switch to cpu to cache inputs")
-                if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 8:
+                if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] <= 16) or
+                        self.__class__.__name__=="AutoRoundMLLM") :
                     logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
-                                   f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
-                                   f" for optimal performance during calibration when enabling lm-head quantization. "
+                                   f"set `--device '0,1'` in our cmd line usage or "
+                                   f"load the model with `device_mapping=auto`,"
+                                   f" for optimal performance during calibration "
                                    f"Otherwise, the process may be significantly slower.")
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                 clear_memory()
