@@ -77,7 +77,6 @@ def pack_layer(name, model, layer_config, backend, pbar):
         pbar.update(1)
 
 
-@register_format("auto_awq")
 def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
     model = kwargs["model"]
