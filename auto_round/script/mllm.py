@@ -206,7 +206,7 @@ def tune(args):
                          "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
                          "auto_round:awq"]
     if not args.quant_nontext_module:
-        supported_formats.append("auto_gptq","auto_gptq:marlin")
+        supported_formats.extend(["auto_gptq","auto_gptq:marlin"])
 
     formats = args.format.replace(' ', '').split(",")
     for format in formats:

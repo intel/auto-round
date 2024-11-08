@@ -1,3 +1,4 @@
+## This recipe is outdated, we recommend using the latest recipe for best accuracy in homepage
 python3 main.py \
 --model_name  microsoft/phi-2 \
 --device 0 \
@@ -6,5 +7,5 @@ python3 main.py \
 --iters 1000 \
 --sym \
 --nsamples 512 \
---deployment_device 'gpu' \
+--format 'auto_round,auto_gptq' \
 --output_dir "./tmp_autoround"

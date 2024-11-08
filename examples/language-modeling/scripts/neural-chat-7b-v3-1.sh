@@ -1,3 +1,4 @@
+## This recipe is outdated, we recommend using the latest recipe for best accuracy in homepage
 ## enter to language-modeling fold
 python3 main.py \
 --model_name  /models/neural-chat-7b-v3-1 \
@@ -7,6 +8,6 @@ python3 main.py \
 --iters 1000 \
 --nsamples 512 \
 --minmax_lr 2e-3 \
---deployment_device 'gpu' \
+--format 'auto_round,auto_gptq' \
 --output_dir "./tmp_autoround" \
 --disable_quanted_input

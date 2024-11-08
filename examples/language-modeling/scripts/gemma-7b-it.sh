@@ -1,3 +1,4 @@
+## This recipe is outdated, we recommend using the latest recipe for best accuracy in homepage
 python3 main.py \
 --model_name  google/gemma-7b-it \
 --device 0 \
@@ -6,6 +7,6 @@ python3 main.py \
 --iters 1000 \
 --minmax_lr 2e-3 \
 --model_dtype "float16" \
---deployment_device 'gpu' \
+--format 'auto_round,auto_gptq' \
 --nsamples 512 \
 --output_dir "./tmp_autoround"
