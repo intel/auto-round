@@ -12,8 +12,10 @@ pr:
       - auto_round_extension
       - test
       - setup.py
-      - requirements_pt.txt
+      - requirements.txt
       - .azure-pipelines/scripts/ut
+    exclude:
+      - test/test*hpu*
 
 pool: ICX-16C
 

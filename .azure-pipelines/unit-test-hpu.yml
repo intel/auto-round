@@ -9,11 +9,13 @@ pr:
   paths:
     include:
       - auto_round
-      - auto_round_extension
-      - test
+      - test/test*hpu*'
       - setup.py
       - requirements-hpu.txt
       - .azure-pipelines/scripts/ut
+    exclude:
+      - auto_round/export/export_to_autogptq
+      - auto_round/export/export_to_awq
 
 pool: GAUDI
 
