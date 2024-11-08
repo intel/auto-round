@@ -30,7 +30,7 @@ class BasicProcessor:
     def __init__(self):
         pass
     
-    def post_init(self, model, tokenizer, image_processor=None):
+    def post_init(self, model, tokenizer, image_processor=None, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
         if image_processor is not None:
@@ -186,7 +186,8 @@ llava_train = LazyImport("llava.train.train")
 
 @regist_processor("llava")
 class LlavaProcessor(BasicProcessor):
-    def post_init(self, tokenizer, image_processor):
+    def post_init(self, model, tokenizer, image_processor=None, **kwargs):
+        self.model = model
         self.tokenizer = tokenizer
         assert image_processor is not None, "for llava model, image_processor should not be None"
         self.image_processor = image_processor
@@ -208,6 +209,7 @@ class LlavaProcessor(BasicProcessor):
 
         if max_length:
             ret['input_ids'] = ret['input_ids'][:, :max_length]
+            ret['labels'] = ret['labels'][:, :max_length]
         if squeeze:
             ret = self.squeeze_result(ret)
         ret['image'] = images
