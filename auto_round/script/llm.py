@@ -245,7 +245,8 @@ def tune(args):
             except:
                 raise ValueError(
                     "Invalid '--device' value: It must be smaller than the number of available devices. "
-                    "For example, with CUDA_VISIBLE_DEVICES=4,5, --device 0,1 is valid, but --device 4,5 is not supported.")
+                    "For example, with CUDA_VISIBLE_DEVICES=4,5, "
+                    "--device 0,1 is valid, but --device 4,5 is not supported.")
             visible_devices =','.join(pick_device)
             os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
         else:
@@ -460,7 +461,8 @@ def eval(args):
             except:
                 raise ValueError(
                     "Invalid '--device' value: It must be smaller than the number of available devices. "
-                    "For example, with CUDA_VISIBLE_DEVICES=4,5, --device 0,1 is valid, but --device 4,5 is not supported.")
+                    "For example, with CUDA_VISIBLE_DEVICES=4,5, "
+                    "--device 0,1 is valid, but --device 4,5 is not supported.")
             visible_devices =','.join(pick_device)
             os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
         else:
