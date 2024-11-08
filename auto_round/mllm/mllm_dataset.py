@@ -134,13 +134,16 @@ class LlavaDataset(Dataset):
 
         text = self.template._encode(text)
 
+        max_length = self.seqlen
+        if 'phi3' in self.template.model_type:
+            max_length = None
         ret = self.template.processor.get_input(
             text=text, 
             images=image_path,
             padding=self.padding,
             truncation=self.truncation,
             return_tensors="pt",
-            max_length = self.seqlen
+            max_length = max_length
            )
         self.cached_data_dict[i] = ret
         return ret

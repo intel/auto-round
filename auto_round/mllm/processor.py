@@ -76,6 +76,8 @@ class BasicProcessor:
         )
         if max_length:
             ret['input_ids'] = ret['input_ids'][:, :max_length]
+            if "attention_mask" in ret:
+                ret['attention_mask'] = ret['attention_mask'][:, :max_length]
         if squeeze:
             ret = self.squeeze_result(ret)
         return ret
