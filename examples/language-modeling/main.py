@@ -7,26 +7,6 @@ from packaging import version
 
 sys.path.insert(0, '../..')
 parser = argparse.ArgumentParser()
-import torch
-import transformers
-
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-torch.use_deterministic_algorithms(True, warn_only=True)
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
-
-import logging
-import warnings
-import numexpr
-
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-warnings.filterwarnings('ignore', category=FutureWarning)
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-dataset_logger = logging.getLogger("datasets")
-dataset_logger.disabled = True
-numexpr_logger = logging.getLogger("numexpr")
-numexpr_logger.disabled = True
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 if __name__ == '__main__':
 
@@ -152,7 +132,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    print("Warning, examples/language-modeling/main.py is deprecated, please use auto-round cmd line instead. The file will be deleted in the V0.4.1 release ")
+    print(
+        "Warning, examples/language-modeling/main.py is deprecated, please use auto-round cmd line instead. The file will be deleted in the V0.4.1 release ")
 
     if args.enable_minmax_tuning:
         print(
@@ -177,6 +158,32 @@ if __name__ == '__main__':
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+    devices = args.device.split(',')
+    use_auto_mapping = False
+    if all(s.isdigit() for s in devices):
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+        use_auto_mapping = True
+
+    import torch
+    import transformers
+
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
+
+    import logging
+    import warnings
+    import numexpr
+
+    warnings.filterwarnings('ignore', category=DeprecationWarning)
+    warnings.filterwarnings('ignore', category=FutureWarning)
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    dataset_logger = logging.getLogger("datasets")
+    dataset_logger.disabled = True
+    numexpr_logger = logging.getLogger("numexpr")
+    numexpr_logger.disabled = True
+
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     tasks = args.tasks
     use_eval_legacy = False
@@ -188,11 +195,6 @@ if __name__ == '__main__':
 
     from auto_round.utils import detect_device
 
-    devices = args.device.split(',')
-    use_auto_mapping = False
-    if torch.cuda.is_available() and all(s.isdigit() for s in devices):
-        os.environ["CUDA_VISIBLE_DEVICES"] = args.device
-        use_auto_mapping = True
     device_str = detect_device(devices[0])
 
     torch_dtype = "auto"

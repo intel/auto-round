@@ -25,23 +25,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-import os
-import re
 import argparse
-
-import torch
-import transformers
-
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-torch.use_deterministic_algorithms(True, warn_only=True)
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
-from lm_eval.utils import make_table  # pylint: disable=E0401
-
-from auto_round import AutoRoundConfig
-from auto_round.eval.evaluation import simple_evaluate
-from auto_round.utils import detect_device, get_library_version, detect_device_count
-from auto_round.utils import logger
 
 
 class BasicArgumentParser(argparse.ArgumentParser):
@@ -234,7 +218,7 @@ def tune(args):
     supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
                          "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
                          "auto_round:awq", "auto_gptq:marlin", "itrex", "iterx_xpu", "fake"]
-    formats =  args.format.replace(' ', '').split(",")
+    formats = args.format.replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
@@ -247,18 +231,33 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         assert False, "marlin backend only supports sym quantization, please remove --asym"
 
+    ##must set this before import torch
+    import os
+    devices = args.device.split(',')
+    use_auto_mapping = False
+    if all(s.isdigit() for s in devices):
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+        use_auto_mapping = True
+
+    import re
+    import torch
+    import transformers
+
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
+    from lm_eval.utils import make_table  # pylint: disable=E0401
+
+    from auto_round import AutoRoundConfig
+    from auto_round.eval.evaluation import simple_evaluate
+    from auto_round.utils import detect_device, get_library_version, detect_device_count
+    from auto_round.utils import logger
+
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
-
-    devices = args.device.split(',')
-    use_auto_mapping = False
-    if torch.cuda.is_available() and all(s.isdigit() for s in devices):
-        os.environ["CUDA_VISIBLE_DEVICES"] = args.device
-        use_auto_mapping = True
     device_str = detect_device(devices[0])
-
     torch_dtype = "auto"
     if "hpu" in device_str:
         torch_dtype = torch.bfloat16
@@ -376,7 +375,6 @@ def tune(args):
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
 
-
     autoround = round(
         model, tokenizer, args.bits, args.group_size, sym=not args.asym, batch_size=args.batch_size,
         dataset=args.dataset, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters, lr=args.lr,
@@ -439,8 +437,18 @@ def tune(args):
 
 
 def eval(args):
-    device_str = detect_device(args.device)
+    import os
+    devices = args.device.split(",")
+    parallelism = False
+    if all(s.isdigit() for s in devices):
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+        parallelism = True
+        device_str = None
+    from auto_round.eval.evaluation import simple_evaluate
+
     model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
+    if parallelism:
+        model_args += ",parallelize=True"
     if isinstance(args.tasks, str):
         tasks = args.tasks.split(',')
     res = simple_evaluate(

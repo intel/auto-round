@@ -599,7 +599,6 @@ class AutoRound(object):
         """
         if layer_names is None:
             layer_names = []
-        print(self.__class__.__name__)
         try:
             if not self.model.device.type == "meta":
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
@@ -617,7 +616,8 @@ class AutoRound(object):
                 if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] <= 16) or
                         self.__class__.__name__=="AutoRoundMLLM") :
                     logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
-                                   f"set `--device '0,1'` in our cmd line usage or load the model with `device_mapping=auto`,"
+                                   f"set `--device '0,1'` in our cmd line usage or "
+                                   f"load the model with `device_mapping=auto`,"
                                    f" for optimal performance during calibration "
                                    f"Otherwise, the process may be significantly slower.")
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
