@@ -46,11 +46,6 @@ from auto_round.utils import get_module, set_module, is_hpu_supported
 
 from auto_round.backend import get_layer_backend, dynamic_import_inference_linear
 
-from auto_round.utils import LazyImport
-qlinear_qbits = LazyImport("auto_round_extension.qbits.qlinear_qbits")
-qlinear_qbits_gptq = LazyImport("auto_round_extension.qbits.qlinear_qbits_gptq")
-qlinear_ipex_gptq = LazyImport("auto_round_extension.ipex.qlinear_ipex_gptq")
-qlinear_ipex_awq = LazyImport("auto_round_extension.ipex.qlinear_ipex_awq")
 from auto_round.backend import BackendInfos
 from transformers.utils.versions import require_version
 from enum import Enum
@@ -586,12 +581,14 @@ class AutoRoundQuantizer(HfQuantizer):
 
         for n, layer in tqdm(layers, desc=message, total=len(layers),
                              leave=True):
-            if isinstance(layer, (qlinear_qbits.QuantLinear, qlinear_qbits_gptq.QuantLinear)):
+            from auto_round_extension.qbits import qbits_qlinear_classes
+            from auto_round_extension.ipex import ipex_qlinear_classes
+            if isinstance(layer, qbits_qlinear_classes):
                 if dep_check:
                     layer.req_check()
                 layer.post_init()
                 dep_check = False
-            if isinstance(layer, (qlinear_ipex_gptq.QuantLinear, qlinear_ipex_awq.QuantLinear)):
+            if isinstance(layer, ipex_qlinear_classes):
                 layer.post_init()
 
         return model
