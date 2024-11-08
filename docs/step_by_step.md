@@ -153,7 +153,7 @@ Please use ',' to split datasets, ':' to split parameters of a dataset and '+' t
   ~~~bash
   auto-round --model="your_model_path" --eval  --device 0,1 --tasks lambada_openai --eval_bs 16
   ~~~
-  For other evaluation framework, if the framework could support Huggingface models, tipically it could support AutoRound format, only you need to do is import the following in the beginning of your code
+  For other evaluation framework, if the framework could support Huggingface models, typically it could support AutoRound format, only you need to do is import the following in the beginning of your code
   ~~~python
   from auto_round import AutoRoundConfig
   ~~~  
