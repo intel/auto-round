@@ -252,7 +252,13 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-    device_str = detect_device(args.device)
+    devices = args.device.split(',')
+    use_auto_mapping = False
+    if torch.cuda.is_available() and all(s.isdigit() for s in devices):
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+        use_auto_mapping = True
+    device_str = detect_device(devices[0])
+
     torch_dtype = "auto"
     if "hpu" in device_str:
         torch_dtype = torch.bfloat16
@@ -289,7 +295,7 @@ def tune(args):
             trust_remote_code=not args.disable_trust_remote_code
         )
     else:
-        if detect_device_count() > 1:
+        if use_auto_mapping:
             model = model_cls.from_pretrained(
                 model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
                 trust_remote_code=not args.disable_trust_remote_code, device_map="auto"

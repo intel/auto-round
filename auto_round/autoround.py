@@ -610,7 +610,7 @@ class AutoRound(object):
                 logger.info("switch to cpu to cache inputs")
                 if "lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 8:
                     logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
-                                   f"'CUDA_VISIBLE_DEVICES=0,1 python xxx',"
+                                   f"set --device '0,1' in our cmd line usage or load the model with auto ',"
                                    f" for optimal performance during calibration when enabling lm-head quantization. "
                                    f"Otherwise, the process may be significantly slower.")
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)

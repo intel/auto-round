@@ -62,7 +62,7 @@ Alternatively, you can use ```auto_round``` instead of ```auto-round```. Set the
 multiple formats exporting has been supported.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 auto-round \
+auto-round \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
@@ -77,7 +77,7 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
   ```bash
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-CUDA_VISIBLE_DEVICES=0 auto-round \
+auto-round \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
@@ -89,7 +89,7 @@ CUDA_VISIBLE_DEVICES=0 auto-round \
 
   ```bash
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-CUDA_VISIBLE_DEVICES=0 auto-round \
+auto-round \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \

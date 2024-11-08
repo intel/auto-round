@@ -46,7 +46,7 @@ if __name__ == '__main__':
     parser.add_argument("--eval_bs", default=None, type=int,
                         help="eval batch size")
 
-    parser.add_argument("--device", default="auto", type=str,
+    parser.add_argument("--device","--devices", default="auto", type=str,
                         help="The device to be used for tuning. The default is set to auto/None,"
                              "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
 
@@ -176,7 +176,6 @@ if __name__ == '__main__':
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
 
-
     tasks = args.tasks
     use_eval_legacy = False
 
@@ -185,9 +184,15 @@ if __name__ == '__main__':
         model_name = model_name[:-1]
     print(model_name, flush=True)
 
-    from auto_round.utils import detect_device, detect_device_count
+    from auto_round.utils import detect_device
 
-    device_str = detect_device(args.device)
+    devices = args.device.split(',')
+    use_auto_mapping = False
+    if torch.cuda.is_available() and all(s.isdigit() for s in devices) :
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+        use_auto_mapping = True
+    device_str = detect_device(devices[0])
+
     torch_dtype = "auto"
     if "hpu" in device_str:
         torch_dtype = torch.bfloat16
@@ -223,7 +228,7 @@ if __name__ == '__main__':
             trust_remote_code=not args.disable_trust_remote_code
         )
     else:
-        if detect_device_count() > 1:
+        if use_auto_mapping:
             model = model_cls.from_pretrained(
                 model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
                 trust_remote_code=not args.disable_trust_remote_code, device_map="auto"
