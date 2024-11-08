@@ -233,7 +233,7 @@ def tune(args):
 
     ##must set this before import torch
     import os
-    devices = args.device.split(',')
+    devices = args.device.replace(" ","").split(',')
     use_auto_mapping = False
     if all(s.isdigit() for s in devices):
         os.environ["CUDA_VISIBLE_DEVICES"] = args.device
@@ -294,16 +294,10 @@ def tune(args):
             trust_remote_code=not args.disable_trust_remote_code
         )
     else:
-        if use_auto_mapping:
-            model = model_cls.from_pretrained(
-                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-                trust_remote_code=not args.disable_trust_remote_code, device_map="auto"
-            )
-        else:
-            model = model_cls.from_pretrained(
-                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-                trust_remote_code=not args.disable_trust_remote_code
-            )
+        model = model_cls.from_pretrained(
+            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+            trust_remote_code=not args.disable_trust_remote_code, device_map="auto" if use_auto_mapping else None
+        )
 
     from auto_round import AutoRound, AutoRoundAdam
 
@@ -438,7 +432,7 @@ def tune(args):
 
 def eval(args):
     import os
-    devices = args.device.split(",")
+    devices = args.device.replace(" ","").split(',')
     parallelism = False
     if all(s.isdigit() for s in devices):
         os.environ["CUDA_VISIBLE_DEVICES"] = args.device

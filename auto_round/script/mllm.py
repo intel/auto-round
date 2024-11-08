@@ -220,7 +220,7 @@ def tune(args):
 
     assert args.dataset is not None, "dataset should not be None."
 
-    devices = args.device.split(',')
+    devices = args.device.replace(" ", "").split(',')
     use_auto_mapping = False
     if torch.cuda.is_available() and all(s.isdigit() for s in devices):
         os.environ["CUDA_VISIBLE_DEVICES"] = args.device
@@ -245,13 +245,10 @@ def tune(args):
         cls = MllamaForConditionalGeneration
     else:
         cls = AutoModelForCausalLM
-    if use_auto_mapping:
-        model = cls.from_pretrained(
-            model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype)
-    else:
-        model = cls.from_pretrained(
-            model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
-            device_map="auto")
+
+    model = cls.from_pretrained(
+        model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
+        device_map="auto" if use_auto_mapping else None)
 
     if "cogvlm2" in model_name:
         model.config.model_type = "cogvlm2"

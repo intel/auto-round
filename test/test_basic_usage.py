@@ -18,6 +18,6 @@ class TestAutoRoundCmd(unittest.TestCase):
         python_path = sys.executable
 
         res = os.system(
-            f"{python_path} ../auto_round/__main__.py --model 'facebook/opt-125m' --iter 2 --nsamples 1 --format auto_gptq,auto_round --disable_eval")
+            f"{python_path} ../auto_round/__main__.py --model 'facebook/opt-125m' --iter 2 --nsamples 1 --format auto_gptq,auto_round --disable_eval --output_dir ./saved")
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have acheck"
