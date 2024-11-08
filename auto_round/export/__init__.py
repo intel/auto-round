@@ -16,7 +16,7 @@ from auto_round.export.register import EXPORT_FORMAT, register_format
 
 
 @register_format("auto_gptq")
-def _(*args, **kwargs):
+def _save_quantized_as_autogptq(*args, **kwargs):
     from auto_round.export.export_to_autogptq.export import save_quantized_as_autogptq
 
     return save_quantized_as_autogptq(*args, **kwargs)
