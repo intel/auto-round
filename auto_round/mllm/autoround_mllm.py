@@ -178,7 +178,15 @@ class AutoRoundMLLM(AutoRound):
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
             self.dataloader = get_mllm_dataloader(
-                self.template, self.model, self.tokenizer, dataset, self.extra_data_dir, self.seqlen, bs, self.seed)
+                template=self.template,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                dataset=dataset, 
+                extra_data_dir=self.extra_data_dir,
+                seqlen=self.seqlen, 
+                bs=bs,
+                seed=self.seed
+                )
         else:
             self.dataloader = self.dataset
         total_cnt = 0 

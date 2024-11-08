@@ -60,7 +60,7 @@ class LlavaDataset(Dataset):
             tokenzier,
             dataset_path,
             extra_data_dir=None,
-            max_length=None,
+            seqlen=None,
             padding=True,
             truncation=True,
             ) -> None:
@@ -78,10 +78,11 @@ class LlavaDataset(Dataset):
                 self.questions = requests.get(_LLAVA_V1_5_MIX665K_URL, stream=True).json()
             else:
                 raise KeyError(f"{dataset_path} is not support, please check.")
+        self.seqlen = seqlen
+        self.questions = self.check(self.questions, seqlen)
         self.padding = padding
         self.truncation = truncation
         self.extra_data_dir = extra_data_dir
-        self.max_length = max_length
         self.role_mapping = {"human": "user", "gpt": "assistant"}
         self.cached_data_dict = {}
 
@@ -92,6 +93,17 @@ class LlavaDataset(Dataset):
                 image_fold = image_fold['image']
             self.image_fold = image_fold
 
+
+    @staticmethod
+    def check(questions, seqlen):
+        new_questions = []
+        for source in questions:
+            text_lenght = 0
+            for text in source['conversations']:
+                text_lenght += len(text['value'])
+            if text_lenght >= seqlen:
+                new_questions.append(source)
+        return new_questions
     
 
     def __len__(self):
@@ -123,7 +135,7 @@ class LlavaDataset(Dataset):
             padding=self.padding,
             truncation=self.truncation,
             return_tensors="pt",
-            max_length = self.max_length
+            max_length = self.seqlen
            )
         self.cached_data_dict[i] = ret
         return ret
@@ -179,11 +191,11 @@ def get_mllm_dataloader(
         if os.path.isfile(dataset):
             dataset = MLLM_DATASET['llava'](
                 template, model, tokenizer, dataset, extra_data_dir, 
-                max_length=min(seqlen, tokenizer.model_max_length))
+                seqlen=min(seqlen, tokenizer.model_max_length))
         elif "llava" in dataset:
             dataset = MLLM_DATASET["llava"](
                 template, model, tokenizer, "llava_v1_5_mix665k", extra_data_dir, 
-                max_length=min(seqlen, tokenizer.model_max_length))
+                seqlen=min(seqlen, tokenizer.model_max_length))
         else:
             from datasets import load_dataset
             from ..calib_dataset import get_tokenizer_function

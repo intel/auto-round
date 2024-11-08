@@ -42,6 +42,7 @@ class BasicProcessor:
             images,
             return_tensors="pt",
             squeeze=True,
+            max_length=None,
             **kwargs):
         
         if isinstance(text, list):
@@ -71,6 +72,8 @@ class BasicProcessor:
             return_tensors=return_tensors,
             # videos = None
         )
+        if max_length:
+            ret['input_ids'] = ret['input_ids'][:, :max_length]
         if squeeze:
             ret = self.squeeze_result(ret)
         return ret
@@ -111,7 +114,7 @@ class CogVLM2Processor(BasicProcessor):
         padding_len = 2303
         max_length = 0
         max_length += padding_len
-        truncation = False
+        truncation = True
         padding = False
         input_data = model.build_conversation_input_ids(
                 self.tokenizer,
@@ -202,6 +205,8 @@ class LlavaProcessor(BasicProcessor):
         input_data = llava_train.preprocess_multimodal([text], DataArgs())
         ret = llava_train.preprocess(input_data, self.tokenizer, has_image=(images is not None))
 
+        if max_length:
+            ret['input_ids'] = ret['input_ids'][:, :max_length]
         if squeeze:
             ret = self.squeeze_result(ret)
         ret['image'] = images

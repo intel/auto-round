@@ -225,16 +225,16 @@ def tune(args):
         torch_dtype = torch.bfloat16
 
     # load_model
+    processor, image_processor = None, None
     if "llava" in model_name:
         from llava.model.builder import load_pretrained_model
         tokenizer, model, image_processor, _ = load_pretrained_model(model_name, model_base=None, model_name=model_name,
             torch_dtype=torch_dtype)
-        processor = None
+        model_type = "llava"
     else:
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-        image_processor = None
         tokenizer.processor = processor
         model_type = config.model_type
         if "qwen2_vl" in model_type:
@@ -321,7 +321,7 @@ def tune(args):
     inplace = False if len(format_list) > 1 else True
     for format_ in format_list:
         eval_folder = f'{export_dir}-{format_}'
-        if not hasattr(processor, "chat_template"):
+        if processor is not None and not hasattr(processor, "chat_template"):
             processor.chat_template = None
         safe_serialization = True
         if "phi3_v" in model_type:
