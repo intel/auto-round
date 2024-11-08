@@ -42,7 +42,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--eval_bs", default=None, type=int,
                           help="batch size in evaluation")
 
-        self.add_argument("--device", default="auto", type=str,
+        self.add_argument("--device", "--devices", default="auto", type=str,
                           help="the device to be used for tuning. The default is set to auto,"
                                "allowing for automatic detection."
                                "Currently, device settings support CPU, GPU, and HPU.")
@@ -206,7 +206,7 @@ def tune(args):
                          "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
                          "auto_round:awq"]
     if not args.quant_nontext_module:
-        supported_formats.extend(["auto_gptq","auto_gptq:marlin"])
+        supported_formats.extend(["auto_gptq", "auto_gptq:marlin"])
 
     formats = args.format.replace(' ', '').split(",")
     for format in formats:
@@ -250,7 +250,8 @@ def tune(args):
             model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype)
     else:
         model = cls.from_pretrained(
-            model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,device_map="auto")
+            model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
+            device_map="auto")
 
     if "cogvlm2" in model_name:
         model.config.model_type = "cogvlm2"

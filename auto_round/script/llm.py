@@ -59,7 +59,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--eval_bs", default=None, type=int,
                           help="batch size in evaluation")
 
-        self.add_argument("--device", default="auto", type=str,
+        self.add_argument("--device", "--devices", default="auto", type=str,
                           help="the device to be used for tuning. The default is set to auto,"
                                "allowing for automatic detection."
                                "Currently, device settings support CPU, GPU, and HPU.")

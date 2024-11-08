@@ -46,7 +46,7 @@ if __name__ == '__main__':
     parser.add_argument("--eval_bs", default=None, type=int,
                         help="eval batch size")
 
-    parser.add_argument("--device","--devices", default="auto", type=str,
+    parser.add_argument("--device", "--devices", default="auto", type=str,
                         help="The device to be used for tuning. The default is set to auto/None,"
                              "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
 
@@ -152,6 +152,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    print("Warning, examples/language-modeling/main.py is deprecated, please use auto-round cmd line instead. The file will be deleted in the V0.4.1 release ")
+
     if args.enable_minmax_tuning:
         print(
             "enable_minmax_tuning is deprecated, it has been set to the default, use disable_minmax_tuning to turn it off")
@@ -188,7 +190,7 @@ if __name__ == '__main__':
 
     devices = args.device.split(',')
     use_auto_mapping = False
-    if torch.cuda.is_available() and all(s.isdigit() for s in devices) :
+    if torch.cuda.is_available() and all(s.isdigit() for s in devices):
         os.environ["CUDA_VISIBLE_DEVICES"] = args.device
         use_auto_mapping = True
     device_str = detect_device(devices[0])
