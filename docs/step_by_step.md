@@ -170,6 +170,48 @@ Please use ',' to split datasets, ':' to split parameters of a dataset and '+' t
   CUDA_VISIBLE_DEVICES=0,1 lm_eval --model hf --model_args pretrained="your_model_path",parallelize=True --tasks lambada_openai --batch_size 16
   ~~~
 
-## 5. Known Issues
+## Inference
+**CPU**: **auto_round version >0.3.1**, pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip
+install intel-extension-for-transformers,
+
+**HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
+in [Gaudi Guide](https://docs.habana.ai/en/latest/).
+
+**CUDA**: no extra operations for sym quantization, for asym quantization, need to install auto-round from source
+### AutoRound format
+- The following code will automatically detect device, and typically some error message will remind you to install some extra libraries
+  ```python
+  from transformers import AutoModelForCausalLM, AutoTokenizer
+  from auto_round import AutoRoundConfig ## must import
+  
+  quantized_model_path = "./tmp_autoround"
+  device="cuda"
+  model = AutoModelForCausalLM.from_pretrained(quantized_model_path).to(device)
+  tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+  text = "There is a girl who likes adventure,"
+  inputs = tokenizer(text, return_tensors="pt").to(model.device)
+  print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+  ```
+- To specify device use a different backend
+
+  ```python
+  from transformers import AutoModelForCausalLM, AutoTokenizer
+  from auto_round import AutoRoundConfig
+  
+  backend = "auto"  ##cpu, hpu, cuda, cuda:marlin(supported in auto_round>0.3.1 and 'pip install -v gptqmodel --no-build-isolation')
+  quantization_config = AutoRoundConfig(
+      backend=backend
+  )
+  quantized_model_path = "./tmp_autoround"
+  model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+                                               device_map=backend.split(':')[0], quantization_config=quantization_config)
+  tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+  text = "There is a girl who likes adventure,"
+  inputs = tokenizer(text, return_tensors="pt").to(model.device)
+  print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+  ```
+
+
+## 6. Known Issues
 * Random quantization results in tuning some models
 * ChatGlm-V1 is not supported
