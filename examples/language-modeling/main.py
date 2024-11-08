@@ -389,6 +389,8 @@ if __name__ == '__main__':
 
         model_args = f"pretrained={eval_folder}"
         model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
+        if use_auto_mapping:
+            model_args += ",parallelize=True"
         user_model = None
         if args.act_bits <= 8:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:

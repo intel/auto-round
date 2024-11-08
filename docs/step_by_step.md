@@ -137,56 +137,38 @@ Please use ',' to split datasets, ':' to split parameters of a dataset and '+' t
   
 ## 4. Evaluation
 ### 4.1 Combine evaluation with tuning
-  We leverage lm-eval-harnessing for the evaluation 
+  - We leverage lm-eval-harnessing for the evaluation 
+    ~~~bash
+     auto-round --model facebook/opt-125m  --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
+    ~~~
+    The last format will be used in evaluation if multiple formats have been exported.
 
 ### 4.2  Eval the Quantized model
+- AutoRound format
+  For lm-eval-harness, you could just call
+  ~~~bash
+  auto-round --model="your_model_path" --eval  --tasks lambada_openai --eval_bs 16
+  ~~~
+  Multiple gpu evaluation
+  ~~~bash
+  auto-round --model="your_model_path" --eval  --device 0,1 --tasks lambada_openai --eval_bs 16
+  ~~~
+  For other evaluation framework, if the framework could support Huggingface models, tipically it could support AutoRound format, only you need to do is import the following in the beginning of your code
+  ~~~python
+  from auto_round import AutoRoundConfig
+  ~~~  
+
 - AutoGPTQ/AutoAWQ format 
-  Please refer to their repo and check the evaluation framework's compatibility. For lm-eval-harness, you could just call
+
+  Please refer to their repo and check the evaluation framework's compatibility. 
+  For lm-eval-harness, you could just call
   ~~~bash
   lm_eval --model hf --model_args pretrained="your_model_path" --device cuda:0 --tasks lambada_openai --batch_size 16
   ~~~
-
-
-[//]: # (The example supports evaluation for various tasks in lm_eval. Moreover, it facilitates separate evaluation through the 'evaluation.py' script, which extends support to three additional tasks &#40;ptb, c4, and wikitext2&#41; beyond the capabilities of the official lm_eval. Additionally, evaluation results will be neatly organized into an Excel file for ease of demonstration.)
-
-[//]: # ()
-[//]: # (For large models, GPU memory may be insufficient. Enable multi-GPU evaluation by setting 'CUDA_VISIBLE_DEVICES'.)
-
-[//]: # ()
-[//]: # (Due to the large size of the model, the quantization and evaluation processes may be time-consuming. To provide flexibility in the process, two options are offered:)
-
-[//]: # ()
-[//]: # (- You can set up multi-GPU cards for the quantization example, which will only use the first card for quantization and then evaluate with all GPU cards.)
-
-[//]: # (```bash)
-
-[//]: # (CUDA_VISIBLE_DEVICES=1,2 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --deployment_device fake,cpu --output_dir /save_model_path/ )
-
-[//]: # (```)
-
-[//]: # ()
-[//]: # (- Enable 'disable_eval' for the quantization example, save the qdq model by setting 'deployment_device=fake', and then set up multi-GPU cards for the evaluation script.)
-
-[//]: # (```bash)
-
-[//]: # (CUDA_VISIBLE_DEVICES=0 python3 main.py --model_name facebook/opt-125m --amp --bits 4 --group_size -1 --disable_eval --deployment_device fake --output_dir /save_model_path/ )
-
-[//]: # ()
-[//]: # (CUDA_VISIBLE_DEVICES=1,2 python3 eval/evaluation.py --model_name /save_model_path/ --eval_bs 8 --tasks mmlu,lambada_openai,ptb --excel_path /result_excel/save_path/)
-
-[//]: # (```)
-
-[//]: # ()
-[//]: # (- User could also perform evaluation on Intel Gaudi-2 using the following script.)
-
-[//]: # (```bash)
-
-[//]: # (python3 eval/evaluation.py --model_name /saved_model_path/ --tasks mmlu --device hpu)
-
-[//]: # (```)
-
-[//]: # ()
-[//]: # (You can also utilize the official lm_eval [link]&#40;https://github.com/EleutherAI/lm-evaluation-harness/tree/main?tab=readme-ov-file#basic-usage&#41;.)
+  Multiple gpu evaluation
+  ~~~bash
+  CUDA_VISIBLE_DEVICES=0,1 lm_eval --model hf --model_args pretrained="your_model_path",parallelize=True --tasks lambada_openai --batch_size 16
+  ~~~
 
 ## 5. Known Issues
 * Random quantization results in tuning some models

@@ -57,9 +57,9 @@ pip install auto-round
 
 ### Basic Usage (Gaudi2/CPU/GPU)
 
-A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
+[//]: # (A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.)
 Alternatively, you can use ```auto_round``` instead of ```auto-round```. Set the format you want in `format` and
-multiple formats exporting has been supported.
+multiple formats exporting has been supported. Please check out [step-by-step-instruction](./docs/step_by_step.md) for more details about calibration dataset or evaluation.
 
 ```bash
 auto-round \
