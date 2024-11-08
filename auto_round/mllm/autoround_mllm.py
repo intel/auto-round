@@ -120,7 +120,8 @@ class AutoRoundMLLM(AutoRound):
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
         self.template = template if template is not None else model.config.model_type
-        self.template = get_template(self.template, tokenizer, image_processor)
+        self.template = get_template(
+            self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
         assert dataset is not None, "dataset should not be None"
         batch_size, gradient_accumulate_steps = check_mllm_model_batch(model, batch_size, gradient_accumulate_steps)
         
@@ -208,8 +209,6 @@ class AutoRoundMLLM(AutoRound):
                     exit()
                 # data = self.template._encode(data)
                 data = self.template.processor.get_input(
-                    self.model,
-                    self.tokenizer,
                     text=data,
                     images=None,
                     max_length=self.seqlen,
@@ -224,14 +223,9 @@ class AutoRoundMLLM(AutoRound):
                 if isinstance(text, dict):
                     text = [text]
                 input_text = self.template._encode(text)
-                image = None
-                if "image" in data:
-                    image = self.template.processor.image_processor(data["image"])
                 data = self.template.processor.get_input(
-                    self.model,
-                    self.tokenizer,
                     text=input_text,
-                    images=image,
+                    images=data["image"],
                     max_length=self.seqlen,
                     squeeze=False,
                     )

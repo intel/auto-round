@@ -50,8 +50,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--asym", action='store_true',
                           help="whether to use asym quantization")
 
-        self.add_argument("--dataset", type=str, default="llava_v1_5_mix665k",
-                            help="The dataset for quantization training. It can be a custom one.")
+        self.add_argument("--dataset", type=str, default="llava_conv_58k",
+                            help="the dataset for quantization training."
+                            " current support llava_conv_58k,llava_instruct_80k "
+                            "It can be a custom one.")
 
         self.add_argument("--lr", default=None, type=float,
                           help="learning rate, if None, it will be set to 1.0/iters automatically")
@@ -65,7 +67,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--adam", action='store_true',
                           help="whether to use adam optimizer instead of SignSGD")
 
-        self.add_argument("--gradient_accumulate_steps", default=1, type=int,
+        self.add_argument("--gradient_accumulate_steps", default=4, type=int,
                           help="gradient accumulate steps")
 
         self.add_argument("--nblocks", default=1, type=int,
@@ -136,7 +138,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--quant_nontext_module", action='store_true',
                           help="whether to quantize non-text module, e.g. vision component")
 
-        self.add_argument("--extra_data_dir", default="", type=str,
+        self.add_argument("--extra_data_dir", default=None, type=str,
                           help="dataset dir for storing images/audio/videos. "
                                "Can be a dir path or multiple dir path with format as "
                                "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
@@ -227,7 +229,7 @@ def tune(args):
     # load_model
     processor, image_processor = None, None
     if "llava" in model_name:
-        from llava.model.builder import load_pretrained_model
+        from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
         tokenizer, model, image_processor, _ = load_pretrained_model(model_name, model_base=None, model_name=model_name,
             torch_dtype=torch_dtype)
         model_type = "llava"
@@ -297,11 +299,12 @@ def tune(args):
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
     
-    autoround = round(model, tokenizer, image_processor=image_processor, dataset=args.dataset, extra_data_dir=args.extra_data_dir,
-                      bits=args.bits, group_size=args.group_size, sym=not args.asym,
-                      batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters,
-                      lr=args.lr, minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
-                      amp=not args.disable_amp, nsamples=args.nsamples, low_gpu_mem_usage=args.low_gpu_mem_usage,
+    autoround = round(model, tokenizer, image_processor=image_processor, dataset=args.dataset, 
+                      extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,
+                      sym=not args.asym, batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks, 
+                      iters=args.iters, lr=args.lr, minmax_lr=args.minmax_lr, amp=not args.disable_amp,
+                      enable_quanted_input=not args.disable_quanted_input,
+                      nsamples=args.nsamples, low_gpu_mem_usage=args.low_gpu_mem_usage,
                       device=device_str, seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config, template=args.template,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,

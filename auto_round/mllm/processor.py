@@ -30,14 +30,16 @@ class BasicProcessor:
     def __init__(self):
         pass
     
-    def post_init(self, tokenizer, image_processor=None):
+    def post_init(self, model, tokenizer, image_processor=None):
+        self.model = model
         self.tokenizer = tokenizer
         if image_processor is not None:
             self.image_processor = image_processor
+        else:
+            self.image_processor = self.default_image_processor 
 
     def get_input(
             self,
-            model,
             text,
             images,
             return_tensors="pt",
@@ -83,7 +85,7 @@ class BasicProcessor:
         return default_data_collator(batch)
 
     @staticmethod 
-    def image_processor(image_path_or_url):
+    def default_image_processor(image_path_or_url):
         return fetch_image(image_path_or_url)
     
     @staticmethod
@@ -105,7 +107,7 @@ class Qwen2VLProcessor(BasicProcessor):
 @regist_processor("cogvlm2")
 class CogVLM2Processor(BasicProcessor):
     def get_input(
-            self, model, text, images,
+            self, text, images,
             squeeze=True, **kwargs):
         
         if images is not None:
@@ -116,7 +118,7 @@ class CogVLM2Processor(BasicProcessor):
         max_length += padding_len
         truncation = True
         padding = False
-        input_data = model.build_conversation_input_ids(
+        input_data = self.model.build_conversation_input_ids(
                 self.tokenizer,
                 query=text,
                 history=None,
@@ -192,8 +194,7 @@ class LlavaProcessor(BasicProcessor):
 
 
     def get_input(
-            self, model, text, images, padding=True, truncation=True,
-            return_tensors="pt", max_length=None, squeeze=True, **kwargs):
+            self, text, images,max_length=None, squeeze=True, **kwargs):
         
         if images is not None:
             images = fetch_image(images).convert('RGB')

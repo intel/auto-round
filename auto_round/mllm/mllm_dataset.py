@@ -45,13 +45,18 @@ def register_dataset(name):
         return dataset
     return register
 
-_LLAVA_V1_5_MIX665K_URL = ("https://huggingface.co/datasets/liuhaotian/"
-                           "LLaVA-Instruct-150K/resolve/main/conversation_58k.json?download=true")
-_COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
+
 
 @register_dataset("llava")
 class LlavaDataset(Dataset):
     """Dataset for supervised fine-tuning."""
+    BASE_LLAVA_URL = "https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/resolve/main/"
+    LLAVA_DATASET = {
+        "llava_conv_58k": BASE_LLAVA_URL + "conversation_58k.json?download=true",
+        "llava_instruct_80k": BASE_LLAVA_URL + "llava_instruct_80k.json?download=true",
+        "llava_instruct_150k": BASE_LLAVA_URL + "llava_instruct_150k.json?download=true",
+    }
+    _COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
 
     def __init__(
             self,
@@ -70,14 +75,15 @@ class LlavaDataset(Dataset):
         self.template = template
         self.tokenizer = tokenzier
         if os.path.exists(dataset_path):
+            logger.info(f'use dataset {dataset_path}, loading from disk...')
             self.questions = json.load(open(dataset_path, "r"))
         else:
             import requests
-            logger.info('the path of llava dataset is not provide, download from url...')
-            if dataset_path == 'llava_v1_5_mix665k':
-                self.questions = requests.get(_LLAVA_V1_5_MIX665K_URL, stream=True).json()
+            if dataset_path in self.LLAVA_DATASET:
+                logger.info(f'use dataset {dataset_path}, dowloading ...')
+                self.questions = requests.get(self.LLAVA_DATASET[dataset_path], stream=True).json()
             else:
-                raise KeyError(f"{dataset_path} is not support, please check.")
+                raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
         self.seqlen = seqlen
         self.questions = self.check(self.questions, seqlen)
         self.padding = padding
@@ -123,13 +129,12 @@ class LlavaDataset(Dataset):
         else:
             image_path = self.questions[i]["image"]
             if not os.path.exists(image_path):
-                image_path = _COCO_DATA_URL + '/' + self.questions[i]["image"].split('/')[-1]
+                image_path = self._COCO_DATA_URL + self.questions[i]["image"].split('/')[-1]
         # image = self.template.processor.image_processor(image_path)
 
         text = self.template._encode(text)
 
         ret = self.template.processor.get_input(
-            self.model,
             text=text, 
             images=image_path,
             padding=self.padding,
@@ -194,7 +199,7 @@ def get_mllm_dataloader(
                 seqlen=min(seqlen, tokenizer.model_max_length))
         elif "llava" in dataset:
             dataset = MLLM_DATASET["llava"](
-                template, model, tokenizer, "llava_v1_5_mix665k", extra_data_dir, 
+                template, model, tokenizer, dataset, extra_data_dir, 
                 seqlen=min(seqlen, tokenizer.model_max_length))
         else:
             from datasets import load_dataset
