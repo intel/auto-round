@@ -1212,7 +1212,7 @@ class AutoRound(object):
         format = format.split(":")[0]
         if format not in EXPORT_FORMAT:
             logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
-            exit(-1)
+            raise ValueError(f"export format only supports {EXPORT_FORMAT.keys()}, but got {format}")
         save_quantized_as_format = EXPORT_FORMAT.get(format)
         if "gptq" in format and not self.sym:
             logger.warning(
