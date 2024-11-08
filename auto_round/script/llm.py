@@ -236,7 +236,22 @@ def tune(args):
     devices = args.device.replace(" ","").split(',')
     use_auto_mapping = False
     if all(s.isdigit() for s in devices):
-        os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
+            current_visible_devices = current_visible_devices.split(',')
+            indices = [int(device) for device in devices]
+            try:
+                pick_device = [current_visible_devices[i] for i in indices]
+            except:
+                raise ValueError(
+                    "Invalid '--device' value: It must be smaller than the number of available devices. "
+                    "For example, with CUDA_VISIBLE_DEVICES=4,5, --device 0,1 is valid, but --device 4,5 is not supported.")
+            visible_devices =','.join(pick_device)
+            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+            args.device = ",".join(map(str, range(len(devices))))
+            devices = args.device.replace(" ", "").split(',')
         use_auto_mapping = True
 
     import re
@@ -434,10 +449,28 @@ def eval(args):
     import os
     devices = args.device.replace(" ","").split(',')
     parallelism = False
+
     if all(s.isdigit() for s in devices):
-        os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
+            current_visible_devices = current_visible_devices.split(',')
+            indices = [int(device) for device in devices]
+            try:
+                pick_device = [current_visible_devices[i] for i in indices]
+            except:
+                raise ValueError(
+                    "Invalid '--device' value: It must be smaller than the number of available devices. "
+                    "For example, with CUDA_VISIBLE_DEVICES=4,5, --device 0,1 is valid, but --device 4,5 is not supported.")
+            visible_devices =','.join(pick_device)
+            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+            args.device = ",".join(map(str, range(len(devices))))
+            devices = args.device.replace(" ", "").split(',')
         parallelism = True
         device_str = None
+
+
     from auto_round.eval.evaluation import simple_evaluate
 
     model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
