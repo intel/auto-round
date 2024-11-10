@@ -45,6 +45,7 @@ class BasicProcessor:
             return_tensors="pt",
             squeeze=True,
             max_length=None,
+            truncation_strategy="token",
             **kwargs):
         
         if isinstance(text, list):
@@ -67,6 +68,9 @@ class BasicProcessor:
 
         if images is not None:
             images = self.image_processor(images)
+        
+        if truncation_strategy is "text" and max_length is not None:
+            text = text[:max_length]
 
         ret = self.tokenizer.processor(
             text=text,
@@ -74,10 +78,15 @@ class BasicProcessor:
             return_tensors=return_tensors,
             # videos = None
         )
-        if max_length:
-            ret['input_ids'] = ret['input_ids'][:, :max_length]
-            if "attention_mask" in ret:
-                ret['attention_mask'] = ret['attention_mask'][:, :max_length]
+        if truncation_strategy is "token" and max_length:
+            seqlen = ret['input_ids'].shape[-1]
+            for key in ret:
+                shape_ = ret[key].shape
+                if len(shape_) == 2 and shape_[-1] == seqlen:
+                    ret[key] = ret[key][:,:max_length]
+                elif len(shape_) == 4 and shape_[1] == seqlen:
+                    ret[key] = ret[key][:,:max_length]
+            
         if squeeze:
             ret = self.squeeze_result(ret)
         return ret
@@ -210,8 +219,12 @@ class LlavaProcessor(BasicProcessor):
         ret = llava_train.preprocess(input_data, self.tokenizer, has_image=(images is not None))
 
         if max_length:
-            ret['input_ids'] = ret['input_ids'][:, :max_length]
-            ret['labels'] = ret['labels'][:, :max_length]
+            seqlen = ret['input_ids'].shape[-1]
+            for key in ret:
+                if ret[key].shape[-1] == seqlen:
+                    ret[key] = ret[key][:,:max_length]
+            # ret['input_ids'] = ret['input_ids'][:, :max_length]
+            # ret['labels'] = ret['labels'][:, :max_length]
         if squeeze:
             ret = self.squeeze_result(ret)
         ret['image'] = images

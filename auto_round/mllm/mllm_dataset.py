@@ -106,7 +106,7 @@ class LlavaDataset(Dataset):
         for source in questions:
             text_lenght = 0
             for text in source['conversations']:
-                text_lenght += len(text['value'])
+                text_lenght += len(text['value'].split(' '))
             if text_lenght >= seqlen:
                 new_questions.append(source)
         return new_questions
@@ -136,14 +136,17 @@ class LlavaDataset(Dataset):
 
         max_length = self.seqlen
         if 'phi3' in self.template.model_type:
-            max_length = None
+            truncation_strategy = "text"
+        else:
+            truncation_strategy = "token"
         ret = self.template.processor.get_input(
             text=text, 
             images=image_path,
             padding=self.padding,
             truncation=self.truncation,
             return_tensors="pt",
-            max_length = max_length
+            max_length = max_length,
+            truncation_strategy=truncation_strategy
            )
         self.cached_data_dict[i] = ret
         return ret
