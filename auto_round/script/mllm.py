@@ -193,7 +193,7 @@ def setup_parser():
     parser.add_argument("--iters", "--iter", default=200, type=int,
                         help=" iters")
 
-    parser.add_argument("--seqlen", "--seq_len", default=2048, type=int,
+    parser.add_argument("--seqlen", "--seq_len", default=256, type=int,
                         help="sequence length")
 
     parser.add_argument("--nsamples", default=128, type=int,

@@ -45,7 +45,7 @@ class BasicProcessor:
             return_tensors="pt",
             squeeze=True,
             max_length=None,
-            truncation_strategy="token",
+            truncation_strategy="text",
             **kwargs):
         
         if isinstance(text, list):
@@ -206,7 +206,8 @@ class LlavaProcessor(BasicProcessor):
 
 
     def get_input(
-            self, text, images,max_length=None, squeeze=True, **kwargs):
+            self, text, images,max_length=None,
+            squeeze=True, truncation_strategy="text", **kwargs):
         
         if images is not None:
             images = fetch_image(images).convert('RGB')
@@ -215,16 +216,18 @@ class LlavaProcessor(BasicProcessor):
         class DataArgs:
             is_multimodal = True
             mm_use_im_start_end = False
+        
+        if truncation_strategy is "text" and max_length is not None:
+            text = text[:max_length]
+
         input_data = llava_train.preprocess_multimodal([text], DataArgs())
         ret = llava_train.preprocess(input_data, self.tokenizer, has_image=(images is not None))
 
-        if max_length:
+        if truncation_strategy == "token" and max_length:
             seqlen = ret['input_ids'].shape[-1]
             for key in ret:
                 if ret[key].shape[-1] == seqlen:
                     ret[key] = ret[key][:,:max_length]
-            # ret['input_ids'] = ret['input_ids'][:, :max_length]
-            # ret['labels'] = ret['labels'][:, :max_length]
         if squeeze:
             ret = self.squeeze_result(ret)
         ret['image'] = images
