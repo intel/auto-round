@@ -135,10 +135,7 @@ class LlavaDataset(Dataset):
         text = self.template._encode(text)
 
         max_length = self.seqlen
-        if 'phi3' in self.template.model_type:
-            truncation_strategy = "text"
-        else:
-            truncation_strategy = "token"
+        truncation_strategy = "text"
         ret = self.template.processor.get_input(
             text=text, 
             images=image_path,
