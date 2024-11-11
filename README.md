@@ -57,12 +57,12 @@ pip install auto-round
 
 ### Basic Usage (Gaudi2/CPU/GPU)
 
-A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
+[//]: # (A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.)
 Alternatively, you can use ```auto_round``` instead of ```auto-round```. Set the format you want in `format` and
-multiple formats exporting has been supported.
+multiple formats exporting has been supported. Please check out [step-by-step-instruction](./docs/step_by_step.md) for more details about calibration dataset or evaluation.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 auto-round \
+auto-round \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
@@ -77,7 +77,7 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
   ```bash
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-CUDA_VISIBLE_DEVICES=0 auto-round \
+auto-round \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
@@ -89,7 +89,7 @@ CUDA_VISIBLE_DEVICES=0 auto-round \
 
   ```bash
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-CUDA_VISIBLE_DEVICES=0 auto-round \
+auto-round \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
@@ -297,6 +297,7 @@ release most of the models ourselves.
 | meta-llama/Meta-Llama-3.1-8B           | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-autoround-gptq-4bit-sym)                                                                                                                                                                                                            |
 | Qwen/Qwen-VL                           | [accuracy](./examples/multimodal-modeling/Qwen-VL/README.md), [recipe](./examples/multimodal-modeling/Qwen-VL/run_autoround.sh)                                                                                                                                                                                           
 | Qwen/Qwen2-7B                          | [model-autoround-sym-int4](https://huggingface.co/Intel/Qwen2-7B-int4-inc), [model-autogptq-sym-int4](https://huggingface.co/Intel/Qwen2-7B-int4-inc)                                                                                                                                                                     |
+| THUDM/glm-4-9b-chat                    | [recipe](./docs/glm-4-9b-chat-recipe.md)                                                                                                                                                                                                                                                                                  |
 | Qwen/Qwen2-57B-A14B-Instruct           | [model-autoround-sym-int4](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc),[model-autogptq-sym-int4](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc)                                                                                                                                        |
 | 01-ai/Yi-1.5-9B                        | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/Yi-1.5-9B-4bit-gptq-autoround)                                                                                                                                                                                                                                |
 | 01-ai/Yi-1.5-9B-Chat                   | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/Yi-1.5-9B-Chat-4bit-gptq-autoround)                                                                                                                                                                                                                           |

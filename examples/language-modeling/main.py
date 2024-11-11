@@ -7,26 +7,6 @@ from packaging import version
 
 sys.path.insert(0, '../..')
 parser = argparse.ArgumentParser()
-import torch
-import transformers
-
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-torch.use_deterministic_algorithms(True, warn_only=True)
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
-
-import logging
-import warnings
-import numexpr
-
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-warnings.filterwarnings('ignore', category=FutureWarning)
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-dataset_logger = logging.getLogger("datasets")
-dataset_logger.disabled = True
-numexpr_logger = logging.getLogger("numexpr")
-numexpr_logger.disabled = True
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 if __name__ == '__main__':
 
@@ -46,7 +26,7 @@ if __name__ == '__main__':
     parser.add_argument("--eval_bs", default=None, type=int,
                         help="eval batch size")
 
-    parser.add_argument("--device", default="auto", type=str,
+    parser.add_argument("--device", "--devices", default="auto", type=str,
                         help="The device to be used for tuning. The default is set to auto/None,"
                              "allowing for automatic detection. Currently, device settings support CPU, GPU, and HPU.")
 
@@ -152,6 +132,9 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    print(
+        "Warning, examples/language-modeling/main.py is deprecated, please use auto-round cmd line instead. The file will be deleted in the V0.4.1 release ")
+
     if args.enable_minmax_tuning:
         print(
             "enable_minmax_tuning is deprecated, it has been set to the default, use disable_minmax_tuning to turn it off")
@@ -170,12 +153,52 @@ if __name__ == '__main__':
         args.format = "auto_round"
     supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
                          "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
-                         "auto_round:awq", "auto_awq", "itrex", "iterx_xpu", "fake"]
+                         "auto_round:awq", "auto_gptq:marlin", "itrex", "iterx_xpu", "fake"]
     formats = args.format.replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+    devices = args.device.replace(" ", "").split(',')
+    use_auto_mapping = False
+    if all(s.isdigit() for s in devices):
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
+            current_visible_devices = current_visible_devices.split(',')
+            indices = [int(device) for device in devices]
+            try:
+                pick_device = [current_visible_devices[i] for i in indices]
+            except:
+                raise ValueError(
+                    "Invalid '--device' value: It must be smaller than the number of available devices. "
+                    "For example, with CUDA_VISIBLE_DEVICES=4,5, --device 0,1 is valid, but --device 4,5 is not supported.")
+            visible_devices = ','.join(pick_device)
+            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+            args.device = ",".join(map(str, range(len(devices))))
+            devices = args.device.replace(" ", "").split(',')
+        use_auto_mapping = True
 
+    import torch
+    import transformers
+
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
+
+    import logging
+    import warnings
+    import numexpr
+
+    warnings.filterwarnings('ignore', category=DeprecationWarning)
+    warnings.filterwarnings('ignore', category=FutureWarning)
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    dataset_logger = logging.getLogger("datasets")
+    dataset_logger.disabled = True
+    numexpr_logger = logging.getLogger("numexpr")
+    numexpr_logger.disabled = True
+
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     tasks = args.tasks
     use_eval_legacy = False
@@ -185,9 +208,10 @@ if __name__ == '__main__':
         model_name = model_name[:-1]
     print(model_name, flush=True)
 
-    from auto_round.utils import detect_device, detect_device_count
+    from auto_round.utils import detect_device
 
-    device_str = detect_device(args.device)
+    device_str = detect_device(devices[0])
+
     torch_dtype = "auto"
     if "hpu" in device_str:
         torch_dtype = torch.bfloat16
@@ -223,16 +247,11 @@ if __name__ == '__main__':
             trust_remote_code=not args.disable_trust_remote_code
         )
     else:
-        if detect_device_count() > 1:
-            model = model_cls.from_pretrained(
-                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-                trust_remote_code=not args.disable_trust_remote_code, device_map="auto"
-            )
-        else:
-            model = model_cls.from_pretrained(
-                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-                trust_remote_code=not args.disable_trust_remote_code
-            )
+
+        model = model_cls.from_pretrained(
+            model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+            trust_remote_code=not args.disable_trust_remote_code, device_map="auto" if use_auto_mapping else None
+        )
 
     from auto_round import (AutoRound,
                             AutoRoundAdam)
@@ -380,6 +399,8 @@ if __name__ == '__main__':
 
         model_args = f"pretrained={eval_folder}"
         model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
+        if use_auto_mapping:
+            model_args += ",parallelize=True"
         user_model = None
         if args.act_bits <= 8:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:

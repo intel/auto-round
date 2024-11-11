@@ -1,6 +1,4 @@
-git clone https://github.com/intel/auto-round
-cd auto-round/examples/language-modeling
-pip install -r requirements.txt
+## This recipe is outdated, we recommend using the latest recipe for best accuracy in homepage
 python3 main.py \
 --model_name  google/gemma-2b \
 --device 0 \
@@ -9,5 +7,5 @@ python3 main.py \
 --iters 400 \
 --model_dtype "float16" \
 --nsamples 512 \
---deployment_device 'gpu' \
+--format 'auto_round,auto_gptq' \
 --output_dir "./tmp_autoround"

@@ -1,3 +1,4 @@
+## This recipe is outdated, we recommend using the latest recipe for best accuracy in homepage
 ## quant lm head
 python3 main.py \
 --model_name  meta-llama/Meta-Llama-3-8B-Instruct \
@@ -7,7 +8,7 @@ python3 main.py \
 --iters 1000 \
 --quant_lm_head \
 --nsamples 512 \
---deployment_device 'gpu' \
+--format 'auto_round,auto_gptq' \
 --output_dir "./tmp_autoround"
 
 
@@ -19,6 +20,6 @@ python3 main.py \
 --group_size 128 \
 --bits 4 \
 --iters 1000 \
---deployment_device 'gpu' \
+--format 'auto_round,auto_gptq' \
 --nsamples 512 \
 --output_dir "./tmp_autoround"

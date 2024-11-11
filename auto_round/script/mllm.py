@@ -42,7 +42,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--eval_bs", default=None, type=int,
                           help="batch size in evaluation")
 
-        self.add_argument("--device", default="auto", type=str,
+        self.add_argument("--device", "--devices", default="auto", type=str,
                           help="the device to be used for tuning. The default is set to auto,"
                                "allowing for automatic detection."
                                "Currently, device settings support CPU, GPU, and HPU.")
@@ -209,6 +209,9 @@ def tune(args):
     supported_formats = ["auto_round", "auto_round:gptq", "auto_round:auto_gptq",
                          "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
                          "auto_round:awq"]
+    if not args.quant_nontext_module:
+        supported_formats.extend(["auto_gptq", "auto_gptq:marlin"])
+
     formats = args.format.replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
@@ -221,7 +224,31 @@ def tune(args):
 
     assert args.dataset is not None, "dataset should not be None."
 
-    device_str = detect_device(args.device)
+    devices = args.device.replace(" ", "").split(',')
+    use_auto_mapping = False
+
+    if all(s.isdigit() for s in devices):
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
+            current_visible_devices = current_visible_devices.split(',')
+            indices = [int(device) for device in devices]
+            try:
+                pick_device = [current_visible_devices[i] for i in indices]
+            except:
+                raise ValueError(
+                    "Invalid '--device' value: It must be smaller than the number of available devices. "
+                    "For example, with CUDA_VISIBLE_DEVICES=4,5, "
+                    "--device 0,1 is valid, but --device 4,5 is not supported.")
+            visible_devices = ','.join(pick_device)
+            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+            args.device = ",".join(map(str, range(len(devices))))
+            devices = args.device.replace(" ", "").split(',')
+        use_auto_mapping = True
+
+    device_str = detect_device(devices[0])
+
     torch_dtype = "auto"
     if "hpu" in device_str:
         torch_dtype = torch.bfloat16
@@ -247,10 +274,12 @@ def tune(args):
             cls = MllamaForConditionalGeneration
         else:
             cls = AutoModelForCausalLM
-        model = cls.from_pretrained(
-            model_name,trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype)
-        if "cogvlm2" in model_name:
-            model.config.model_type = "cogvlm2"
+    
+    model = cls.from_pretrained(
+            model_name,trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
+        device_map="auto" if use_auto_mapping else None)
+    if "cogvlm2" in model_name:
+        model.config.model_type = "cogvlm2"
 
     from auto_round import AutoRoundMLLM
 
@@ -293,7 +322,6 @@ def tune(args):
                 auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
-
 
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
