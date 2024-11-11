@@ -185,7 +185,7 @@ PKG_INSTALL_CFG = {
     "auto_round": {
         "project_name": "auto_round",
         "include_packages": find_packages(
-            include=["auto_round", "auto_round.*", "auto_round_extension", "auto_round_extension.*"],
+            include=["auto_round", "auto_round.*", "auto_round_extension"],
         ),
         "install_requires": fetch_requirements("requirements.txt"),
         "extras_require": {
