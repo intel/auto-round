@@ -195,6 +195,7 @@ PKG_INSTALL_CFG = {
         "install_requires": fetch_requirements("requirements.txt"),
         "extras_require": {
             "hpu": fetch_requirements("requirements-hpu.txt"),
+            "cpu": fetch_requirements("requirements-cpu.txt"),
         },
     },
     "auto_round_hpu": {
@@ -208,6 +209,18 @@ PKG_INSTALL_CFG = {
         ),
         "install_requires": fetch_requirements("requirements-hpu.txt"),
     },
+    "auto_round_cpu": {
+        "project_name": "auto_round_cpu",
+        "include_packages": find_packages(
+            include=[
+                "auto_round",
+                "auto_round.*",
+                "auto_round_extension",
+                "auto_round_extension.*",
+            ],
+        ),
+        "install_requires": fetch_requirements("requirements-cpu.txt"),
+    },
 }
 
 if __name__ == "__main__":
@@ -218,6 +231,9 @@ if __name__ == "__main__":
     if "hpu" in sys.argv:
         sys.argv.remove("hpu")
         cfg_key = "auto_round_hpu"
+    elif "cpu" in sys.argv:
+        sys.argv.remove("cpu")
+        cfg_key = "auto_round_cpu"
     if BUILD_HPU_ONLY:
         cfg_key = "auto_round_hpu"
 

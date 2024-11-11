@@ -61,8 +61,6 @@ stages:
 
   - stage: Coverage
     displayName: "Coverage Compare"
-    pool:
-      vmImage: "ubuntu-latest"
     dependsOn: [Unit_test, Unit_test_baseline]
     jobs:
       - job: CollectDatafiles
