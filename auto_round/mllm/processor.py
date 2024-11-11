@@ -69,7 +69,7 @@ class BasicProcessor:
         if images is not None:
             images = self.image_processor(images)
         
-        if truncation_strategy is "text" and max_length is not None:
+        if truncation_strategy == "text" and max_length is not None:
             text = text[:max_length]
 
         ret = self.tokenizer.processor(
@@ -78,7 +78,7 @@ class BasicProcessor:
             return_tensors=return_tensors,
             # videos = None
         )
-        if truncation_strategy is "token" and max_length:
+        if truncation_strategy == "token" and max_length:
             seqlen = ret['input_ids'].shape[-1]
             for key in ret:
                 shape_ = ret[key].shape
@@ -217,7 +217,7 @@ class LlavaProcessor(BasicProcessor):
             is_multimodal = True
             mm_use_im_start_end = False
         
-        if truncation_strategy is "text" and max_length is not None:
+        if truncation_strategy == "text" and max_length is not None:
             text = text[:max_length]
 
         input_data = llava_train.preprocess_multimodal([text], DataArgs())

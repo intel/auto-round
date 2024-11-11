@@ -109,6 +109,7 @@ class LlavaDataset(Dataset):
                 text_lenght += len(text['value'].split(' '))
             if text_lenght >= seqlen:
                 new_questions.append(source)
+        assert len(new_questions) > 0, f"no data with length greater than {seqlen}, please check"
         return new_questions
     
 

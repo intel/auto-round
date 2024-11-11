@@ -30,7 +30,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument("--model", "--model_name", "--model_name_or_path",
-                          default="facebook/opt-125m",
+                          default="Qwen/Qwen2-VL-2B-Instruct",
                           help="model name or path")
 
         self.add_argument('--eval', action='store_true',
