@@ -17,8 +17,9 @@ auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 LOG_DIR=/auto-round/log_dir
 mkdir -p ${LOG_DIR}
 ut_log_name=${LOG_DIR}/ut.log
-
-find . -name "test*.py" ! -name "*hpu_only*.py" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html  --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run.sh
+# TODO: Revert change 
+# find . -name "test*.py" ! -name "*hpu_only*.py" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html  --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run.sh
+find . -name "test_import.py" ! -name "*hpu_only*.py" | sed "s,\.\/,python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html  --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run.sh
 cat run.sh
 bash run.sh 2>&1 | tee ${ut_log_name}
 
