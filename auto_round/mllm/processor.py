@@ -188,7 +188,7 @@ class CogVLM2Processor(BasicProcessor):
         return batched_data
     
     @staticmethod
-    def image_processor(image_path_or_url):
+    def default_image_processor(image_path_or_url):
         return fetch_image(image_path_or_url).convert('RGB')
 
 

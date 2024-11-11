@@ -258,7 +258,7 @@ class AutoRoundMLLM(AutoRound):
             except Exception as error:
                 raise error
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
-            if total_cnt > nsamples:
+            if total_cnt >= nsamples:
                 break
         if total_cnt == 0:
             logger.error(
