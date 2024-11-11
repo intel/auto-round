@@ -19,11 +19,14 @@ from .utils import fetch_image
 
 PROCESSORS = {}
 
+
 def regist_processor(name):
     def register(processor):
         PROCESSORS[name] = processor
         return processor
+
     return register
+
 
 @regist_processor("basic")
 class BasicProcessor:
@@ -68,9 +71,10 @@ class BasicProcessor:
     def data_collator(batch):
         return default_data_collator(batch)
 
-    @staticmethod 
+    @staticmethod
     def image_processor(image_path_or_url):
         return fetch_image(image_path_or_url)
+
 
 @regist_processor("qwen2_vl")
 class Qwen2VLProcessor(BasicProcessor):
@@ -114,17 +118,18 @@ class Qwen2VLProcessor(BasicProcessor):
 @regist_processor("cogvlm2")
 class CogVLM2Processor(BasicProcessor):
     def get_input(
-            self, model, tokenizer, text, images, max_length=2048, 
+            self, model, tokenizer, text, images, max_length=2048,
             padding=True, truncation=True, squeeze=True, **kwargs):
         padding_len = 2303
         max_length += padding_len
         input_data = model.build_conversation_input_ids(
-                tokenizer,
-                query=text,
-                history=None,
-                images=[images],
-                template_version='base'
-            )
+            tokenizer,
+            query=text,
+            history=None,
+            images=[images],
+            template_version='base'
+        )
+
         def pad_to_len(unpadded_tensor, pad_to_length, pad_value=0):
             current_length = len(unpadded_tensor)
             if current_length >= pad_to_length:
@@ -134,13 +139,14 @@ class CogVLM2Processor(BasicProcessor):
                     return unpadded_tensor
             if padding:
                 return torch.cat(
-                (unpadded_tensor,
-                 torch.full([pad_to_length - current_length],
-                            fill_value=pad_value,
-                            dtype=unpadded_tensor.dtype,
-                            device=unpadded_tensor.device)), dim=0)
+                    (unpadded_tensor,
+                     torch.full([pad_to_length - current_length],
+                                fill_value=pad_value,
+                                dtype=unpadded_tensor.dtype,
+                                device=unpadded_tensor.device)), dim=0)
             else:
                 return unpadded_tensor
+
         input_data['input_ids'] = pad_to_len(
             input_data['input_ids'],
             max_length,
@@ -156,14 +162,14 @@ class CogVLM2Processor(BasicProcessor):
             max_length,
             pad_value=0
         )
-        if input_data['labels']: 
+        if input_data['labels']:
             input_data['labels'] = pad_to_len(
                 input_data['labels'],
                 max_length,
                 pad_value=-100
             )
         return input_data
-    
+
     @staticmethod
     def data_collator(batch):
         batched_data = {}
@@ -175,7 +181,7 @@ class CogVLM2Processor(BasicProcessor):
             # else:
             #     raise ValueError("Unsupported datatype in custom collate_fn")
         return batched_data
-    
+
     @staticmethod
     def image_processor(image_path_or_url):
         return fetch_image(image_path_or_url).convert('RGB')

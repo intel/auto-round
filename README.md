@@ -248,7 +248,8 @@ quantization_config = AutoRoundConfig(
 )
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map=backend.split(':')[0], quantization_config=quantization_config)
+                                             device_map=backend.split(':')[0],
+                                             quantization_config=quantization_config)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)

@@ -49,8 +49,7 @@ from .utils import (
     to_dtype,
     get_layer_names_in_block,
     mv_module_from_gpu,
-    unsupport_meta_device, detect_device_count, clear_memory,
-    get_multimodal_block_names, get_library_version,
+    unsupport_meta_device, clear_memory,
     compile_func,
 )
 from .low_cpu_mem.utils import get_layers_before_block
@@ -111,6 +110,9 @@ class AutoRound(object):
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
         quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
+        enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
+        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True
+
     Returns:
         The quantized model.
     """
@@ -151,6 +153,7 @@ class AutoRound(object):
             act_dynamic: bool = True,
             quant_block_list: list = None,
             enable_norm_bias_tuning: bool = False,
+            enable_torch_compile: bool = None,
             **kwargs,
     ):
         self.quantized = False
@@ -214,6 +217,7 @@ class AutoRound(object):
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
         logger.info(f"using {self.model.dtype} for quantization tuning")
+        self.enable_torch_compile = enable_torch_compile
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
@@ -396,7 +400,7 @@ class AutoRound(object):
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
         device = next(self.model.parameters()).device
-        quant_layer = compile_func(self.quant_layer, device)
+        quant_layer = compile_func(self.quant_layer, device, self.enable_torch_compile)
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
@@ -614,7 +618,7 @@ class AutoRound(object):
             if "CUDA out of memory" in str(e):
                 logger.info("switch to cpu to cache inputs")
                 if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] <= 16) or
-                        self.__class__.__name__=="AutoRoundMLLM") :
+                        self.__class__.__name__ == "AutoRoundMLLM"):
                     logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
                                    f"set `--device '0,1'` in our cmd line usage or "
                                    f"load the model with `device_mapping=auto`,"
@@ -725,7 +729,7 @@ class AutoRound(object):
 
             if self.batch_dim is None:
                 self.batch_dim = 0
-                if hidden_states is not None and self.batch_size>1:
+                if hidden_states is not None and self.batch_size > 1:
                     if hidden_states.shape[0] > self.batch_size:
                         self.batch_dim = 1
                         if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.batch_size:
@@ -1028,7 +1032,7 @@ class AutoRound(object):
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
                 ##we assume the block input and output shape is same
-                if self.gradient_accumulate_steps!=1:
+                if self.gradient_accumulate_steps != 1:
                     current_input_ids = [input_ids[i] for i in whole_indices]
                     num_elm = sum(id.numel() for id in current_input_ids)
             for tmp_step in range(self.gradient_accumulate_steps):
@@ -1152,7 +1156,7 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
-        quant_block = compile_func(self.quant_block, device)
+        quant_block = compile_func(self.quant_block, device, self.enable_torch_compile)
 
         pbar = tqdm(range(0, len(block_names), nblocks))
         for i in pbar:
@@ -1418,6 +1422,8 @@ class AutoRoundOPT(AutoRound):
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
         quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
+        enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
+        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer function
         **kwargs: Additional keyword arguments.
 
     Returns:
@@ -1458,8 +1464,9 @@ class AutoRoundOPT(AutoRound):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
-            enable_norm_bias_tuning: bool = False,
             quant_block_list: list = None,
+            enable_norm_bias_tuning: bool = False,
+            enable_torch_compile: bool = None,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1496,8 +1503,9 @@ class AutoRoundOPT(AutoRound):
             act_group_size=act_group_size,
             act_sym=act_sym,
             act_dynamic=act_dynamic,
-            enable_norm_bias_tuning=enable_norm_bias_tuning,
             quant_block_list=quant_block_list,
+            enable_norm_bias_tuning=enable_norm_bias_tuning,
+            enable_torch_compile=enable_torch_compile,
             **kwargs,
         )
 
@@ -1584,6 +1592,8 @@ class AutoRoundAdam(AutoRoundOPT):
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
         quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
+        enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
+        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer function
     Returns:
         The quantized model.
     """
@@ -1622,8 +1632,9 @@ class AutoRoundAdam(AutoRoundOPT):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
-            enable_norm_bias_tuning: bool = False,
             quant_block_list: list = None,
+            enable_norm_bias_tuning: bool = False,
+            enable_torch_compile: bool = None,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1660,9 +1671,9 @@ class AutoRoundAdam(AutoRoundOPT):
             act_group_size=act_group_size,
             act_sym=act_sym,
             act_dynamic=act_dynamic,
-            enable_norm_bias_tuning=enable_norm_bias_tuning,
             quant_block_list=quant_block_list,
+            enable_norm_bias_tuning=enable_norm_bias_tuning,
+            enable_torch_compile=enable_torch_compile,
             optimizer=optimizer,
             **kwargs,
         )
-
