@@ -33,7 +33,7 @@ def _extract_data_dir(dir_path: str):
                 result[k] = v
         return result
     else:
-        raise TypeError("wrong input of extra_data_dir, please use auto_round --help for more details.")
+        raise TypeError("incorrect input of extra_data_dir, please use auto_round --help for more details.")
 
 
 def fetch_image(path_or_url):
