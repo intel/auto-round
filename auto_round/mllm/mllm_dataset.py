@@ -47,7 +47,7 @@ def register_dataset(name):
 
 
 
-@register_dataset("llava")
+@register_dataset("liuhaotian/llava")
 class LlavaDataset(Dataset):
     """Dataset for supervised fine-tuning."""
     BASE_LLAVA_URL = "https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/resolve/main/"
@@ -79,9 +79,10 @@ class LlavaDataset(Dataset):
             self.questions = json.load(open(dataset_path, "r"))
         else:
             import requests
-            if dataset_path in self.LLAVA_DATASET:
-                logger.info(f'use dataset {dataset_path}, downloading ...')
-                self.questions = requests.get(self.LLAVA_DATASET[dataset_path], stream=True).json()
+            dataset_name = dataset_path.split('/')[-1]
+            if dataset_name in self.LLAVA_DATASET:
+                logger.info(f'use dataset {dataset_name}, downloading ...')
+                self.questions = requests.get(self.LLAVA_DATASET[dataset_name], stream=True).json()
             else:
                 raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
         self.seqlen = seqlen
@@ -198,11 +199,11 @@ def get_mllm_dataloader(
 
     if isinstance(dataset, str):
         if os.path.isfile(dataset):
-            dataset = MLLM_DATASET['llava'](
+            dataset = MLLM_DATASET['liuhaotian/llava'](
                 template, model, tokenizer, dataset, extra_data_dir, 
                 seqlen=min(seqlen, tokenizer.model_max_length))
-        elif "llava" in dataset:
-            dataset = MLLM_DATASET["llava"](
+        elif "liuhaotian/llava" in dataset:
+            dataset = MLLM_DATASET["liuhaotian/llava"](
                 template, model, tokenizer, dataset, extra_data_dir, 
                 seqlen=min(seqlen, tokenizer.model_max_length))
         else:

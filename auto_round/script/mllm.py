@@ -50,7 +50,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--asym", action='store_true',
                           help="whether to use asym quantization")
 
-        self.add_argument("--dataset", type=str, default="llava_conv_58k",
+        self.add_argument("--dataset", type=str, default="liuhaotian/llava_conv_58k",
                             help="the dataset for quantization training."
                             " current support llava_conv_58k,llava_instruct_80k "
                             "It can be a custom one.")

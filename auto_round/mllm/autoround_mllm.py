@@ -197,7 +197,7 @@ class AutoRoundMLLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to(self.device)
 
-        for data in tqdm(self.dataloader, desc="calib", total=nsamples):
+        for data in tqdm(self.dataloader, desc="calib", total=nsamples-1):
             if data is None:
                 continue  
             if isinstance(data, torch.Tensor):
