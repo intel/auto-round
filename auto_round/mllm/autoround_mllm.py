@@ -119,6 +119,7 @@ class AutoRoundMLLM(AutoRound):
             quant_block_list = get_multimodal_block_names(model, quant_nontext_module)
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
+        self.image_processor = image_processor
         self.template = template if template is not None else model.config.model_type
         self.template = get_template(
             self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
@@ -182,6 +183,7 @@ class AutoRoundMLLM(AutoRound):
                 template=self.template,
                 model=self.model,
                 tokenizer=self.tokenizer,
+                image_processor=self.image_processor,
                 dataset=dataset, 
                 extra_data_dir=self.extra_data_dir,
                 seqlen=self.seqlen, 

@@ -168,8 +168,9 @@ def get_mllm_dataloader(
         template,
         model,
         tokenizer, 
-        dataset,
-        extra_data_dir,
+        image_processor=None,
+        dataset="liuhaotian/llava_conv_58k",
+        extra_data_dir=None,
         seqlen=512, 
         bs=1, 
         split=None,
@@ -195,7 +196,7 @@ def get_mllm_dataloader(
     """
     if isinstance(template, str):
         from .template import get_template
-        template = get_template(template)
+        template = get_template(template, model=model, tokenizer=tokenizer, image_processor=image_processor)
 
     if isinstance(dataset, str):
         if os.path.isfile(dataset):
