@@ -81,7 +81,7 @@ class TestAutoroundExport(unittest.TestCase):
         self.assertTrue(torch.all(torch.isclose(out4[0], out5[0], atol=1e-3)))
 
     def test_config(self):
-        from auto_round.export import QuantConfig
+        from auto_round.export.export_to_itrex import QuantConfig
 
         config = QuantConfig.from_pretrained("TheBloke/Llama-2-7B-Chat-GPTQ")
         config.save_pretrained("quantization_config_dir")

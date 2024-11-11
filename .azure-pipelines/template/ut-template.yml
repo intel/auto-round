@@ -17,6 +17,9 @@ parameters:
   - name: utContainerName
     type: string
     default: "AutoRoundUnitTest"
+  - name: imageSource
+    type: string
+    default: "build"
 
 steps:
   - template: docker-template.yml
@@ -27,14 +30,23 @@ steps:
       dockerFileName: "Dockerfile"
       containerName: ${{ parameters.utContainerName }}
       repo: ${{ parameters.repo }}
+      imageSource: ${{ parameters.imageSource }}
 
-  - script: |
-      docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-        && pip install -r requirements.txt \
-        && python setup.py bdist_wheel && rm -rf build \
-        && pip install dist/auto_round*.whl \
-        && pip list"
-    displayName: "Env Setup"
+  - ${{ if eq(parameters.imageSource, 'build') }}:
+    - script: |
+        docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
+          && pip install -r requirements.txt \
+          && python setup.py bdist_wheel && rm -rf build \
+          && pip install dist/auto_round*.whl \
+          && pip list"
+      displayName: "Env Setup"
+
+  - ${{ if eq(parameters.imageSource, 'pull') }}:
+    - script: |
+        docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
+          && python setup.py install hpu \
+          && pip list"
+      displayName: "HPU Env Setup"
 
   - script: |
       docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round/.azure-pipelines/scripts \
@@ -54,4 +66,6 @@ steps:
       targetType: "inline"
       script: |
         docker exec ${{ parameters.utContainerName }} bash -c "rm -rf /auto-round/* && rm -rf /auto-round/.* || true"
+        docker stop ${{ parameters.utContainerName }}
+        docker rm -vf ${{ parameters.utContainerName }} || true
     displayName: "Docker clean up"

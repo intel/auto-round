@@ -153,7 +153,6 @@ def pack_layer(name, model, layer_config, backend, pbar):
         pbar.update(1)
 
 
-@register_format("auto_round")
 def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):
     """
     Saves a quantized model in the auto-round format.

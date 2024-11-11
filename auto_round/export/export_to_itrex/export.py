@@ -60,7 +60,6 @@ def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
     return int_weight
 
 
-@register_format("itrex")
 def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     """Save configure file and weights for CPU backend inference."""
     model = kwargs["model"]
@@ -107,7 +106,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     return compressed_model
 
 
-@register_format("itrex_xpu")
+
 def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
     """Save configure file and weights for XPU backend inference."""
     model = kwargs["model"]
