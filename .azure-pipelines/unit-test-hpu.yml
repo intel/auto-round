@@ -9,15 +9,15 @@ pr:
   paths:
     include:
       - auto_round
-      - auto_round_extension
-      - test
+      - test/test*hpu*'
       - setup.py
-      - requirements.txt
+      - requirements-hpu.txt
       - .azure-pipelines/scripts/ut
     exclude:
-      - test/test*hpu*
+      - auto_round/export/export_to_autogptq
+      - auto_round/export/export_to_awq
 
-pool: ICX-16C
+pool: GAUDI
 
 variables:
   IMAGE_NAME: "auto-round"
@@ -37,8 +37,9 @@ stages:
         steps:
           - template: template/ut-template.yml
             parameters:
+              imageSource: "pull"
               dockerConfigName: "commonDockerConfig"
-              utScriptFileName: "run_ut"
+              utScriptFileName: "run_ut_hpu"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut"
 
@@ -51,8 +52,9 @@ stages:
         steps:
           - template: template/ut-template.yml
             parameters:
+              imageSource: "pull"
               dockerConfigName: "gitCloneDockerConfig"
-              utScriptFileName: "run_ut"
+              utScriptFileName: "run_ut_hpu"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut_baseline"
               repo: $(REPO)
@@ -89,9 +91,7 @@ stages:
               docker ps
               echo "--- collect logs ---"
               docker exec collectLogs bash -c "cd /auto-round \
-                && pip install -r requirements.txt \
-                && python setup.py bdist_wheel && rm -rf build \
-                && pip install dist/auto_round*.whl \
+                && python setup.py install hpu \
                 && pip list"
               docker exec collectLogs /bin/bash +x -c "cd /auto-round/.azure-pipelines/scripts \
                 && bash ut/collect_log.sh"

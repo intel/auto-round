@@ -3,7 +3,7 @@ from io import open
 import os
 from setuptools import find_packages, setup
 import sys
-
+from functools import lru_cache
 os.environ["CC"] = "g++"
 os.environ["CXX"] = "g++"
 try:
@@ -18,6 +18,19 @@ version = __version__
 
 BUILD_CUDA_EXT = int(os.environ.get('BUILD_CUDA_EXT', '1')) == 1
 PYPI_RELEASE = os.environ.get('PYPI_RELEASE', None)
+BUILD_HPU_ONLY = os.environ.get('BUILD_HPU_ONLY', '0') == '1'
+
+@lru_cache(None)
+def is_hpu_available():
+    try:
+        import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
+        return True
+    except ImportError:
+        return False
+
+if is_hpu_available():
+    # When HPU is available, we build HPU only by default
+    BUILD_HPU_ONLY = True
 
 def is_cpu_env():
     try:
@@ -167,9 +180,54 @@ if BUILD_CUDA_EXT:
         "cmdclass": {'build_ext': cpp_extension.BuildExtension}
     }
 
+PKG_INSTALL_CFG = {
+    # overall installation config, pip install neural-compressor
+    "auto_round": {
+        "project_name": "auto_round",
+        "include_packages": find_packages(
+            include=[
+                "auto_round",
+                "auto_round.*",
+                "auto_round_extension",
+                "auto_round_extension.*",
+            ],
+        ),
+        "install_requires": fetch_requirements("requirements.txt"),
+        "extras_require": {
+            "hpu": fetch_requirements("requirements-hpu.txt"),
+        },
+    },
+    "auto_round_hpu": {
+        "project_name": "auto_round_hpu",
+        "include_packages": find_packages(
+            include=["auto_round", "auto_round.*"],
+            exclude=[
+                "auto_round.export.export_to_autogptq",
+                "auto_round.export.export_to_awq",
+            ],
+        ),
+        "install_requires": fetch_requirements("requirements-hpu.txt"),
+    },
+}
+
 if __name__ == "__main__":
+    # There are two ways to install hpu-only package:
+    # 1. pip install setup.py hpu.
+    # 2. Within the gaudi docker where the HPU is available, we install the hpu package by default.
+    cfg_key = "auto_round"
+    if "hpu" in sys.argv:
+        sys.argv.remove("hpu")
+        cfg_key = "auto_round_hpu"
+    if BUILD_HPU_ONLY:
+        cfg_key = "auto_round_hpu"
+
+    project_name = PKG_INSTALL_CFG[cfg_key].get("project_name")
+    include_packages = PKG_INSTALL_CFG[cfg_key].get("include_packages", {})
+    install_requires = PKG_INSTALL_CFG[cfg_key].get("install_requires", [])
+    extras_require = PKG_INSTALL_CFG[cfg_key].get("extras_require", {})
+
     setup(
-        name="auto_round",
+        name=project_name,
         author="Intel AIPT Team",
         version=version,
         author_email="wenhua.cheng@intel.com, weiwei1.zhang@intel.com",
@@ -179,10 +237,11 @@ if __name__ == "__main__":
         keywords="quantization,auto-around,LLM,SignRound",
         license="Apache 2.0",
         url="https://github.com/intel/auto-round",
-        packages=find_packages(),
+        packages=include_packages,
         include_dirs=include_dirs,
         ##include_package_data=False,
-        install_requires=fetch_requirements("requirements.txt"),
+        install_requires=install_requires,
+        extras_require=extras_require,
         python_requires=">=3.7.0",
         classifiers=[
             "Intended Audience :: Science/Research",
@@ -192,5 +251,5 @@ if __name__ == "__main__":
         ],
         include_package_data=True,
         package_data={"": ["mllm/templates/*.json"]},
-        **additional_setup_kwargs
+        **additional_setup_kwargs,
     )

@@ -1,0 +1,11 @@
+accelerate
+datasets
+py-cpuinfo
+sentencepiece
+transformers
+numpy < 2.0
+tqdm
+packaging
+pillow
+numba
+tbb
