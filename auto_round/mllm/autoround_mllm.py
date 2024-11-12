@@ -71,8 +71,12 @@ class AutoRoundMLLM(AutoRound):
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
         quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
+        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True
         **kwargs: Additional keyword arguments.
+
+
     """
+
     def __init__(
             self,
             model,
@@ -114,6 +118,7 @@ class AutoRoundMLLM(AutoRound):
             quant_block_list: list = None,
             enable_norm_bias_tuning: bool = False,
             truncation: bool = False,
+            enable_torch_compile: bool = None,
             **kwargs,
     ):
         if quant_block_list is None:
@@ -161,11 +166,11 @@ class AutoRoundMLLM(AutoRound):
             act_group_size=act_group_size,
             act_sym=act_sym,
             act_dynamic=act_dynamic,
-            enable_norm_bias_tuning=enable_norm_bias_tuning,
             quant_block_list=quant_block_list,
+            enable_norm_bias_tuning=enable_norm_bias_tuning,
+            enable_torch_compile=enable_torch_compile,
             **kwargs,
         )
-        
 
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
@@ -195,7 +200,7 @@ class AutoRoundMLLM(AutoRound):
                 )
         else:
             self.dataloader = self.dataset
-        total_cnt = 0 
+        total_cnt = 0
 
         if self.low_cpu_mem_usage:
             embed_layers = get_layers_before_block(self.model)
@@ -204,7 +209,7 @@ class AutoRoundMLLM(AutoRound):
 
         for data in tqdm(self.dataloader, desc="calib", total=nsamples-1):
             if data is None:
-                continue  
+                continue
             if isinstance(data, torch.Tensor):
                 input_ids = data.to(self.device)
                 data_new = input_ids
@@ -218,7 +223,7 @@ class AutoRoundMLLM(AutoRound):
                     images=None,
                     max_length=self.seqlen,
                     squeeze=False,
-                    )
+                )
                 data_new = {}
                 for key in data.keys():
                     data_new[key] = data[key].to(self.device)
@@ -233,7 +238,7 @@ class AutoRoundMLLM(AutoRound):
                     images=data["image"],
                     max_length=self.seqlen,
                     squeeze=False,
-                    )
+                )
                 data_new = {}
                 for key in data.keys():
                     data_new[key] = to_device(data[key], self.model.device)
