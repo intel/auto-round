@@ -8,5 +8,6 @@
     "format_separator": "\n",
     "default_system": "You are a helpful assistant.",
     "replace_tokens": null,
-    "processor": "basic" 
+    "processor": "basic",
+    "add_special_token" : false
 }

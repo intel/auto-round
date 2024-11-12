@@ -54,7 +54,6 @@ from .utils import (
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
-
 class AutoRound(object):
     """For more information, please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
      for the quantization of llms." arXiv preprint arXiv:2309.05516 (2023).
