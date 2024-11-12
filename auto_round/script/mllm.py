@@ -30,7 +30,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument("--model", "--model_name", "--model_name_or_path",
-                          default="facebook/opt-125m",
+                          default="Qwen/Qwen2-VL-2B-Instruct",
                           help="model name or path")
 
         self.add_argument('--eval', action='store_true',
@@ -50,8 +50,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--asym", action='store_true',
                           help="whether to use asym quantization")
 
-        self.add_argument("--dataset", type=str, default=None,
-                          help="the dataset for quantization training. It can be a custom one.")
+        self.add_argument("--dataset", type=str, default="liuhaotian/llava_conv_58k",
+                            help="the dataset for quantization training."
+                            " current support llava_conv_58k,llava_instruct_80k "
+                            "It can be a custom one.")
 
         self.add_argument("--lr", default=None, type=float,
                           help="learning rate, if None, it will be set to 1.0/iters automatically")
@@ -65,7 +67,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--adam", action='store_true',
                           help="whether to use adam optimizer instead of SignSGD")
 
-        self.add_argument("--gradient_accumulate_steps", default=1, type=int,
+        self.add_argument("--gradient_accumulate_steps", default=4, type=int,
                           help="gradient accumulate steps")
 
         self.add_argument("--nblocks", default=1, type=int,
@@ -136,17 +138,19 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--quant_nontext_module", action='store_true',
                           help="whether to quantize non-text module, e.g. vision component")
 
-        self.add_argument("--extra_data_dir", default="", type=str,
+        self.add_argument("--extra_data_dir", default=None, type=str,
                           help="dataset dir for storing images/audio/videos. "
                                "Can be a dir path or multiple dir path with format as "
                                "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
-                               "By default, it will search in the relative path.")
+                               "By default, it will search in the relative path, "
+                            "and if not find, will automatic download.")
 
         self.add_argument("--template", default=None, type=str,
                           help="the template for building training dataset. It can be a custom one.")
 
         ## ======================= VLM eval=======================
-        self.add_argument("--tasks", type=str, default="COCO_VAL",
+        self.add_argument("--tasks", type=str,
+                          default="MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE",
                           help="eval tasks for VLMEvalKit.")
         # Args that only apply to Video Dataset
         self.add_argument("--nframe", type=int, default=8,
@@ -189,7 +193,7 @@ def setup_parser():
     parser.add_argument("--iters", "--iter", default=200, type=int,
                         help=" iters")
 
-    parser.add_argument("--seqlen", "--seq_len", default=2048, type=int,
+    parser.add_argument("--seqlen", "--seq_len", default=256, type=int,
                         help="sequence length")
 
     parser.add_argument("--nsamples", default=128, type=int,
@@ -250,24 +254,30 @@ def tune(args):
         torch_dtype = torch.bfloat16
 
     # load_model
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-    tokenizer.processor = processor
-    model_type = config.model_type
-    if "qwen2_vl" in model_type:
-        from transformers import Qwen2VLForConditionalGeneration
-        cls = Qwen2VLForConditionalGeneration
-    elif "mllama" in model_type:
-        from transformers import MllamaForConditionalGeneration
-        cls = MllamaForConditionalGeneration
+    processor, image_processor = None, None
+    if "llava" in model_name:
+        from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
+        tokenizer, model, image_processor, _ = load_pretrained_model(model_name, model_base=None, model_name=model_name,
+            torch_dtype=torch_dtype)
+        model_type = "llava"
     else:
-        cls = AutoModelForCausalLM
-
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        tokenizer.processor = processor
+        model_type = config.model_type
+        if "qwen2_vl" in model_type:
+            from transformers import Qwen2VLForConditionalGeneration
+            cls = Qwen2VLForConditionalGeneration
+        elif "mllama" in model_type:
+            from transformers import MllamaForConditionalGeneration
+            cls = MllamaForConditionalGeneration
+        else:
+            cls = AutoModelForCausalLM
+    
     model = cls.from_pretrained(
-        model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
+            model_name,trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
         device_map="auto" if use_auto_mapping else None)
-
     if "cogvlm2" in model_name:
         model.config.model_type = "cogvlm2"
 
@@ -275,6 +285,12 @@ def tune(args):
 
     model = model.eval()
     seqlen = args.seqlen
+
+    if args.model_dtype != None:
+        if args.model_dtype == "float16" or args.model_dtype == "fp16":
+            model = model.to(torch.float16)
+        if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
+            model = model.to(torch.bfloat16)
 
     round = AutoRoundMLLM
     layer_config = {}
@@ -310,14 +326,15 @@ def tune(args):
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
-
-    autoround = round(model, tokenizer, dataset=args.dataset, extra_data_dir=args.extra_data_dir,
-                      bits=args.bits, group_size=args.group_size, sym=not args.asym,
-                      batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks, iters=args.iters,
-                      lr=args.lr, minmax_lr=args.minmax_lr, enable_quanted_input=not args.disable_quanted_input,
-                      amp=not args.disable_amp, nsamples=args.nsamples, low_gpu_mem_usage=args.low_gpu_mem_usage,
+    
+    autoround = round(model, tokenizer, image_processor=image_processor, dataset=args.dataset, 
+                      extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,
+                      sym=not args.asym, batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks, 
+                      iters=args.iters, lr=args.lr, minmax_lr=args.minmax_lr, amp=not args.disable_amp,
+                      enable_quanted_input=not args.disable_quanted_input,
+                      nsamples=args.nsamples, low_gpu_mem_usage=args.low_gpu_mem_usage,
                       device=device_str, seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
-                      scale_dtype=args.scale_dtype, layer_config=layer_config,
+                      scale_dtype=args.scale_dtype, layer_config=layer_config, template=args.template,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       quant_nontext_module=args.quant_nontext_module, not_use_best_mse=args.not_use_best_mse)
     model, _ = autoround.quantize()
@@ -335,12 +352,18 @@ def tune(args):
     inplace = False if len(format_list) > 1 else True
     for format_ in format_list:
         eval_folder = f'{export_dir}-{format_}'
-        autoround.save_quantized(eval_folder, format=format_, inplace=inplace, processor=processor)
+        if processor is not None and not hasattr(processor, "chat_template"):
+            processor.chat_template = None
+        safe_serialization = True
+        if "phi3_v" in model_type:
+            safe_serialization = False
+        autoround.save_quantized(
+            eval_folder, format=format_, inplace=inplace, processor=processor, safe_serialization=safe_serialization)
 
 
 def eval(args):
     if isinstance(args.tasks, str):
-        args.tasks = args.tasks.split(',')
+        args.tasks = args.tasks.replace(' ', '').split(',')
     from auto_round.mllm import mllm_eval
     mllm_eval(
         args.model,

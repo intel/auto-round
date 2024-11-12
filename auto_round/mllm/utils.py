@@ -24,7 +24,7 @@ from PIL import Image  # pylint: disable=E0401
 def _extract_data_dir(dir_path: str):
     if os.path.isdir(dir_path):
         return dir_path
-    else:
+    elif "=" in dir_path:
         result = {}
         dir_path = dir_path.split(",")
         for _path in dir_path:
@@ -32,6 +32,8 @@ def _extract_data_dir(dir_path: str):
             if k in ['image', 'video', 'audio']:
                 result[k] = v
         return result
+    else:
+        raise TypeError("incorrect input of extra_data_dir, please use auto_round --help for more details.")
 
 
 def fetch_image(path_or_url):
