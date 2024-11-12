@@ -40,8 +40,16 @@ def run_mllm():
     else:
         tune(args)
 
+def run_lmms():
+    from auto_round.script.lmms_eval import setup_lmms_args, eval
+    args = setup_lmms_args()
+    eval(args)
+
 def switch():
-    if "--mllm" in sys.argv:
+    if "--lmms" in sys.argv:
+        sys.argv.remove("--lmms")
+        run_lmms()
+    elif "--mllm" in sys.argv:
         sys.argv.remove("--mllm")
         run_mllm()
     else:
