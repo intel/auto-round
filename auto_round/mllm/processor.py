@@ -70,7 +70,7 @@ class BasicProcessor:
             images = self.image_processor(images)
         
         if truncation_strategy == "text" and max_length is not None:
-            text = self.tokenizer.decode(self.tokenizer(text)['input_ids'])
+            text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
 
         ret = self.tokenizer.processor(
             text=text,
@@ -218,7 +218,7 @@ class LlavaProcessor(BasicProcessor):
             mm_use_im_start_end = False
         
         if truncation_strategy == "text" and max_length is not None:
-            text = text[:max_length]
+            text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
 
         input_data = llava_train.preprocess_multimodal([text], DataArgs())
         ret = llava_train.preprocess(input_data, self.tokenizer, has_image=(images is not None))

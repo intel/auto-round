@@ -57,6 +57,7 @@ class LlavaDataset(Dataset):
         "llava_instruct_150k": BASE_LLAVA_URL + "llava_instruct_150k.json?download=true",
     }
     _COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
+    IMAGE_TOKEN = "<image>"
 
     def __init__(
             self,
@@ -101,12 +102,13 @@ class LlavaDataset(Dataset):
             self.image_fold = image_fold
 
 
-    @staticmethod
-    def check(questions, seqlen):
+    def check(self, questions, seqlen):
         new_questions = []
         for source in questions:
             text_lenght = 0
             for text in source['conversations']:
+                if self.IMAGE_TOKEN in text['value']:
+                    text['value'] = self.IMAGE_TOKEN + text['value'].replace(self.IMAGE_TOKEN, '')
                 text_lenght += len(text['value'].split(' '))
             if text_lenght >= seqlen:
                 new_questions.append(source)
