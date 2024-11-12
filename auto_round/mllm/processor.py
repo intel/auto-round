@@ -70,7 +70,7 @@ class BasicProcessor:
             images = self.image_processor(images)
         
         if truncation_strategy == "text" and max_length is not None:
-            text = text[:max_length]
+            text = self.tokenizer.decode(self.tokenizer(text)['input_ids'])
 
         ret = self.tokenizer.processor(
             text=text,

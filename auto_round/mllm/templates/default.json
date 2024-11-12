@@ -9,5 +9,5 @@
     "default_system": "You are a helpful assistant.",
     "replace_tokens": null,
     "processor": "basic",
-    "add_special_token" : false
+    "extra_encode" : false
 }

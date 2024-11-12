@@ -48,12 +48,12 @@ class Template:
     format_separator: str
     default_system: str
     replace_tokens: List[tuple]
-    add_special_token: bool
+    extra_encode: bool
     processor: "BasicProcessor"
 
     def _encode(self, sources):
         """Encodes formatted inputs to pairs of token ids."""
-        if self.add_special_token:
+        if self.extra_encode:
             element = ""
             for i, source in enumerate(sources):
                 if i == 0:
@@ -84,7 +84,7 @@ def _register_template(
     format_separator: Optional[str] = None,
     default_system: str = "",
     replace_tokens: List[tuple] = None,
-    add_special_token: Optional[bool] = True,
+    extra_encode: Optional[bool] = True,
     processor: "BasicProcessor" = PROCESSORS["basic"],
 ):
     """Registers a chat template."""
@@ -105,7 +105,7 @@ def _register_template(
         format_separator = format_separator or default_format_separator,
         default_system = default_system,
         replace_tokens = replace_tokens,
-        add_special_token = add_special_token,
+        extra_encode = extra_encode,
         processor = processor()
     )
     return TEMPLATES[model_type]

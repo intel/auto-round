@@ -2,5 +2,5 @@
     "model_type": "phi3_v",
     "replace_tokens": ["<image>", "<|image_1|>"],
     "processor": "basic",
-    "add_special_token" : false
+    "extra_encode" : false
 }
