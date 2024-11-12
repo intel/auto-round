@@ -45,6 +45,7 @@ class BasicProcessor:
             return_tensors="pt",
             squeeze=True,
             max_length=None,
+            truncation=False,
             truncation_strategy="text",
             **kwargs):
         
@@ -69,7 +70,7 @@ class BasicProcessor:
         if images is not None:
             images = self.image_processor(images)
         
-        if truncation_strategy == "text" and max_length is not None:
+        if truncation is True and truncation_strategy == "text":
             text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
 
         ret = self.tokenizer.processor(
@@ -78,7 +79,7 @@ class BasicProcessor:
             return_tensors=return_tensors,
             # videos = None
         )
-        if truncation_strategy == "token" and max_length:
+        if truncation is True and truncation_strategy == "token":
             seqlen = ret['input_ids'].shape[-1]
             for key in ret:
                 shape_ = ret[key].shape
@@ -118,7 +119,7 @@ class Qwen2VLProcessor(BasicProcessor):
 @regist_processor("cogvlm2")
 class CogVLM2Processor(BasicProcessor):
     def get_input(
-            self, text, images,
+            self, text, images, truncation=False,
             squeeze=True, **kwargs):
         
         if images is not None:
@@ -127,7 +128,6 @@ class CogVLM2Processor(BasicProcessor):
         padding_len = 2303
         max_length = 0
         max_length += padding_len
-        truncation = True
         padding = False
         input_data = self.model.build_conversation_input_ids(
                 self.tokenizer,
@@ -207,7 +207,7 @@ class LlavaProcessor(BasicProcessor):
 
     def get_input(
             self, text, images,max_length=None,
-            squeeze=True, truncation_strategy="text", **kwargs):
+            squeeze=True, truncation=False, truncation_strategy="text", **kwargs):
         
         if images is not None:
             images = fetch_image(images).convert('RGB')
@@ -217,13 +217,13 @@ class LlavaProcessor(BasicProcessor):
             is_multimodal = True
             mm_use_im_start_end = False
         
-        if truncation_strategy == "text" and max_length is not None:
+        if truncation is True and truncation_strategy == "text":
             text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
 
         input_data = llava_train.preprocess_multimodal([text], DataArgs())
         ret = llava_train.preprocess(input_data, self.tokenizer, has_image=(images is not None))
 
-        if truncation_strategy == "token" and max_length:
+        if truncation is True and truncation_strategy == "token":
             seqlen = ret['input_ids'].shape[-1]
             for key in ret:
                 if ret[key].shape[-1] == seqlen:
