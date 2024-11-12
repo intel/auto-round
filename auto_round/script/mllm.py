@@ -148,7 +148,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--template", default=None, type=str,
                           help="the template for building training dataset. It can be a custom one.")
         
-        self.add_argument("--truncation", action="store_true")
+        self.add_argument("--truncation", action="store_true", 
+                          help="whether to truncate sequences at the maximum length.")
 
         ## ======================= VLM eval=======================
         self.add_argument("--tasks", type=str,
