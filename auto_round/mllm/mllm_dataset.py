@@ -57,6 +57,7 @@ class LlavaDataset(Dataset):
         "llava_instruct_150k": BASE_LLAVA_URL + "llava_instruct_150k.json?download=true",
     }
     _COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
+    IMAGE_TOKEN = "<image>"
 
     def __init__(
             self,
@@ -101,16 +102,18 @@ class LlavaDataset(Dataset):
             self.image_fold = image_fold
 
 
-    @staticmethod
-    def check(questions, seqlen):
+    def check(self, questions, seqlen):
         new_questions = []
         for source in questions:
             text_lenght = 0
             for text in source['conversations']:
+                if self.IMAGE_TOKEN in text['value']:
+                    text['value'] = self.IMAGE_TOKEN + text['value'].replace(self.IMAGE_TOKEN, '')
                 text_lenght += len(text['value'].split(' '))
             if text_lenght >= seqlen:
                 new_questions.append(source)
-        assert len(new_questions) > 0, f"no data with length greater than {seqlen}, please check"
+        assert len(new_questions) > 0, \
+            f"no data with length greater than {seqlen}, please reduce the seqlen or change another dataset."
         return new_questions
     
 
@@ -175,6 +178,7 @@ def get_mllm_dataloader(
         bs=1, 
         split=None,
         apply_template=None,
+        truncation=False,
         seed=42,
 ):
     """Generate a DataLoader for calibration using specified parameters.
@@ -202,11 +206,11 @@ def get_mllm_dataloader(
         if os.path.isfile(dataset):
             dataset = MLLM_DATASET['liuhaotian/llava'](
                 template, model, tokenizer, dataset, extra_data_dir, 
-                seqlen=min(seqlen, tokenizer.model_max_length))
+                seqlen=min(seqlen, tokenizer.model_max_length), truncation=truncation)
         elif "liuhaotian/llava" in dataset:
             dataset = MLLM_DATASET["liuhaotian/llava"](
                 template, model, tokenizer, dataset, extra_data_dir, 
-                seqlen=min(seqlen, tokenizer.model_max_length))
+                seqlen=min(seqlen, tokenizer.model_max_length), truncation=truncation)
         else:
             from datasets import load_dataset
             from ..calib_dataset import get_tokenizer_function

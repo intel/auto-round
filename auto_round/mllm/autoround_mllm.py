@@ -117,6 +117,7 @@ class AutoRoundMLLM(AutoRound):
             act_dynamic: bool = True,
             quant_block_list: list = None,
             enable_norm_bias_tuning: bool = False,
+            truncation: bool = False,
             enable_torch_compile: bool = None,
             **kwargs,
     ):
@@ -128,6 +129,7 @@ class AutoRoundMLLM(AutoRound):
         self.template = template if template is not None else model.config.model_type
         self.template = get_template(
             self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
+        self.truncation = truncation
         assert dataset is not None, "dataset should not be None"
         batch_size, gradient_accumulate_steps = check_mllm_model_batch(model, batch_size, gradient_accumulate_steps)
         
@@ -193,7 +195,8 @@ class AutoRoundMLLM(AutoRound):
                 extra_data_dir=self.extra_data_dir,
                 seqlen=self.seqlen, 
                 bs=bs,
-                seed=self.seed
+                seed=self.seed,
+                truncation=self.truncation,
                 )
         else:
             self.dataloader = self.dataset

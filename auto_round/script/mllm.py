@@ -147,6 +147,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--template", default=None, type=str,
                           help="the template for building training dataset. It can be a custom one.")
+        
+        self.add_argument("--truncation", action="store_true", 
+                          help="whether to truncate sequences at the maximum length.")
 
         ## ======================= VLM eval=======================
         self.add_argument("--tasks", type=str,
@@ -331,7 +334,7 @@ def tune(args):
                       extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,
                       sym=not args.asym, batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks, 
                       iters=args.iters, lr=args.lr, minmax_lr=args.minmax_lr, amp=not args.disable_amp,
-                      enable_quanted_input=not args.disable_quanted_input,
+                      enable_quanted_input=not args.disable_quanted_input, truncation=args.truncation,
                       nsamples=args.nsamples, low_gpu_mem_usage=args.low_gpu_mem_usage,
                       device=device_str, seed=args.seed, gradient_accumulate_steps=args.gradient_accumulate_steps,
                       scale_dtype=args.scale_dtype, layer_config=layer_config, template=args.template,
