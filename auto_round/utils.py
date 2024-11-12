@@ -31,6 +31,7 @@ from packaging import version
 import gc
 from .special_model_handler import shareable_keywords
 
+
 @lru_cache(None)
 def warning_once(self, msg: str):
     self.warning(msg)
@@ -753,6 +754,7 @@ def is_autoround_exllamav2_available():
         res = False
     return res
 
+
 @lru_cache(None)
 def is_hpu_supported():  # pragma: no cover
     try:
@@ -888,11 +890,11 @@ TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
 def check_hpu_compile_mode():
     assert (
-        os.environ["PT_HPU_LAZY_MODE"] == "0"
+            os.environ["PT_HPU_LAZY_MODE"] == "0"
     ), "Please set `PT_HPU_LAZY_MODE=0` to use HPU compile mode"
     # Note: this is a temporary solution, will be removed in the future
     assert (
-        os.environ["PT_ENABLE_INT64_SUPPORT"] == "1"
+            os.environ["PT_ENABLE_INT64_SUPPORT"] == "1"
     ), "Please set `PT_ENABLE_INT64_SUPPORT=1` to use HPU compile mode"
 
 
@@ -903,15 +905,15 @@ def compile_func_on_hpu(func):
     return func
 
 
-def compile_func_on_cuda_or_cpu(func):
-    if TORCH_VERSION_AT_LEAST_2_6_PRE_RELEASE:
+def compile_func_on_cuda_or_cpu(func, enable_torch_compile):
+    if enable_torch_compile or TORCH_VERSION_AT_LEAST_2_6_PRE_RELEASE:
         return torch.compile(func)
     else:
         return func
 
 
-def compile_func(fun, device):
+def compile_func(fun, device, enable_torch_compile):
     if "hpu" in str(device):
-        return compile_func_on_hpu(fun)
+        return compile_func_on_hpu(fun)  ## use auto by default
     else:
-        return compile_func_on_cuda_or_cpu(fun)
+        return compile_func_on_cuda_or_cpu(fun, enable_torch_compile)

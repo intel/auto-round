@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from typing import Optional, Union
+from tqdm import tqdm
 
 import torch
 
@@ -27,6 +28,8 @@ from .template import get_template, Template
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
 from ..special_model_handler import check_mllm_model_batch
+
+
 class AutoRoundMLLM(AutoRound):
     """Class for automatic rounding-based quantization with MLLMs.
     
@@ -68,12 +71,17 @@ class AutoRoundMLLM(AutoRound):
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
         quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
+        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True
         **kwargs: Additional keyword arguments.
+
+
     """
+
     def __init__(
             self,
             model,
             tokenizer,
+            image_processor = None,
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
@@ -83,7 +91,7 @@ class AutoRoundMLLM(AutoRound):
             device: str = None,
             lr_scheduler=None,
             dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = None,
-            extra_data_dir: Union[str, torch.utils.data.DataLoader] = None,
+            extra_data_dir: str = None,
             template: Union[str, Template] = None,
             quant_nontext_module: bool = False,
             enable_quanted_input: bool = True,
@@ -109,19 +117,21 @@ class AutoRoundMLLM(AutoRound):
             act_dynamic: bool = True,
             quant_block_list: list = None,
             enable_norm_bias_tuning: bool = False,
+            truncation: bool = False,
+            enable_torch_compile: bool = None,
             **kwargs,
     ):
         if quant_block_list is None:
             quant_block_list = get_multimodal_block_names(model, quant_nontext_module)
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
-        self.template = template
-        if self.template is None:
-            self.template = get_template(model.config.model_type)
+        self.image_processor = image_processor
+        self.template = template if template is not None else model.config.model_type
+        self.template = get_template(
+            self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
+        self.truncation = truncation
         assert dataset is not None, "dataset should not be None"
         batch_size, gradient_accumulate_steps = check_mllm_model_batch(model, batch_size, gradient_accumulate_steps)
-        if isinstance(dataset, str):
-            dataset = get_mllm_dataloader(self.template, model, tokenizer, dataset, extra_data_dir, seqlen, batch_size)
         
         super(AutoRoundMLLM, self).__init__(
             model=model,
@@ -156,11 +166,11 @@ class AutoRoundMLLM(AutoRound):
             act_group_size=act_group_size,
             act_sym=act_sym,
             act_dynamic=act_dynamic,
-            enable_norm_bias_tuning=enable_norm_bias_tuning,
             quant_block_list=quant_block_list,
+            enable_norm_bias_tuning=enable_norm_bias_tuning,
+            enable_torch_compile=enable_torch_compile,
             **kwargs,
         )
-        
 
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
@@ -177,19 +187,29 @@ class AutoRoundMLLM(AutoRound):
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
             self.dataloader = get_mllm_dataloader(
-                self.template, self.model, self.tokenizer, dataset, self.extra_data_dir, self.seqlen, bs)
+                template=self.template,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                image_processor=self.image_processor,
+                dataset=dataset, 
+                extra_data_dir=self.extra_data_dir,
+                seqlen=self.seqlen, 
+                bs=bs,
+                seed=self.seed,
+                truncation=self.truncation,
+                )
         else:
             self.dataloader = self.dataset
-        total_cnt = 0 
+        total_cnt = 0
 
         if self.low_cpu_mem_usage:
             embed_layers = get_layers_before_block(self.model)
             for n, m in embed_layers:
                 m = m.to(self.device)
 
-        for data in self.dataloader:
+        for data in tqdm(self.dataloader, desc="calib", total=nsamples-1):
             if data is None:
-                continue  
+                continue
             if isinstance(data, torch.Tensor):
                 input_ids = data.to(self.device)
                 data_new = input_ids
@@ -199,13 +219,11 @@ class AutoRoundMLLM(AutoRound):
                     exit()
                 # data = self.template._encode(data)
                 data = self.template.processor.get_input(
-                    self.model,
-                    self.tokenizer,
                     text=data,
                     images=None,
                     max_length=self.seqlen,
                     squeeze=False,
-                    )
+                )
                 data_new = {}
                 for key in data.keys():
                     data_new[key] = data[key].to(self.device)
@@ -215,17 +233,12 @@ class AutoRoundMLLM(AutoRound):
                 if isinstance(text, dict):
                     text = [text]
                 input_text = self.template._encode(text)
-                image = None
-                if "image" in data:
-                    image = self.template.processor.image_processor(data["image"])
                 data = self.template.processor.get_input(
-                    self.model,
-                    self.tokenizer,
                     text=input_text,
-                    images=image,
+                    images=data["image"],
                     max_length=self.seqlen,
                     squeeze=False,
-                    )
+                )
                 data_new = {}
                 for key in data.keys():
                     data_new[key] = to_device(data[key], self.model.device)
@@ -242,9 +255,6 @@ class AutoRoundMLLM(AutoRound):
                     if key == 'images':
                         data_new[key] = to_dtype(data_new[key], self.model.dtype)
                 input_ids = data_new["input_ids"]
-
-            if input_ids.shape[-1] < self.seqlen:
-                continue
 
             try:
                 if isinstance(data_new, torch.Tensor):

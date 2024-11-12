@@ -1,0 +1,6 @@
+{
+    "model_type": "llava",
+    "replace_tokens": null,
+    "processor": "llava",
+    "extra_encode" : false
+}

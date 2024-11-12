@@ -1,0 +1,6 @@
+{
+    "model_type": "phi3_v",
+    "replace_tokens": ["<image>", "<|image_1|>"],
+    "processor": "basic",
+    "extra_encode" : false
+}

@@ -31,13 +31,13 @@ more accuracy data and recipes across various models.
   their [release note](https://github.com/pytorch/ao/releases/tag/v0.6.1)
 * [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
   configuration. This configuration is typically better or comparable to asymmetric quantization and significantly
-  outperforms other symmetric variants, especially at low bit-widths like 2-bit.
+  outperforms other symmetric variants, especially at low bit-widths like 2-bit, check out [some accuracy data](./docs/full_range_sym.md).
 * [2024/09] AutoRound format supports several LVM models, check out the
   examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
 * [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
   to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
 * [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters (for 2-bit
-  and W4A4), activation quantization, and the mx_fp data type.
+  and W4A4, check out [more details](./docs/tuning_norm_bias.md)), activation quantization, and the mx_fp data type.
 
 ## Installation
 
@@ -248,7 +248,8 @@ quantization_config = AutoRoundConfig(
 )
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map=backend.split(':')[0], quantization_config=quantization_config)
+                                             device_map=backend.split(':')[0],
+                                             quantization_config=quantization_config)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)

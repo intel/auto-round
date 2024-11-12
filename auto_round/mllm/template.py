@@ -19,8 +19,6 @@ from typing import Dict, Optional, List, Union, Sequence
 from enum import Enum, unique
 
 from ..utils import logger
-
-
 from .processor import BasicProcessor, PROCESSORS
 
 TEMPLATES: Dict[str, "Template"] = {}
@@ -50,26 +48,30 @@ class Template:
     format_separator: str
     default_system: str
     replace_tokens: List[tuple]
+    extra_encode: bool
     processor: "BasicProcessor"
 
     def _encode(self, sources):
         """Encodes formatted inputs to pairs of token ids."""
-        element = ""
-        for i, source in enumerate(sources):
-            if i == 0:
-                element += fill_content(self.format_system, content=self.default_system)
-            # if i > 0 and i % 2 ==0:
-            #     element += fill_content(self.format_separator)
-            
-            if source['role'] == Role.USER.value:
-                element += fill_content(self.format_user, content=source["content"])
-            elif source['role'] == Role.ASSISTANT.value:
-                element += fill_content(self.format_assistant, content=source["content"])
-            elif source['role'] == Role.OBSERVATION.value:
-                element += fill_content(self.format_observation, content=source["content"])
-            elif source['role'] == Role.FUNCTION.value:
-                element += fill_content(self.format_function, content=source["content"])
-        return element
+        if self.extra_encode:
+            element = ""
+            for i, source in enumerate(sources):
+                if i == 0:
+                    element += fill_content(self.format_system, content=self.default_system)
+                # if i > 0 and i % 2 ==0:
+                #     element += fill_content(self.format_separator)
+                
+                if source['role'] == Role.USER.value:
+                    element += fill_content(self.format_user, content=source["content"])
+                elif source['role'] == Role.ASSISTANT.value:
+                    element += fill_content(self.format_assistant, content=source["content"])
+                elif source['role'] == Role.OBSERVATION.value:
+                    element += fill_content(self.format_observation, content=source["content"])
+                elif source['role'] == Role.FUNCTION.value:
+                    element += fill_content(self.format_function, content=source["content"])
+            return element
+        else:
+            return sources
     
 
 def _register_template(
@@ -82,7 +84,8 @@ def _register_template(
     format_separator: Optional[str] = None,
     default_system: str = "",
     replace_tokens: List[tuple] = None,
-    processor: "BasicProcessor" = PROCESSORS["basic"]
+    extra_encode: Optional[bool] = True,
+    processor: "BasicProcessor" = PROCESSORS["basic"],
 ):
     """Registers a chat template."""
     template_class = Template
@@ -102,6 +105,7 @@ def _register_template(
         format_separator = format_separator or default_format_separator,
         default_system = default_system,
         replace_tokens = replace_tokens,
+        extra_encode = extra_encode,
         processor = processor()
     )
     return TEMPLATES[model_type]
@@ -137,7 +141,7 @@ def _load_preset_template():
 _load_preset_template()
 
 
-def get_template(template_or_path: str):
+def get_template(template_or_path: str, model=None, tokenizer=None, image_processor=None):
     """Get template by template name or from a json file.
 
     Args:
@@ -155,4 +159,7 @@ def get_template(template_or_path: str):
         else:
             logger.warning(f"Unable to recognize {template_or_path}, using default template instead.")
             template = TEMPLATES["default"]
+
+    template.processor.post_init(model=model, tokenizer=tokenizer, image_processor=image_processor)
+
     return template

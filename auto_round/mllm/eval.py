@@ -27,6 +27,7 @@
 # limitations under the License.
 
 import os
+import time
 import json
 from functools import partial
 
@@ -84,6 +85,10 @@ def mllm_eval(
 
     model = None
     if data_store_dir is not None:
+        if not os.path.exists(data_store_dir):
+            oldmask = os.umask(000)
+            os.makedirs(data_store_dir, mode=0o777)
+            os.umask(oldmask)
         os.environ['LMUData'] = data_store_dir
 
     model_name = pretrained_model_name_or_path
@@ -119,7 +124,10 @@ def mllm_eval(
     pred_root = os.path.join(work_dir, model_name)
     os.makedirs(pred_root, exist_ok=True)
 
+    st = time.time()
+    rt_file = open(f'{pred_root}/{model_name}_eval_cost.txt', 'w')
     for dataset_name in dataset:
+        task_st = time.time()
         try:
             dataset_kwargs = {}
             if dataset_name in ['MMLongBench_DOC', 'DUDE', 'DUDE_MINI', 'SLIDEVQA', 'SLIDEVQA_MINI']:
@@ -269,8 +277,10 @@ def mllm_eval(
                         logger.info('\n' + tabulate.tabulate(eval_results))
                     except:
                         logger.info(eval_results.to_string())
-        
+            rt_file.write('%s cost: %.4fs\n' % (dataset_name, time.time() - task_st)) 
         except Exception as e:
             logger.exception(f'Model {model_name} x Dataset {dataset_name} combination failed: {e}, '
                                  'skipping this combination.')
             continue
+    rt_file.write('%d tasks cost: %.4fs\n' % (len(dataset), time.time() - st)) 
+    rt_file.close()
