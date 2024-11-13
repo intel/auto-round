@@ -51,9 +51,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
                           help="whether to use asym quantization")
 
         self.add_argument("--dataset", type=str, default="liuhaotian/llava_conv_58k",
-                            help="the dataset for quantization training."
-                            " current support llava_conv_58k,llava_instruct_80k "
-                            "It can be a custom one.")
+                          help="the dataset for quantization training."
+                               " current support llava_conv_58k,llava_instruct_80k "
+                               "It can be a custom one.")
 
         self.add_argument("--lr", default=None, type=float,
                           help="learning rate, if None, it will be set to 1.0/iters automatically")
@@ -143,12 +143,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
                                "Can be a dir path or multiple dir path with format as "
                                "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
                                "By default, it will search in the relative path, "
-                            "and if not find, will automatic download.")
+                               "and if not find, will automatic download.")
 
         self.add_argument("--template", default=None, type=str,
                           help="the template for building training dataset. It can be a custom one.")
-        
-        self.add_argument("--truncation", action="store_true", 
+
+        self.add_argument("--truncation", action="store_true",
                           help="whether to truncate sequences at the maximum length.")
 
         ## ======================= VLM eval=======================
@@ -209,9 +209,7 @@ def setup_parser():
 def tune(args):
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = ["auto_round", "auto_round:gptq", "auto_round:auto_gptq",
-                         "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
-                         "auto_round:awq"]
+    supported_formats = ["auto_round", "auto_round:auto_gptq", "auto_round:auto_awq"]
     if not args.quant_nontext_module:
         supported_formats.extend(["auto_gptq", "auto_gptq:marlin"])
 
@@ -261,7 +259,7 @@ def tune(args):
     if "llava" in model_name:
         from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
         tokenizer, model, image_processor, _ = load_pretrained_model(model_name, model_base=None, model_name=model_name,
-            torch_dtype=torch_dtype)
+                                                                     torch_dtype=torch_dtype)
         model_type = "llava"
     else:
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
@@ -277,9 +275,9 @@ def tune(args):
             cls = MllamaForConditionalGeneration
         else:
             cls = AutoModelForCausalLM
-    
+
     model = cls.from_pretrained(
-            model_name,trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
+        model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
         device_map="auto" if use_auto_mapping else None)
     if "cogvlm2" in model_name:
         model.config.model_type = "cogvlm2"
@@ -329,10 +327,10 @@ def tune(args):
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
-    
-    autoround = round(model, tokenizer, image_processor=image_processor, dataset=args.dataset, 
+
+    autoround = round(model, tokenizer, image_processor=image_processor, dataset=args.dataset,
                       extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,
-                      sym=not args.asym, batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks, 
+                      sym=not args.asym, batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks,
                       iters=args.iters, lr=args.lr, minmax_lr=args.minmax_lr, amp=not args.disable_amp,
                       enable_quanted_input=not args.disable_quanted_input, truncation=args.truncation,
                       nsamples=args.nsamples, low_gpu_mem_usage=args.low_gpu_mem_usage,

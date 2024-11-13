@@ -27,6 +27,8 @@
 # limitations under the License.
 import argparse
 
+from auto_round.utils import detect_device
+
 
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
@@ -215,9 +217,8 @@ def tune(args):
     tasks = args.tasks
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:gptq", "auto_round:auto_gptq",
-                         "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
-                         "auto_round:awq", "auto_gptq:marlin", "itrex", "iterx_xpu", "fake"]
+    supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq",
+                         "auto_gptq:marlin", "itrex", "iterx_xpu", "fake"]
     formats = args.format.replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
@@ -233,7 +234,7 @@ def tune(args):
 
     ##must set this before import torch
     import os
-    devices = args.device.replace(" ","").split(',')
+    devices = args.device.replace(" ", "").split(',')
     use_auto_mapping = False
     if all(s.isdigit() for s in devices):
         if "CUDA_VISIBLE_DEVICES" in os.environ:
@@ -247,7 +248,7 @@ def tune(args):
                     "Invalid '--device' value: It must be smaller than the number of available devices. "
                     "For example, with CUDA_VISIBLE_DEVICES=4,5, "
                     "--device 0,1 is valid, but --device 4,5 is not supported.")
-            visible_devices =','.join(pick_device)
+            visible_devices = ','.join(pick_device)
             os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
@@ -451,7 +452,7 @@ def tune(args):
 
 def eval(args):
     import os
-    devices = args.device.replace(" ","").split(',')
+    devices = args.device.replace(" ", "").split(',')
     parallelism = False
 
     if all(s.isdigit() for s in devices):
@@ -466,7 +467,7 @@ def eval(args):
                     "Invalid '--device' value: It must be smaller than the number of available devices. "
                     "For example, with CUDA_VISIBLE_DEVICES=4,5, "
                     "--device 0,1 is valid, but --device 4,5 is not supported.")
-            visible_devices =','.join(pick_device)
+            visible_devices = ','.join(pick_device)
             os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
@@ -474,7 +475,8 @@ def eval(args):
             devices = args.device.replace(" ", "").split(',')
         parallelism = True
         device_str = None
-
+    else:
+        device_str = detect_device(args.device.replace(" ", ""))
 
     from auto_round.eval.evaluation import simple_evaluate
 
