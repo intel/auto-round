@@ -71,7 +71,8 @@ class AutoRoundMLLM(AutoRound):
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of block's layer names to be quantized.
+        to_quant_block_names (str|list): A string or list whose elements are list of 
+                            block's layer names to be quantized.
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True
         **kwargs: Additional keyword arguments.
 
@@ -190,7 +191,7 @@ class AutoRoundMLLM(AutoRound):
                 from ..calib_dataset import get_dataloader
                 if self.quant_nontext_module:
                     logger.error(
-                    f"Quantitative nontext module is not supported for plain text datasets," \
+                    f"Quantitative nontext mudule is not supported for plain text datasets," \
                         " please disable arg '--quant_nontext_module'")
                 if "mllama" in self.model.config.model_type:
                     logger.error(
