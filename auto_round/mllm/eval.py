@@ -348,10 +348,7 @@ def lmms_eval(
         use_cache=None,
         apply_chat_template=False
         ):
-    try:
-        from auto_round import AutoRoundConfig
-    except:
-        from auto_round.auto_quantizer import AutoHfQuantizer
+    from auto_round import AutoRoundConfig
 
     if isinstance(tasks, str):
         tasks = tasks.replace(' ', '').split(',') 
@@ -379,6 +376,8 @@ def lmms_eval(
         model_args = f"model_id_name={model}"
     else:
         model_args = f"pretrained={model}"
+    if MODEL_TYPE_TO_LMMS_MODEL[model_type] == "llama_vision":
+        model_args += f",device_map={device}"
     results = _lmms_eval.evaluator.simple_evaluate(
         model=MODEL_TYPE_TO_LMMS_MODEL[model_type],
         model_args=model_args,

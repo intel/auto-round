@@ -41,11 +41,8 @@ def run_mllm():
         tune(args)
 
 def run_lmms():
-    try:
-        import importlib
-        importlib.import_module("lmms_eval")
-    except:
-        raise ImportError("please install the lmms_eval firt.")
+    from transformers.utils.versions import require_version
+    require_version("lmms_eval", "please install the lmms_eval firt.")
     # from auto_round.script.lmms_eval import setup_lmms_args, eval
     from auto_round.script.mllm import setup_lmms_parser, lmms_eval
     args = setup_lmms_parser()

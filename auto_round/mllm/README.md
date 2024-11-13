@@ -1,6 +1,6 @@
 # AutoRound for MLLMs
 ## Basic Usage (Gaudi2/CPU/GPU)
-A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.Alternatively, you can use ```auto_round``` instead of ```auto-round```. Set the format you want in `format` and
+A user guide detailing the full list of supported arguments is provided by calling ```auto-round-mllm -h``` on the terminal.Alternatively, you can use ```auto_round_mllm``` instead of ```auto-round-mllm```. Set the format you want in `format` and
 multiple formats exporting has been supported.
 
 ```bash
@@ -8,7 +8,6 @@ auto—round-mllm \
     --model Qwen/Qwen2-VL-2B-Instruct\
     --bits 4 \
     --batch_size 1 \
-    --nsamples 128 \
     --gradient_accumulate_steps 4 \
     --group_size 128 \
     --format "auto_round" \
@@ -37,7 +36,7 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
 
 ### Dataset
-For mllm, we used liuhaotian/llava_conv_58k as our defalt calib datasets. Through command ```--dataset```, user can use other datasets such as "liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path to use local file.
+For mllm, we used liuhaotian/llava_conv_58k as our defalt calib datasets. Through argument ```--dataset```, user can use other datasets such as "liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path to use local file.
 
 ### Limitation
 So far, auto-round for mllm supports five model families, include Qwen2, Llama, Phi3v, Llava and CogVLM2.
