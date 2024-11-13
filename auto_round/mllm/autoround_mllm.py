@@ -21,7 +21,8 @@ from ..utils import (
     logger,
     to_device,
     to_dtype,
-    get_multimodal_block_names
+    get_multimodal_block_names,
+    find_matching_blocks
 )
 from ..autoround import AutoRound
 from .template import get_template, Template
@@ -58,7 +59,7 @@ class AutoRoundMLLM(AutoRound):
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
         sampler (str): The sampling method (default is "rand").
-        seed (int): The random seed (default is 42).
+        seed (int): The random seed (default is 42).s
         nblocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
@@ -70,7 +71,7 @@ class AutoRoundMLLM(AutoRound):
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
+        to_quant_block_names (str|list): A string or list whose elements are list of block's layer names to be quantized.
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True
         **kwargs: Additional keyword arguments.
 
@@ -115,14 +116,14 @@ class AutoRoundMLLM(AutoRound):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
-            quant_block_list: list = None,
+            to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             truncation: bool = False,
             enable_torch_compile: bool = None,
             **kwargs,
     ):
-        if quant_block_list is None:
-            quant_block_list = get_multimodal_block_names(model, quant_nontext_module)
+        all_blocks = get_multimodal_block_names(model, quant_nontext_module)
+        self.to_quant_block_names = find_matching_blocks(model, all_blocks, to_quant_block_names)
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
         self.image_processor = image_processor
@@ -131,7 +132,6 @@ class AutoRoundMLLM(AutoRound):
             self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
         self.truncation = truncation
         assert dataset is not None, "dataset should not be None"
-        batch_size, gradient_accumulate_steps = check_mllm_model_batch(model, batch_size, gradient_accumulate_steps)
         
         super(AutoRoundMLLM, self).__init__(
             model=model,
@@ -166,7 +166,7 @@ class AutoRoundMLLM(AutoRound):
             act_group_size=act_group_size,
             act_sym=act_sym,
             act_dynamic=act_dynamic,
-            quant_block_list=quant_block_list,
+            to_quant_block_names=self.to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
             **kwargs,
@@ -186,18 +186,32 @@ class AutoRoundMLLM(AutoRound):
         """
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
-            self.dataloader = get_mllm_dataloader(
-                template=self.template,
-                model=self.model,
-                tokenizer=self.tokenizer,
-                image_processor=self.image_processor,
-                dataset=dataset, 
-                extra_data_dir=self.extra_data_dir,
-                seqlen=self.seqlen, 
-                bs=bs,
-                seed=self.seed,
-                truncation=self.truncation,
-                )
+            if "pile" in dataset:
+                from ..calib_dataset import get_dataloader
+                if self.quant_nontext_module:
+                    logger.error(
+                    f"Quantitative nontext mudule is not supported for plain text datasets," \
+                        " please disable arg '--quant_nontext_module'")
+                if "mllama" in self.model.config.model_type:
+                    logger.error(
+                    f"The llama3.2-vision model does not support the quantization of text-only calibration datasets.")
+                self.dataloader = get_dataloader(
+                    self.tokenizer, self.seqlen, dataset, self.seed, bs, self.nsamples)
+            else:
+                self.batch_size, self.gradient_accumulate_steps = check_mllm_model_batch(
+                        self.model,self.batch_size, self.gradient_accumulate_steps)
+                self.dataloader = get_mllm_dataloader(
+                    template=self.template,
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    image_processor=self.image_processor,
+                    dataset=dataset, 
+                    extra_data_dir=self.extra_data_dir,
+                    seqlen=self.seqlen, 
+                    bs=self.batch_size,
+                    seed=self.seed,
+                    truncation=self.truncation,
+                    )
         else:
             self.dataloader = self.dataset
         total_cnt = 0
@@ -287,3 +301,4 @@ class AutoRoundMLLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to("meta")
         # torch.cuda.empty_cache()
+
