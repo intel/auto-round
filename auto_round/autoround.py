@@ -160,7 +160,7 @@ class AutoRound(object):
         self.seed = seed
         set_seed(self.seed)
         assert not unsupport_meta_device(model), (
-            "AutoRound does not support for params on meta device. Please using more gpus vis set `--device 0,1,2,3` or just use one gpu")
+            "AutoRound does not support for params on meta device. Please use more gpus vis set `--device 0,1,2,3` or just use one gpu")
 
         ## important tuning hype-parameters
         self.amp = amp
