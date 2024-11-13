@@ -160,7 +160,8 @@ class AutoRound(object):
         self.seed = seed
         set_seed(self.seed)
         assert not unsupport_meta_device(model), (
-            "AutoRound does not support for params on meta device. Please use more gpus vis set `--device 0,1,2,3` or just use one gpu")
+            "AutoRound does not support for params on meta device."
+            " Please use more gpus vis set `--device 0,1,2,3` or just use one gpu")
 
         ## important tuning hype-parameters
         self.amp = amp
@@ -613,7 +614,7 @@ class AutoRound(object):
             clear_memory()
         except RuntimeError as e:
             if "CUDA out of memory" in str(e):
-                logger.info("switch to cpu to cache inputs")
+                logger.info("switch to cpu to cache block inputs")
                 if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 16) or
                         self.__class__.__name__ == "AutoRoundMLLM"):
                     logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
