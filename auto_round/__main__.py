@@ -41,9 +41,15 @@ def run_mllm():
         tune(args)
 
 def run_lmms():
-    from auto_round.script.lmms_eval import setup_lmms_args, eval
-    args = setup_lmms_args()
-    eval(args)
+    try:
+        import importlib
+        importlib.import_module("lmms_eval")
+    except:
+        raise ImportError("please install the lmms_eval firt.")
+    # from auto_round.script.lmms_eval import setup_lmms_args, eval
+    from auto_round.script.mllm import setup_lmms_parser, lmms_eval
+    args = setup_lmms_parser()
+    lmms_eval(args)
 
 def switch():
     if "--lmms" in sys.argv:
