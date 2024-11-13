@@ -209,9 +209,7 @@ def setup_parser():
 def tune(args):
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = ["auto_round", "auto_round:gptq", "auto_round:auto_gptq",
-                         "auto_round:auto_gptq:marlin", "auto_round:gptq:marlin", "auto_round:auto_awq",
-                         "auto_round:awq"]
+    supported_formats = ["auto_round" "auto_round:auto_gptq", "auto_round:auto_awq"]
     if not args.quant_nontext_module:
         supported_formats.extend(["auto_gptq", "auto_gptq:marlin"])
 
