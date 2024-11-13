@@ -191,7 +191,7 @@ class AutoRoundMLLM(AutoRound):
                 from ..calib_dataset import get_dataloader
                 if self.quant_nontext_module:
                     logger.error(
-                    f"Quantitative nontext mudule is not supported for plain text datasets," \
+                    f"Quantitative nontext module is not supported for plain text datasets," \
                         " please disable arg '--quant_nontext_module'")
                 if "mllama" in self.model.config.model_type:
                     logger.error(
