@@ -348,6 +348,11 @@ def lmms_eval(
         use_cache=None,
         apply_chat_template=False
         ):
+    try:
+        from auto_round import AutoRoundConfig
+    except:
+        from auto_round.auto_quantizer import AutoHfQuantizer
+
     if isinstance(tasks, str):
         tasks = tasks.replace(' ', '').split(',') 
 

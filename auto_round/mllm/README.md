@@ -1,4 +1,19 @@
 # AutoRound for MLLMs
+## Basic Usage (Gaudi2/CPU/GPU)
+A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.Alternatively, you can use ```auto_round``` instead of ```auto-round```. Set the format you want in `format` and
+multiple formats exporting has been supported.
+
+```bash
+auto—round-mllm \
+    --model Qwen/Qwen2-VL-2B-Instruct\
+    --bits 4 \
+    --batch_size 1 \
+    --nsamples 128 \
+    --gradient_accumulate_steps 4 \
+    --group_size 128 \
+    --format "auto_round" \
+    --output_dir ./tmp_autoround
+```
 ## API Usage (Gaudi2/CPU/GPU)
 ```python
 from auto_round import AutoRoundMLLM
@@ -21,7 +36,14 @@ output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
 
-## Template
+### Dataset
+For mllm, we used liuhaotian/llava_conv_58k as our defalt calib datasets. Through command ```--dataset```, user can use other datasets such as "liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path to use local file.
+
+### Limitation
+So far, auto-round for mllm supports five model families, include Qwen2, Llama, Phi3v, Llava and CogVLM2.
+
+## New Models Support
+### Template
 For autoround MLLMs, using Template to customize different operations for different models. User can add a custom chat template through json file as below.
 ```json
 {
@@ -33,7 +55,9 @@ For autoround MLLMs, using Template to customize different operations for differ
     "format_separator": "\n",
     "default_system": "You are a helpful assistant.",
     "replace_tokens": ["<image>", "<|vision_start|><|image_pad|><|vision_end|>"],
-    "processor": "qwen2_vl" }
+    "extra_encode": "True",
+    "processor": "qwen2_vl" 
+}
 ```
 The special token ```{{content}}``` is a placeholder to tell the preprocessor where to fill in the corresponding dialogue content.
 
@@ -45,5 +69,5 @@ For example, the input conversations:<br>
 Using the above template, the input will be converted to the specified format required by Qwen2-vl as below: <br>
  ```'<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>\nWhat are the colors of the bus in the image?<|im_end|>\n<|im_start|>assistant\nThe bus in the image is white and red.<|im_end|>\n<|im_start|>user\nWhat feature can be seen on the back of the bus?<|im_end|>\n<|im_start|>assistant\nThe back of the bus features an advertisement.<|im_end|>\n<|im_start|>user\nIs the bus driving down the street or pulled off to the side?<|im_end|>\n<|im_start|>assistant\nThe bus is driving down the street, which is crowded with people and other vehicles.<|im_end|>\n'```.
 
-## Processor
+### Processor
 Processor is callback interface for calling different processors, such as texts or images processors, for MLLMs. User can define own processor and use registration function to declare. For more information, please refer to the relevant code in ```auto_round/mllm/processor.py```.
