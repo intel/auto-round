@@ -130,6 +130,9 @@ if __name__ == '__main__':
     parser.add_argument("--fp_layers", default="", type=str,
                         help="List of Layers to maintain original data type")
 
+    parser.add_argument("--enable_torch_compile", default=None, type=bool,
+                        help="whether to enable torch compile")
+
     args = parser.parse_args()
 
     print(
@@ -345,7 +348,8 @@ if __name__ == '__main__':
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
-                      enable_norm_bias_tuning=args.enable_norm_bias_tuning)
+                      enable_norm_bias_tuning=args.enable_norm_bias_tuning,
+                      enable_torch_compile=args.enable_torch_compile)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
