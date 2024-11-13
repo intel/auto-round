@@ -151,7 +151,7 @@ if __name__ == '__main__':
 
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq","auto_round:auto_awq",
+    supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq",
                          "auto_gptq:marlin", "itrex", "iterx_xpu", "fake"]
     formats = args.format.replace(' ', '').split(",")
     for format in formats:
@@ -176,7 +176,8 @@ if __name__ == '__main__':
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
             args.device = ",".join(map(str, range(len(devices))))
             devices = args.device.replace(" ", "").split(',')
-        use_auto_mapping = True
+        if len(devices) > 1:
+            use_auto_mapping = True
 
     import torch
     import transformers
@@ -260,10 +261,14 @@ if __name__ == '__main__':
     seqlen = args.seqlen
 
     if args.model_dtype != None:
-        if args.model_dtype == "float16" or args.model_dtype == "fp16":
-            model = model.to(torch.float16)
-        if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
-            model = model.to(torch.bfloat16)
+        try:
+            if args.model_dtype == "float16" or args.model_dtype == "fp16":
+                model = model.to(torch.float16)
+            if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
+                model = model.to(torch.bfloat16)
+        except:
+            print("please use more device,e.g `--devices 0,1,2,3` to fit the device or just use one device")
+            exit()
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
 

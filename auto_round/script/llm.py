@@ -236,7 +236,7 @@ def tune(args):
     import os
     devices = args.device.replace(" ", "").split(',')
     use_auto_mapping = False
-    if all(s.isdigit() for s in devices):
+    if all(s.isdigit() for s in devices) :
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
             current_visible_devices = current_visible_devices.split(',')
@@ -254,7 +254,8 @@ def tune(args):
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
             args.device = ",".join(map(str, range(len(devices))))
             devices = args.device.replace(" ", "").split(',')
-        use_auto_mapping = True
+        if len(devices) > 0: ##for 70B model on single care, use auto will cause offload to cpu
+            use_auto_mapping = True
 
     import re
     import torch
@@ -328,10 +329,14 @@ def tune(args):
         seqlen = 2048
 
     if args.model_dtype != None:
-        if args.model_dtype == "float16" or args.model_dtype == "fp16":
-            model = model.to(torch.float16)
-        if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
-            model = model.to(torch.bfloat16)
+        try:
+            if args.model_dtype == "float16" or args.model_dtype == "fp16":
+                model = model.to(torch.float16)
+            if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
+                model = model.to(torch.bfloat16)
+        except:
+            logger.error("please use more device to fit the device or just use one device")
+            exit()
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
@@ -455,7 +460,7 @@ def eval(args):
     devices = args.device.replace(" ", "").split(',')
     parallelism = False
 
-    if all(s.isdigit() for s in devices):
+    if all(s.isdigit() for s in devices) :
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
             current_visible_devices = current_visible_devices.split(',')
@@ -473,7 +478,8 @@ def eval(args):
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
             args.device = ",".join(map(str, range(len(devices))))
             devices = args.device.replace(" ", "").split(',')
-        parallelism = True
+        if len(devices) > 1:
+            parallelism = True
         device_str = None
     else:
         device_str = detect_device(args.device.replace(" ", ""))
