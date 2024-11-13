@@ -193,9 +193,11 @@ class AutoRoundMLLM(AutoRound):
                     logger.error(
                     f"Quantitative nontext mudule is not supported for plain text datasets," \
                         " please disable arg '--quant_nontext_module'")
+                    exit(-1)
                 if "mllama" in self.model.config.model_type:
                     logger.error(
                     f"The llama3.2-vision model does not support the quantization of text-only calibration datasets.")
+                    exit(-1)
                 self.dataloader = get_dataloader(
                     self.tokenizer, self.seqlen, dataset, self.seed, bs, self.nsamples)
             else:

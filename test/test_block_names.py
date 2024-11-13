@@ -161,7 +161,7 @@ class TestQuantizationBlocks(unittest.TestCase):
             seqlen=2,
             batch_size=batch_size,
             dataset=self.llm_dataloader,
-            quant_block_list=llm_block_names
+            to_quant_block_names=llm_block_names
         )
         autoround.quantize()
         try:
@@ -181,13 +181,14 @@ class TestQuantizationBlocks(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
         quant_config = model.config.quantization_config
-        assert quant_config.quant_block_list is not None
+        assert quant_config.to_quant_block_names is not None
         
         
         
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
