@@ -42,7 +42,7 @@ def run_mllm():
 
 def run_lmms():
     from transformers.utils.versions import require_version
-    require_version("lmms_eval", "please install the lmms_eval firt.")
+    require_version("lmms_eval", "lmms_eval need to be installed, `pip install lmms_eval`")
     # from auto_round.script.lmms_eval import setup_lmms_args, eval
     from auto_round.script.mllm import setup_lmms_parser, lmms_eval
     args = setup_lmms_parser()
