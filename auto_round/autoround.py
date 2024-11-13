@@ -160,9 +160,9 @@ class AutoRound(object):
         self.seed = seed
         set_seed(self.seed)
         assert not unsupport_meta_device(model), (
-            "autoround does not support for params on meta device by transformers` interfaces,"
-            "please do not using device_map='auto' in model loading, "
-            "or follow examples/language-modeling/main.py to enable low_cpu_mem_usage")
+            "AutoRound does not support for params on meta device,"
+            "please do not using `device_map='auto'` in model loading, "
+            "or follow our basic usage to enable `low_cpu_mem_usage`")
 
         ## important tuning hype-parameters
         self.amp = amp
@@ -616,7 +616,7 @@ class AutoRound(object):
         except RuntimeError as e:
             if "CUDA out of memory" in str(e):
                 logger.info("switch to cpu to cache inputs")
-                if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] <= 16) or
+                if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 16) or
                         self.__class__.__name__ == "AutoRoundMLLM"):
                     logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
                                    f"set `--device '0,1'` in our cmd line usage or "
