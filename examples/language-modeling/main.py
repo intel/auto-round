@@ -130,6 +130,9 @@ if __name__ == '__main__':
     parser.add_argument("--fp_layers", default="", type=str,
                         help="List of Layers to maintain original data type")
 
+    parser.add_argument("--enable_torch_compile", default=None, type=bool,
+                        help="whether to enable torch compile")
+
     args = parser.parse_args()
 
     print(
@@ -151,7 +154,7 @@ if __name__ == '__main__':
 
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq","auto_round:auto_awq",
+    supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq",
                          "auto_gptq:marlin", "itrex", "iterx_xpu", "fake"]
     formats = args.format.replace(' ', '').split(",")
     for format in formats:
@@ -176,7 +179,8 @@ if __name__ == '__main__':
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
             args.device = ",".join(map(str, range(len(devices))))
             devices = args.device.replace(" ", "").split(',')
-        use_auto_mapping = True
+        if len(devices) > 1:
+            use_auto_mapping = True
 
     import torch
     import transformers
@@ -260,10 +264,14 @@ if __name__ == '__main__':
     seqlen = args.seqlen
 
     if args.model_dtype != None:
-        if args.model_dtype == "float16" or args.model_dtype == "fp16":
-            model = model.to(torch.float16)
-        if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
-            model = model.to(torch.bfloat16)
+        try:
+            if args.model_dtype == "float16" or args.model_dtype == "fp16":
+                model = model.to(torch.float16)
+            if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
+                model = model.to(torch.bfloat16)
+        except:
+            print("please use more device,e.g `--devices 0,1,2,3` to fit the device or just use one device")
+            exit()
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
 
@@ -340,7 +348,8 @@ if __name__ == '__main__':
                       scale_dtype=args.scale_dtype, layer_config=layer_config,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
-                      enable_norm_bias_tuning=args.enable_norm_bias_tuning)
+                      enable_norm_bias_tuning=args.enable_norm_bias_tuning,
+                      enable_torch_compile=args.enable_torch_compile)
     model, _ = autoround.quantize()
     model_name = args.model_name.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
