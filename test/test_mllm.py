@@ -48,8 +48,8 @@ class TestAutoRoundMLLM(unittest.TestCase):
         bits, group_size = 4, 128
         autoround = AutoRoundMLLM(
             model, tokenizer, bits=bits, group_size=group_size,
-            nsamples=2,
-            batch_size=1, iters=2, dataset=self.dataset)
+            nsamples=1,
+            batch_size=1, iters=2, dataset=self.dataset,seqlen=256)
         autoround.quantize()
         autoround.save_quantized("./saved/", format="auto_gptq", inplace=False)
         autoround.save_quantized("./saved/", format="auto_round", inplace=False)
@@ -63,8 +63,8 @@ class TestAutoRoundMLLM(unittest.TestCase):
         bits, group_size = 4, 128
         autoround = AutoRoundMLLM(
             model, tokenizer, bits=bits, group_size=group_size,
-            nsamples=2,
-            batch_size=1, iters=2, dataset=self.dataset, quant_nontext_module=True)
+            nsamples=1,
+            batch_size=1, iters=2, dataset=self.dataset, quant_nontext_module=True,seqlen=256)
         autoround.quantize()
         autoround.save_quantized("./saved/", format="auto_round", inplace=True)
 
