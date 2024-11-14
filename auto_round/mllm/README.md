@@ -38,8 +38,16 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ### Dataset
 For mllm, we used liuhaotian/llava_conv_58k as our default calib datasets. Through argument ```--dataset```, user can use other datasets such as "liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path to use local file.
 
-### Limitation
-So far, auto-round for mllm supports five model families, include Qwen2, Llama, Phi3v, Llava and CogVLM2.
+### Support Matrix
+So far, auto-round for mllm supports five model families, include Qwen2-VL, Llama-Vision, Phi3-Vision, Llava-v1.5 and CogVLM2.
+
+|Model          |Eval Lib   |calibration dataset|quant nontext module|
+|---------------|-----------|-------------------|--------------------|
+|Qwen2-VL       |vlmeval    |pile/llava         |✔                   |
+|Llama-Vision   |lmms_eval  |llava              |✔                   |
+|Phi3-Vision    |vlmeval    |pile/llava         |✔                   |
+|Llava-v1.5     |lmms_eval  |pile/llava         |-                   |
+|CogVLM2        |lmms_eval  |pile/llava         |✔                   |
 
 ## New Models Support
 ### Template
