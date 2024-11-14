@@ -106,6 +106,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
+            device="cpu",
         )
         autoround.quantize()
         quantized_model_path = "./saved"
