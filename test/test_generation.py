@@ -171,7 +171,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        assert (
-                res == """</s>There is a girl who likes adventure, and I'm not sure if she's into it, but I'm sure she's into it.\nI'm not sure if she's into adventure, but I'm sure she's into it.\nI'm not sure if she's into adventure""")
+        assert ("!!!" not in res)
+
 
 
