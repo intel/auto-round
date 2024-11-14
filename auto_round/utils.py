@@ -834,7 +834,7 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
     version = get_library_version("auto_gptq")
     from packaging.version import Version
-    if Version(version) <= Version("0.7.1"):
+    if Version(version) < Version("0.7.2"):
         QuantLinear = dynamically_import_QuantLinear(
             use_triton=use_triton,
             desc_act=False,

@@ -106,7 +106,6 @@ def is_auto_round_available():
             )
 
 
-
 #
 def get_device(obj: Union[torch.Tensor, nn.Module]):
     if isinstance(obj, torch.Tensor):
@@ -535,6 +534,13 @@ class AutoRoundQuantizer(HfQuantizer):
                 layer_backend = get_layer_backend(
                     target_device, target_backend, orig_backend, bits, group_size, sym, in_features, out_features
                 )
+            if "gptq" in layer_backend and "exllamav2" in layer_backend:
+                try:
+                    from exllamav2_kernels import gemm_half_q_half, make_q_matrix
+                except:
+                    logger.warning_once(
+                        "For better inference performance, please install exllamav2 kernel "
+                        "via `pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`")
 
             QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym)
 
@@ -575,9 +581,9 @@ class AutoRoundQuantizer(HfQuantizer):
     def cpu_post_init(self, model):
         dep_check = True
         message = "Repacking to CPU format"
-        layers = [] ## ipex post_init  will add one more layer
-        for n,m in  model.named_modules():
-            layers.append((n,m))
+        layers = []  ## ipex post_init  will add one more layer
+        for n, m in model.named_modules():
+            layers.append((n, m))
 
         for n, layer in tqdm(layers, desc=message, total=len(layers),
                              leave=True):
