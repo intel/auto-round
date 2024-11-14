@@ -44,6 +44,8 @@ more accuracy data and recipes across various models.
 ### Build from Source
 
 ```bash
+pip install -r requirements.txt
+
 # GPU
 pip install -vvv --no-build-isolation -e .
 

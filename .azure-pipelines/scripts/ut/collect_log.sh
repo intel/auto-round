@@ -26,6 +26,7 @@ git fetch
 git checkout main
 rm -rf build dist *egg-info
 echo y | pip uninstall auto_round
+pip install -r requirements.txt
 pip install -vvv --no-build-isolation -e .[cpu]
 
 coverage erase
