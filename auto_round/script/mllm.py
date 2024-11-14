@@ -134,6 +134,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--not_use_best_mse", action='store_true',
                           help="whether to use the iter of best mes loss in the tuning phase")
 
+        self.add_argument("--enable_torch_compile", default=None, type=bool,
+                            help="whether to enable torch compile")
+
         ## ======================= VLM =======================
         self.add_argument("--quant_nontext_module", action='store_true',
                           help="whether to quantize non-text module, e.g. vision component")
@@ -341,7 +344,7 @@ def tune(args):
                       scale_dtype=args.scale_dtype, layer_config=layer_config, template=args.template,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       quant_nontext_module=args.quant_nontext_module, not_use_best_mse=args.not_use_best_mse,
-                      to_quant_block_names=args.to_quant_block_names)
+                      to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile)
     model, _ = autoround.quantize()
 
     model.eval()
