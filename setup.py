@@ -195,6 +195,7 @@ PKG_INSTALL_CFG = {
         "install_requires": fetch_requirements("requirements.txt"),
         "extras_require": {
             "hpu": fetch_requirements("requirements-hpu.txt"),
+            "cpu": fetch_requirements("requirements-cpu.txt"),
         },
     },
     "auto_round_hpu": {
