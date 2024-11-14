@@ -28,7 +28,6 @@ from ..autoround import AutoRound
 from .template import get_template, Template
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
-from ..special_model_handler import check_mllm_model_batch
 
 
 class AutoRoundMLLM(AutoRound):
@@ -187,23 +186,7 @@ class AutoRoundMLLM(AutoRound):
         """
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
-            if "pile" in dataset:
-                from ..calib_dataset import get_dataloader
-                if self.quant_nontext_module:
-                    logger.error(
-                    f"Quantitative nontext module is not supported for plain text datasets," \
-                        " please disable arg '--quant_nontext_module'")
-                    exit(-1)
-                if "mllama" in self.model.config.model_type:
-                    logger.error(
-                    f"The llama3.2-vision model does not support the quantization of text-only calibration datasets.")
-                    exit(-1)
-                self.dataloader = get_dataloader(
-                    self.tokenizer, self.seqlen, dataset, self.seed, bs, self.nsamples)
-            else:
-                self.batch_size, self.gradient_accumulate_steps = check_mllm_model_batch(
-                        self.model,self.batch_size, self.gradient_accumulate_steps)
-                self.dataloader = get_mllm_dataloader(
+            self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_mllm_dataloader(
                     template=self.template,
                     model=self.model,
                     tokenizer=self.tokenizer,
@@ -214,7 +197,10 @@ class AutoRoundMLLM(AutoRound):
                     bs=self.batch_size,
                     seed=self.seed,
                     truncation=self.truncation,
-                    )
+                    nsamples=self.nsamples,
+                    gradient_accumulate_steps=self.gradient_accumulate_steps,
+                    quant_nontext_module=self.quant_nontext_module
+            )
         else:
             self.dataloader = self.dataset
         total_cnt = 0
@@ -224,69 +210,72 @@ class AutoRoundMLLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to(self.device)
 
-        for data in tqdm(self.dataloader, desc="calib", total=nsamples-1):
-            if data is None:
-                continue
-            if isinstance(data, torch.Tensor):
-                input_ids = data.to(self.device)
-                data_new = input_ids
-            elif isinstance(data, str):
-                if self.tokenizer is None:
-                    logger.error("please provide tokenizer for string input")
-                    exit()
-                # data = self.template._encode(data)
-                data = self.template.processor.get_input(
-                    text=data,
-                    images=None,
-                    max_length=self.seqlen,
-                    squeeze=False,
-                )
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = data[key].to(self.device)
-                input_ids = data_new["input_ids"]
-            elif isinstance(data, dict) and "text" in data.keys():
-                text = data['text']
-                if isinstance(text, dict):
-                    text = [text]
-                input_text = self.template._encode(text)
-                data = self.template.processor.get_input(
-                    text=input_text,
-                    images=data["image"],
-                    max_length=self.seqlen,
-                    squeeze=False,
-                )
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = to_device(data[key], self.model.device)
-                    if key == 'images':
-                        data_new[key] = to_dtype(data_new[key], self.model.dtype)
-                input_ids = data_new["input_ids"]
-            elif isinstance(data, tuple) or isinstance(data, list):
-                data_new = data
-                input_ids = data_new[0]
-            else:
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = to_device(data[key], self.model.device)
-                    if key == 'images':
-                        data_new[key] = to_dtype(data_new[key], self.model.dtype)
-                input_ids = data_new["input_ids"]
-
-            try:
-                if isinstance(data_new, torch.Tensor):
-                    self.model(data_new)
-                elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new)
+        with tqdm(total=nsamples-1, desc="calib") as pbar:
+            for data in self.dataloader:
+                if data is None:
+                    continue
+                if isinstance(data, torch.Tensor):
+                    input_ids = data.to(self.device)
+                    data_new = input_ids
+                elif isinstance(data, str):
+                    if self.tokenizer is None:
+                        logger.error("please provide tokenizer for string input")
+                        exit()
+                    # data = self.template._encode(data)
+                    data = self.template.processor.get_input(
+                        text=data,
+                        images=None,
+                        max_length=self.seqlen,
+                        squeeze=False,
+                    )
+                    data_new = {}
+                    for key in data.keys():
+                        data_new[key] = data[key].to(self.device)
+                    input_ids = data_new["input_ids"]
+                elif isinstance(data, dict) and "text" in data.keys():
+                    text = data['text']
+                    if isinstance(text, dict):
+                        text = [text]
+                    input_text = self.template._encode(text)
+                    data = self.template.processor.get_input(
+                        text=input_text,
+                        images=data["image"],
+                        max_length=self.seqlen,
+                        squeeze=False,
+                    )
+                    data_new = {}
+                    for key in data.keys():
+                        data_new[key] = to_device(data[key], self.model.device)
+                        if key == 'images':
+                            data_new[key] = to_dtype(data_new[key], self.model.dtype)
+                    input_ids = data_new["input_ids"]
+                elif isinstance(data, tuple) or isinstance(data, list):
+                    data_new = data
+                    input_ids = data_new[0]
                 else:
-                    self.model(**data_new)
-            except NotImplementedError:
-                pass
-            except Exception as error:
-                raise error
-            total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
-            if total_cnt >= nsamples:
-                break
+                    data_new = {}
+                    for key in data.keys():
+                        data_new[key] = to_device(data[key], self.model.device)
+                        if key == 'images':
+                            data_new[key] = to_dtype(data_new[key], self.model.dtype)
+                    input_ids = data_new["input_ids"]
+
+                try:
+                    if isinstance(data_new, torch.Tensor):
+                        self.model(data_new)
+                    elif isinstance(data_new, tuple) or isinstance(data_new, list):
+                        self.model(*data_new)
+                    else:
+                        self.model(**data_new)
+                except NotImplementedError:
+                    pass
+                except Exception as error:
+                    raise error
+                step = input_ids.shape[0] if len(input_ids.shape) > 1 else 1
+                total_cnt += step
+                pbar.update(step)
+                if total_cnt >= nsamples:
+                    break
         if total_cnt == 0:
             logger.error(
                 f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "

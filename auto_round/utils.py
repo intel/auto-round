@@ -313,6 +313,8 @@ def find_matching_blocks(model, all_blocks, to_quant_block_names):
     if not to_quant_block_names:
         return all_blocks
     to_quant_block_list = to_quant_block_names
+    if isinstance(to_quant_block_names, list) or isinstance(to_quant_block_names,tuple):
+        return to_quant_block_names
     if isinstance(to_quant_block_names, str):
         to_quant_block_list = [name.strip() for name in to_quant_block_names.split(",")]
     target_blocks = []
