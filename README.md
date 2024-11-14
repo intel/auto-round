@@ -44,13 +44,27 @@ more accuracy data and recipes across various models.
 ### Build from Source
 
 ```bash
+# GPU
 pip install -vvv --no-build-isolation -e .
+
+# CPU
+pip install -e .[cpu]
+
+# HPU
+pip install -e .[hpu]
 ```
 
 ### Install from pypi
 
 ```bash
+# GPU
 pip install auto-round
+
+# CPU
+pip install auto-round[cpu]
+
+# HPU
+pip install auto-round[hpu]
 ```
 
 ## Model Quantization

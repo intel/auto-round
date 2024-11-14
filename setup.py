@@ -181,54 +181,32 @@ if BUILD_CUDA_EXT:
     }
 
 PKG_INSTALL_CFG = {
-    # overall installation config, pip install neural-compressor
-    "auto_round": {
-        "project_name": "auto_round",
-        "include_packages": find_packages(
-            include=[
-                "auto_round",
-                "auto_round.*",
-                "auto_round_extension",
-                "auto_round_extension.*",
-            ],
-        ),
-        "install_requires": fetch_requirements("requirements.txt"),
-        "extras_require": {
-            "hpu": fetch_requirements("requirements-hpu.txt"),
-            "cpu": fetch_requirements("requirements-cpu.txt"),
-        },
-    },
-    "auto_round_hpu": {
-        "project_name": "auto_round_hpu",
-        "include_packages": find_packages(
-            include=["auto_round", "auto_round.*"],
-            exclude=[
-                "auto_round.export.export_to_autogptq",
-                "auto_round.export.export_to_awq",
-            ],
-        ),
-        "install_requires": fetch_requirements("requirements-hpu.txt"),
+    "include_packages": find_packages(
+        include=[
+            "auto_round",
+            "auto_round.*",
+            "auto_round_extension",
+            "auto_round_extension.*",
+        ],
+    ),
+    "install_requires": fetch_requirements("requirements.txt"),
+    "extras_require": {
+        "hpu": fetch_requirements("requirements-hpu.txt"),
+        "cpu": fetch_requirements("requirements-cpu.txt"),
     },
 }
 
 if __name__ == "__main__":
     # There are two ways to install hpu-only package:
-    # 1. pip install setup.py hpu.
+    # 1. pip install -e .[hpu]
     # 2. Within the gaudi docker where the HPU is available, we install the hpu package by default.
-    cfg_key = "auto_round"
-    if "hpu" in sys.argv:
-        sys.argv.remove("hpu")
-        cfg_key = "auto_round_hpu"
-    if BUILD_HPU_ONLY:
-        cfg_key = "auto_round_hpu"
 
-    project_name = PKG_INSTALL_CFG[cfg_key].get("project_name")
-    include_packages = PKG_INSTALL_CFG[cfg_key].get("include_packages", {})
-    install_requires = PKG_INSTALL_CFG[cfg_key].get("install_requires", [])
-    extras_require = PKG_INSTALL_CFG[cfg_key].get("extras_require", {})
+    include_packages = PKG_INSTALL_CFG.get("include_packages", {})
+    install_requires = PKG_INSTALL_CFG.get("install_requires", [])
+    extras_require = PKG_INSTALL_CFG.get("extras_require", {})
 
     setup(
-        name=project_name,
+        name="auto_round",
         author="Intel AIPT Team",
         version=version,
         author_email="wenhua.cheng@intel.com, weiwei1.zhang@intel.com",
