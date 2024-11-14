@@ -198,7 +198,7 @@ PKG_INSTALL_CFG = {
 
 if __name__ == "__main__":
     # There are two ways to install hpu-only package:
-    # 1. pip install -e .[hpu]
+    # 1. pip install -vvv --no-build-isolation -e .[hpu]
     # 2. Within the gaudi docker where the HPU is available, we install the hpu package by default.
 
     include_packages = PKG_INSTALL_CFG.get("include_packages", {})

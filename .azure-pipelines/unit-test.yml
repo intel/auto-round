@@ -89,8 +89,7 @@ stages:
               docker ps
               echo "--- collect logs ---"
               docker exec collectLogs bash -c "cd /auto-round \
-                && pip install -r requirements.txt \
-                && pip install -e .[cpu] \
+                && pip install -vvv --no-build-isolation -e .[cpu] \
                 && pip list"
               docker exec collectLogs /bin/bash +x -c "cd /auto-round/.azure-pipelines/scripts \
                 && bash ut/collect_log.sh"

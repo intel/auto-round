@@ -48,10 +48,10 @@ more accuracy data and recipes across various models.
 pip install -vvv --no-build-isolation -e .
 
 # CPU
-pip install -e .[cpu]
+pip install -vvv --no-build-isolation -e .[cpu]
 
 # HPU
-pip install -e .[hpu]
+pip install -vvv --no-build-isolation -e .[hpu]
 ```
 
 ### Install from pypi
