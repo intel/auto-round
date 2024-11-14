@@ -221,7 +221,7 @@ def get_mllm_dataloader(
                 tokenizer, seqlen, dataset, seed, bs, nsamples)
             if quant_nontext_module:
                 logger.error(
-                f"Quantitative nontext mudule is not supported for plain text datasets," \
+                f"Quantitative nontext module is not supported for plain text datasets," \
                     " please disable arg '--quant_nontext_module'")
                 exit(-1)
             if "mllama" in model.config.model_type:
