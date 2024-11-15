@@ -160,9 +160,8 @@ class AutoRound(object):
         self.seed = seed
         set_seed(self.seed)
         assert not unsupport_meta_device(model), (
-            "autoround does not support for params on meta device by transformers` interfaces,"
-            "please do not using device_map='auto' in model loading, "
-            "or follow examples/language-modeling/main.py to enable low_cpu_mem_usage")
+            "AutoRound does not support for params on meta device."
+            " Please use more gpus vis set `--device 0,1,2,3` or just use one gpu")
 
         ## important tuning hype-parameters
         self.amp = amp
@@ -283,12 +282,12 @@ class AutoRound(object):
         layer_names = self.get_quantized_layer_names_outside_blocks()
         self.start_time = time.time()
         all_first_block_names = [block[0] for block in all_blocks]
-        logger.info("start calibration")
+        logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-        logger.info("calibration done")
+        logger.info("caching done")
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
@@ -615,8 +614,8 @@ class AutoRound(object):
             clear_memory()
         except RuntimeError as e:
             if "CUDA out of memory" in str(e):
-                logger.info("switch to cpu to cache inputs")
-                if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] <= 16) or
+                logger.info("switch to cpu to cache block inputs")
+                if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 16) or
                         self.__class__.__name__ == "AutoRoundMLLM"):
                     logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
                                    f"set `--device '0,1'` in our cmd line usage or "
