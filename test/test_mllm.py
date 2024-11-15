@@ -48,8 +48,8 @@ class TestAutoRoundMLLM(unittest.TestCase):
         bits, group_size = 4, 128
         autoround = AutoRoundMLLM(
             model, tokenizer, bits=bits, group_size=group_size,
-            nsamples=2,
-            batch_size=1, iters=2, dataset=self.dataset)
+            nsamples=1,
+            batch_size=1, iters=2, dataset=self.dataset,seqlen=256)
         autoround.quantize()
         autoround.save_quantized("./saved/", format="auto_gptq", inplace=False)
         autoround.save_quantized("./saved/", format="auto_round", inplace=False)
@@ -63,11 +63,26 @@ class TestAutoRoundMLLM(unittest.TestCase):
         bits, group_size = 4, 128
         autoround = AutoRoundMLLM(
             model, tokenizer, bits=bits, group_size=group_size,
-            nsamples=2,
-            batch_size=1, iters=2, dataset=self.dataset, quant_nontext_module=True)
+            nsamples=1,
+            batch_size=1, iters=2, dataset=self.dataset, quant_nontext_module=True,seqlen=256)
         autoround.quantize()
         autoround.save_quantized("./saved/", format="auto_round", inplace=True)
+        
+    def test_quant_block_names(self):
+        from auto_round.utils import get_multimodal_block_names,find_matching_blocks
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
+        tokenizer.processor = processor
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            self.model_name, trust_remote_code=True, device_map="auto")
+        to_quant_block_names = 'visual.*12,layers.0,model.layers.*9'
+        target_blocks = [['visual.blocks.12'], ['model.layers.0', 'model.layers.9', 'model.layers.19']]
+        all_blocks = get_multimodal_block_names(model, quant_vision=True)
+        blocks = find_matching_blocks(model, all_blocks, to_quant_block_names)
+        assert target_blocks == blocks
+        
 
 
 if __name__ == "__main__":
     unittest.main()
+

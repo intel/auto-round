@@ -260,7 +260,7 @@ def check_is_cpu(device):
     return device == torch.device("cpu") or device == "cpu"
 
 
-def validate_modules(module_names):
+def validate_modules(module_names, quant_vision=False, vison_blocks_names=None):
     """
     Test a list of modules' validity.
 
@@ -288,9 +288,50 @@ def validate_modules(module_names):
     if shortest_module in longest_module:  # pragma: no cover
         raise ValueError(f"Invalid modules, at least two modules detected" \
                          " as dependent, {shortest_module} and {longest_module}")
-    return True
+    flag = False
+    if quant_vision:
+        for n,_ in module_names:
+            flag = any(key not in n.lower() for key in (vison_blocks_names))
+    if quant_vision and not flag:
+        raise ValueError(f"Cannot find the visual block. Please reset the quant_nontext_module parameter to False, " \
+                         "or raise an issue at https://github.com/intel/auto-round/issues.")
+    return
 
 
+def find_matching_blocks(model, all_blocks, to_quant_block_names):
+    """
+    Find and return matching blocks in the model based on to_quant_block_names.
+    
+    Args:
+        model: The model (not used in this specific function but kept for completeness).
+        all_blocks: List of lists, where each inner list contains full block names in the model.
+        to_quant_block_names: Comma-separated string of target block names to match.
+    
+    Returns:
+        target_blocks: List of lists containing full paths of matching blocks in the model.
+    """
+    if not to_quant_block_names:
+        return all_blocks
+    to_quant_block_list = to_quant_block_names
+    if isinstance(to_quant_block_names, list) or isinstance(to_quant_block_names,tuple):
+        return to_quant_block_names
+    if isinstance(to_quant_block_names, str):
+        to_quant_block_list = [name.strip() for name in to_quant_block_names.split(",")]
+    target_blocks = []
+    for block_list in all_blocks:
+        matched_sublist = []
+        for name in to_quant_block_list:
+            matches = [block for block in block_list if re.search(name, block)]
+            if matches:
+                matched_sublist.extend(matches)
+        if matched_sublist:
+            target_blocks.append(matched_sublist)
+        if not target_blocks:
+            raise ValueError("No block names matched. Please check the input for to_quant_block_name," \
+                             "or set to_quant_block_name to None to automatically match quantizable blocks.")
+    return target_blocks
+    
+    
 def get_block_names(model):
     """Get the block names for transformers-like networks.
 
@@ -324,12 +365,12 @@ def get_multimodal_block_names(model, quant_vision=False):
     """
     block_names = []
     target_modules = []
-    Vison_blocks_tuple = ("vision", "visual",)
+    vison_blocks_tuple = ("vision", "visual",)
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            if quant_vision or all(key not in n.lower() for key in (Vison_blocks_tuple)):
+            if quant_vision or all(key not in n.lower() for key in (vison_blocks_tuple)):
                 target_modules.append((n, m))
-    validate_modules(target_modules)
+    validate_modules(target_modules, quant_vision, vison_blocks_tuple)
     for i, target_m in enumerate(target_modules):
         block_names.append([])
         for n, m in target_m[1].named_children():
@@ -713,7 +754,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D], quant_block_list=None):
+                                                     transformers.modeling_utils.Conv1D], to_quant_block_names=None):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -724,8 +765,8 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
         if isinstance(m, tuple(supported_types)):
             m.tmp_name = n
     layers_in_block = []
-    if bool(quant_block_list):
-        all_blocks = quant_block_list
+    if bool(to_quant_block_names):
+        all_blocks = to_quant_block_names
     else:
         all_blocks = get_block_names(model)
     for block_names in all_blocks:
@@ -834,7 +875,7 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
     from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
     version = get_library_version("auto_gptq")
     from packaging.version import Version
-    if Version(version) <= Version("0.7.1"):
+    if Version(version) < Version("0.7.2"):
         QuantLinear = dynamically_import_QuantLinear(
             use_triton=use_triton,
             desc_act=False,
@@ -906,7 +947,7 @@ def compile_func_on_hpu(func):
 
 
 def compile_func_on_cuda_or_cpu(func, enable_torch_compile):
-    if enable_torch_compile or TORCH_VERSION_AT_LEAST_2_6_PRE_RELEASE:
+    if enable_torch_compile or (TORCH_VERSION_AT_LEAST_2_6_PRE_RELEASE and enable_torch_compile!=False):
         return torch.compile(func)
     else:
         return func
@@ -917,3 +958,4 @@ def compile_func(fun, device, enable_torch_compile):
         return compile_func_on_hpu(fun)  ## use auto by default
     else:
         return compile_func_on_cuda_or_cpu(fun, enable_torch_compile)
+

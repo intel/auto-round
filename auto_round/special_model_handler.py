@@ -15,7 +15,7 @@
 import torch
 from collections import UserDict
 shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
-mllms_with_limited_bs = ("llava", "qwen2-vl", "phi3_v", "mllama") # Limitations on batch_size
+mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama") # Limitations on batch_size
 skippable_cache_keys = ("past_key_value",)
 
 def to_device(input, device=torch.device("cpu")):
@@ -91,7 +91,7 @@ def check_skippable_keywords(key):
     return False
             
 
-def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps):
+def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
     """
     Checks model configuration to determine if it's necessary to limit bs to avoid potential input shape mismatches.
     """
@@ -102,3 +102,4 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps):
                     f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}")
             return 1, accumulate_steps
     return batch_size, gradient_accumulate_steps
+

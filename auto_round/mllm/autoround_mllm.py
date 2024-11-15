@@ -21,13 +21,13 @@ from ..utils import (
     logger,
     to_device,
     to_dtype,
-    get_multimodal_block_names
+    get_multimodal_block_names,
+    find_matching_blocks
 )
 from ..autoround import AutoRound
 from .template import get_template, Template
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
-from ..special_model_handler import check_mllm_model_batch
 
 
 class AutoRoundMLLM(AutoRound):
@@ -58,7 +58,7 @@ class AutoRoundMLLM(AutoRound):
         seqlen (int): Length of the sequence.
         nsamples (int): Number of samples (default is 128).
         sampler (str): The sampling method (default is "rand").
-        seed (int): The random seed (default is 42).
+        seed (int): The random seed (default is 42).s
         nblocks (int): Number of blocks (default is 1).
         gradient_accumulate_steps (int): Number of gradient accumulation steps (default is 1).
         not_use_best_mse (bool): Whether to use mean squared error (default is False).
@@ -70,7 +70,8 @@ class AutoRoundMLLM(AutoRound):
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
+        to_quant_block_names (str|list): A string or list whose elements are list of 
+                            block's layer names to be quantized.
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True
         **kwargs: Additional keyword arguments.
 
@@ -115,14 +116,14 @@ class AutoRoundMLLM(AutoRound):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
-            quant_block_list: list = None,
+            to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             truncation: bool = False,
             enable_torch_compile: bool = None,
             **kwargs,
     ):
-        if quant_block_list is None:
-            quant_block_list = get_multimodal_block_names(model, quant_nontext_module)
+        all_blocks = get_multimodal_block_names(model, quant_nontext_module)
+        self.to_quant_block_names = find_matching_blocks(model, all_blocks, to_quant_block_names)
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
         self.image_processor = image_processor
@@ -131,7 +132,6 @@ class AutoRoundMLLM(AutoRound):
             self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
         self.truncation = truncation
         assert dataset is not None, "dataset should not be None"
-        batch_size, gradient_accumulate_steps = check_mllm_model_batch(model, batch_size, gradient_accumulate_steps)
         
         super(AutoRoundMLLM, self).__init__(
             model=model,
@@ -166,7 +166,7 @@ class AutoRoundMLLM(AutoRound):
             act_group_size=act_group_size,
             act_sym=act_sym,
             act_dynamic=act_dynamic,
-            quant_block_list=quant_block_list,
+            to_quant_block_names=self.to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
             **kwargs,
@@ -186,18 +186,21 @@ class AutoRoundMLLM(AutoRound):
         """
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
-            self.dataloader = get_mllm_dataloader(
-                template=self.template,
-                model=self.model,
-                tokenizer=self.tokenizer,
-                image_processor=self.image_processor,
-                dataset=dataset, 
-                extra_data_dir=self.extra_data_dir,
-                seqlen=self.seqlen, 
-                bs=bs,
-                seed=self.seed,
-                truncation=self.truncation,
-                )
+            self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_mllm_dataloader(
+                    template=self.template,
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    image_processor=self.image_processor,
+                    dataset=dataset, 
+                    extra_data_dir=self.extra_data_dir,
+                    seqlen=self.seqlen, 
+                    bs=self.batch_size,
+                    seed=self.seed,
+                    truncation=self.truncation,
+                    nsamples=self.nsamples,
+                    gradient_accumulate_steps=self.gradient_accumulate_steps,
+                    quant_nontext_module=self.quant_nontext_module
+            )
         else:
             self.dataloader = self.dataset
         total_cnt = 0
@@ -207,69 +210,72 @@ class AutoRoundMLLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to(self.device)
 
-        for data in tqdm(self.dataloader, desc="calib", total=nsamples-1):
-            if data is None:
-                continue
-            if isinstance(data, torch.Tensor):
-                input_ids = data.to(self.device)
-                data_new = input_ids
-            elif isinstance(data, str):
-                if self.tokenizer is None:
-                    logger.error("please provide tokenizer for string input")
-                    exit()
-                # data = self.template._encode(data)
-                data = self.template.processor.get_input(
-                    text=data,
-                    images=None,
-                    max_length=self.seqlen,
-                    squeeze=False,
-                )
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = data[key].to(self.device)
-                input_ids = data_new["input_ids"]
-            elif isinstance(data, dict) and "text" in data.keys():
-                text = data['text']
-                if isinstance(text, dict):
-                    text = [text]
-                input_text = self.template._encode(text)
-                data = self.template.processor.get_input(
-                    text=input_text,
-                    images=data["image"],
-                    max_length=self.seqlen,
-                    squeeze=False,
-                )
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = to_device(data[key], self.model.device)
-                    if key == 'images':
-                        data_new[key] = to_dtype(data_new[key], self.model.dtype)
-                input_ids = data_new["input_ids"]
-            elif isinstance(data, tuple) or isinstance(data, list):
-                data_new = data
-                input_ids = data_new[0]
-            else:
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = to_device(data[key], self.model.device)
-                    if key == 'images':
-                        data_new[key] = to_dtype(data_new[key], self.model.dtype)
-                input_ids = data_new["input_ids"]
-
-            try:
-                if isinstance(data_new, torch.Tensor):
-                    self.model(data_new)
-                elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new)
+        with tqdm(total=nsamples-1, desc="calib") as pbar:
+            for data in self.dataloader:
+                if data is None:
+                    continue
+                if isinstance(data, torch.Tensor):
+                    input_ids = data.to(self.device)
+                    data_new = input_ids
+                elif isinstance(data, str):
+                    if self.tokenizer is None:
+                        logger.error("please provide tokenizer for string input")
+                        exit()
+                    # data = self.template._encode(data)
+                    data = self.template.processor.get_input(
+                        text=data,
+                        images=None,
+                        max_length=self.seqlen,
+                        squeeze=False,
+                    )
+                    data_new = {}
+                    for key in data.keys():
+                        data_new[key] = data[key].to(self.device)
+                    input_ids = data_new["input_ids"]
+                elif isinstance(data, dict) and "text" in data.keys():
+                    text = data['text']
+                    if isinstance(text, dict):
+                        text = [text]
+                    input_text = self.template._encode(text)
+                    data = self.template.processor.get_input(
+                        text=input_text,
+                        images=data["image"],
+                        max_length=self.seqlen,
+                        squeeze=False,
+                    )
+                    data_new = {}
+                    for key in data.keys():
+                        data_new[key] = to_device(data[key], self.model.device)
+                        if key == 'images':
+                            data_new[key] = to_dtype(data_new[key], self.model.dtype)
+                    input_ids = data_new["input_ids"]
+                elif isinstance(data, tuple) or isinstance(data, list):
+                    data_new = data
+                    input_ids = data_new[0]
                 else:
-                    self.model(**data_new)
-            except NotImplementedError:
-                pass
-            except Exception as error:
-                raise error
-            total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
-            if total_cnt >= nsamples:
-                break
+                    data_new = {}
+                    for key in data.keys():
+                        data_new[key] = to_device(data[key], self.model.device)
+                        if key == 'images':
+                            data_new[key] = to_dtype(data_new[key], self.model.dtype)
+                    input_ids = data_new["input_ids"]
+
+                try:
+                    if isinstance(data_new, torch.Tensor):
+                        self.model(data_new)
+                    elif isinstance(data_new, tuple) or isinstance(data_new, list):
+                        self.model(*data_new)
+                    else:
+                        self.model(**data_new)
+                except NotImplementedError:
+                    pass
+                except Exception as error:
+                    raise error
+                step = input_ids.shape[0] if len(input_ids.shape) > 1 else 1
+                total_cnt += step
+                pbar.update(step)
+                if total_cnt >= nsamples:
+                    break
         if total_cnt == 0:
             logger.error(
                 f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
@@ -287,3 +293,4 @@ class AutoRoundMLLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to("meta")
         # torch.cuda.empty_cache()
+

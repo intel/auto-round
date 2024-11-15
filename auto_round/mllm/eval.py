@@ -26,6 +26,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Copyright (c) 2024 LMMs-Lab
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import os
 import time
 import json
@@ -33,6 +53,8 @@ from functools import partial
 
 import pandas as pd
 from ..utils import logger, LazyImport
+import numpy as np
+
 vlmeval = LazyImport("vlmeval")
 
 
@@ -284,3 +306,103 @@ def mllm_eval(
             continue
     rt_file.write('%d tasks cost: %.4fs\n' % (len(dataset), time.time() - st)) 
     rt_file.close()
+
+
+MODEL_TYPE_TO_LMMS_MODEL = {
+    # model_name
+    "Qwen-VL": "qwen_vl",
+    "Qwen2-VL": "qwen2_vl",
+    "cogvlm2": "cogvlm2",
+    "llava_v1.5": "llava",
+    "Llama-3.2": "llama_vision",
+    "Phi-3-vision": "phi3v",
+    "Phi-3.5-vision": "phi3v",
+
+    # model_type
+    "qwen2_vl": "qwen2_vl",
+    "qwen": "qwen_vl",
+    "llava": "llava",
+    "phi3_v": "phi3v",
+    "mllama": "llama_vision",
+}
+
+_lmms_eval = LazyImport("lmms_eval")
+
+def _handle_non_serializable(o):
+    if isinstance(o, np.int64) or isinstance(o, np.int32):
+        return int(o)
+    elif isinstance(o, set):
+        return list(o)
+    else:
+        return str(o)
+
+def lmms_eval(
+        model,
+        tasks,
+        output_dir = None,
+        num_fewshot=None,
+        limit=None,
+        batch_size=1,
+        max_batch_size=None,
+        device='cpu',
+        use_cache=None,
+        apply_chat_template=False
+        ):
+    from auto_round import AutoRoundConfig
+
+    if isinstance(tasks, str):
+        tasks = tasks.replace(' ', '').split(',') 
+
+    model_name = model
+    if model_name[-1] == "/":
+        model_name = model_name[:-1]
+    model_name = model_name.split("/")[-1]
+
+    model_type = None
+    split_name = model_name.split("-")
+    for i in range(len(split_name), 0, -1):
+        tmp = "-".join(split_name[0:i])
+        if tmp in MODEL_TYPE_TO_LMMS_MODEL:
+            model_type = tmp
+            break
+    if model_type is None:
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model, trust_remote_code=True)
+        model_type = config.model_type
+    
+    assert model_type in MODEL_TYPE_TO_LMMS_MODEL, f"{model_type} is not support by lmms."
+
+    if MODEL_TYPE_TO_LMMS_MODEL[model_type] == "phi3v":
+        model_args = f"model_id_name={model}"
+    else:
+        model_args = f"pretrained={model}"
+    if MODEL_TYPE_TO_LMMS_MODEL[model_type] == "llama_vision":
+        model_args += f",device_map={device}"
+    class CliArgs:
+        output_path = output_dir
+
+    results = _lmms_eval.evaluator.simple_evaluate(
+        model=MODEL_TYPE_TO_LMMS_MODEL[model_type],
+        model_args=model_args,
+        tasks=tasks,
+        num_fewshot=num_fewshot,
+        limit=limit,
+        batch_size=batch_size,
+        max_batch_size=max_batch_size,
+        device=device,
+        use_cache=use_cache,
+        apply_chat_template=apply_chat_template,
+        cli_args=CliArgs()
+    )
+
+    # print and save result
+    print(_lmms_eval.utils.make_table(results))
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        
+        from datetime import datetime
+        now = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = os.path.join(output_dir, f"{model_name}_{now}_result.json")
+        json.dump(results, open(output_file, 'w'), indent=4, default=_handle_non_serializable)
+
+    return results

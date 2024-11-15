@@ -142,7 +142,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--not_use_best_mse", action='store_true',
                           help="whether to use the iter of best mes loss in the tuning phase")
+        
+        self.add_argument("--to_quant_block_names", default=None, type=str,
+                          help="Names of quantitative blocks, please use commas to separate them.")
 
+        self.add_argument("--enable_torch_compile", default=None, type=bool,
+                            help="whether to enable torch compile")
 
 def setup_parser():
     parser = BasicArgumentParser()
@@ -208,6 +213,7 @@ def setup_fast_parser():
     parser.add_argument("--nsamples", default=128, type=int,
                         help="number of samples")
 
+
     args = parser.parse_args()
 
     return args
@@ -254,7 +260,8 @@ def tune(args):
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
             args.device = ",".join(map(str, range(len(devices))))
             devices = args.device.replace(" ", "").split(',')
-        use_auto_mapping = True
+        if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
+            use_auto_mapping = True
 
     import re
     import torch
@@ -328,10 +335,14 @@ def tune(args):
         seqlen = 2048
 
     if args.model_dtype != None:
-        if args.model_dtype == "float16" or args.model_dtype == "fp16":
-            model = model.to(torch.float16)
-        if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
-            model = model.to(torch.bfloat16)
+        try:
+            if args.model_dtype == "float16" or args.model_dtype == "fp16":
+                model = model.to(torch.float16)
+            if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
+                model = model.to(torch.bfloat16)
+        except:
+            logger.error("please use more device to fit the device or just use one device")
+            exit()
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
@@ -395,7 +406,8 @@ def tune(args):
         gradient_accumulate_steps=args.gradient_accumulate_steps, layer_config=layer_config,
         enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
         low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
-        enable_norm_bias_tuning=args.enable_norm_bias_tuning, not_use_best_mse=args.not_use_best_mse)
+        enable_norm_bias_tuning=args.enable_norm_bias_tuning, not_use_best_mse=args.not_use_best_mse,
+        to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile)
     model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
@@ -473,7 +485,8 @@ def eval(args):
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
             args.device = ",".join(map(str, range(len(devices))))
             devices = args.device.replace(" ", "").split(',')
-        parallelism = True
+        if len(devices) > 1:
+            parallelism = True
         device_str = None
     else:
         device_str = detect_device(args.device.replace(" ", ""))
@@ -494,3 +507,4 @@ def eval(args):
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
     print(make_table(res))
+

@@ -24,6 +24,7 @@ from transformers import set_seed
 from .utils import _extract_data_dir
 from .template import Template
 from ..utils import logger
+from ..special_model_handler import check_mllm_model_batch
 
 
 MLLM_DATASET : Dict[str, Dataset] = {}
@@ -174,12 +175,15 @@ def get_mllm_dataloader(
         image_processor=None,
         dataset="liuhaotian/llava_conv_58k",
         extra_data_dir=None,
-        seqlen=512, 
+        seqlen=512,
         bs=1, 
         split=None,
         apply_template=None,
         truncation=False,
         seed=42,
+        nsamples=512,
+        gradient_accumulate_steps=1,
+        quant_nontext_module=False
 ):
     """Generate a DataLoader for calibration using specified parameters.
 
@@ -202,22 +206,32 @@ def get_mllm_dataloader(
         from .template import get_template
         template = get_template(template, model=model, tokenizer=tokenizer, image_processor=image_processor)
 
-    if isinstance(dataset, str):
-        if os.path.isfile(dataset):
-            dataset = MLLM_DATASET['liuhaotian/llava'](
-                template, model, tokenizer, dataset, extra_data_dir, 
-                seqlen=min(seqlen, tokenizer.model_max_length), truncation=truncation)
-        elif "liuhaotian/llava" in dataset:
-            dataset = MLLM_DATASET["liuhaotian/llava"](
-                template, model, tokenizer, dataset, extra_data_dir, 
-                seqlen=min(seqlen, tokenizer.model_max_length), truncation=truncation)
-        else:
-            from datasets import load_dataset
-            from ..calib_dataset import get_tokenizer_function
-            dataset = load_dataset(dataset, split=split)
-            tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_template=apply_template)
-            dataset = dataset.map(tokenizer_function, batched=True)
-
+    if os.path.isfile(dataset):
+        dataset = MLLM_DATASET['liuhaotian/llava'](
+            template, model, tokenizer, dataset, extra_data_dir, 
+            seqlen=min(seqlen, tokenizer.model_max_length), truncation=truncation)
+    elif "liuhaotian/llava" in dataset:
+        dataset = MLLM_DATASET["liuhaotian/llava"](
+            template, model, tokenizer, dataset, extra_data_dir, 
+            seqlen=min(seqlen, tokenizer.model_max_length), truncation=truncation)
+    else:
+        # try to load text calibration dataset
+            from ..calib_dataset import get_dataloader
+            dataloader = get_dataloader(
+                tokenizer, seqlen, dataset, seed, bs, nsamples)
+            if quant_nontext_module:
+                logger.error(
+                f"Quantitative nontext module is not supported for plain text datasets," \
+                    " please disable arg '--quant_nontext_module'")
+                exit(-1)
+            if "mllama" in model.config.model_type:
+                logger.error(
+                f"The llama3.2-vision model does not support the quantization of text-only calibration datasets.")
+                exit(-1)
+            return dataloader, bs, gradient_accumulate_steps
+    
+    bs, gradient_accumulate_steps = check_mllm_model_batch(
+            model, batch_size=bs, gradient_accumulate_steps=gradient_accumulate_steps)
     
     set_seed(seed)
     dataloader_params = {
@@ -226,4 +240,5 @@ def get_mllm_dataloader(
         "collate_fn": dataset.template.processor.data_collator
     }
 
-    return DataLoader(dataset, **dataloader_params)
+    return DataLoader(dataset, **dataloader_params), bs, gradient_accumulate_steps
+
