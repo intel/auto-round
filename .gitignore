@@ -1,7 +1,7 @@
 ﻿.vs
 .vscode
 __pycache__
-auto_round.egg-info/
+*.egg-info/
 build/*
 .eggs/
 dist/
