@@ -26,7 +26,8 @@ git fetch
 git checkout main
 rm -rf build dist *egg-info
 echo y | pip uninstall auto_round
-python setup.py bdist_wheel && rm -rf build && pip install dist/auto_round*.whl
+pip install -r requirements.txt
+pip install -vvv --no-build-isolation -e .[cpu]
 
 coverage erase
 cd /auto-round/log_dir

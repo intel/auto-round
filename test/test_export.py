@@ -117,7 +117,12 @@ class TestAutoRound(unittest.TestCase):
             return
 
         from auto_round.auto_quantizer import AutoHfQuantizer
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
+        device = "auto"  ##cpu, hpu, cuda
+        from auto_round import AutoRoundConfig
+        quantization_config = AutoRoundConfig(
+            backend=device
+        )
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device, quantization_config=quantization_config)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
