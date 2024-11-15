@@ -300,7 +300,24 @@ def tune(args):
             model = model.to(torch.bfloat16)
 
     round = AutoRoundMLLM
+
     layer_config = {}
+    if args.fp_layers != "":
+        fp_layers = args.fp_layers.replace(" ", "").split(",")
+        for n, m in model.named_modules():
+            if not isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D)):
+                continue
+            for fp_layer in fp_layers:
+                if fp_layer in n:
+                    layer_config[n] = {"bits": 16}
+                    logger.info(
+                        f"{n} will not be quantized.")
+        if len(layer_config) > 0:
+            for format in formats:
+                if "auto_round" not in format:
+                    ##TODO gptq, awq could support some mixed precision config
+                    logger.warning(f"mixed precision exporting does not support {format} currently")
+
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
