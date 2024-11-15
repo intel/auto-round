@@ -44,7 +44,7 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=10,
             dataset=self.llm_dataloader,
-            quant_block_list=None
+            to_quant_block_names=None
         )
         autoround.quantize()
         
@@ -64,11 +64,12 @@ class TestAutoRound(unittest.TestCase):
             seqlen=2,
             batch_size=batch_size,
             dataset=self.llm_dataloader,
-            quant_block_list=llm_block_names
+            to_quant_block_names=llm_block_names
         )
         adamround.quantize()
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

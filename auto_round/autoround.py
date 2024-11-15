@@ -51,6 +51,7 @@ from .utils import (
     mv_module_from_gpu,
     unsupport_meta_device, clear_memory,
     compile_func,
+    find_matching_blocks
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -108,10 +109,10 @@ class AutoRound(object):
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
+        to_quant_block_names (str|list): A string or list whose elements are list of 
+                            block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
-        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True
-
+        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True.
     Returns:
         The quantized model.
     """
@@ -150,7 +151,7 @@ class AutoRound(object):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
-            quant_block_list: list = None,
+            to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
             **kwargs,
@@ -201,7 +202,10 @@ class AutoRound(object):
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-        self.quant_block_list = quant_block_list
+        if not hasattr(self, 'to_quant_block_names'):
+            all_blocks = get_block_names(model)
+            self.to_quant_block_names = find_matching_blocks(model, all_blocks, to_quant_block_names)
+        
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
@@ -267,8 +271,8 @@ class AutoRound(object):
         The quantized model and layer configurations.
         """
 
-        if bool(self.quant_block_list):
-            all_blocks = self.quant_block_list
+        if bool(self.to_quant_block_names):
+            all_blocks = self.to_quant_block_names
         else:
             all_blocks = get_block_names(self.model)
 
@@ -418,7 +422,7 @@ class AutoRound(object):
         Returns:
         None
         """
-        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
+        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.to_quant_block_names)
         keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
                 "act_dynamic"]
         for n, m in self.model.named_modules():
@@ -1248,7 +1252,7 @@ class AutoRound(object):
             "amp",
             "nsamples",
             "low_gpu_mem_usage",
-            "quant_block_list",
+            "to_quant_block_names",
             "enable_norm_bias_tuning"
         ]
         if isinstance(self.dataset, str):
@@ -1281,7 +1285,7 @@ class AutoRound(object):
             data_type=self.data_type,
             serialization_dict=serialization_dict,
             backend=backend,
-            quant_block_list=self.quant_block_list,
+            to_quant_block_names=self.to_quant_block_names,
             **kwargs
         )
         return compressed_model
@@ -1296,7 +1300,7 @@ class AutoRound(object):
             return []
 
         layer_names = []
-        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
+        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.to_quant_block_names)
 
         for key in self.layer_config.keys():
             if key in all_layers_in_block:
@@ -1419,7 +1423,8 @@ class AutoRoundOPT(AutoRound):
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
+        to_quant_block_names (str|list): A string or list whose elements are list of 
+                            block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer function
         **kwargs: Additional keyword arguments.
@@ -1462,7 +1467,7 @@ class AutoRoundOPT(AutoRound):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
-            quant_block_list: list = None,
+            to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
             optimizer="AdamW",
@@ -1501,7 +1506,7 @@ class AutoRoundOPT(AutoRound):
             act_group_size=act_group_size,
             act_sym=act_sym,
             act_dynamic=act_dynamic,
-            quant_block_list=quant_block_list,
+            to_quant_block_names=to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
             **kwargs,
@@ -1589,7 +1594,7 @@ class AutoRoundAdam(AutoRoundOPT):
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        quant_block_list (list): A list whose elements are list of block's layer names to be quantized.
+        to_quant_block_names (str|list): A list whose elements are list of block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer function
     Returns:
@@ -1630,7 +1635,7 @@ class AutoRoundAdam(AutoRoundOPT):
             act_group_size: int = None,
             act_sym: bool = None,
             act_dynamic: bool = True,
-            quant_block_list: list = None,
+            to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
             optimizer="AdamW",
@@ -1669,9 +1674,10 @@ class AutoRoundAdam(AutoRoundOPT):
             act_group_size=act_group_size,
             act_sym=act_sym,
             act_dynamic=act_dynamic,
-            quant_block_list=quant_block_list,
+            to_quant_block_names=to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
             optimizer=optimizer,
             **kwargs,
         )
+

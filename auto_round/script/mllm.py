@@ -154,6 +154,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--truncation", action="store_true",
                           help="whether to truncate sequences at the maximum length.")
+        
+        self.add_argument("--to_quant_block_names", default=None, type=str,
+                          help="Names of quantitative blocks, please use commas to separate them.")
 
         ## ======================= VLM eval=======================
         self.add_argument("--tasks", type=str,
@@ -342,7 +345,7 @@ def tune(args):
                       scale_dtype=args.scale_dtype, layer_config=layer_config, template=args.template,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       quant_nontext_module=args.quant_nontext_module, not_use_best_mse=args.not_use_best_mse,
-                      enable_torch_compile=args.enable_torch_compile)
+                      to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile)
     model, _ = autoround.quantize()
 
     model.eval()
