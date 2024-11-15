@@ -230,7 +230,7 @@ def get_mllm_dataloader(
     if os.path.isfile(dataset) or dataset in MLLM_DATASET.keys():
         dataset = MLLM_DATASET['liuhaotian/llava'](
             template, model, tokenizer, dataset, extra_data_dir, 
-            seqlen=min(seqlen, 111512), truncation=truncation, nsamples=nsamples)
+            seqlen=min(seqlen, 512), truncation=truncation, nsamples=nsamples)
 
         bs, gradient_accumulate_steps = check_mllm_model_batch(
             model, batch_size=bs, gradient_accumulate_steps=gradient_accumulate_steps)

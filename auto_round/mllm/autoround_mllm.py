@@ -190,7 +190,7 @@ class AutoRoundMLLM(AutoRound):
     def _only_text_test(self):
         """Test if the model whether can use text-only datasets."""
         try:
-            text =  ["only text test", "whether can use text-only dataset"]
+            text =  ["only text", "test"]
             inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
             self.model(**inputs)
             return True
@@ -313,7 +313,7 @@ class AutoRoundMLLM(AutoRound):
         elif total_cnt < nsamples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantification. "
-                f"Valid samples size {total_cnt}, while target sample size is only {nsamples}"
+                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
 
         # clean embed weight to save memory
