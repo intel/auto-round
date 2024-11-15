@@ -403,9 +403,9 @@ class AutoRoundQuantizer(HfQuantizer):
         data_type = quantization_config.data_type if hasattr(quantization_config,
                                                              "data_type") else "int"  # pragma: no cover
         sym = quantization_config.sym
-        quant_block_list = quantization_config.quant_block_list if hasattr(quantization_config,
-                                                                           "quant_block_list") else None
-        layer_names = get_layer_names_in_block(model, quant_block_list=quant_block_list)
+        to_quant_block_names = quantization_config.to_quant_block_names if hasattr(quantization_config,
+                                                                           "to_quant_block_names") else None
+        layer_names = get_layer_names_in_block(model, to_quant_block_names=to_quant_block_names)
 
         extra_config = {}
         if hasattr(quantization_config, "extra_config"):
@@ -741,3 +741,4 @@ if version.parse(transformers.__version__) < version.parse("4.38.0"):
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
+

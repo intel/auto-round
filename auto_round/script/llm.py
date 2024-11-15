@@ -142,6 +142,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--not_use_best_mse", action='store_true',
                           help="whether to use the iter of best mes loss in the tuning phase")
+        
+        self.add_argument("--to_quant_block_names", default=None, type=str,
+                          help="Names of quantitative blocks, please use commas to separate them.")
 
         self.add_argument("--enable_torch_compile", default=None, type=bool,
                             help="whether to enable torch compile")
@@ -404,7 +407,7 @@ def tune(args):
         enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
         low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning, not_use_best_mse=args.not_use_best_mse,
-        enable_torch_compile=args.enable_torch_compile)
+        to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile)
     model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
@@ -504,3 +507,4 @@ def eval(args):
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
     print(make_table(res))
+

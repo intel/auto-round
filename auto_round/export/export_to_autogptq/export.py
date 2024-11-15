@@ -121,7 +121,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     model = kwargs["model"]
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
-    quant_block_list = kwargs["quant_block_list"]
+    to_quant_block_names = kwargs["to_quant_block_names"]
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
@@ -131,8 +131,8 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         processor.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
     quantization_config = kwargs["serialization_dict"]
-    if bool(quant_block_list):
-        all_blocks = quant_block_list
+    if bool(to_quant_block_names):
+        all_blocks = to_quant_block_names
         flattened_list = [item for sublist in all_blocks for item in sublist]
         common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
         if common_prefix not in BLOCK_PATTERNS:
@@ -220,3 +220,4 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
