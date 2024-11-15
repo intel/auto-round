@@ -41,20 +41,6 @@ more accuracy data and recipes across various models.
 
 ## Installation
 
-### Build from Source
-
-```bash
-pip install -r requirements.txt
-
-# GPU
-pip install -vvv --no-build-isolation -e .
-
-# CPU
-pip install -vvv --no-build-isolation -e .[cpu]
-
-# HPU
-pip install -vvv --no-build-isolation -e .[hpu]
-```
 
 ### Install from pypi
 
@@ -68,6 +54,24 @@ pip install auto-round[cpu]
 # HPU
 pip install auto-round[hpu]
 ```
+
+
+<details>
+  <summary>Build from Source</summary>
+
+  ```bash
+  pip install -r requirements.txt
+
+  # GPU
+  pip install -vvv --no-build-isolation -e .
+
+  # CPU
+  pip install -vvv --no-build-isolation -e .[cpu]
+
+  # HPU
+  pip install -vvv --no-build-isolation -e .[hpu]
+  ```
+</details>
 
 ## Model Quantization
 

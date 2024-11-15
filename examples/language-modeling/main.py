@@ -312,7 +312,7 @@ if __name__ == '__main__':
                         f"{n} will not be quantized.")
         if len(layer_config) > 0:
             for format in formats:
-                if "auto_round" not in format:
+                if "auto_round" not in format and "fake" not in format:
                     ##TODO gptq, awq could support some mixed precision config
                     print(f"mixed precision exporting does not support {format} currently")
 
