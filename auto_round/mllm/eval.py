@@ -378,6 +378,9 @@ def lmms_eval(
         model_args = f"pretrained={model}"
     if MODEL_TYPE_TO_LMMS_MODEL[model_type] == "llama_vision":
         model_args += f",device_map={device}"
+    class CliArgs:
+        output_path = output_dir
+
     results = _lmms_eval.evaluator.simple_evaluate(
         model=MODEL_TYPE_TO_LMMS_MODEL[model_type],
         model_args=model_args,
@@ -389,6 +392,7 @@ def lmms_eval(
         device=device,
         use_cache=use_cache,
         apply_chat_template=apply_chat_template,
+        cli_args=CliArgs()
     )
 
     # print and save result
