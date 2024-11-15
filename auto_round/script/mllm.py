@@ -55,7 +55,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--dataset", type=str, default=None,
                           help="the dataset for quantization training."
                                " current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k "
-                               "It can be a custom one. Defualt is NeelNanda/pile-10k")
+                               "It can be a custom one. Default is NeelNanda/pile-10k")
 
         self.add_argument("--lr", default=None, type=float,
                           help="learning rate, if None, it will be set to 1.0/iters automatically")
