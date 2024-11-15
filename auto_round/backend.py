@@ -404,7 +404,7 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     from packaging.version import Version
 
     # Import the appropriate QuantLinear based on the version of auto_gptq
-    if Version(version) <= Version("0.7.1"):
+    if Version(version) < Version("0.7.2"):
         QuantLinear = dynamically_import_QuantLinear(
             use_triton=use_triton,
             desc_act=False,
