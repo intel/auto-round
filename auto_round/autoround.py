@@ -579,7 +579,7 @@ class AutoRound(object):
         elif total_cnt < nsamples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantification. "
-                f"Valid samples size:{total_cnt}, Target sample size:{nsamples}"
+                f"Valid samples size {total_cnt}, while target sample size is only {nsamples}"
             )
 
         # clean embed weight to save memory
