@@ -14,6 +14,7 @@
 
 import os
 import argparse
+import json
 
 import torch
 import transformers
@@ -282,9 +283,9 @@ def tune(args):
         else:
             cls = AutoModelForCausalLM
 
-    model = cls.from_pretrained(
-        model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
-        device_map="auto" if use_auto_mapping else None)
+        model = cls.from_pretrained(
+            model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
+            device_map="auto" if use_auto_mapping else None)
     if "cogvlm2" in model_name:
         model.config.model_type = "cogvlm2"
 
@@ -388,4 +389,70 @@ def eval(args):
         mode=args.mode,
         ignore=args.ignore
     )
+
+def setup_lmms_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", "--model_name", "--model_name_or_path",
+                          help="model name or path")
+    parser.add_argument(
+        "--tasks",
+        default="pope,textvqa_val,scienceqa,mmbench_en",
+        help="To get full list of tasks, use the command lmms-eval --tasks list",
+    )
+    parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
+                          help="the directory to save quantized model")
+    parser.add_argument(
+        "--num_fewshot",
+        type=int,
+        default=None,
+        help="Number of examples in few-shot context",
+    )
+    parser.add_argument(
+        "--batch_size",
+        "-b",
+        type=str,
+        default=1,
+        metavar="auto|auto:N|N",
+        help="Acceptable values are 'auto', 'auto:N' or N, where N is an integer. Default 1.",
+    )
+    parser.add_argument(
+        "--max_batch_size",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximal batch size to try with --batch_size auto.",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to use (e.g. cuda, cuda:0, cpu)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=float,
+        default=None,
+        help="Limit the number of examples per task. " "If <1, limit is a percentage of the total"
+        " number of examples.",
+    )
+    args = parser.parse_args()
+    return args
+
+def lmms_eval(args):
+    from auto_round.mllm import lmms_eval
+
+    results = lmms_eval(
+        model=args.model,
+        tasks=args.tasks,
+        output_dir=args.output_dir,
+        num_fewshot=args.num_fewshot,
+        limit=args.limit,
+        batch_size=args.batch_size,
+        max_batch_size=args.max_batch_size,
+        device=args.device,
+        use_cache=None,
+        apply_chat_template=False,
+    )
+    return results
+
 

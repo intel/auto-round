@@ -40,8 +40,19 @@ def run_mllm():
     else:
         tune(args)
 
+def run_lmms():
+    from transformers.utils.versions import require_version
+    require_version("lmms_eval", "lmms_eval need to be installed, `pip install lmms_eval`")
+    # from auto_round.script.lmms_eval import setup_lmms_args, eval
+    from auto_round.script.mllm import setup_lmms_parser, lmms_eval
+    args = setup_lmms_parser()
+    lmms_eval(args)
+
 def switch():
-    if "--mllm" in sys.argv:
+    if "--lmms" in sys.argv:
+        sys.argv.remove("--lmms")
+        run_lmms()
+    elif "--mllm" in sys.argv:
         sys.argv.remove("--mllm")
         run_mllm()
     else:
