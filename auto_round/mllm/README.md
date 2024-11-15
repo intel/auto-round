@@ -44,7 +44,7 @@ So far, auto-round for mllm supports five model families, include Qwen2-VL, Llam
 
 |Model          |Eval Lib   |calibration dataset|quant nontext module|
 |---------------|-----------|-------------------|--------------------|
-|Qwen2-VL       |vlmeval    |pile/llava         |✔                   |
+|Qwen2-VL       |vlmeval    |pile/llava         |-                   |
 |Llama-Vision   |lmms_eval  |llava              |✔                   |
 |Phi3-Vision    |vlmeval    |pile/llava         |✔                   |
 |Llava-v1.5     |lmms_eval  |pile/llava         |-                   |
