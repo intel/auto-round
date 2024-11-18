@@ -28,6 +28,7 @@ from ..autoround import AutoRound
 from .template import get_template, Template
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
+from ..calib_dataset import CALIB_DATASETS
 
 
 class AutoRoundMLLM(AutoRound):
@@ -134,11 +135,11 @@ class AutoRoundMLLM(AutoRound):
         if dataset is None:
             dataset = self.template.default_dataset
         if truncation is None:
-            truncation = True if dataset == "NeelNanda/pile-10k" else False
+            truncation = True if dataset in CALIB_DATASETS.keys() else False
         self.truncation = truncation
 
-        if not self._only_text_test() and dataset == "NeelNanda/pile-10k":
-            logger.warning(f"{model.config.model_type} not support for NeelNanda/pile-10k,"
+        if not self._only_text_test() and dataset in CALIB_DATASETS.keys():
+            logger.warning(f"{model.config.model_type} not support for {dataset},"
                            " will use liuhaotian/llava_conv_58k as an alternative.")
             dataset = "liuhaotian/llava_conv_58k"
             self.truncation = False
