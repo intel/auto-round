@@ -451,7 +451,7 @@ class WeightOnlyLinear(torch.nn.Module):
 
             numba.config.THREADING_LAYER = "tbb"
             from numba.np.ufunc import tbbpool as lib
-        except ImportError:
+        except (ImportError, ValueError) as e:
             logger.warning(
                 "To accelerate packing, please install numba with `pip install numba tbb`."
             )
