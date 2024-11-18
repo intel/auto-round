@@ -128,11 +128,11 @@ class LlavaDataset(Dataset):
                 return new_questions
             else:
                 if seqlen > max_len:
-                    logger.error(f"seqlen={seqlen} is greater than the max length of dataset {max_len},"
+                    logger.warning(f"seqlen={seqlen} is greater than the max length of dataset {max_len},"
                                  f" will change seqlen to {max_len - 128}")
                     new_min_seqlen = max_len - 128
                 else:
-                    logger.error(f"no enough sample for seqlen greater than {min_seqlen},"
+                    logger.warning(f"no enough sample for seqlen greater than {min_seqlen},"
                                  f" will decrease to {min_seqlen-128}")
                     new_min_seqlen = min_seqlen - 128
                 return new_questions + _check(questions, new_min_seqlen, min_seqlen, nsamples-len(new_questions))
