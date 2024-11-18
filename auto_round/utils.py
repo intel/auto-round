@@ -54,7 +54,7 @@ class AutoRoundFormatter(logging.Formatter):
 
     def format(self, record):
         log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt)
+        formatter = logging.Formatter(log_fmt, "%Y-%m-%d %H:%M:%S")
         return formatter.format(record)
 
 logging.Logger.warning_once = warning_once
@@ -62,8 +62,6 @@ logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
 logger.propagate = False
 fh = logging.StreamHandler()
-# fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
-# fh.setFormatter(fh_formatter)
 fh.setFormatter(AutoRoundFormatter())
 logger.addHandler(fh)
 
