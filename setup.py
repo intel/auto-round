@@ -16,7 +16,7 @@ except Exception as error:
 version = __version__
 
 
-BUILD_CUDA_EXT = int(os.environ.get('BUILD_CUDA_EXT', '1')) == 1
+BUILD_CUDA_EXT = int(os.environ.get('BUILD_CUDA_EXT', '0')) == 1
 PYPI_RELEASE = os.environ.get('PYPI_RELEASE', None)
 BUILD_HPU_ONLY = os.environ.get('BUILD_HPU_ONLY', '0') == '1'
 
