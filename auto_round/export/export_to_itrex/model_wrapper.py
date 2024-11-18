@@ -80,6 +80,19 @@ def get_torch_version():
 PT_VERSION = get_torch_version().release
 
 
+def is_tbb_available():
+    try:
+        from numba.np.ufunc.parallel import _check_tbb_version_compatible
+        # check if TBB is present and compatible
+        _check_tbb_version_compatible()
+        # now try and load the backend
+        from numba.np.ufunc import tbbpool as lib
+        return True
+    except ImportError:
+        logger.warning("TBB not available, falling back to numpy")
+        return False
+
+
 class WeightOnlyLinear(torch.nn.Module):
 
     def __init__(
@@ -450,7 +463,12 @@ class WeightOnlyLinear(torch.nn.Module):
             import numba
 
             numba.config.THREADING_LAYER = "tbb"
-            from numba.np.ufunc import tbbpool as lib
+            if not is_tbb_available():
+                return (
+                    self.pack_tensor_with_torch(torch.from_numpy(raw_array))
+                    .cpu()
+                    .numpy()
+                )
         except (ImportError, ValueError) as e:
             logger.warning(
                 "To accelerate packing, please install numba with `pip install numba tbb`."
