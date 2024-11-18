@@ -236,9 +236,8 @@ class AutoRoundMLLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to(self.device)
 
-        pbar = tqdm(total=min(nsamples, len(self.dataloader)), desc="calib")
-        pbar.update(1)
-        with pbar:
+        total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
+        with tqdm(range(1, total + 1), desc="calib") as pbar:
             for data in self.dataloader:
                 if data is None:
                     continue

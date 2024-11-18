@@ -60,6 +60,7 @@ class LlavaDataset(Dataset):
     }
     _COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
     IMAGE_TOKEN = "<image>"
+    MAX_SEQLEN = 512
 
     def __init__(
             self,
@@ -93,7 +94,7 @@ class LlavaDataset(Dataset):
                 self.questions = requests.get(self.LLAVA_DATASET[dataset_name], stream=True).json()
             else:
                 raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
-        self.seqlen = seqlen
+        self.seqlen = min(seqlen, self.MAX_SEQLEN)
         self.questions = self.check(self.questions, seqlen, nsamples)
         self.padding = padding
         self.truncation = truncation
@@ -230,7 +231,7 @@ def get_mllm_dataloader(
     if os.path.isfile(dataset) or dataset in MLLM_DATASET.keys():
         dataset = MLLM_DATASET['liuhaotian/llava'](
             template, model, tokenizer, dataset, extra_data_dir, 
-            seqlen=min(seqlen, 512), truncation=truncation, nsamples=nsamples)
+            seqlen=seqlen, truncation=truncation, nsamples=nsamples)
 
         bs, gradient_accumulate_steps = check_mllm_model_batch(
             model, batch_size=bs, gradient_accumulate_steps=gradient_accumulate_steps)
