@@ -8,6 +8,7 @@
     "format_separator": "\n",
     "default_system": "You are a helpful assistant.",
     "replace_tokens": null,
-    "processor": "basic",
-    "extra_encode" : false
+    "extra_encode" : false,
+    "default_dataset": "NeelNanda/pile-10k",
+    "processor": "basic"
 }

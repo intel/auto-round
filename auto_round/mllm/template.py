@@ -49,6 +49,7 @@ class Template:
     default_system: str
     replace_tokens: List[tuple]
     extra_encode: bool
+    default_dataset: str
     processor: "BasicProcessor"
 
     def _encode(self, sources):
@@ -84,7 +85,8 @@ def _register_template(
     format_separator: Optional[str] = None,
     default_system: str = "",
     replace_tokens: List[tuple] = None,
-    extra_encode: Optional[bool] = True,
+    extra_encode: Optional[bool] = False,
+    default_dataset: Optional[bool] = "NeelNanda/pile-10k",
     processor: "BasicProcessor" = PROCESSORS["basic"],
 ):
     """Registers a chat template."""
@@ -106,6 +108,7 @@ def _register_template(
         default_system = default_system,
         replace_tokens = replace_tokens,
         extra_encode = extra_encode,
+        default_dataset = default_dataset,
         processor = processor()
     )
     return TEMPLATES[model_type]

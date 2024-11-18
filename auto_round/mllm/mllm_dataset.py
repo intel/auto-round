@@ -29,7 +29,7 @@ from ..special_model_handler import check_mllm_model_batch
 
 MLLM_DATASET : Dict[str, Dataset] = {}
 
-def register_dataset(name):
+def register_dataset(name_list):
     """Class decorator to register a DATASET subclass to the registry.
 
     Decorator function used before a Pattern subclass.
@@ -42,13 +42,14 @@ def register_dataset(name):
     """
 
     def register(dataset):
-        MLLM_DATASET[name] = dataset
-        return dataset
+        for name in name_list.replace(' ', '').split(','):
+            MLLM_DATASET[name] = dataset
     return register
 
 
 
-@register_dataset("liuhaotian/llava")
+@register_dataset(
+    "liuhaotian/llava,liuhaotian/llava_conv_58k,liuhaotian/llava_instruct_80k,liuhaotian/llava_instruct_150k")
 class LlavaDataset(Dataset):
     """Dataset for supervised fine-tuning."""
     BASE_LLAVA_URL = "https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/resolve/main/"
@@ -59,6 +60,7 @@ class LlavaDataset(Dataset):
     }
     _COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
     IMAGE_TOKEN = "<image>"
+    MAX_SEQLEN = 512
 
     def __init__(
             self,
@@ -67,15 +69,20 @@ class LlavaDataset(Dataset):
             tokenzier,
             dataset_path,
             extra_data_dir=None,
-            seqlen=None,
+            seqlen=512,
             padding=True,
             truncation=True,
+            nsamples=512
             ) -> None:
         super().__init__()
         self.model = model
         self.model_type = template.model_type
         self.template = template
         self.tokenizer = tokenzier
+        if dataset_path == "liuhaotian/llava":
+            dataset_path = "llava_conv_58k"
+        else:
+            dataset_path = dataset_path.split("/")[-1]
         if os.path.exists(dataset_path):
             logger.info(f'use dataset {dataset_path}, loading from disk...')
             self.questions = json.load(open(dataset_path, "r"))
@@ -87,8 +94,8 @@ class LlavaDataset(Dataset):
                 self.questions = requests.get(self.LLAVA_DATASET[dataset_name], stream=True).json()
             else:
                 raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
-        self.seqlen = seqlen
-        self.questions = self.check(self.questions, seqlen)
+        self.seqlen = min(seqlen, self.MAX_SEQLEN)
+        self.questions = self.check(self.questions, seqlen, nsamples)
         self.padding = padding
         self.truncation = truncation
         self.extra_data_dir = extra_data_dir
@@ -103,19 +110,33 @@ class LlavaDataset(Dataset):
             self.image_fold = image_fold
 
 
-    def check(self, questions, seqlen):
-        new_questions = []
-        for source in questions:
-            text_lenght = 0
-            for text in source['conversations']:
-                if self.IMAGE_TOKEN in text['value']:
-                    text['value'] = self.IMAGE_TOKEN + text['value'].replace(self.IMAGE_TOKEN, '')
-                text_lenght += len(text['value'].split(' '))
-            if text_lenght >= seqlen:
-                new_questions.append(source)
-        assert len(new_questions) > 0, \
-            f"no data with length greater than {seqlen}, please reduce the seqlen or change another dataset."
-        return new_questions
+    def check(self, questions, seqlen, nsamples):
+        def _check(questions, min_seqlen, max_seqlen, nsamples):
+            new_questions = []
+            max_len = 0
+            for source in questions:
+                str_len = 0
+                for text in source['conversations']:
+                    if self.IMAGE_TOKEN in text['value']:
+                        text['value'] = self.IMAGE_TOKEN + text['value'].replace(self.IMAGE_TOKEN, '')
+                    str_len += len(text['value'].split(' '))
+                if str_len > max_len:
+                    max_len = str_len
+                if min_seqlen <= str_len < max_seqlen:
+                    new_questions.append(source)
+            if len(new_questions) >= nsamples:
+                return new_questions
+            else:
+                if seqlen > max_len:
+                    logger.warning(f"seqlen={seqlen} is greater than the max length of dataset {max_len},"
+                                 f" will change seqlen to {max_len - 128}")
+                    new_min_seqlen = max_len - 128
+                else:
+                    logger.warning(f"no enough sample for seqlen greater than {min_seqlen},"
+                                 f" will decrease to {min_seqlen-128}")
+                    new_min_seqlen = min_seqlen - 128
+                return new_questions + _check(questions, new_min_seqlen, min_seqlen, nsamples-len(new_questions))
+        return _check(questions, seqlen, float("inf"), nsamples)
     
 
     def __len__(self):
@@ -205,40 +226,35 @@ def get_mllm_dataloader(
     if isinstance(template, str):
         from .template import get_template
         template = get_template(template, model=model, tokenizer=tokenizer, image_processor=image_processor)
+    
 
-    if os.path.isfile(dataset):
+    if os.path.isfile(dataset) or dataset in MLLM_DATASET.keys():
         dataset = MLLM_DATASET['liuhaotian/llava'](
             template, model, tokenizer, dataset, extra_data_dir, 
-            seqlen=min(seqlen, tokenizer.model_max_length), truncation=truncation)
-    elif "liuhaotian/llava" in dataset:
-        dataset = MLLM_DATASET["liuhaotian/llava"](
-            template, model, tokenizer, dataset, extra_data_dir, 
-            seqlen=min(seqlen, tokenizer.model_max_length), truncation=truncation)
-    else:
-        # try to load text calibration dataset
-            from ..calib_dataset import get_dataloader
-            dataloader = get_dataloader(
-                tokenizer, seqlen, dataset, seed, bs, nsamples)
-            if quant_nontext_module:
-                logger.error(
-                f"Quantitative nontext module is not supported for plain text datasets," \
-                    " please disable arg '--quant_nontext_module'")
-                exit(-1)
-            if "mllama" in model.config.model_type:
-                logger.error(
-                f"The llama3.2-vision model does not support the quantization of text-only calibration datasets.")
-                exit(-1)
-            return dataloader, bs, gradient_accumulate_steps
-    
-    bs, gradient_accumulate_steps = check_mllm_model_batch(
+            seqlen=seqlen, truncation=truncation, nsamples=nsamples)
+
+        bs, gradient_accumulate_steps = check_mllm_model_batch(
             model, batch_size=bs, gradient_accumulate_steps=gradient_accumulate_steps)
     
-    set_seed(seed)
-    dataloader_params = {
-        "batch_size": bs,
-        "shuffle": True,
-        "collate_fn": dataset.template.processor.data_collator
-    }
+        set_seed(seed)
+        dataloader_params = {
+            "batch_size": bs,
+            "shuffle": True,
+            "collate_fn": dataset.template.processor.data_collator
+        }
 
-    return DataLoader(dataset, **dataloader_params), bs, gradient_accumulate_steps
+        return DataLoader(dataset, **dataloader_params), bs, gradient_accumulate_steps
+    else:
+        # try to load text calibration dataset
+        from ..calib_dataset import get_dataloader
+        dataloader = get_dataloader(
+            tokenizer, seqlen, dataset, seed, bs, nsamples)
+        if quant_nontext_module:
+            logger.error(
+            f"Quantitative nontext module is not supported for plain text datasets," \
+                " please disable arg '--quant_nontext_module'")
+            exit(-1)
+        return dataloader, bs, gradient_accumulate_steps
+    
+    
 

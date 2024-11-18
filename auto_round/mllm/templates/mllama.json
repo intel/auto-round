@@ -4,5 +4,7 @@
     "format_assistant": "<|start_header_id|>assistant<|end_header_id|>\n{{content}}<|eot_id|>",
     "format_system": "<|begin_of_text|><|start_header_id|>system|end_header_id|>\n{{content}}<<eot_id>",
     "default_system": "You are a helpful assistant.",
-    "replace_tokens": ["<image>", "<|image|>"]
+    "replace_tokens": ["<image>", "<|image|>"],
+    "extra_encode" : true,
+    "default_dataset": "liuhaotian/llava_conv_58k"
 }
