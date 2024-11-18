@@ -132,15 +132,14 @@ class AutoRoundMLLM(AutoRound):
         self.template = get_template(
             self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
         
-        if dataset is None:
-            dataset = self.template.default_dataset
+        dataset = self.template.default_dataset if dataset is None else dataset
         if truncation is None:
             truncation = True if dataset in CALIB_DATASETS.keys() else False
         self.truncation = truncation
 
-        if not self._only_text_test() and dataset in CALIB_DATASETS.keys():
+        if dataset in CALIB_DATASETS.keys() and not self._only_text_test():
             logger.warning(f"{model.config.model_type} not support for {dataset},"
-                           " will use liuhaotian/llava_conv_58k as an alternative.")
+                           " will use liuhaotian/llava_conv_58k with default config as an alternative.")
             dataset = "liuhaotian/llava_conv_58k"
             self.truncation = False
             batch_size = 1
