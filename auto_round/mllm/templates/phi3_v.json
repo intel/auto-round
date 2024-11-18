@@ -2,5 +2,6 @@
     "model_type": "phi3_v",
     "replace_tokens": ["<image>", "<|image_1|>"],
     "processor": "basic",
-    "extra_encode" : false
+    "extra_encode" : false,
+    "default_dataset": "NeelNanda/pile-10k"
 }

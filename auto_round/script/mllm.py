@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import sys
 import argparse
 import json
 
@@ -51,10 +52,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--asym", action='store_true',
                           help="whether to use asym quantization")
 
-        self.add_argument("--dataset", type=str, default="liuhaotian/llava_conv_58k",
+        self.add_argument("--dataset", type=str, default=None,
                           help="the dataset for quantization training."
-                               " current support llava_conv_58k,llava_instruct_80k "
-                               "It can be a custom one.")
+                               " current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k "
+                               "It can be a custom one. Default is NeelNanda/pile-10k")
 
         self.add_argument("--lr", default=None, type=float,
                           help="learning rate, if None, it will be set to 1.0/iters automatically")
@@ -68,7 +69,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--adam", action='store_true',
                           help="whether to use adam optimizer instead of SignSGD")
 
-        self.add_argument("--gradient_accumulate_steps", default=4, type=int,
+        self.add_argument("--gradient_accumulate_steps", default=1, type=int,
                           help="gradient accumulate steps")
 
         self.add_argument("--nblocks", default=1, type=int,
@@ -153,7 +154,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
                           help="the template for building training dataset. It can be a custom one.")
 
         self.add_argument("--truncation", action="store_true",
-                          help="whether to truncate sequences at the maximum length.")
+                          help="whether to truncate sequences at the maximum length."
+                          " Default True for pile and False for llava dataset.")
         
         self.add_argument("--to_quant_block_names", default=None, type=str,
                           help="Names of quantitative blocks, please use commas to separate them.")
@@ -197,13 +199,13 @@ def setup_parser():
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--batch_size", "--train_bs", default=1, type=int,
+    parser.add_argument("--batch_size", "--train_bs", default=8, type=int,
                         help="train batch size")
 
     parser.add_argument("--iters", "--iter", default=200, type=int,
                         help=" iters")
 
-    parser.add_argument("--seqlen", "--seq_len", default=256, type=int,
+    parser.add_argument("--seqlen", "--seq_len", default=2048, type=int,
                         help="sequence length")
 
     parser.add_argument("--nsamples", default=128, type=int,
@@ -229,8 +231,6 @@ def tune(args):
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
-
-    assert args.dataset is not None, "dataset should not be None."
 
     devices = args.device.replace(" ", "").split(',')
     use_auto_mapping = False
@@ -351,6 +351,9 @@ def tune(args):
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
               f"gpu")
+
+    if "--truncation" not in sys.argv:
+        args.truncation = None
 
     autoround = round(model, tokenizer, image_processor=image_processor, dataset=args.dataset,
                       extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,

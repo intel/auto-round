@@ -28,6 +28,7 @@ from ..autoround import AutoRound
 from .template import get_template, Template
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
+from ..calib_dataset import CALIB_DATASETS
 
 
 class AutoRoundMLLM(AutoRound):
@@ -130,8 +131,21 @@ class AutoRoundMLLM(AutoRound):
         self.template = template if template is not None else model.config.model_type
         self.template = get_template(
             self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
+        
+        dataset = self.template.default_dataset if dataset is None else dataset
+        if truncation is None:
+            truncation = True if dataset in CALIB_DATASETS.keys() else False
         self.truncation = truncation
-        assert dataset is not None, "dataset should not be None"
+
+        if dataset in CALIB_DATASETS.keys() and not self._only_text_test():
+            logger.warning(f"{model.config.model_type} not support for {dataset},"
+                           " will use liuhaotian/llava_conv_58k with default config as an alternative.")
+            dataset = "liuhaotian/llava_conv_58k"
+            self.truncation = False
+            batch_size = 1
+            gradient_accumulate_steps = 4
+            seqlen = 512
+
         
         super(AutoRoundMLLM, self).__init__(
             model=model,
@@ -172,6 +186,18 @@ class AutoRoundMLLM(AutoRound):
             **kwargs,
         )
 
+        
+    def _only_text_test(self):
+        """Test if the model whether can use text-only datasets."""
+        try:
+            text =  ["only text", "test"]
+            inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
+            self.model(**inputs)
+            return True
+        except:
+            return False
+            
+
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
 
@@ -210,7 +236,8 @@ class AutoRoundMLLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to(self.device)
 
-        with tqdm(total=nsamples-1, desc="calib") as pbar:
+        total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
+        with tqdm(range(1, total + 1), desc="calib") as pbar:
             for data in self.dataloader:
                 if data is None:
                     continue
@@ -285,7 +312,7 @@ class AutoRoundMLLM(AutoRound):
         elif total_cnt < nsamples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantification. "
-                f"Valid samples size:{total_cnt}, Target sample size:{nsamples}"
+                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
 
         # clean embed weight to save memory
