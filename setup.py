@@ -26,6 +26,7 @@ def is_hpu_available():
         import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
         return True
     except ImportError:
+        print("Unable to import habana_frameworks.torch.core, HPU is not available.")
         return False
 
 if is_hpu_available():
