@@ -397,6 +397,10 @@ class AutoRoundQuantizer(HfQuantizer):
             if ("hpu" == target_device or "cpu" == target_device) and model.dtype != torch.bfloat16:
                 logger.info(f"Change the dtype to `bfloat16` as {target_device.upper()} does not support float16")
                 model = model.to(torch.bfloat16)
+            else:
+                if model.dtype != torch.float16:
+                    logger.info(f"Change the dtype to `float16` for better performance")
+                    model = model.to(torch.float16)
 
         bits = quantization_config.bits
         group_size = quantization_config.group_size
@@ -404,7 +408,7 @@ class AutoRoundQuantizer(HfQuantizer):
                                                              "data_type") else "int"  # pragma: no cover
         sym = quantization_config.sym
         to_quant_block_names = quantization_config.to_quant_block_names if hasattr(quantization_config,
-                                                                           "to_quant_block_names") else None
+                                                                                   "to_quant_block_names") else None
         layer_names = get_layer_names_in_block(model, to_quant_block_names=to_quant_block_names)
 
         extra_config = {}

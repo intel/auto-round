@@ -300,21 +300,29 @@ if __name__ == '__main__':
         round = AutoRoundAdam
 
     layer_config = {}
+    if args.fp_layers != "":
+        fp_layers = args.fp_layers.replace(" ", "").split(",")
+        for n, m in model.named_modules():
+            if not isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D)):
+                continue
+            for fp_layer in fp_layers:
+                if fp_layer in n:
+                    layer_config[n] = {"bits": 16}
+                    print(
+                        f"{n} will not be quantized.")
+        if len(layer_config) > 0:
+            for format in formats:
+                if "auto_round" not in format and "fake" not in format:
+                    ##TODO gptq, awq could support some mixed precision config
+                    print(f"mixed precision exporting does not support {format} currently")
+
     for n, m in model.named_modules():
         if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                 layer_config[n] = {"bits": 16}
                 print(
                     f"{n} will not be quantized due to its shape not being divisible by 32, resulting in an exporting issue to autogptq")
-    fp_layers = args.fp_layers.split(",")
-    if bool(fp_layers):
-        for n, m in model.named_modules():
-            if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
-                name = n.split('.')[-1]
-                if n in fp_layers or name in fp_layers:
-                    layer_config[n] = {"bits": 16}
-                    print(
-                        f"{n} will not be quantized.")
+
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():
         lm_head_layer_name = n

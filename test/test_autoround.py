@@ -307,6 +307,38 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
 
 
+    def test_fallback_layers(self):
+        bits, group_size, sym = 4, 128, True
+        model_name = "facebook/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, trust_remote_code=True,
+                                                     device_map='auto')
+        layer_config = {"model.decoder.layers.0.self_attn.q_proj": {"bits": "16"},
+                        "model.decoder.layers.1.self_attn.k_proj": {"bits": "16"}}
+        autoround = AutoRound(
+            model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            layer_config=layer_config
+        )
+        autoround.quantize()
+        quantized_model_path = "./saved"
+
+        autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
+
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+                                                     device_map='auto')
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=1)[0])
+
+
 
 if __name__ == "__main__":
     unittest.main()
+
