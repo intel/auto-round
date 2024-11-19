@@ -491,11 +491,12 @@ def check_to_quantized(config):
             False otherwise.
     """
     if isinstance(config, dict):
-        if config["bits"] > 8:
+        
+        if int(config["bits"]) > 8:
             return False
         return True
     else:
-        if config.bits > 8:
+        if int(config.bits) > 8:
             return False
         return True
 
@@ -977,4 +978,5 @@ def compile_func(fun, device, enable_torch_compile):
         return compile_func_on_hpu(fun)  ## use auto by default
     else:
         return compile_func_on_cuda_or_cpu(fun, enable_torch_compile)
+
 

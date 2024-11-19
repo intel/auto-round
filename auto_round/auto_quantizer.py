@@ -745,3 +745,4 @@ if version.parse(transformers.__version__) < version.parse("4.38.0"):
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
+
