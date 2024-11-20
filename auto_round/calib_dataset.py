@@ -16,9 +16,6 @@ import json
 import random
 
 import torch
-
-assert  False
-torch.use_deterministic_algorithms(True, warn_only=True)
 from torch.utils.data import DataLoader
 
 from .utils import is_local_path, logger
