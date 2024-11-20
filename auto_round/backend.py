@@ -119,6 +119,14 @@ BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                             requirements=["auto-gptq>=0.7.1"]
                                             )
 
+BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda","cpu"], sym=[True, False],
+                                            packing_format="triton_zp+-1",
+                                            bits=[2, 3, 4, 8], group_size=None,
+                                            priority=0, feature_checks=[feature_multiply_checker_32],
+                                            alias=["auto_round:auto_gptq:cuda"],
+                                            requirements=["auto-gptq>=0.7.1"]
+                                            )
+
 BackendInfos['awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##actrally is gemm
                                        packing_format="awq",
                                        bits=[4], group_size=None,
