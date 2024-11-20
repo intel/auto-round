@@ -31,6 +31,17 @@ from ..low_cpu_mem.utils import get_layers_before_block
 from ..calib_dataset import CALIB_DATASETS
 
 
+def _only_text_test(model, tokenizer):
+    """Test if the model whether can use text-only datasets."""
+    try:
+        text =  ["only text", "test"]
+        inputs = tokenizer(text, return_tensors="pt", padding=True).to(model.device)
+        model(**inputs)
+        return True
+    except:
+        return False
+
+
 class AutoRoundMLLM(AutoRound):
     """Class for automatic rounding-based quantization with MLLMs.
     
@@ -137,7 +148,7 @@ class AutoRoundMLLM(AutoRound):
             truncation = True if dataset in CALIB_DATASETS.keys() else False
         self.truncation = truncation
 
-        if dataset in CALIB_DATASETS.keys() and not self._only_text_test():
+        if dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer):
             logger.warning(f"{model.config.model_type} not support for {dataset},"
                            " will use liuhaotian/llava_conv_58k with default config as an alternative.")
             dataset = "liuhaotian/llava_conv_58k"
@@ -187,15 +198,7 @@ class AutoRoundMLLM(AutoRound):
         )
 
         
-    def _only_text_test(self):
-        """Test if the model whether can use text-only datasets."""
-        try:
-            text =  ["only text", "test"]
-            inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
-            self.model(**inputs)
-            return True
-        except:
-            return False
+    
             
 
     def calib(self, nsamples, bs):
