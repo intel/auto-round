@@ -469,14 +469,10 @@ class AutoRoundQuantizer(HfQuantizer):
                 If any condition related to backend or quantization configuration is not met.
         """
 
-        def remove_device_str(str, device_str):
-            if str is None or str == "":
-                return str
-            if str.startswith(device_str):
-                return str[len(device_str):]
-            elif str.startswith(device_str + ":"):
-                return str[len(device_str + ":"):]
-            return str
+        def remove_device_str(s, device_str):
+            if s and s.startswith(device_str):
+                return s[len(device_str):].lstrip(":")
+            return s
 
         if "auto" == target_backend.split(':')[0]:
             target_backend = target_backend[4:]  # Remove 'auto'
