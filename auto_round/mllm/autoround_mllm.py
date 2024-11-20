@@ -35,7 +35,8 @@ def _only_text_test(model, tokenizer):
     """Test if the model whether can use text-only datasets."""
     try:
         text =  ["only text", "test"]
-        inputs = tokenizer(text, return_tensors="pt", padding=True).to(model.device)
+        tokenizer.padding_side  = 'left'
+        inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(model.device)
         model(**inputs)
         return True
     except:
