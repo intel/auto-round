@@ -36,6 +36,8 @@ def _only_text_test(model, tokenizer):
     try:
         text =  ["only text", "test"]
         tokenizer.padding_side  = 'left'
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
         inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(model.device)
         model(**inputs)
         return True
@@ -149,6 +151,10 @@ class AutoRoundMLLM(AutoRound):
         if truncation is None:
             truncation = True if dataset in CALIB_DATASETS.keys() else False
         self.truncation = truncation
+
+        if nsamples % batch_size != 0:
+            nsamples = (nsamples // batch_size + 1) * batch_size
+            logger.warning(f"nsample divided by batch_size is not an integer, will adjusted to {nsamples}")
 
         if dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer):
             logger.warning(f"{model.config.model_type} not support for {dataset},"
