@@ -124,6 +124,7 @@ BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda","cpu"], sym=[True, False]
                                             bits=[2, 3, 4, 8], group_size=None,
                                             priority=0, feature_checks=[feature_multiply_checker_32],
                                             alias=["auto_round:auto_gptq:cuda"],
+                                            convertable_format=["triton_zp+-1"],
                                             requirements=["auto-gptq>=0.7.1"]
                                             )
 
