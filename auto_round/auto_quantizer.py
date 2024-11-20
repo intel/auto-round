@@ -469,15 +469,24 @@ class AutoRoundQuantizer(HfQuantizer):
                 If any condition related to backend or quantization configuration is not met.
         """
 
+        def remove_device_str(str, device_str):
+            if str is None or str == "":
+                return str
+            if str.startswith(device_str):
+                return str[len(device_str):]
+            elif str.startswith(device_str + ":"):
+                return str[len(device_str + ":"):]
+            return str
+
         if "auto" == target_backend.split(':')[0]:
             target_backend = target_backend[4:]  # Remove 'auto'
             if len(target_backend) >= 1 and target_backend[0] == ":":
                 target_backend = target_backend[1:]
 
         # Remove device info from target_backend
-        target_backend = target_backend.lstrip("cpu:")
-        target_backend = target_backend.lstrip("hpu:")
-        target_backend = target_backend.lstrip("cuda:")
+        target_backend = remove_device_str(target_backend, "cpu")
+        target_backend = remove_device_str(target_backend, "hpu")
+        target_backend = remove_device_str(target_backend, "cuda")
         orig_backend = self.find_backend(orig_backend)
 
         if target_backend == "":
@@ -729,4 +738,3 @@ if version.parse(transformers.__version__) < version.parse("4.38.0"):
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
-
