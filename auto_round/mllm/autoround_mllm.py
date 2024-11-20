@@ -28,7 +28,7 @@ from ..autoround import AutoRound
 from .template import get_template, Template
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
-from ..calib_dataset import CALIB_DATASETS
+
 
 
 class AutoRoundMLLM(AutoRound):
@@ -133,6 +133,7 @@ class AutoRoundMLLM(AutoRound):
             self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
         
         dataset = self.template.default_dataset if dataset is None else dataset
+        from ..calib_dataset import CALIB_DATASETS
         if truncation is None:
             truncation = True if dataset in CALIB_DATASETS.keys() else False
         self.truncation = truncation
