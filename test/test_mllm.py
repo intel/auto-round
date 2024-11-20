@@ -64,7 +64,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
         autoround = AutoRoundMLLM(
             model, tokenizer, bits=bits, group_size=group_size,
             nsamples=1,
-            batch_size=1, iters=2, dataset=self.dataset, quant_nontext_module=True,seqlen=256)
+            batch_size=3, iters=2, dataset=self.dataset, quant_nontext_module=True,seqlen=256)
         autoround.quantize()
         autoround.save_quantized("./saved/", format="auto_round", inplace=True)
         
