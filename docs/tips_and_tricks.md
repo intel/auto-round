@@ -148,7 +148,7 @@ Although these values fall within the FP16 range, during INT4 tuning, weight adj
 
 **Suggestions:**
 
-1. **Better not relying solely on PPL (Perplexity) for evaluation.**
+1. **Better not rely solely on PPL (Perplexity) for evaluation.**
 2. **Incorporate tasks that use chat templates for instruct/chat models.**
 
 **Reasoning:**
