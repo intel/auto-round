@@ -12,14 +12,14 @@
 **Reasoning:**
 
 1. Language Module Dominates, Making It More Cost-Effective to Quantize:
-
-| Model                         | 16-bit | Language 4-bit |
-| ----------------------------- | ------ | -------------- |
-| Qwen2-VL-7B-Instruct          | 15.6G  | 6.5G           |
-| Phi-3.5-Vision-Instruct       | 7.9G   | 2.8G           |
-| LLaVA-v1.5-7B                 | 12.6G  | 4.3G           |
-| LLaMA-3.2-11B-Vision-Instruct | 20.1G  | 7.9G           |
-| CogVLm2                       | 36.9G  | 17.6G          |
+    
+    | Model                         | 16-bit | Language 4-bit |
+    | ----------------------------- | ------ | -------------- |
+    | Qwen2-VL-7B-Instruct          | 15.6G  | 6.5G           |
+    | Phi-3.5-Vision-Instruct       | 7.9G   | 2.8G           |
+    | LLaVA-v1.5-7B                 | 12.6G  | 4.3G           |
+    | LLaMA-3.2-11B-Vision-Instruct | 20.1G  | 7.9G           |
+    | CogVLm2                       | 36.9G  | 17.6G          |
 
 2. Quantizing the Vision Module Leads to Larger Accuracy Loss: We have conducted experiments on Qwen1 and LLaVA, and found that quantizing the vision module resulted in considerable accuracy degradation.
 
