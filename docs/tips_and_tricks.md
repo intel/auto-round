@@ -131,7 +131,7 @@ Although these values fall within the FP16 range, during INT4 tuning, weight adj
 
 
 
-### **7. Using `torch.compile`**
+### **7. Better use `torch.compile`**
 
 **Suggestion: Use `torch.compile` if possible, but be aware that it may throw exceptions for some models, especially with lower versions of PyTorch**. Starting from PyTorch 2.6, we have set using `torch.compile` as the default.
 
