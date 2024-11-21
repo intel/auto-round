@@ -156,8 +156,12 @@ class AutoRoundMLLM(AutoRound):
             nsamples = (nsamples // batch_size + 1) * batch_size
             logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
 
-        if dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer):
-            logger.warning(f"{model.config.model_type} not support for {dataset},"
+        if quant_nontext_module or (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer)):
+            if quant_nontext_module:
+                logger.warning(f"Quantitative nontext module is not supported for plain text datasets,"
+                               "will use liuhaotian/llava_conv_58k with default config as an alternative.")
+            else:
+                logger.warning(f"{model.config.model_type} not support for {dataset},"
                            " will use liuhaotian/llava_conv_58k with default config as an alternative.")
             dataset = "liuhaotian/llava_conv_58k"
             self.truncation = False
