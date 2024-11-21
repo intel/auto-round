@@ -329,6 +329,15 @@ class AutoRoundMLLM(AutoRound):
                 f"Insufficient number of samples collected may affect the quantification. "
                 f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
+            if total_cnt < self.batch_size:
+                raise ValueError(f"valid samples is less than batch_size({self.batch_size}),"
+                                 " please adjust self.batch_size or seqlen.")
+            max_len = (total_cnt // self.batch_size) * self.batch_size
+            for k, v in self.inputs.items():
+                for key in v:
+                    if isinstance(v[key], list) and len(v[key]) == total_cnt:
+                        self.inputs[k][key] = v[key][:max_len]
+
 
         # clean embed weight to save memory
         if self.low_cpu_mem_usage:

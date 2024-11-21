@@ -43,7 +43,7 @@ class TestAutoRoundCmd(unittest.TestCase):
             assert False, "cmd line test fail, please have a check"
 
         res = os.system(
-            f"cd .. && {python_path} -m auto_round --mllm --iter 2 --nsamples 16 --format auto_round"
+            f"cd .. && {python_path} -m auto_round --mllm --iter 2 --nsamples 10 --format auto_round"
             " --quant_nontext_module --output_dir ./saved --dataset liuhaotian/llava_conv_58k")
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
