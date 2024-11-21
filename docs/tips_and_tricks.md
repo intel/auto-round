@@ -109,7 +109,7 @@ Although these values fall within the FP16 range, during INT4 tuning, weight adj
 
 
 
-### 5. Be Cautious of Underflow caused by Quantization Scales
+### 5. Be Cautious of Underflow Caused by Quantization Scales
 
 **Background:** When quantizing LLaMA 3.1 70B, we found that the accuracy was unstable across tasks—some tasks performed very well, while others performed poorly
 
@@ -131,7 +131,7 @@ Although these values fall within the FP16 range, during INT4 tuning, weight adj
 
 
 
-### **7. Better use `torch.compile`**
+### **7. Better Use `torch.compile`**
 
 **Suggestion: Use `torch.compile` if possible, but be aware that it may throw exceptions for some models, especially with lower versions of PyTorch**. Starting from PyTorch 2.6, we have set using `torch.compile` as the default.
 
