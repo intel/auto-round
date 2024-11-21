@@ -18,7 +18,7 @@ AutoRound (>=0.4) will set this as the default model, but users can opt for othe
 1. Language Module Dominates, Making It More Cost-Effective to Quantize:
 
    | Model                         | 16-bit | Language 4-bit |
-       | ----------------------------- | ------ | -------------- |
+   | ----------------------------- | ------ | -------------- |
    | Qwen2-VL-7B-Instruct          | 15.6G  | 6.5G           |
    | Phi-3.5-Vision-Instruct       | 7.9G   | 2.8G           |
    | LLaVA-v1.5-7B                 | 12.6G  | 4.3G           |
