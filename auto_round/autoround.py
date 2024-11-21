@@ -262,6 +262,12 @@ class AutoRound(object):
                 f"reset batch_size to nsamples({self.nsamples}) "
                 f"as batch_size({self.batch_size}) must be smaller than nsamples")
             self.batch_size = self.nsamples
+        
+        if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
+            self.nsamples = self.gradient_accumulate_steps * self.batch_size
+            logger.warning(
+                f"rest nsamples to {self.nsamples} as nsamples must equal or greater"
+                " than gradient_accumulate_steps * batch_szie")
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
