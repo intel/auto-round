@@ -89,7 +89,7 @@ could lead to some accuracy loss, so the question is whether it should be quanti
 use `auto-round --model xxx --quant_lm_head`.
 
 **Reasoning:** For models with 7B or more parameters, quantizing the LM-head has minimal impact on accuracy, and it
-offers a reasonable compression rate for the model. But We do find that lm-head quantization could bring large accuracy
+offers a reasonable compression rate for the model. But we do find that lm-head quantization could bring large accuracy
 drop of IFEVAL task for Qwen2.5-14B-Instruct, so you may need a verification for you model.
 
 | GLM4-chat Metric                           | BF16   | INT4 (6.4G) | INT4-quantized-LM-head (5.5G) |
