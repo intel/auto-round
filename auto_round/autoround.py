@@ -257,11 +257,13 @@ class AutoRound(object):
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
 
-        if self.batch_size > self.nsamples:
+
+        if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
+            self.batch_size = min(self.batch_size, self.nsamples)
+            self.gradient_accumulate_steps = min(self.nsamples // self.batch_size, self.gradient_accumulate_steps)
             logger.warning(
-                f"reset batch_size to nsamples({self.nsamples}) "
-                f"as batch_size({self.batch_size}) must be smaller than nsamples")
-            self.batch_size = self.nsamples
+                f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps} as nsamples must equal or greater"
+                " than gradient_accumulate_steps * batch_szie")
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.

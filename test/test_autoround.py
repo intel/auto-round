@@ -16,7 +16,7 @@ class LLMDataLoader:
         self.batch_size = 1
 
     def __iter__(self):
-        for i in range(2):
+        for i in range(3):
             yield torch.ones([1, 10], dtype=torch.long)
 
 
@@ -100,6 +100,19 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
+    def test_nsample(self):
+       autoround= AutoRound(
+           self.model,
+           self.tokenizer,
+           bits=4,
+           group_size=128,
+           seqlen=2,
+           nsamples=3,
+           batch_size=3,
+           iters=2,
+           dataset=self.llm_dataloader,
+           gradient_accumulate_steps=4)
+       autoround.quantize()
 
     def test_default(self):
         bits, group_size, sym = 4, 128, False

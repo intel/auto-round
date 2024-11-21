@@ -469,21 +469,10 @@ class AutoRoundQuantizer(HfQuantizer):
                 If any condition related to backend or quantization configuration is not met.
         """
 
-        def remove_str(input_string: str, sub_str) -> str:
-            """Removes the specified substring from the input string, if present.
-
-            Args:
-                input_string (str):
-                    The original string from which to remove the substring.
-                sub_str (str):
-                    The substring to be removed.
-
-            Returns:
-                str:
-                    The modified string with the substring removed.
-            """
-            pattern = re.escape(sub_str) + r':?'
-            return re.sub(pattern, '', input_string)
+        def remove_device_str(s, device_str):
+            if s and s.startswith(device_str):
+                return s[len(device_str):].lstrip(":")
+            return s
 
         if "auto" == target_backend.split(':')[0]:
             target_backend = target_backend[4:]  # Remove 'auto'
@@ -491,9 +480,9 @@ class AutoRoundQuantizer(HfQuantizer):
                 target_backend = target_backend[1:]
 
         # Remove device info from target_backend
-        target_backend = remove_str(target_backend, "cpu")
-        target_backend = remove_str(target_backend, "hpu")
-        target_backend = remove_str(target_backend, "cuda")
+        target_backend = remove_device_str(target_backend, "cpu")
+        target_backend = remove_device_str(target_backend, "hpu")
+        target_backend = remove_device_str(target_backend, "cuda")
         orig_backend = self.find_backend(orig_backend)
 
         if target_backend == "":
@@ -745,4 +734,3 @@ if version.parse(transformers.__version__) < version.parse("4.38.0"):
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
-

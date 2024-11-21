@@ -28,7 +28,7 @@ from ..autoround import AutoRound
 from .template import get_template, Template
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
-from ..calib_dataset import CALIB_DATASETS
+
 
 
 def _only_text_test(model, tokenizer):
@@ -36,6 +36,8 @@ def _only_text_test(model, tokenizer):
     try:
         text =  ["only text", "test"]
         tokenizer.padding_side  = 'left'
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
         inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(model.device)
         model(**inputs)
         return True
@@ -145,12 +147,21 @@ class AutoRoundMLLM(AutoRound):
             self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
         
         dataset = self.template.default_dataset if dataset is None else dataset
+        from ..calib_dataset import CALIB_DATASETS
         if truncation is None:
             truncation = True if dataset in CALIB_DATASETS.keys() else False
         self.truncation = truncation
 
-        if dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer):
-            logger.warning(f"{model.config.model_type} not support for {dataset},"
+        if nsamples % batch_size != 0:
+            nsamples = (nsamples // batch_size + 1) * batch_size
+            logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
+
+        if quant_nontext_module or (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer)):
+            if quant_nontext_module:
+                logger.warning(f"Quantitative nontext module is not supported for plain text datasets,"
+                               "will use liuhaotian/llava_conv_58k with default config as an alternative.")
+            else:
+                logger.warning(f"{model.config.model_type} not support for {dataset},"
                            " will use liuhaotian/llava_conv_58k with default config as an alternative.")
             dataset = "liuhaotian/llava_conv_58k"
             self.truncation = False
@@ -318,6 +329,15 @@ class AutoRoundMLLM(AutoRound):
                 f"Insufficient number of samples collected may affect the quantification. "
                 f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
+            if total_cnt < self.batch_size:
+                raise ValueError(f"valid samples is less than batch_size({self.batch_size}),"
+                                 " please adjust self.batch_size or seqlen.")
+            max_len = (total_cnt // self.batch_size) * self.batch_size
+            for k, v in self.inputs.items():
+                for key in v:
+                    if isinstance(v[key], list) and len(v[key]) == total_cnt:
+                        self.inputs[k][key] = v[key][:max_len]
+
 
         # clean embed weight to save memory
         if self.low_cpu_mem_usage:
