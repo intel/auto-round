@@ -52,8 +52,8 @@ the default.
 
 **Reasoning:**
 
-Full-range symmetric quantization was first introduced by the Llama CPP community. Its precision is comparable to
-asymmetric quantization, and it outperforms traditional symmetric quantization, particularly in low-bit scenarios like
+**To my beset knowledge, full-range symmetric quantization was first introduced by the LlamaCPP community.** Based on our experiments, its precision is comparable to
+asymmetric quantization, and it outperforms other symmetric quantization variants, particularly in low-bit scenarios like
 2-bit quantization.
 
 **Average accuracy across 10 tasks:**
