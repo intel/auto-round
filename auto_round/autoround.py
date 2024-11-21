@@ -264,9 +264,9 @@ class AutoRound(object):
             self.batch_size = self.nsamples
         
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
-            self.nsamples = self.gradient_accumulate_steps * self.batch_size
+            self.gradient_accumulate_steps = self.nsamples // self.batch_size
             logger.warning(
-                f"rest nsamples to {self.nsamples} as nsamples must equal or greater"
+                f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps} as nsamples must equal or greater"
                 " than gradient_accumulate_steps * batch_szie")
 
     def quantize(self):
