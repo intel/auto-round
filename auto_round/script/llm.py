@@ -458,7 +458,7 @@ def tune(args):
                 user_model = model
             else:
                 user_model = model.to(device_str)
-            if args.eval_bs == "auto":
+            if args.eval_bs is None or args.eval_bs == "auto" :
                 args.eval_bs = 16
             from auto_round.eval.evaluation import simple_evaluate_user_model
             res = simple_evaluate_user_model(user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs)

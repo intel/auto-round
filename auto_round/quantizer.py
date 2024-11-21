@@ -15,6 +15,7 @@
 import torch
 import transformers
 from auto_round.data_type import get_quant_func
+from .data_type.fp8 import progressive_quant_fp8_int4
 from .utils import (
     check_to_quantized,
     get_scale_shape,
@@ -103,11 +104,13 @@ class WrapperWALayer(torch.nn.Module):
         self.act_quant_func = self.orig_layer.act_quant_func
 
     def forward(self, x):
-        x, _, _ = quant_tensor(self.orig_layer.act_quant_func, x, self.orig_layer.act_bits,
-                               self.orig_layer.group_size,
-                               scale_dtype=self.orig_layer.scale_dtype,
-                               q_scale_thresh=self.orig_layer.q_scale_thresh,
-                               data_type=self.orig_layer.act_data_type)
+        from auto_round.data_type.fp8 import quant_fp8_per_tensor
+        x, _, _ = quant_fp8_per_tensor(x, 8, "fp8", v=0.0, min_scale=1.0, max_scale=1.0)
+        # x, _, _ = quant_tensor(self.orig_layer.act_quant_func, x, self.orig_layer.act_bits,
+        #                        self.orig_layer.group_size,
+        #                        scale_dtype=self.orig_layer.scale_dtype,
+        #                        q_scale_thresh=self.orig_layer.q_scale_thresh,
+        #                        data_type=self.orig_layer.act_data_type)
         return self.orig_layer.forward(x)
 
 
@@ -315,10 +318,14 @@ class WrapperLinear(torch.nn.Module):
 
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
-        qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.orig_layer.weight, self.bits,
-                                             self.group_size, v,
-                                             min_scale, max_scale, self.scale_dtype, self.weight_min, self.weight_max,
-                                             data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
+        qdq_weight, scale, zp = progressive_quant_fp8_int4(self.orig_layer.weight, self.bits, self.group_size, data_type="fp8", v=v,
+                                                    min_scale=min_scale, max_scale=max_scale)
+        qdq_weight =qdq_weight.to(self.orig_layer.weight.dtype)
+        #
+        # qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.orig_layer.weight, self.bits,
+        #                                      self.group_size, v,
+        #                                      min_scale, max_scale, self.scale_dtype, self.weight_min, self.weight_max,
+        #                                      data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
         scale = scale.reshape(qdq_weight.shape[0], -1)
         if zp is not None:
             zp = zp.reshape(qdq_weight.shape[0], -1)
@@ -364,15 +371,20 @@ class WrapperLinear(torch.nn.Module):
             weight = self.orig_layer.get_weight().to(self.device)
         self.min_scale.data.copy_(torch.clamp(self.min_scale.data, 0, 1.0))
         self.max_scale.data.copy_(torch.clamp(self.max_scale.data, 0, 1.0))
-        weight_q, _, _ = quant_tensor(self.weight_quant_func, weight, self.bits, self.group_size, self.value,
-                                      self.min_scale,
-                                      self.max_scale, self.scale_dtype, self.weight_min, self.weight_max,
-                                      data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
+        # weight_q, _, _ = quant_tensor(self.weight_quant_func, weight, self.bits, self.group_size, self.value,
+        #                               self.min_scale,
+        #                               self.max_scale, self.scale_dtype, self.weight_min, self.weight_max,
+        #                               data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
+        from auto_round.data_type.fp8 import progressive_quant_fp8_int4
+
+        weight_q,_,_= progressive_quant_fp8_int4(weight,self.bits,self.group_size,data_type="fp8", v=self.value,min_scale=self.min_scale,max_scale=self.max_scale)
         weight_q = weight_q.to(weight.dtype)
         if self.act_quant:
-            x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
-                                   scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
-                                   data_type=self.act_data_type)
+            from auto_round.data_type.fp8 import quant_fp8_per_tensor
+            x,_,_ = quant_fp8_per_tensor(x,self.act_bits,"fp8", v=0.0,min_scale=1.0,max_scale=1.0)
+            # x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
+            #                        scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
+            #                        data_type=self.act_data_type)
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
         if bias is not None and bias.device.type == 'meta':
