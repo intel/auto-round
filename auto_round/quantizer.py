@@ -104,8 +104,8 @@ class WrapperWALayer(torch.nn.Module):
         self.act_quant_func = self.orig_layer.act_quant_func
 
     def forward(self, x):
-        from auto_round.data_type.fp8 import quant_fp8_per_tensor
-        x, _, _ = quant_fp8_per_tensor(x, 8, "fp8", v=0.0, min_scale=1.0, max_scale=1.0)
+        from auto_round.data_type.fp8 import quant_fp8_dynamic_per_token
+        x, _, _ = quant_fp8_dynamic_per_token(x, 8, "fp8", v=0.0, min_scale=1.0, max_scale=1.0)
         # x, _, _ = quant_tensor(self.orig_layer.act_quant_func, x, self.orig_layer.act_bits,
         #                        self.orig_layer.group_size,
         #                        scale_dtype=self.orig_layer.scale_dtype,
@@ -380,8 +380,8 @@ class WrapperLinear(torch.nn.Module):
         weight_q,_,_= progressive_quant_fp8_int4(weight,self.bits,self.group_size,data_type="fp8", v=self.value,min_scale=self.min_scale,max_scale=self.max_scale)
         weight_q = weight_q.to(weight.dtype)
         if self.act_quant:
-            from auto_round.data_type.fp8 import quant_fp8_per_tensor
-            x,_,_ = quant_fp8_per_tensor(x,self.act_bits,"fp8", v=0.0,min_scale=1.0,max_scale=1.0)
+            from auto_round.data_type.fp8 import quant_fp8_dynamic_per_token
+            x,_,_ = quant_fp8_dynamic_per_token(x, self.act_bits, "fp8", v=0.0, min_scale=1.0, max_scale=1.0)
             # x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
             #                        scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
             #                        data_type=self.act_data_type)
