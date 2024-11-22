@@ -171,8 +171,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--pack", action='store_true',
                           help="a video may associate with multiple questions, if pack==True,"
                                " will ask all questions for a video in a single")
-        self.add_argument("--use-subtitle", action='store_true')
-        self.add_argument("--fps", type=float, default=-1)
+        self.add_argument("--fps", type=float, default=-1,
+                          help="set the fps for a video.")
         # Work Dir
         # Infer + Eval or Infer Only
         self.add_argument("--mode", type=str, default='all', choices=['all', 'infer'],
@@ -183,14 +183,16 @@ class BasicArgumentParser(argparse.ArgumentParser):
         # API Kwargs, Apply to API VLMs and Judge API LLMs
         self.add_argument('--retry', type=int, default=None, help='retry numbers for API VLMs')
         # Explicitly Set the Judge Model
-        self.add_argument('--judge', type=str, default=None)
+        self.add_argument('--judge', type=str, default=None,
+                          help="whether is a judge model.")
         # Logging Utils
-        self.add_argument('--verbose', action='store_true')
+        self.add_argument('--verbose', action='store_true',
+                          help="whether to display verbose information.")
         # Configuration for Resume
         # Ignore: will not rerun failed VLM inference
         self.add_argument('--ignore', action='store_true', help='ignore failed indices. ')
         # Rerun: will remove all evaluation temp files
-        self.add_argument('--rerun', action='store_true')
+        self.add_argument('--rerun', action='store_true', help="If true, will remove all evvaluation temp files and rerun.")
 
 
 def setup_parser():
