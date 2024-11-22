@@ -8,19 +8,18 @@ AutoRound uses the text module of MLLM (LLM component) as the main quantization 
 ```python
     from auto_round import AutoRoundMLLM
     from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
-
     ## load the model
     model_name = "Qwen/Qwen2-VL-2B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         model_name, trust_remote_code=True)
-    
+        
     ## quantize the model
     bits, group_size = 4, 128
     autoround = AutoRoundMLLM(model, tokenizer, processor, bits=bits, group_size=group_size)
     autoround.quantize()
-    
+
     # save the quantized model, set format='auto_gptq' to use AutoGPTQ format
     output_dir = "./tmp_autoround"
     autoround.save_quantized(output_dir, format='auto_round', inplace=True)
@@ -135,9 +134,9 @@ from auto_round import AutoRoundConfig ## must import for auto-round format
 For more details on quantization, inference, evaluation, and environment, see the following recipe:
 
 - [Qwen2-VL-Instruct](../../docs/Qwen2-VL-7B-Instruct_sym.md)
-- [Llama-3.2-11B-Vision](../../docs/Qwen2-VL-7B-Instruct_sym.md) 
-- [Phi-3.5-vision-instruct](../../docs/Qwen2-VL-7B-Instruct_sym.md)
-- [llava-v1.5-7b](../../docs/Qwen2-VL-7B-Instruct_sym.md)
+- [Llama-3.2-11B-Vision](../../docs/Llama-3.2-11B-Vision-Instruct_sym.md) 
+- [Phi-3.5-vision-instruct](../../docs/Phi-3.5-vision-instruct_sym.md)
+- [llava-v1.5-7b](../../docs/llava-v1.5-7b_sym.md)
 
 
 
