@@ -272,8 +272,8 @@ if __name__ == '__main__':
             elif args.model_dtype == "float32" or args.model_dtype == "fp32":
                 model = model.to(torch.float32)
         except:
-            logger.error("please use more device to fit the device or just use one device")
-            exit()
+            print("please use more device to fit the device or just use one device")
+            exit(-1)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
 
