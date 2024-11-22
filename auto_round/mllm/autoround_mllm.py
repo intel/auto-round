@@ -97,6 +97,7 @@ class AutoRoundMLLM(AutoRound):
             self,
             model,
             tokenizer,
+            processor = None,
             image_processor = None,
             bits: int = 4,
             group_size: int = 128,
@@ -144,7 +145,7 @@ class AutoRoundMLLM(AutoRound):
         self.image_processor = image_processor
         self.template = template if template is not None else model.config.model_type
         self.template = get_template(
-            self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
+            self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
         
         dataset = self.template.default_dataset if dataset is None else dataset
         from ..calib_dataset import CALIB_DATASETS

@@ -22,14 +22,13 @@ from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTok
 model_name = "Qwen/Qwen2-VL-2B-Instruct"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
-tokenizer.processor = processor
 model = Qwen2VLForConditionalGeneration.from_pretrained(
     model_name, trust_remote_code=True) 
 dataset = "/path/to/llava.json"
 extra_data_dir = "/path/to/images/dir" 
 
 bits, group_size = 4, 128
-autoround = AutoRoundMLLM(model, tokenizer, bits=bits, group_size=group_size, dataset=dataset, extra_data_dir=extra_data_dir)
+autoround = AutoRoundMLLM(model, tokenizer, processor=processor, bits=bits, group_size=group_size, dataset=dataset, extra_data_dir=extra_data_dir)
 
 autoround.quantize()
 output_dir = "./tmp_autoround"

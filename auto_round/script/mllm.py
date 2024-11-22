@@ -287,7 +287,6 @@ def tune(args):
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-        tokenizer.processor = processor
         model_type = config.model_type
         if "qwen2_vl" in model_type:
             from transformers import Qwen2VLForConditionalGeneration
@@ -370,7 +369,7 @@ def tune(args):
     if "--truncation" not in sys.argv:
         args.truncation = None
 
-    autoround = round(model, tokenizer, image_processor=image_processor, dataset=args.dataset,
+    autoround = round(model, tokenizer, processor=processor, image_processor=image_processor, dataset=args.dataset,
                       extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,
                       sym=not args.asym, batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks,
                       iters=args.iters, lr=args.lr, minmax_lr=args.minmax_lr, amp=not args.disable_amp,
