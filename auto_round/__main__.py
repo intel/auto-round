@@ -33,11 +33,17 @@ def run_fast():
 
 
 def run_mllm():
-    from auto_round.script.mllm import setup_parser, tune, eval
-    args = setup_parser()
-    if args.eval:
+    if "--eval" in sys.argv:
+        from auto_round.script.mllm import setup_lmeval_parser, eval
+        sys.argv.remove("--eval")
+        args = setup_lmeval_parser()
         eval(args)
+    elif "--lmms" in sys.argv:
+        sys.argv.remove("--lmms")
+        run_lmms()
     else:
+        from auto_round.script.mllm import setup_parser, tune
+        args = setup_parser()
         tune(args)
 
 def run_lmms():
@@ -49,10 +55,10 @@ def run_lmms():
     lmms_eval(args)
 
 def switch():
-    if "--lmms" in sys.argv:
-        sys.argv.remove("--lmms")
-        run_lmms()
-    elif "--mllm" in sys.argv:
+    # if "--lmms" in sys.argv:
+    #     sys.argv.remove("--lmms")
+    #     run_lmms()
+    if "--mllm" in sys.argv:
         sys.argv.remove("--mllm")
         run_mllm()
     else:

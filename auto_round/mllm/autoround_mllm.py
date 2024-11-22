@@ -208,9 +208,6 @@ class AutoRoundMLLM(AutoRound):
             enable_torch_compile=enable_torch_compile,
             **kwargs,
         )
-
-        
-    
             
 
     def calib(self, nsamples, bs):

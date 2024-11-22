@@ -32,8 +32,21 @@ class TestAutoRoundCmd(unittest.TestCase):
 
 
         # test mllm script
+        # test auto_round_mllm help
         res = os.system(
             f"cd .. && {python_path} -m auto_round --mllm -h")
+        if res > 0 or res == -1:
+            assert False, "cmd line test fail, please have a check"
+
+        # test auto_round_mllm --eval help
+        res = os.system(
+            f"cd .. && {python_path} -m auto_round --mllm --eval -h")
+        if res > 0 or res == -1:
+            assert False, "cmd line test fail, please have a check"
+        
+        # test auto_round_mllm --lmms help
+        res = os.system(
+            f"cd .. && {python_path} -m auto_round --mllm --lmms -h")
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 

@@ -160,39 +160,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--to_quant_block_names", default=None, type=str,
                           help="Names of quantitative blocks, please use commas to separate them.")
 
-        ## ======================= VLM eval=======================
-        self.add_argument("--tasks", type=str,
-                          default="MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE",
-                          help="eval tasks for VLMEvalKit.")
-        # Args that only apply to Video Dataset
-        self.add_argument("--nframe", type=int, default=8,
-                          help="the number of frames to sample from a video,"
-                               " only applicable to the evaluation of video benchmarks.")
-        self.add_argument("--pack", action='store_true',
-                          help="a video may associate with multiple questions, if pack==True,"
-                               " will ask all questions for a video in a single")
-        self.add_argument("--fps", type=float, default=-1,
-                          help="set the fps for a video.")
-        # Work Dir
-        # Infer + Eval or Infer Only
-        self.add_argument("--mode", type=str, default='all', choices=['all', 'infer'],
-                          help="when mode set to 'all', will perform both inference and evaluation;"
-                               " when set to 'infer' will only perform the inference.")
-        self.add_argument('--eval_data_dir', type=str, default=None,
-                          help='path for VLMEvalKit to store the eval data. Default will store in ~/LMUData')
-        # API Kwargs, Apply to API VLMs and Judge API LLMs
-        self.add_argument('--retry', type=int, default=None, help='retry numbers for API VLMs')
-        # Explicitly Set the Judge Model
-        self.add_argument('--judge', type=str, default=None,
-                          help="whether is a judge model.")
-        # Logging Utils
-        self.add_argument('--verbose', action='store_true',
-                          help="whether to display verbose information.")
-        # Configuration for Resume
-        # Ignore: will not rerun failed VLM inference
-        self.add_argument('--ignore', action='store_true', help='ignore failed indices. ')
-        # Rerun: will remove all evaluation temp files
-        self.add_argument('--rerun', action='store_true', help="If true, will remove all evvaluation temp files and rerun.")
+        
 
 
 def setup_parser():
@@ -213,6 +181,46 @@ def setup_parser():
     parser.add_argument("--nsamples", default=128, type=int,
                         help="number of samples")
 
+    args = parser.parse_args()
+    return args
+
+
+def setup_lmeval_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", "--model_name", "--model_name_or_path",
+                          help="model name or path")
+    parser.add_argument("--tasks", type=str,
+                        default="MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE",
+                        help="eval tasks for VLMEvalKit.")
+    # Args that only apply to Video Dataset
+    parser.add_argument("--nframe", type=int, default=8,
+                        help="the number of frames to sample from a video,"
+                            " only applicable to the evaluation of video benchmarks.")
+    parser.add_argument("--pack", action='store_true',
+                        help="a video may associate with multiple questions, if pack==True,"
+                            " will ask all questions for a video in a single")
+    parser.add_argument("--fps", type=float, default=-1,
+                        help="set the fps for a video.")
+    # Work Dir
+    # Infer + Eval or Infer Only
+    parser.add_argument("--mode", type=str, default='all', choices=['all', 'infer'],
+                        help="when mode set to 'all', will perform both inference and evaluation;"
+                            " when set to 'infer' will only perform the inference.")
+    parser.add_argument('--eval_data_dir', type=str, default=None,
+                        help='path for VLMEvalKit to store the eval data. Default will store in ~/LMUData')
+    # API Kwargs, Apply to API VLMs and Judge API LLMs
+    parser.add_argument('--retry', type=int, default=None, help='retry numbers for API VLMs')
+    # Explicitly Set the Judge Model
+    parser.add_argument('--judge', type=str, default=None,
+                        help="whether is a judge model.")
+    # Logging Utils
+    parser.add_argument('--verbose', action='store_true',
+                        help="whether to display verbose information.")
+    # Configuration for Resume
+    # Ignore: will not rerun failed VLM inference
+    parser.add_argument('--ignore', action='store_true', help='ignore failed indices. ')
+    # Rerun: will remove all evaluation temp files
+    parser.add_argument('--rerun', action='store_true', help="if true, will remove all evaluation temp files and rerun.")
     args = parser.parse_args()
     return args
 
