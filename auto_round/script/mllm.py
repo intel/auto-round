@@ -221,6 +221,8 @@ def setup_lmeval_parser():
     parser.add_argument('--ignore', action='store_true', help='ignore failed indices. ')
     # Rerun: will remove all evaluation temp files
     parser.add_argument('--rerun', action='store_true', help="if true, will remove all evaluation temp files and rerun.")
+    parser.add_argument("--output_dir", default="./eval_result", type=str,
+                          help="the directory to save quantized model")
     args = parser.parse_args()
     return args
 
@@ -410,7 +412,6 @@ def eval(args):
         data_store_dir=args.eval_data_dir,
         dataset=args.tasks,
         pack=args.pack,
-        use_subtitle=args.use_subtitle,
         fps=args.fps,
         nframe=args.nframe,
         rerun=args.rerun,
@@ -429,7 +430,7 @@ def setup_lmms_parser():
         default="pope,textvqa_val,scienceqa,mmbench_en",
         help="To get full list of tasks, use the command lmms-eval --tasks list",
     )
-    parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
+    parser.add_argument("--output_dir", default="./eval_result", type=str,
                           help="the directory to save quantized model")
     parser.add_argument(
         "--num_fewshot",
