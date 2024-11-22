@@ -82,7 +82,7 @@ messages = [{"from": "human", "value": "How many people and animals are there in
 ## Evaluation the model
 pip3 install lmms_eval
 ```bash
-auto_round --lmms --model llava-v1.5-7b-inc-private --tasks pope,textvqa_val,scienceqa,mmbench_en  --output_dir "./eval_result" --device cuda:0 
+auto-round-mllm --lmms --model Intel/llava-v1.5-7b-inc-private --tasks pope,textvqa_val,scienceqa,mmbench_en  --output_dir "./eval_result" --device cuda:0 
 ```
 |Metric             |16bits|Pile Calib INT4  | Llava Calib INT4  |
 |:-------------------|:------|:------|:--------------|
