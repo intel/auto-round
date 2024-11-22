@@ -30,12 +30,11 @@ from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
 
 
-
 def _only_text_test(model, tokenizer):
     """Test if the model whether can use text-only datasets."""
     try:
-        text =  ["only text", "test"]
-        tokenizer.padding_side  = 'left'
+        text = ["only text", "test"]
+        tokenizer.padding_side = 'left'
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(model.device)
@@ -97,7 +96,7 @@ class AutoRoundMLLM(AutoRound):
             self,
             model,
             tokenizer,
-            image_processor = None,
+            image_processor=None,
             bits: int = 4,
             group_size: int = 128,
             sym: bool = False,
@@ -145,7 +144,7 @@ class AutoRoundMLLM(AutoRound):
         self.template = template if template is not None else model.config.model_type
         self.template = get_template(
             self.template, model=model, tokenizer=tokenizer, image_processor=image_processor)
-        
+
         dataset = self.template.default_dataset if dataset is None else dataset
         from ..calib_dataset import CALIB_DATASETS
         if truncation is None:
@@ -162,14 +161,13 @@ class AutoRoundMLLM(AutoRound):
                                "will use liuhaotian/llava_conv_58k with default config as an alternative.")
             else:
                 logger.warning(f"{model.config.model_type} not support for {dataset},"
-                           " will use liuhaotian/llava_conv_58k with default config as an alternative.")
+                               " will use liuhaotian/llava_conv_58k with default config as an alternative.")
             dataset = "liuhaotian/llava_conv_58k"
             self.truncation = False
             batch_size = 1
             gradient_accumulate_steps = 4
             seqlen = 512
 
-        
         super(AutoRoundMLLM, self).__init__(
             model=model,
             tokenizer=tokenizer,
@@ -209,10 +207,6 @@ class AutoRoundMLLM(AutoRound):
             **kwargs,
         )
 
-        
-    
-            
-
     def calib(self, nsamples, bs):
         """Perform calibration for quantization.
 
@@ -228,19 +222,19 @@ class AutoRoundMLLM(AutoRound):
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
             self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_mllm_dataloader(
-                    template=self.template,
-                    model=self.model,
-                    tokenizer=self.tokenizer,
-                    image_processor=self.image_processor,
-                    dataset=dataset, 
-                    extra_data_dir=self.extra_data_dir,
-                    seqlen=self.seqlen, 
-                    bs=self.batch_size,
-                    seed=self.seed,
-                    truncation=self.truncation,
-                    nsamples=self.nsamples,
-                    gradient_accumulate_steps=self.gradient_accumulate_steps,
-                    quant_nontext_module=self.quant_nontext_module
+                template=self.template,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                image_processor=self.image_processor,
+                dataset=dataset,
+                extra_data_dir=self.extra_data_dir,
+                seqlen=self.seqlen,
+                bs=self.batch_size,
+                seed=self.seed,
+                truncation=self.truncation,
+                nsamples=self.nsamples,
+                gradient_accumulate_steps=self.gradient_accumulate_steps,
+                quant_nontext_module=self.quant_nontext_module
             )
         else:
             self.dataloader = self.dataset
@@ -338,10 +332,8 @@ class AutoRoundMLLM(AutoRound):
                     if isinstance(v[key], list) and len(v[key]) == total_cnt:
                         self.inputs[k][key] = v[key][:max_len]
 
-
         # clean embed weight to save memory
         if self.low_cpu_mem_usage:
             for n, m in embed_layers:
                 m = m.to("meta")
         # torch.cuda.empty_cache()
-
