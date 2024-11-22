@@ -25,13 +25,13 @@ AutoRound uses the text module of MLLM (LLM component) as the main quantization 
     autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
 
-- `dataset`: the dataset for quantization training. current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k. It can be a custom one.
+- `dataset`: the dataset for quantization training. default to NeelNanda/pile-10k. For llava dataset, currently limited support llava_conv_58k, llava_instruct_80k and llava_instruct_150k. It can be a custom one.
 
 - `quant_nontext_module`: whether to quantize non-text module, e.g. vision component. 
 
 - `extra_data_dir`:dataset dir for storing images/audio/videos, default to None. Can be a dir path or multiple dir path with format as 'image=path_to_image,video=path_to_video,audio=path_to_audio' By default, it will search in the relative path, and if not find, will automatic download.
 
-for more hyperparameters introduction, please refer [Profile Detailed Hyperparameters](../../README.md#api-usage-gaudi2cpugpu)
+for more hyperparameters introduction, please refer [Homepage Detailed Hyperparameters](../../README.md#api-usage-gaudi2cpugpu)
 
 <details>
 <summary style="font-size:17px;">Basic Usage (Gaudi2/CPU/GPU)</summary>
@@ -68,7 +68,7 @@ Through argument --dataset(text file), user can use other datasets such as "liuh
 
 ### Support Matrix
 
-For existing MLLMs, the LLM components quantization is theoretically unproblematic. But, the design of vision components in MLLM model APIs is not standardized, and some models do not support the quantization of non-text modules.
+For typical VLLMs, we assume that the default quantization, which excludes quantizing the visual component, is supported. The design of vision components in MLLM model APIs is not standardized, and some models do not support the quantization of non-text modules.
 
 Currently, the quantization of vision components is supported for Llama-3.2-11B-Vision, Phi-3.5-Vision-Instruct, and Llava-v1.5-7B.
 
