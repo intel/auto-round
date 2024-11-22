@@ -23,6 +23,7 @@ from .processor import BasicProcessor, PROCESSORS
 
 TEMPLATES: Dict[str, "Template"] = {}
 
+
 def fill_content(target, **kwargs):
     for name, value in kwargs.items():
         target = target.replace("{{" + name + "}}", value, 1)
@@ -36,6 +37,7 @@ class Role(str, Enum):
     SYSTEM = "system"
     FUNCTION = "function"
     OBSERVATION = "observation"
+
 
 @dataclass
 class Template:
@@ -61,7 +63,7 @@ class Template:
                     element += fill_content(self.format_system, content=self.default_system)
                 # if i > 0 and i % 2 ==0:
                 #     element += fill_content(self.format_separator)
-                
+
                 if source['role'] == Role.USER.value:
                     element += fill_content(self.format_user, content=source["content"])
                 elif source['role'] == Role.ASSISTANT.value:
@@ -73,21 +75,21 @@ class Template:
             return element
         else:
             return sources
-    
+
 
 def _register_template(
-    model_type: str,
-    format_user: Optional[str] = None,
-    format_assistant: Optional[str] = None,
-    format_system: Optional[str] = None,
-    format_function: Optional[str] = None,
-    format_observation: Optional[str] = None,
-    format_separator: Optional[str] = None,
-    default_system: str = "",
-    replace_tokens: List[tuple] = None,
-    extra_encode: Optional[bool] = False,
-    default_dataset: Optional[bool] = "NeelNanda/pile-10k",
-    processor: "BasicProcessor" = PROCESSORS["basic"],
+        model_type: str,
+        format_user: Optional[str] = None,
+        format_assistant: Optional[str] = None,
+        format_system: Optional[str] = None,
+        format_function: Optional[str] = None,
+        format_observation: Optional[str] = None,
+        format_separator: Optional[str] = None,
+        default_system: str = "",
+        replace_tokens: List[tuple] = None,
+        extra_encode: Optional[bool] = False,
+        default_dataset: Optional[bool] = "NeelNanda/pile-10k",
+        processor: "BasicProcessor" = PROCESSORS["basic"],
 ):
     """Registers a chat template."""
     template_class = Template
@@ -98,18 +100,18 @@ def _register_template(
     default_format_observation = ""
     default_format_separator = "\n"
     TEMPLATES[model_type] = template_class(
-        model_type = model_type,
-        format_user = format_user or default_format_user,
-        format_assistant = format_assistant or default_format_assistant,
-        format_system = format_system or default_format_system, 
-        format_function = format_function or default_format_function,
-        format_observation = format_observation or default_format_observation,
-        format_separator = format_separator or default_format_separator,
-        default_system = default_system,
-        replace_tokens = replace_tokens,
-        extra_encode = extra_encode,
-        default_dataset = default_dataset,
-        processor = processor()
+        model_type=model_type,
+        format_user=format_user or default_format_user,
+        format_assistant=format_assistant or default_format_assistant,
+        format_system=format_system or default_format_system,
+        format_function=format_function or default_format_function,
+        format_observation=format_observation or default_format_observation,
+        format_separator=format_separator or default_format_separator,
+        default_system=default_system,
+        replace_tokens=replace_tokens,
+        extra_encode=extra_encode,
+        default_dataset=default_dataset,
+        processor=processor()
     )
     return TEMPLATES[model_type]
 
@@ -124,7 +126,7 @@ def load_template(path: str):
             "the format of replace_tokens should be [old_tag1, replace_tag1, old_tag2, replace_tag2]"
         temp = []
         for i in range(0, len(data["replace_tokens"]), 2):
-           temp.append((data["replace_tokens"][i], data["replace_tokens"][i+1])) 
+            temp.append((data["replace_tokens"][i], data["replace_tokens"][i + 1]))
         data["replace_tokens"] = temp
     if "processor" in data:
         assert data["processor"] in PROCESSORS.keys(), \
@@ -140,6 +142,7 @@ def _load_preset_template():
     dir_path = os.path.join(os.path.dirname(__file__), 'templates')
     for file_name in os.listdir(dir_path):
         load_template(os.path.join(dir_path, file_name))
+
 
 _load_preset_template()
 

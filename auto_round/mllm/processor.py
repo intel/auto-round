@@ -19,11 +19,14 @@ from .utils import fetch_image
 
 PROCESSORS = {}
 
+
 def regist_processor(name):
     def register(processor):
         PROCESSORS[name] = processor
         return processor
+
     return register
+
 
 @regist_processor("basic")
 class BasicProcessor:
@@ -37,7 +40,7 @@ class BasicProcessor:
         if image_processor is not None:
             self.image_processor = image_processor
         else:
-            self.image_processor = self.default_image_processor 
+            self.image_processor = self.default_image_processor
 
     def get_input(
             self,
@@ -49,7 +52,7 @@ class BasicProcessor:
             truncation=False,
             truncation_strategy="text",
             **kwargs):
-        
+
         if isinstance(text, list):
             for message in text:
                 if not ("role" in message and "content" in message):
@@ -61,7 +64,7 @@ class BasicProcessor:
             try:
                 text = self.tokenizer.apply_chat_template(
                     text, tokenize=False, add_generation_prompt=not continue_final_message,
-                    continue_final_message=continue_final_message,)
+                    continue_final_message=continue_final_message, )
             except:
                 raise NotImplementedError("current not support for non-instructed model.")
 
@@ -70,7 +73,7 @@ class BasicProcessor:
 
         if images is not None:
             images = self.image_processor(images)
-        
+
         if truncation is True and truncation_strategy == "text":
             text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
 
@@ -85,10 +88,10 @@ class BasicProcessor:
             for key in ret:
                 shape_ = ret[key].shape
                 if len(shape_) == 2 and shape_[-1] == seqlen:
-                    ret[key] = ret[key][:,:max_length]
+                    ret[key] = ret[key][:, :max_length]
                 elif len(shape_) == 4 and shape_[1] == seqlen:
-                    ret[key] = ret[key][:,:max_length]
-            
+                    ret[key] = ret[key][:, :max_length]
+
         if squeeze:
             ret = self.squeeze_result(ret)
         return ret
@@ -97,15 +100,16 @@ class BasicProcessor:
     def data_collator(batch):
         return default_data_collator(batch)
 
-    @staticmethod 
+    @staticmethod
     def default_image_processor(image_path_or_url):
         return fetch_image(image_path_or_url)
-    
+
     @staticmethod
     def squeeze_result(ret):
         for key in ret:
             ret[key] = ret[key][0]
         return ret
+
 
 @regist_processor("qwen2_vl")
 class Qwen2VLProcessor(BasicProcessor):
@@ -113,16 +117,17 @@ class Qwen2VLProcessor(BasicProcessor):
     def squeeze_result(ret):
         for key in ret:
             if key == "pixel_values":
-                    continue
+                continue
             ret[key] = ret[key][0]
         return ret
+
 
 @regist_processor("cogvlm2")
 class CogVLM2Processor(BasicProcessor):
     def get_input(
             self, text, images, truncation=False,
             squeeze=True, **kwargs):
-        
+
         if images is not None:
             images = self.image_processor(images)
 
@@ -131,12 +136,13 @@ class CogVLM2Processor(BasicProcessor):
         max_length += padding_len
         padding = False
         input_data = self.model.build_conversation_input_ids(
-                self.tokenizer,
-                query=text,
-                history=None,
-                images=[images],
-                template_version='base'
-            )
+            self.tokenizer,
+            query=text,
+            history=None,
+            images=[images],
+            template_version='base'
+        )
+
         def pad_to_len(unpadded_tensor, pad_to_length, pad_value=0):
             current_length = len(unpadded_tensor)
             if current_length >= pad_to_length:
@@ -146,13 +152,14 @@ class CogVLM2Processor(BasicProcessor):
                     return unpadded_tensor
             if padding:
                 return torch.cat(
-                (unpadded_tensor,
-                 torch.full([pad_to_length - current_length],
-                            fill_value=pad_value,
-                            dtype=unpadded_tensor.dtype,
-                            device=unpadded_tensor.device)), dim=0)
+                    (unpadded_tensor,
+                     torch.full([pad_to_length - current_length],
+                                fill_value=pad_value,
+                                dtype=unpadded_tensor.dtype,
+                                device=unpadded_tensor.device)), dim=0)
             else:
                 return unpadded_tensor
+
         input_data['input_ids'] = pad_to_len(
             input_data['input_ids'],
             max_length,
@@ -168,14 +175,14 @@ class CogVLM2Processor(BasicProcessor):
             max_length,
             pad_value=0
         )
-        if input_data['labels']: 
+        if input_data['labels']:
             input_data['labels'] = pad_to_len(
                 input_data['labels'],
                 max_length,
                 pad_value=-100
             )
         return input_data
-    
+
     @staticmethod
     def data_collator(batch):
         batched_data = {}
@@ -187,14 +194,16 @@ class CogVLM2Processor(BasicProcessor):
             # else:
             #     raise ValueError("Unsupported datatype in custom collate_fn")
         return batched_data
-    
+
     @staticmethod
     def default_image_processor(image_path_or_url):
         return fetch_image(image_path_or_url).convert('RGB')
 
 
 from ..utils import LazyImport
+
 llava_train = LazyImport("llava.train.train")
+
 
 @regist_processor("llava")
 class LlavaProcessor(BasicProcessor):
@@ -205,11 +214,10 @@ class LlavaProcessor(BasicProcessor):
         self.image_processor = image_processor
         self.collator_func = llava_train.DataCollatorForSupervisedDataset(tokenizer=self.tokenizer)
 
-
     def get_input(
-            self, text, images,max_length=None,
+            self, text, images, max_length=None,
             squeeze=True, truncation=False, truncation_strategy="text", **kwargs):
-        
+
         if images is not None:
             images = fetch_image(images).convert('RGB')
             images = self.image_processor.preprocess(images, return_tensors='pt')['pixel_values'][0]
@@ -217,7 +225,7 @@ class LlavaProcessor(BasicProcessor):
         class DataArgs:
             is_multimodal = True
             mm_use_im_start_end = False
-        
+
         if truncation is True and truncation_strategy == "text":
             text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
 
@@ -228,12 +236,12 @@ class LlavaProcessor(BasicProcessor):
             seqlen = ret['input_ids'].shape[-1]
             for key in ret:
                 if ret[key].shape[-1] == seqlen:
-                    ret[key] = ret[key][:,:max_length]
+                    ret[key] = ret[key][:, :max_length]
         if squeeze:
             ret = self.squeeze_result(ret)
         ret['image'] = images
 
         return ret
-    
+
     def data_collator(self, batch):
         return self.collator_func(batch)
