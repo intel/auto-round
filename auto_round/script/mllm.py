@@ -218,9 +218,11 @@ def setup_lmeval_parser():
                         help="whether to display verbose information.")
     # Configuration for Resume
     # Ignore: will not rerun failed VLM inference
-    parser.add_argument('--ignore', action='store_true', help='ignore failed indices. ')
+    parser.add_argument('--ignore', action='store_true',
+                        help='ignore failed indices. ')
     # Rerun: will remove all evaluation temp files
-    parser.add_argument('--rerun', action='store_true', help="if true, will remove all evaluation temp files and rerun.")
+    parser.add_argument('--rerun', action='store_true',
+                        help="if true, will remove all evaluation temp files and rerun.")
     parser.add_argument("--output_dir", default="./eval_result", type=str,
                           help="the directory to save quantized model")
     args = parser.parse_args()
@@ -277,8 +279,9 @@ def tune(args):
     processor, image_processor = None, None
     if "llava" in model_name:
         from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
-        tokenizer, model, image_processor, _ = load_pretrained_model(model_name, model_base=None, model_name=model_name,
-                                                                     torch_dtype=torch_dtype)
+        tokenizer, model, image_processor, _ = load_pretrained_model(
+            model_name, model_base=None, model_name=model_name,
+            torch_dtype=torch_dtype)
         model_type = "llava"
     else:
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
