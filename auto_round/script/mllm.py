@@ -137,7 +137,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
                           help="whether to use the iter of best mes loss in the tuning phase")
 
         self.add_argument("--enable_torch_compile", default=None, type=bool,
-                            help="whether to enable torch compile")
+                          help="whether to enable torch compile")
 
         ## ======================= VLM =======================
         self.add_argument("--quant_nontext_module", action='store_true',
@@ -155,8 +155,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--truncation", action="store_true",
                           help="whether to truncate sequences at the maximum length."
-                          " Default True for pile and False for llava dataset.")
-        
+                               " Default True for pile and False for llava dataset.")
+
         self.add_argument("--to_quant_block_names", default=None, type=str,
                           help="Names of quantitative blocks, please use commas to separate them.")
 
@@ -295,10 +295,16 @@ def tune(args):
     seqlen = args.seqlen
 
     if args.model_dtype != None:
-        if args.model_dtype == "float16" or args.model_dtype == "fp16":
-            model = model.to(torch.float16)
-        if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
-            model = model.to(torch.bfloat16)
+        try:
+            if args.model_dtype == "float16" or args.model_dtype == "fp16":
+                model = model.to(torch.float16)
+            elif args.model_dtype == "bfloat16" or args.model_dtype == "bfp16" or args.model_dtype == "bf16":
+                model = model.to(torch.bfloat16)
+            elif args.model_dtype == "float32" or args.model_dtype == "fp32":
+                model = model.to(torch.float32)
+        except:
+            logger.error("please use more device to fit the device or just use one device")
+            exit()
 
     round = AutoRoundMLLM
 
@@ -410,17 +416,18 @@ def eval(args):
         ignore=args.ignore
     )
 
+
 def setup_lmms_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", "--model_name", "--model_name_or_path",
-                          help="model name or path")
+                        help="model name or path")
     parser.add_argument(
         "--tasks",
         default="pope,textvqa_val,scienceqa,mmbench_en",
         help="To get full list of tasks, use the command lmms-eval --tasks list",
     )
     parser.add_argument("--output_dir", default="./tmp_autoround", type=str,
-                          help="the directory to save quantized model")
+                        help="the directory to save quantized model")
     parser.add_argument(
         "--num_fewshot",
         type=int,
@@ -453,10 +460,11 @@ def setup_lmms_parser():
         type=float,
         default=None,
         help="Limit the number of examples per task. " "If <1, limit is a percentage of the total"
-        " number of examples.",
+             " number of examples.",
     )
     args = parser.parse_args()
     return args
+
 
 def lmms_eval(args):
     from auto_round.mllm import lmms_eval
@@ -474,5 +482,3 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-
-

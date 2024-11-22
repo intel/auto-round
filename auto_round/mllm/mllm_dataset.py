@@ -16,7 +16,6 @@ import os
 import json
 from typing import Dict
 
-
 import torch
 from torch.utils.data import Dataset, DataLoader
 from transformers import set_seed
@@ -26,8 +25,8 @@ from .template import Template
 from ..utils import logger
 from ..special_model_handler import check_mllm_model_batch
 
+MLLM_DATASET: Dict[str, Dataset] = {}
 
-MLLM_DATASET : Dict[str, Dataset] = {}
 
 def register_dataset(name_list):
     """Class decorator to register a DATASET subclass to the registry.
@@ -44,8 +43,8 @@ def register_dataset(name_list):
     def register(dataset):
         for name in name_list.replace(' ', '').split(','):
             MLLM_DATASET[name] = dataset
-    return register
 
+    return register
 
 
 @register_dataset(
@@ -73,7 +72,7 @@ class LlavaDataset(Dataset):
             padding=True,
             truncation=True,
             nsamples=512
-            ) -> None:
+    ) -> None:
         super().__init__()
         self.model = model
         self.model_type = template.model_type
@@ -109,7 +108,6 @@ class LlavaDataset(Dataset):
                 image_fold = image_fold['image']
             self.image_fold = image_fold
 
-
     def check(self, questions, seqlen, nsamples):
         def _check(questions, min_seqlen, max_seqlen, nsamples):
             new_questions = []
@@ -129,19 +127,19 @@ class LlavaDataset(Dataset):
             else:
                 if seqlen > max_len:
                     logger.warning(f"seqlen={seqlen} is greater than the max length of dataset {max_len},"
-                                 f" will change seqlen to {max_len - 128}")
+                                   f" will change seqlen to {max_len - 128}")
                     new_min_seqlen = max_len - 128
                 else:
                     logger.warning(f"no enough sample for seqlen greater than {min_seqlen},"
-                                 f" will decrease to {min_seqlen-128}")
+                                   f" will decrease to {min_seqlen - 128}")
                     new_min_seqlen = min_seqlen - 128
-                return new_questions + _check(questions, new_min_seqlen, min_seqlen, nsamples-len(new_questions))
+                return new_questions + _check(questions, new_min_seqlen, min_seqlen, nsamples - len(new_questions))
+
         return _check(questions, seqlen, float("inf"), nsamples)
-    
 
     def __len__(self):
         return len(self.questions)
-    
+
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         if i in self.cached_data_dict:
             return self.cached_data_dict[i]
@@ -164,17 +162,17 @@ class LlavaDataset(Dataset):
         max_length = self.seqlen
         truncation_strategy = "text"
         ret = self.template.processor.get_input(
-            text=text, 
+            text=text,
             images=image_path,
             padding=self.padding,
             truncation=self.truncation,
             return_tensors="pt",
-            max_length = max_length,
+            max_length=max_length,
             truncation_strategy=truncation_strategy
-           )
+        )
         self.cached_data_dict[i] = ret
         return ret
-    
+
     def covert_conversations(self, data):
         new_data = []
         for d in data:
@@ -192,12 +190,12 @@ class LlavaDataset(Dataset):
 def get_mllm_dataloader(
         template,
         model,
-        tokenizer, 
+        tokenizer,
         image_processor=None,
         dataset="liuhaotian/llava_conv_58k",
         extra_data_dir=None,
         seqlen=512,
-        bs=1, 
+        bs=1,
         split=None,
         apply_template=None,
         truncation=False,
@@ -226,16 +224,15 @@ def get_mllm_dataloader(
     if isinstance(template, str):
         from .template import get_template
         template = get_template(template, model=model, tokenizer=tokenizer, image_processor=image_processor)
-    
 
     if os.path.isfile(dataset) or dataset in MLLM_DATASET.keys():
         dataset = MLLM_DATASET['liuhaotian/llava'](
-            template, model, tokenizer, dataset, extra_data_dir, 
+            template, model, tokenizer, dataset, extra_data_dir,
             seqlen=seqlen, truncation=truncation, nsamples=nsamples)
 
         bs, gradient_accumulate_steps = check_mllm_model_batch(
             model, batch_size=bs, gradient_accumulate_steps=gradient_accumulate_steps)
-    
+
         set_seed(seed)
         dataloader_params = {
             "batch_size": bs,
@@ -251,10 +248,7 @@ def get_mllm_dataloader(
             tokenizer, seqlen, dataset, seed, bs, nsamples)
         if quant_nontext_module:
             logger.error(
-            f"Quantitative nontext module is not supported for plain text datasets," \
+                f"Quantitative nontext module is not supported for plain text datasets," \
                 " please disable arg '--quant_nontext_module'")
             exit(-1)
         return dataloader, bs, gradient_accumulate_steps
-    
-    
-

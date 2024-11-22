@@ -338,8 +338,10 @@ def tune(args):
         try:
             if args.model_dtype == "float16" or args.model_dtype == "fp16":
                 model = model.to(torch.float16)
-            if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
+            elif args.model_dtype == "bfloat16" or args.model_dtype == "bfp16" or args.model_dtype=="bf16":
                 model = model.to(torch.bfloat16)
+            elif args.model_dtype=="float32" or args.model_dtype=="fp32":
+                model = model.to(torch.float32)
         except:
             logger.error("please use more device to fit the device or just use one device")
             exit()

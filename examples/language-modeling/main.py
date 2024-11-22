@@ -267,10 +267,12 @@ if __name__ == '__main__':
         try:
             if args.model_dtype == "float16" or args.model_dtype == "fp16":
                 model = model.to(torch.float16)
-            if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
+            elif args.model_dtype == "bfloat16" or args.model_dtype == "bfp16" or args.model_dtype == "bf16":
                 model = model.to(torch.bfloat16)
+            elif args.model_dtype == "float32" or args.model_dtype == "fp32":
+                model = model.to(torch.float32)
         except:
-            print("please use more device,e.g `--devices 0,1,2,3` to fit the device or just use one device")
+            logger.error("please use more device to fit the device or just use one device")
             exit()
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
