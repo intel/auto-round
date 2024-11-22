@@ -32,10 +32,11 @@ def regist_processor(name):
 class BasicProcessor:
     def __init__(self):
         pass
-
-    def post_init(self, model, tokenizer, image_processor=None, **kwargs):
+    
+    def post_init(self, model, tokenizer, processor=None, image_processor=None, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
+        self.processor = processor
         if image_processor is not None:
             self.image_processor = image_processor
         else:
@@ -76,7 +77,7 @@ class BasicProcessor:
         if truncation is True and truncation_strategy == "text":
             text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
 
-        ret = self.tokenizer.processor(
+        ret = self.processor(
             text=text,
             images=images,
             return_tensors=return_tensors,
