@@ -27,7 +27,6 @@ more accuracy data and recipes across various models.
 
 ## What's New
 * [2024/11] We provide some tips and tricks for LLM&VLM quantization, please check out [this file](./docs/tips_and_tricks.md).
-* 
 * [2024/10] AutoRound has been integrated to [torch/ao](https://github.com/pytorch/ao), check out
   their [release note](https://github.com/pytorch/ao/releases/tag/v0.6.1)
 * [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
