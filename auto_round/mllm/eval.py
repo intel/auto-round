@@ -57,12 +57,11 @@ import numpy as np
 
 vlmeval = LazyImport("vlmeval")
 
-
 MODEL_TYPE_TO_VLMEVAL_MODEL = {
-    #model_name
+    # model_name
     "Qwen-VL": dict(cls="QwenVL"),
     "Qwen-VL-Chat": dict(cls="QwenVLChat"),
-    "Qwen2-VL": dict(cls="Qwen2VLChat", min_pixels=1280*28*28, max_pixels=16384*28*28, verbose=False),
+    "Qwen2-VL": dict(cls="Qwen2VLChat", min_pixels=1280 * 28 * 28, max_pixels=16384 * 28 * 28, verbose=False),
     "Llama-3.2": dict(cls="llama_vision"),
     "Phi-3-vision": dict(cls="Phi3Vision"),
     "Phi-3.5-vision": dict(cls="Phi3_5Vision"),
@@ -75,7 +74,7 @@ MODEL_TYPE_TO_VLMEVAL_MODEL = {
     "Molmo": dict(cls="molmo"),
 
     # config.model_type
-    "qwen2_vl": dict(cls="Qwen2VLChat", min_pixels=1280*28*28, max_pixels=16384*28*28),
+    "qwen2_vl": dict(cls="Qwen2VLChat", min_pixels=1280 * 28 * 28, max_pixels=16384 * 28 * 28),
     "qwen": dict(cls="QwenVL"),
     "qwen_chat": dict(cls="QwenVLChat"),
     "llava": dict(cls="LLaVA"),
@@ -83,6 +82,7 @@ MODEL_TYPE_TO_VLMEVAL_MODEL = {
     "phi3_v": dict(cls="Phi3Vision"),
     "mllama": dict(cls="llama_vision"),
 }
+
 
 def mllm_eval(
         pretrained_model_name_or_path: str,
@@ -98,8 +98,7 @@ def mllm_eval(
         verbose: bool = False,
         mode: str = 'all',
         ignore: bool = False
-        ):
-    
+):
     try:
         from auto_round import AutoRoundConfig
     except:
@@ -158,7 +157,7 @@ def mllm_eval(
                 dataset_kwargs['pack'] = pack
             if dataset_name == 'Video-MME':
                 dataset_kwargs['use_subtitle'] = use_subtitle
-            
+
             dataset = vlmeval.dataset.build_dataset(dataset_name, **dataset_kwargs)
             if dataset is None:
                 logger.error(f'Dataset {dataset_name} is not valid, will be skipped. ')
@@ -229,7 +228,7 @@ def mllm_eval(
                     dataset=dataset,
                     verbose=verbose,
                     ignore_failed=ignore)
-        
+
             # Set the judge kwargs first before evaluation or dumping
             judge_kwargs = {
                 'verbose': verbose,
@@ -240,16 +239,16 @@ def mllm_eval(
                 if dataset.TYPE in ['MCQ', 'Y/N'] or vlmeval.smp.listinstr(['MathVerse'], dataset_name):
                     judge_kwargs['model'] = 'chatgpt-0125'
                 elif vlmeval.smp.listinstr(['MMVet', 'MathVista', 'LLaVABench', 'MMBench-Video', 'MathVision'],
-                                dataset_name):
+                                           dataset_name):
                     judge_kwargs['model'] = 'gpt-4-turbo'
                 elif vlmeval.smp.listinstr(['MMLongBench', 'MMDU', 'DUDE', 'DUDE_MINI', 'SLIDEVQA', 'SLIDEVQA_MINI'],
-                                dataset_name):
+                                           dataset_name):
                     judge_kwargs['model'] = 'gpt-4o'
             if 'OPENAI_API_KEY_JUDGE' in os.environ and len(os.environ['OPENAI_API_KEY_JUDGE']):
                 judge_kwargs['key'] = os.environ['OPENAI_API_KEY_JUDGE']
             if 'OPENAI_API_BASE_JUDGE' in os.environ and len(os.environ['OPENAI_API_BASE_JUDGE']):
                 judge_kwargs['api_base'] = os.environ['OPENAI_API_BASE_JUDGE']
-            
+
             if dataset_name in ['MMMU_TEST']:
                 result_json = vlmeval.utils.result_transfer.MMMU_result_transfer(result_file)
                 logger.info(f'Transfer MMMU_TEST result to json for official evaluation, '
@@ -271,7 +270,7 @@ def mllm_eval(
             elif dataset_name in ['DocVQA_TEST', 'InfoVQA_TEST', 'Q-Bench1_TEST', 'A-Bench_TEST']:
                 logger.info(f'{dataset_name} is a test split without ground-truth. '
                             'Thus only the inference part is supported for those datasets. ')  # noqa: E501
-            
+
             if dataset_name in [
                 'MMBench_TEST_CN', 'MMBench_TEST_EN', 'MMBench', 'MMBench_CN',
                 'MMBench_TEST_CN_V11', 'MMBench_TEST_EN_V11', 'MMBench_V11', 'MMBench_CN_V11'
@@ -282,7 +281,7 @@ def mllm_eval(
                         'will skip the evaluation. '
                     )
                     continue
-            
+
             if mode == 'all':
                 eval_results = dataset.evaluate(result_file, **judge_kwargs)
                 if eval_results is not None:
@@ -299,12 +298,12 @@ def mllm_eval(
                         logger.info('\n' + tabulate.tabulate(eval_results))
                     except:
                         logger.info(eval_results.to_string())
-            rt_file.write('%s cost: %.4fs\n' % (dataset_name, time.time() - task_st)) 
+            rt_file.write('%s cost: %.4fs\n' % (dataset_name, time.time() - task_st))
         except Exception as e:
             logger.exception(f'Model {model_name} x Dataset {dataset_name} combination failed: {e}, '
-                                 'skipping this combination.')
+                             'skipping this combination.')
             continue
-    rt_file.write('%d tasks cost: %.4fs\n' % (len(dataset), time.time() - st)) 
+    rt_file.write('%d tasks cost: %.4fs\n' % (len(dataset), time.time() - st))
     rt_file.close()
 
 
@@ -328,6 +327,7 @@ MODEL_TYPE_TO_LMMS_MODEL = {
 
 _lmms_eval = LazyImport("lmms_eval")
 
+
 def _handle_non_serializable(o):
     if isinstance(o, np.int64) or isinstance(o, np.int32):
         return int(o)
@@ -336,10 +336,11 @@ def _handle_non_serializable(o):
     else:
         return str(o)
 
+
 def lmms_eval(
         model,
         tasks,
-        output_dir = None,
+        output_dir=None,
         num_fewshot=None,
         limit=None,
         batch_size=1,
@@ -347,11 +348,11 @@ def lmms_eval(
         device='cpu',
         use_cache=None,
         apply_chat_template=False
-        ):
+):
     from auto_round import AutoRoundConfig
 
     if isinstance(tasks, str):
-        tasks = tasks.replace(' ', '').split(',') 
+        tasks = tasks.replace(' ', '').split(',')
 
     model_name = model
     if model_name[-1] == "/":
@@ -369,7 +370,7 @@ def lmms_eval(
         from transformers import AutoConfig
         config = AutoConfig.from_pretrained(model, trust_remote_code=True)
         model_type = config.model_type
-    
+
     assert model_type in MODEL_TYPE_TO_LMMS_MODEL, f"{model_type} is not support by lmms."
 
     if MODEL_TYPE_TO_LMMS_MODEL[model_type] == "phi3v":
@@ -378,6 +379,7 @@ def lmms_eval(
         model_args = f"pretrained={model}"
     if MODEL_TYPE_TO_LMMS_MODEL[model_type] == "llama_vision":
         model_args += f",device_map={device}"
+
     class CliArgs:
         output_path = output_dir
 
@@ -399,7 +401,7 @@ def lmms_eval(
     print(_lmms_eval.utils.make_table(results))
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-        
+
         from datetime import datetime
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = os.path.join(output_dir, f"{model_name}_{now}_result.json")
