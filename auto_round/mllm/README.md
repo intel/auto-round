@@ -3,13 +3,11 @@
 ## Quantization
 
 ### API Usage (Gaudi2/CPU/GPU) Recommended
-
-- default to be **text-only** calibration dataset(NeelNanda/pile-10k), if the model type does not support plain text calibration, it will also automatically switch to llava dataset.
+AutoRound uses the text module of MLLM (LLM component) as the main quantization target. with NeelNanda/pile-10k as the default calibration dataset.
 
     ```python
     from auto_round import AutoRoundMLLM
     from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
-    dataset = "NeelNanda/pile-10k" ## dataset = "liuhaotian/llava_conv_58k"
     model_name = "Qwen/Qwen2-VL-2B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
@@ -18,7 +16,7 @@
         model_name, trust_remote_code=True)
 
     bits, group_size = 4, 128
-    autoround = AutoRoundMLLM(model, tokenizer, bits=bits, group_size=group_size, dataset=dataset)
+    autoround = AutoRoundMLLM(model, tokenizer, bits=bits, group_size=group_size)
 
     autoround.quantize()
     output_dir = "./tmp_autoround"
@@ -26,21 +24,21 @@
     ```
 
 <details>
-<summary>Basic Usage (Gaudi2/CPU/GPU)</summary>
-A user guide detailing the full list of supported arguments is provided by calling ```auto-round-mllm -h``` on the terminal. Alternatively, you can use ```auto_round_mllm``` instead of ```auto-round-mllm```. Set the format you want in `format` and
-multiple formats exporting has been supported.
+<summary style="font-size:17px;">Basic Usage (Gaudi2/CPU/GPU)</summary>
+    A user guide detailing the full list of supported arguments is provided by calling ```auto-round-mllm -h``` on the terminal. Alternatively, you can use ```auto_round_mllm``` instead of ```auto-round-mllm```. Set the format you want in `format` and
+    multiple formats exporting has been supported.
 
-```bash
-# experimental feature, default hyperparameters may be changed later
-auto—round-mllm \
-    --model Qwen/Qwen2-VL-2B-Instruct \
-    --bits 4 \
-    --group_size 128 \
-    --format "auto_round" \
-    --output_dir ./tmp_autoround
-```
+    ```bash
+    # experimental feature, default hyperparameters may be changed later
+    auto—round-mllm \
+        --model Qwen/Qwen2-VL-2B-Instruct \
+        --bits 4 \
+        --group_size 128 \
+        --format "auto_round" \
+        --output_dir ./tmp_autoround
+    ```
 
-- `dataset`: the dataset for quantization training. current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k. It can be a custom one. Default is NeelNanda/pile-10k(text-only calibration). If the model's type(e.g. Llama3.2-vision) does not support plain text calibration, it will automatically switch to llava dataset and adjust the hyperparameters.
+- `dataset`: the dataset for quantization training. current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k. It can be a custom one.
 
 - `quant_nontext_module`: whether to quantize non-text module, e.g. vision component. 
 
@@ -49,33 +47,44 @@ auto—round-mllm \
 </details>
 
 
-### Calibration Dataset
-For mllm, we used NeelNanda/pile-10k as our default calib datasets. Through argument --dataset(text file), user can use other datasets such as "liuhaotian/llava_conv_58k" "liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path to use local file.
+<details>
+<summary style="font-size:17px;">Calibration Dataset</summary>
+
+For mllm, we used **text-only** calibration dataset (NeelNanda/pile-10k) as our default. If the model type does not support plain text calibration(e.g. Llama-3.2-vision), it will also automatically switch to llava dataset and adjust the hyperparameters.
+
+Through argument --dataset(text file), user can use other datasets such as "liuhaotian/llava_conv_58k" "liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path to use local file.
 
 
-### Run Inference for models
-Please refer to the readme files on model quantization and inference:
+### Support List
 
-- [Qwen2-VL-Instruct](./docs/Qwen2-VL-7B-Instruct_sym.md)
-- [Llama-3.2-11B-Vision](./docs/Llama-3.2-11B-Vision-Instruct_sym.md) 
-- [Phi-3.5-vision-instruct](./docs/Phi-3.5-vision-instruct_sym.md)
-- [llava-v1.5-7b](./docs/llava-v1.5-7b_sym.md)
+The llava calibration dataset supports the five existing MLLMs. 
+
+|Model          |Eval Lib   |calibration dataset|Feasibility of quantification|
+|---------------|-----------|-------------------|--------------------|
+|Qwen/Qwen2-VL-Instruct            |vlmeval    |llava         |✔                   |
+|meta-llama/Llama-3.2-11B-Vision   |vlmeval/lmms_eval  |llava              |✔                   |
+|microsoft/Phi-3.5-vision-instruct |vlmeval    |llava         |✔                   |
+|liuhaotian/llava-v1.5-7b          |lmms_eval  |llava         |✔                   |
+|THUDM/cogvlm2-llama3-chat-19B     |lmms_eval  |llava         |✔                   |
+
+</details>
 
 
 
-## Nontext Module Quantization
+<details>
+<summary style="font-size:17px;">Nontext Module Quantization</summary>
 
 ### Support Matrix
 
-So far, auto-round for mllm supports five model families, include Qwen2-VL-Instruct, Llama-3.2-Vision, Phi-3.5-vision-instruct, Llava-v1.5 and Cogvlm2.
+The design of the MLLM model API is not uniform, and some models do not support the quantization nontext module. Quantization of the vision components of Llama-3.2-11B-Vision, Phi-3.5-vision-instruct and llava-v1.5-7b is currently supported.
 
-|Model          |Eval Lib   |calibration dataset|quant nontext module|
-|---------------|-----------|-------------------|--------------------|
-|Qwen/Qwen2-VL-Instruct            |vlmeval    |pile/llava         |-                   |
-|meta-llama/Llama-3.2-11B-Vision   |lmms_eval  |llava              |✔                   |
-|microsoft/Phi-3.5-vision-instruct |vlmeval    |pile/llava         |✔                   |
-|liuhaotian/llava-v1.5-7b          |lmms_eval  |pile/llava         |-                   |
-|THUDM/cogvlm2-llama3-chat-19B     |lmms_eval  |pile/llava         |✔                   |
+|Model          |Eval Lib   |quant nontext module|
+|---------------|-----------|-------------------|
+|Qwen/Qwen2-VL-Instruct            |vlmeval    |-                    |
+|meta-llama/Llama-3.2-11B-Vision   |lmms_eval  |✔                   |
+|microsoft/Phi-3.5-vision-instruct |vlmeval    |✔                   |
+|liuhaotian/llava-v1.5-7b          |lmms_eval  |-                    |
+|THUDM/cogvlm2-llama3-chat-19B     |lmms_eval  |✔                   |
 
 
 
@@ -108,6 +117,24 @@ Using the above template, the input will be converted to the specified format re
 
 #### Processor
 Processor is callback interface for calling different processors, such as texts or images processors, for MLLMs. User can define own processor and use registration function to declare. For more information, please refer to the relevant code in ```auto_round/mllm/processor.py```.
+
+</details>
+
+
+
+### Run Inference for models
+For quantization please refer to Quantization API Usage, quantized model Inference can be found in the official model card of each model, and only needs to import autoround before loading the model.
+
+```python
+from auto_round import AutoRoundConfig ## must import for auto-round format
+```
+
+For more details on quantization, inference, evaluation, and environment, see the following recipe:
+
+- [Qwen2-VL-Instruct](./docs/Qwen2-VL-7B-Instruct_sym.md)
+- [Llama-3.2-11B-Vision](./docs/Llama-3.2-11B-Vision-Instruct_sym.md) 
+- [Phi-3.5-vision-instruct](./docs/Phi-3.5-vision-instruct_sym.md)
+- [llava-v1.5-7b](./docs/llava-v1.5-7b_sym.md)
 
 
 
