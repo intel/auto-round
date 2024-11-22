@@ -16,6 +16,8 @@ pr:
       - .azure-pipelines/scripts/ut
     exclude:
       - test/test*hpu*
+      - "*.md"
+      - "**/*.md"
 
 pool: ICX-16C
 

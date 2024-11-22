@@ -16,6 +16,8 @@ pr:
     exclude:
       - auto_round/export/export_to_autogptq
       - auto_round/export/export_to_awq
+      - "*.md"
+      - "**/*.md"
 
 pool: GAUDI
 
