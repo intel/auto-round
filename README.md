@@ -26,14 +26,13 @@ more accuracy data and recipes across various models.
 <div align="left">
 
 ## What's New
-* [2024/11] We provide some tips and tricks for LLM&VLM quantization, please check out [this file](./docs/tips_and_tricks.md).
+* [2024/11] We provide experimental support for VLLM quantization, please check out [MLLM README](./auto_round/mllm/README.md)
+* [2024/11] We provide some tips and tricks for LLM&VLM quantization, please check out [this file](./docs/tips_and_tricks.md)
 * [2024/10] AutoRound has been integrated to [torch/ao](https://github.com/pytorch/ao), check out
   their [release note](https://github.com/pytorch/ao/releases/tag/v0.6.1)
 * [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
   configuration. This configuration is typically better or comparable to asymmetric quantization and significantly
   outperforms other symmetric variants, especially at low bit-widths like 2-bit, check out [some accuracy data](./docs/full_range_sym.md).
-* [2024/09] AutoRound format supports several LVM models, check out the
-  examples [Qwen2-Vl](./examples/multimodal-modeling/Qwen-VL),[Phi-3-vision](./examples/multimodal-modeling/Phi-3-vision), [Llava](./examples/multimodal-modeling/Llava)
 * [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
   to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
 * [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters (for 2-bit
@@ -317,7 +316,9 @@ release most of the models ourselves.
 | meta-llama/Llama-3.2-11B-Vision | [recipe](./docs/Llama-3.2-11B-Vision-Instruct_sym.md)                                                                                                                                                                                                                                   |
 | microsoft/Phi-3.5-vision-instruct | [recipe](./docs/Phi-3.5-vision-instruct_sym.md)                                                                                                                                                                                                                                   |
 | liuhaotian/llava-v1.5-7b | [recipe](./docs/llava-v1.5-7b_sym.md)                                                                                                                                                                                                                                   |
-| Qwen/Qwen2.5-7B-Instruct | [recipe](./docs/Qwen2.5-7B-Instruct_sym.md)                                                                                                                                                                                                                                   |
+| Qwen/Qwen2.5-7B-Instruct |[model-kaitchup-autogptq-int4*](https://beta-index.hf-mirror.com/kaitchup/Qwen2.5-7B-Instruct-AutoRound-GPTQ-asym-4bit), [recipe](./docs/Qwen2.5-7B-Instruct_sym.md)                                                                                                                                                                                                                                                                    |
+| Qwen/Qwen2.5-Coder-32B-Instruct |[model-kaitchup-autogptq-int4*](https://beta-index.hf-mirror.com/kaitchup/Qwen2.5-Coder-32B-Instruct-AutoRound-GPTQ-4bit)                                                                                                                                                                                                                                   |
+| Qwen/Qwen2.5-72B-Instruct |[model-kaitchup-autogptq-int4*](https://beta-index.hf-mirror.com/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-4bit),  [model-kaitchup-autogptq-int2*](https://beta-index.hf-mirror.com/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-2bit)                                                                                                                                                                                                                                                             |
 | meta-llama/Meta-Llama-3.1-70B-Instruct | [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-70B-Instruct-int4-inc)                                                                                                                                                                                                                                   |
 | meta-llama/Meta-Llama-3.1-8B-Instruct  | [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-asym), [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-sym), [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-8B-Instruct-int4-inc) |
 | meta-llama/Meta-Llama-3.1-8B           | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-autoround-gptq-4bit-sym)                                                                                                                                                                                                |
@@ -372,4 +373,5 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
