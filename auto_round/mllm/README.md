@@ -25,7 +25,7 @@ AutoRound uses the text module of MLLM (LLM component) as the main quantization 
     autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
 
-- `dataset`: the dataset for quantization training. default to NeelNanda/pile-10k. For llava dataset, currently limited support llava_conv_58k, llava_instruct_80k and llava_instruct_150k. It can be a custom one.
+- `dataset`: the dataset for quantization training. current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k and llava_instruct_150k. It can be a custom one. Please note that the effectiveness of the Llava calibration dataset has only been validated on five models so far.
 
 - `quant_nontext_module`: whether to quantize non-text module, e.g. vision component. 
 
