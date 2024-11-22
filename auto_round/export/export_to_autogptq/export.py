@@ -213,7 +213,7 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
         safe_serialization (`bool`, defaults to `True`):
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
-    max_shard_size = "10000GB"  ## API of auto-gptq with marlin does not support shard size
+    ##max_shard_size = "10000GB"  ## API of auto-gptq with marlin does not support shard size
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_file = "quantize_config.json"
