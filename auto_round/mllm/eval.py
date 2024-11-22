@@ -349,7 +349,8 @@ def lmms_eval(
         apply_chat_template=False
         ):
     from auto_round import AutoRoundConfig
-
+    from transformers.utils.versions import require_version
+    require_version("lmms_eval", "lmms_eval need to be installed, `pip install lmms_eval`")
     if isinstance(tasks, str):
         tasks = tasks.replace(' ', '').split(',') 
 
