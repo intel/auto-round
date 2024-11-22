@@ -6,9 +6,7 @@ This model is an int4 model with group_size 128 and symmetric quantization of [m
 ## How To Use
 
 ### Requirements
-Starting with transformers >= 4.45.0 onward, you can run inference using conversational messages that may include an image you can query about.
-
-Make sure to update your transformers installation via `pip install --upgrade transformers`.
+Please use Transformers version 4.45.0 or later
 
 
 ### INT4 Inference

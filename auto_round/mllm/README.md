@@ -5,30 +5,33 @@
 ### API Usage (Gaudi2/CPU/GPU) Recommended
 AutoRound uses the text module of MLLM (LLM component) as the main quantization target. with NeelNanda/pile-10k as the default calibration dataset.
 
-    ```python
+```python
     from auto_round import AutoRoundMLLM
     from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
+    
+    ## load the model
     model_name = "Qwen/Qwen2-VL-2B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
-    tokenizer.processor = processor
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         model_name, trust_remote_code=True)
 
+    ## quantize the model
     bits, group_size = 4, 128
-    autoround = AutoRoundMLLM(model, tokenizer, bits=bits, group_size=group_size)
-
+    autoround = AutoRoundMLLM(model, tokenizer, processor, bits=bits, group_size=group_size)
     autoround.quantize()
+
+    # save the quantized model, set format='auto_gptq' to use AutoGPTQ format
     output_dir = "./tmp_autoround"
     autoround.save_quantized(output_dir, format='auto_round', inplace=True)
-    ```
+```
 
 <details>
 <summary style="font-size:17px;">Basic Usage (Gaudi2/CPU/GPU)</summary>
     A user guide detailing the full list of supported arguments is provided by calling ```auto-round-mllm -h``` on the terminal. Alternatively, you can use ```auto_round_mllm``` instead of ```auto-round-mllm```. Set the format you want in `format` and
     multiple formats exporting has been supported.
 
-    ```bash
+```bash
     # experimental feature, default hyperparameters may be changed later
     auto—round-mllm \
         --model Qwen/Qwen2-VL-2B-Instruct \
@@ -36,7 +39,7 @@ AutoRound uses the text module of MLLM (LLM component) as the main quantization 
         --group_size 128 \
         --format "auto_round" \
         --output_dir ./tmp_autoround
-    ```
+```
 
 - `dataset`: the dataset for quantization training. current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k. It can be a custom one.
 
@@ -122,8 +125,8 @@ Processor is callback interface for calling different processors, such as texts 
 
 
 
-### Run Inference for models
-For quantization please refer to Quantization API Usage, quantized model Inference can be found in the official model card of each model, and only needs to import autoround before loading the model.
+## Inference for Models
+For the AutoRound format, please add the following code at the beginning of the original model's inference code.
 
 ```python
 from auto_round import AutoRoundConfig ## must import for auto-round format

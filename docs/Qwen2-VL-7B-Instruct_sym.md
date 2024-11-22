@@ -7,7 +7,7 @@ This model is an int4 model with group_size 128 and symmetric quantization of [Q
 
 
 ### Requirements
-The code of Qwen2-VL has been in the latest Hugging face transformers and we advise you to build from source with command `pip install git+https://github.com/huggingface/transformers`, or you might encounter the following error:
+Please use Transformers version 4.45.0 or later, or you might encounter the following error:
 ```
 KeyError: 'qwen2_vl'
 ```
