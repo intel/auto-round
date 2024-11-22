@@ -25,6 +25,14 @@ AutoRound uses the text module of MLLM (LLM component) as the main quantization 
     autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
 
+- `dataset`: the dataset for quantization training. current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k and llava_instruct_150k. It can be a custom one. Please note that the effectiveness of the Llava calibration dataset has only been validated on five models so far.
+
+- `quant_nontext_module`: whether to quantize non-text module, e.g. vision component. 
+
+- `extra_data_dir`:dataset dir for storing images/audio/videos, default to None. Can be a dir path or multiple dir path with format as 'image=path_to_image,video=path_to_video,audio=path_to_audio' By default, it will search in the relative path, and if not find, will automatic download.
+
+for more hyperparameters introduction, please refer [Homepage Detailed Hyperparameters](../../README.md#api-usage-gaudi2cpugpu)
+
 <details>
 <summary style="font-size:17px;">Basic Usage (Gaudi2/CPU/GPU)</summary>
     A user guide detailing the full list of supported arguments is provided by calling ```auto-round-mllm -h``` on the terminal. Alternatively, you can use ```auto_round_mllm``` instead of ```auto-round-mllm```. Set the format you want in `format` and
@@ -40,11 +48,6 @@ AutoRound uses the text module of MLLM (LLM component) as the main quantization 
         --output_dir ./tmp_autoround
 ```
 
-- `dataset`: the dataset for quantization training. current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k. It can be a custom one.
-
-- `quant_nontext_module`: whether to quantize non-text module, e.g. vision component. 
-
-- `extra_data_dir`:dataset dir for storing images/audio/videos, default to None. Can be a dir path or multiple dir path with format as 'image=path_to_image,video=path_to_video,audio=path_to_audio' By default, it will search in the relative path, and if not find, will automatic download.
 
 </details>
 
@@ -56,19 +59,6 @@ For mllm, we used **text-only** calibration dataset (NeelNanda/pile-10k) as our 
 
 Through argument --dataset(text file), user can use other datasets such as "liuhaotian/llava_conv_58k" "liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path to use local file.
 
-
-### Support List
-
-The llava calibration dataset supports the five existing MLLMs. 
-
-|Model          |Eval Lib   |calibration dataset|Feasibility of quantification|
-|---------------|-----------|-------------------|--------------------|
-|Qwen/Qwen2-VL-Instruct            |vlmeval    |llava         |✔                   |
-|meta-llama/Llama-3.2-11B-Vision   |vlmeval/lmms_eval  |llava              |✔                   |
-|microsoft/Phi-3.5-vision-instruct |vlmeval    |llava         |✔                   |
-|liuhaotian/llava-v1.5-7b          |lmms_eval  |llava         |✔                   |
-|THUDM/cogvlm2-llama3-chat-19B     |lmms_eval  |llava         |✔                   |
-
 </details>
 
 
@@ -78,15 +68,17 @@ The llava calibration dataset supports the five existing MLLMs.
 
 ### Support Matrix
 
-The design of the MLLM model API is not uniform, and some models do not support the quantization nontext module. Quantization of the vision components of Llama-3.2-11B-Vision, Phi-3.5-vision-instruct and llava-v1.5-7b is currently supported.
+For typical VLLMs, we assume that the default quantization, which excludes quantizing the visual component, is supported. The design of vision components in MLLM model APIs is not standardized, and some models do not support the quantization of non-text modules.
 
-|Model          |Eval Lib   |quant nontext module|
-|---------------|-----------|-------------------|
-|Qwen/Qwen2-VL-Instruct            |vlmeval    |-                    |
-|meta-llama/Llama-3.2-11B-Vision   |lmms_eval  |✔                   |
-|microsoft/Phi-3.5-vision-instruct |vlmeval    |✔                   |
-|liuhaotian/llava-v1.5-7b          |lmms_eval  |-                    |
-|THUDM/cogvlm2-llama3-chat-19B     |lmms_eval  |✔                   |
+Currently, the quantization of vision components is supported for Llama-3.2-11B-Vision, Phi-3.5-Vision-Instruct, and Llava-v1.5-7B.
+
+| Model        | Eval Lib  | calibration dataset | quant nontext module |
+|--------------|-----------|---------------------|----------------------|
+| Qwen2-VL     | vlmeval   | pile/llava          | -                    |
+| Llama-Vision | lmms_eval | llava               | ✔                    |
+| Phi3-Vision  | vlmeval   | pile/llava          | ✔                    |
+| Llava-v1.5   | lmms_eval | pile/llava          | -                    |
+| CogVLM2      | lmms_eval | pile/llava          | ✔                    |
 
 
 
@@ -137,6 +129,7 @@ For more details on quantization, inference, evaluation, and environment, see th
 - [Llama-3.2-11B-Vision](../../docs/Llama-3.2-11B-Vision-Instruct_sym.md) 
 - [Phi-3.5-vision-instruct](../../docs/Phi-3.5-vision-instruct_sym.md)
 - [llava-v1.5-7b](../../docs/llava-v1.5-7b_sym.md)
+
 
 
 
