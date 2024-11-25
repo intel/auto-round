@@ -118,7 +118,7 @@ auto-round-mllm --eval --model Intel/Qwen2-VL-7B-Instruct-inc-private --tasks MM
 ### Generate the model
 Here is the sample command to reproduce the model.
 ```bash
-pip install auto_round
+pip install auto-round
 auto-round-mllm
 --model microsoft/Phi-3.5-vision-instruct \
 --device 0 \

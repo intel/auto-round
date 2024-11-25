@@ -125,11 +125,11 @@ from auto_round import AutoRoundConfig ## must import for auto-round format
 
 For more details on quantization, inference, evaluation, and environment, see the following recipe:
 
-- [Qwen2-VL-7B-Instruct](../../docs/Qwen2-VL-7B-Instruct_sym.md)
-- [Llama-3.2-11B-Vision](../../docs/Llama-3.2-11B-Vision-Instruct_sym.md) 
-- [Phi-3.5-vision-instruct](../../docs/Phi-3.5-vision-instruct_sym.md)
-- [llava-v1.5-7b](../../docs/llava-v1.5-7b_sym.md)
-- [cogvlm2-llama3-chat-19B](../../docs/cogvlm2-llama3-chat-19B_sym.md)
+- [Qwen2-VL-7B-Instruct](../../docs/Qwen2-VL-7B-Instruct-sym)
+- [Llama-3.2-11B-Vision](../../docs/Llama-3.2-11B-Vision-Instruct-sym) 
+- [Phi-3.5-vision-instruct](../../docs/Phi-3.5-vision-instruct-sym)
+- [llava-v1.5-7b](../../docs/llava-v1.5-7b-sym)
+- [cogvlm2-llama3-chat-19B](../../docs/cogvlm2-llama3-chat-19B-sym)
 
 
 

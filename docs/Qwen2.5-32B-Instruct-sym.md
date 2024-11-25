@@ -141,7 +141,7 @@ auto-round --model "Intel/Qwen2.5-32B-Instruct-int4-inc" --eval --eval_bs 16  --
 
 Here is the sample command to generate the model. 
 
-For symmetric quantization, we found overflow/NAN will occur for some backends, so better fallback some layers. auto_round requires version >0.4.1
+For symmetric quantization, we found overflow/NAN will occur for some backends, so better fallback some layers. auto_round requires version > 0.3.1
 
 ```bash
 auto-round \

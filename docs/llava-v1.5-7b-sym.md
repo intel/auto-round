@@ -95,7 +95,7 @@ auto-round-mllm --lmms --model Intel/llava-v1.5-7b-inc-private --tasks pope,text
 ### Generate the model
 Here is the sample command to reproduce the model.
 ```bash
-pip install auto_round
+pip install auto-round
 auto-round-mllm
 --model liuhaotian/llava-v1.5-7b \
 --device 0 \
