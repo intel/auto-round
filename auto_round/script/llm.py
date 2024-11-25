@@ -149,6 +149,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--enable_torch_compile", default=None, type=bool,
                           help="whether to enable torch compile")
 
+        self.add_argument("--act_data_type", default=None, type=str,
+                          help="activation data type")
+
+        self.add_argument("--disable_act_dynamic", action='store_true',
+                          help="activation static quantization")
+
 
 def setup_parser():
     parser = BasicArgumentParser()
@@ -338,9 +344,9 @@ def tune(args):
         try:
             if args.model_dtype == "float16" or args.model_dtype == "fp16":
                 model = model.to(torch.float16)
-            elif args.model_dtype == "bfloat16" or args.model_dtype == "bfp16" or args.model_dtype=="bf16":
+            elif args.model_dtype == "bfloat16" or args.model_dtype == "bfp16" or args.model_dtype == "bf16":
                 model = model.to(torch.bfloat16)
-            elif args.model_dtype=="float32" or args.model_dtype=="fp32":
+            elif args.model_dtype == "float32" or args.model_dtype == "fp32":
                 model = model.to(torch.float32)
         except:
             logger.error("please use more device to fit the device or just use one device")
@@ -418,7 +424,8 @@ def tune(args):
         enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
         low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning, not_use_best_mse=args.not_use_best_mse,
-        to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile)
+        to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile,
+        act_data_type=args.act_data_type, act_dynamic=not args.disable_act_dynamic)
     model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:

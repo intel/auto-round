@@ -104,8 +104,8 @@ class WrapperWALayer(torch.nn.Module):
         self.act_quant_func = self.orig_layer.act_quant_func
 
     def forward(self, x):
-        from auto_round.data_type.fp8 import quant_fp8_dynamic_per_token
-        x, _, _ = quant_fp8_dynamic_per_token(x, 8, "fp8", v=0.0, min_scale=1.0, max_scale=1.0)
+        from auto_round.data_type.fp8 import quant_fp8_act
+        x, _, _ = quant_fp8_act(x, 8, "fp8", v=0.0, min_scale=1.0, max_scale=1.0, act_max=self.orig_layer.act_max)
         # x, _, _ = quant_tensor(self.orig_layer.act_quant_func, x, self.orig_layer.act_bits,
         #                        self.orig_layer.group_size,
         #                        scale_dtype=self.orig_layer.scale_dtype,
@@ -318,14 +318,16 @@ class WrapperLinear(torch.nn.Module):
 
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
-        qdq_weight, scale, zp = progressive_quant_fp8_int4(self.orig_layer.weight, self.bits, self.group_size, data_type="fp8", v=v,
-                                                    min_scale=min_scale, max_scale=max_scale)
-        qdq_weight =qdq_weight.to(self.orig_layer.weight.dtype)
+        qdq_weight, scale, zp = progressive_quant_fp8_int4(self.orig_layer.weight, self.bits, self.group_size,
+                                                           data_type="fp8", v=v,
+                                                           min_scale=min_scale, max_scale=max_scale)
+        qdq_weight = qdq_weight.to(self.orig_layer.weight.dtype)
         #
         # qdq_weight, scale, zp = quant_tensor(self.weight_quant_func, self.orig_layer.weight, self.bits,
         #                                      self.group_size, v,
         #                                      min_scale, max_scale, self.scale_dtype, self.weight_min, self.weight_max,
         #                                      data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
+
         scale = scale.reshape(qdq_weight.shape[0], -1)
         if zp is not None:
             zp = zp.reshape(qdq_weight.shape[0], -1)
@@ -377,11 +379,13 @@ class WrapperLinear(torch.nn.Module):
         #                               data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
         from auto_round.data_type.fp8 import progressive_quant_fp8_int4
 
-        weight_q,_,_= progressive_quant_fp8_int4(weight,self.bits,self.group_size,data_type="fp8", v=self.value,min_scale=self.min_scale,max_scale=self.max_scale)
+        weight_q, _, _ = progressive_quant_fp8_int4(weight, self.bits, self.group_size, data_type="fp8", v=self.value,
+                                                    min_scale=self.min_scale, max_scale=self.max_scale)
         weight_q = weight_q.to(weight.dtype)
         if self.act_quant:
-            from auto_round.data_type.fp8 import quant_fp8_dynamic_per_token
-            x,_,_ = quant_fp8_dynamic_per_token(x, self.act_bits, "fp8", v=0.0, min_scale=1.0, max_scale=1.0)
+            from auto_round.data_type.fp8 import quant_fp8_act
+            x, _, _ = quant_fp8_act(x, self.act_bits, "fp8", v=0.0, min_scale=1.0, max_scale=1.0,
+                                    act_max=self.orig_layer.act_max)
             # x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
             #                        scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
             #                        data_type=self.act_data_type)

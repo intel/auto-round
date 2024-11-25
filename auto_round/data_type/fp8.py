@@ -31,7 +31,7 @@ def float8_e4m3fn_ste(x: torch.Tensor):
     return fp8
 
 
-def quant_fp8_dynamic_per_token(tensor, bits, data_type, v, min_scale, max_scale, **kwargs):
+def quant_fp8_act(tensor, bits, data_type, v, min_scale, max_scale,act_max=None, **kwargs):
     ##this is mainly for activation, dynamic now, need to support static later
     # info = torch.finfo(torch.float8_e4m3fn)
     # max_tensor = torch.max(torch.abs(tensor))  ## better train a ratio
@@ -45,10 +45,14 @@ def quant_fp8_dynamic_per_token(tensor, bits, data_type, v, min_scale, max_scale
     # qdq_res = (fp8_res.to(tensor.dtype) * scale).to(tensor.dtype)
     # return qdq_res, scale, None
     orig_shape = tensor.shape
-    tensor = tensor.reshape(-1, orig_shape[-1])
-    orig_dtype= tensor.dtype
     info = torch.finfo(torch.float8_e4m3fn)
-    max_tensor = torch.max(torch.abs(tensor),dim=-1)[0]  ## better train a ratio
+    orig_dtype = tensor.dtype
+
+    if act_max is None:
+        tensor = tensor.reshape(-1, orig_shape[-1])
+        max_tensor = torch.max(torch.abs(tensor),dim=-1)[0]  ## better train a ratio
+    else:
+        max_tensor = torch.tensor(act_max).to(tensor.device) ## better train a ratio
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)

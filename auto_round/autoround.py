@@ -55,6 +55,7 @@ from .utils import (
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
+
 class AutoRound(object):
     """For more information, please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
      for the quantization of llms." arXiv preprint arXiv:2309.05516 (2023).
@@ -150,6 +151,7 @@ class AutoRound(object):
             act_bits: int = 16,
             act_group_size: int = None,
             act_sym: bool = None,
+            act_data_type=None,
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
@@ -188,12 +190,6 @@ class AutoRound(object):
         self.lr = lr or (1.0 / self.iters)  ##must after iter setting
         self.minmax_lr = minmax_lr or self.lr
 
-        ##activation
-        self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
-        self.act_bits = act_bits if not (act_bits is None) else self.bits
-        self.act_sym = act_sym if not (act_sym is None) else self.sym
-        self.act_dynamic = act_dynamic
-
         self.data_type = data_type
         self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
         self.model = model.eval()
@@ -205,7 +201,13 @@ class AutoRound(object):
         if not hasattr(self, 'to_quant_block_names'):
             all_blocks = get_block_names(model)
             self.to_quant_block_names = find_matching_blocks(model, all_blocks, to_quant_block_names)
-        
+
+        ##activation
+        self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
+        self.act_bits = act_bits if not (act_bits is None) else self.bits
+        self.act_sym = act_sym if not (act_sym is None) else self.sym
+        self.act_dynamic = act_dynamic
+        self.act_data_type = act_data_type if act_data_type is not None else data_type
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
@@ -215,7 +217,6 @@ class AutoRound(object):
         self.batch_dim = None
         self.infer_bs_coeff = 1
 
-        self.set_layerwise_config(self.layer_config)  ##better place in the end
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
         logger.info(f"using {self.model.dtype} for quantization tuning")
@@ -223,7 +224,9 @@ class AutoRound(object):
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
-            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
+            import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
+
+        self.set_layerwise_config(self.layer_config)  ##better place in the end
 
     def check_configs(self):
         """Checks if the configurations are valid.
@@ -242,7 +245,6 @@ class AutoRound(object):
         assert self.seqlen > 0, "seqlen must be positive"
         assert self.nblocks > 0, "nblocks must be positive"
         assert self.gradient_accumulate_steps > 0, "gradient accumulate step must be positive"
-        assert self.act_dynamic is True, "only support dynamic quantization for activation currently"
         # assert self.tokenizer != None or self.dataloader != None
         if self.act_bits <= 8:
             logger.warning(
@@ -256,7 +258,6 @@ class AutoRound(object):
 
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
-
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             self.batch_size = min(self.batch_size, self.nsamples)
@@ -426,7 +427,7 @@ class AutoRound(object):
         """
         layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.to_quant_block_names)
         keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
-                "act_dynamic"]
+                "act_dynamic", "act_data_type"]
         for n, m in self.model.named_modules():
             if not isinstance(m, tuple(self.supported_types)):
                 continue
@@ -450,7 +451,7 @@ class AutoRound(object):
                 setattr(m, key, layer_config[n][key])
 
     @torch.no_grad()
-    def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device):
+    def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device, save_output=True):
         """Compute the output of a given block of the model for a given input.
 
         Args:
@@ -481,10 +482,11 @@ class AutoRound(object):
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
             )
-            if self.batch_size == 1:
-                output.append(tmp_output)
-            else:
-                output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
+            if save_output:
+                if self.batch_size == 1:
+                    output.append(tmp_output)
+                else:
+                    output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
         if self.low_gpu_mem_usage:
             clear_memory()
 
@@ -663,7 +665,7 @@ class AutoRound(object):
         ## have bug if block name is not the first block
         if (len(block_names) > 1 or len(layer_names) > 0) and self.low_gpu_mem_usage:
             tmp_dtype = self.model.dtype
-            self.model = self.model.to(torch.bfloat16) if self.amp else self.model.to(torch.float32)
+            self.model = self.model.to(torch.bfloat16) if self.amp else self.model.to(torch.float32)  ##model on cpu
 
         self.last_cache_name = last_cache_name
         if last_cache_name is None and len(block_names) + len(layer_names) == 1:
@@ -957,6 +959,23 @@ class AutoRound(object):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.debug(dump_info)
 
+    def register_act_max_hook(self, model):
+        def get_act_max_hook(module, input, output):
+            if isinstance(input, (tuple, list)):
+                input = input[0]
+            if not hasattr(module, "act_max"):
+                module.act_max = torch.abs(input).max().item()
+            else:
+                module.act_max = max(torch.abs(input).max().item(), module.act_max)
+
+        hook_handles = []
+
+        for n, m in model.named_modules():
+            if hasattr(m, "act_dynamic") and m.act_dynamic == False and check_to_quantized(m):
+                hook = m.register_forward_hook(get_act_max_hook)
+                hook_handles.append(hook)
+        return hook_handles
+
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
 
@@ -970,9 +989,26 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+        if q_input is None:
+            hook_handles = self.register_act_max_hook(block)
 
-        output = self.get_block_outputs(block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device,
-                                        self.cache_device)
+            output = self.get_block_outputs(block, input_ids, input_others, self.batch_size * self.infer_bs_coeff,
+                                            device,
+                                            self.cache_device)
+
+            for handle in hook_handles:
+                handle.remove()
+        else:
+            output = self.get_block_outputs(block, input_ids, input_others, self.batch_size * self.infer_bs_coeff,
+                                            device,
+                                            self.cache_device)
+            hook_handles = self.register_act_max_hook(block)
+            self.get_block_outputs(block, q_input, input_others, self.batch_size * self.infer_bs_coeff,
+                                   device,
+                                   self.cache_device)
+
+            for handle in hook_handles:
+                handle.remove()
 
         if q_input is not None:
             input_ids = q_input
@@ -1689,5 +1725,3 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer=optimizer,
             **kwargs,
         )
-
-
