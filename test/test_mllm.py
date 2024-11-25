@@ -80,8 +80,18 @@ class TestAutoRoundMLLM(unittest.TestCase):
         blocks = find_matching_blocks(model, all_blocks, to_quant_block_names)
         assert target_blocks == blocks
         
+    def test_quant_block_names(self):
+        from auto_round.mllm.mllm_dataset import MLLM_DATASET
+        class Myclass:
+            model_type=None
+        dataset = MLLM_DATASET['liuhaotian/llava'](template=Myclass(), model=None, tokenzier=None, dataset_path="liuhaotian/llava", seqlen=32, nsamples=32)
+        self.assertEqual(len(dataset.questions), 32)
+        dataset = MLLM_DATASET['liuhaotian/llava'](template=Myclass(), model=None, tokenzier=None, dataset_path="liuhaotian/llava", seqlen=2048, nsamples=512)
+        self.assertEqual(len(dataset.questions), 512)
+        
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

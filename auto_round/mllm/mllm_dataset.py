@@ -78,21 +78,22 @@ class LlavaDataset(Dataset):
         self.model_type = template.model_type
         self.template = template
         self.tokenizer = tokenzier
-        if dataset_path == "liuhaotian/llava":
-            dataset_path = "llava_conv_58k"
-        else:
-            dataset_path = dataset_path.split("/")[-1]
         if os.path.exists(dataset_path):
             logger.info(f'use dataset {dataset_path}, loading from disk...')
             self.questions = json.load(open(dataset_path, "r"))
         else:
             import requests
+            if dataset_path == "liuhaotian/llava":
+                dataset_path = "llava_conv_58k"
+            else:
+                dataset_path = dataset_path.split("/")[-1]
             dataset_name = dataset_path.split('/')[-1]
             if dataset_name in self.LLAVA_DATASET:
                 logger.info(f'use dataset {dataset_name}, downloading ...')
                 self.questions = requests.get(self.LLAVA_DATASET[dataset_name], stream=True).json()
             else:
                 raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
+            
         self.seqlen = min(seqlen, self.MAX_SEQLEN)
         self.questions = self.check(self.questions, seqlen, nsamples)
         self.padding = padding
@@ -122,18 +123,17 @@ class LlavaDataset(Dataset):
                     max_len = str_len
                 if min_seqlen <= str_len < max_seqlen:
                     new_questions.append(source)
-            if len(new_questions) >= nsamples:
-                return new_questions
+                if len(new_questions) >= nsamples:
+                    return new_questions
+            if min_seqlen > max_len:
+                logger.warning(f"seqlen={min_seqlen} is greater than the max length of dataset {max_len},"
+                                f" will change seqlen to {max_len - 128}")
+                new_min_seqlen = max_len - 128
             else:
-                if seqlen > max_len:
-                    logger.warning(f"seqlen={seqlen} is greater than the max length of dataset {max_len},"
-                                   f" will change seqlen to {max_len - 128}")
-                    new_min_seqlen = max_len - 128
-                else:
-                    logger.warning(f"no enough sample for seqlen greater than {min_seqlen},"
-                                   f" will decrease to {min_seqlen - 128}")
-                    new_min_seqlen = min_seqlen - 128
-                return new_questions + _check(questions, new_min_seqlen, min_seqlen, nsamples - len(new_questions))
+                logger.warning(f"no enough sample for seqlen greater than {min_seqlen},"
+                                f" will decrease to {min_seqlen - 128}")
+                new_min_seqlen = min_seqlen - 128
+            return new_questions + _check(questions, new_min_seqlen, min_seqlen, nsamples - len(new_questions))
 
         return _check(questions, seqlen, float("inf"), nsamples)
 
@@ -252,3 +252,4 @@ def get_mllm_dataloader(
                 " please disable arg '--quant_nontext_module'")
             exit(-1)
         return dataloader, bs, gradient_accumulate_steps
+

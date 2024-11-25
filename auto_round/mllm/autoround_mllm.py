@@ -50,6 +50,9 @@ class AutoRoundMLLM(AutoRound):
     Args:
         model: The PyTorch model to be quantized.
         tokenizer: An optional tokenizer for processing input data.
+        processor: Any multi-modal model will require an object to encode or
+                   decode the data that groups several modalities (among text, vision and audio).
+        image_processor: Image processor for special model like llava.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is True).
@@ -141,10 +144,12 @@ class AutoRoundMLLM(AutoRound):
         self.to_quant_block_names = find_matching_blocks(model, all_blocks, to_quant_block_names)
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
+        self.processor = processor
         self.image_processor = image_processor
         self.template = template if template is not None else model.config.model_type
-        self.template = get_template(
-            self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
+        if not isinstance(dataset, torch.utils.data.DataLoader):
+            self.template = get_template(
+                self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
         
         dataset = self.template.default_dataset if dataset is None else dataset
         from ..calib_dataset import CALIB_DATASETS
@@ -155,14 +160,15 @@ class AutoRoundMLLM(AutoRound):
         if nsamples % batch_size != 0:
             nsamples = (nsamples // batch_size + 1) * batch_size
             logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
-
-        if quant_nontext_module or (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer)):
+            
+        if not isinstance(dataset, torch.utils.data.DataLoader) and (
+                quant_nontext_module or (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer))):
             if quant_nontext_module:
                 logger.warning(f"Quantitative nontext module is not supported for plain text datasets,"
-                               "will use liuhaotian/llava_conv_58k with default config as an alternative.")
+                            "will use liuhaotian/llava_conv_58k with default config as an alternative.")
             else:
                 logger.warning(f"{model.config.model_type} not support for {dataset},"
-                               " will use liuhaotian/llava_conv_58k with default config as an alternative.")
+                            " will use liuhaotian/llava_conv_58k with default config as an alternative.")
             dataset = "liuhaotian/llava_conv_58k"
             self.truncation = False
             batch_size = 1
@@ -338,3 +344,4 @@ class AutoRoundMLLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to("meta")
         # torch.cuda.empty_cache()
+
