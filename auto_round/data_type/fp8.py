@@ -26,12 +26,12 @@ def float8_e4m3fn_ste(x: torch.Tensor):
     Returns:
         torch.Tensor
     """
-    fp8 = x.to(torch.float8_e4m3fn).to(x.dtype)
+    fp8 = (x.to(torch.float8_e4m3fn).to(x.dtype)-x).detach()+x
 
     return fp8
 
 
-def quant_fp8_act(tensor, bits, data_type, v, min_scale, max_scale,act_max=None, **kwargs):
+def quant_fp8_act(tensor, bits, data_type, v, min_scale, max_scale, act_max=None, **kwargs):
     ##this is mainly for activation, dynamic now, need to support static later
     # info = torch.finfo(torch.float8_e4m3fn)
     # max_tensor = torch.max(torch.abs(tensor))  ## better train a ratio
@@ -44,22 +44,24 @@ def quant_fp8_act(tensor, bits, data_type, v, min_scale, max_scale,act_max=None,
     # fp8_res = float8_e4m3fn_ste(fp8_res)
     # qdq_res = (fp8_res.to(tensor.dtype) * scale).to(tensor.dtype)
     # return qdq_res, scale, None
+
     orig_shape = tensor.shape
     info = torch.finfo(torch.float8_e4m3fn)
     orig_dtype = tensor.dtype
 
     if act_max is None:
         tensor = tensor.reshape(-1, orig_shape[-1])
-        max_tensor = torch.max(torch.abs(tensor),dim=-1)[0]  ## better train a ratio
+        max_tensor = torch.max(torch.abs(tensor), dim=-1)[
+                         0] * max_scale  ## bug, dim is not matched,better train a ratio
     else:
-        max_tensor = torch.tensor(act_max).to(tensor.device) ## better train a ratio
+        max_tensor = torch.tensor(act_max).to(tensor.device) * max_scale  ## better train a ratio
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)
     if tensor.dtype == torch.float16:  ##easy NAN Value
         tensor = tensor.to(torch.bfloat16)
     scale = scale.unsqueeze(dim=-1)
-    fp8_res = (tensor / scale)  ## if tensor is
+    fp8_res = (tensor / scale)
     fp8_res = torch.clip(fp8_res, info.min, info.max)
     fp8_res = float8_e4m3fn_ste(fp8_res)
     qdq_res = fp8_res * scale
@@ -76,7 +78,6 @@ def progressive_quant_fp8_int4(tensor, bits, group_size, data_type, v, min_scale
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = 1.0 / (info.max * 512.0)  ##copy from vllm
     scale_bf16_to_fp8 = torch.clip(scale, min=min_scaling_factor)
-    ##fp8_res = (tensor / scale_bf16_to_fp8).to(torch.float8_e4m3fn)  ##fp8 does not support many ops
     fp8_res = tensor / scale_bf16_to_fp8
     fp8_res = float8_e4m3fn_ste(fp8_res)
 

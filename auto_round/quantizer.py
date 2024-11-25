@@ -275,6 +275,12 @@ class WrapperLinear(torch.nn.Module):
         else:
             self.min_scale = self.max_scale = torch.tensor(1.0, device=self.device, dtype=weight_dtype)
 
+        if self.act_quant:
+            self.act_max_scale = torch.nn.Parameter(
+                torch.ones((1), device=self.device, dtype=weight_dtype), requires_grad=True
+            )
+            self.params.update({"act_max_scale": self.act_max_scale})
+
         ## bias tuning
         if self.enable_norm_bias_tuning:
             self.bias_bits = 4  ## hard code
@@ -303,9 +309,11 @@ class WrapperLinear(torch.nn.Module):
         v = best_params.get('v', torch.tensor(0.0, device=self.device))
         min_scale = best_params.get('min_scale', torch.tensor(1.0, device=self.device))
         max_scale = best_params.get('max_scale', torch.tensor(1.0, device=self.device))
+        act_max_scale = best_params.get('act_max_scale', torch.tensor(1.0, device=self.device))
 
         min_scale.clamp_(0, 1.0)
         max_scale.clamp_(0, 1.0)
+        act_max_scale.clamp_(0, 1.0)
         v, min_scale, max_scale = v.to(self.device), min_scale.to(self.device), max_scale.to(self.device)
 
         if self.orig_layer.weight.device.type == 'meta':
@@ -340,6 +348,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.data_type = self.data_type
         if self.act_quant:
+            self.orig_layer.act_max = self.orig_layer.act_max * act_max_scale.item()
             self.orig_layer.act_data_type = self.act_data_type
             self.orig_layer.act_quant_func = self.act_quant_func
             wrapper_layer = WrapperWALayer(self.orig_layer)
@@ -369,6 +378,7 @@ class WrapperLinear(torch.nn.Module):
         # Clamp min/max scales
         self.min_scale.data.clamp_(0, 1.0)
         self.max_scale.data.clamp_(0, 1.0)
+        self.act_max_scale.data.clamp_(0, 1.0)
 
         # weight_q, _, _ = quant_tensor(self.weight_quant_func, weight, self.bits, self.group_size, self.value,
         #                               self.min_scale,
@@ -383,7 +393,7 @@ class WrapperLinear(torch.nn.Module):
 
         if self.act_quant:
             from auto_round.data_type.fp8 import quant_fp8_act
-            x, _, _ = quant_fp8_act(x, self.orig_layer.act_bits, "fp8", v=0.0, min_scale=1.0, max_scale=1.0,
+            x, _, _ = quant_fp8_act(x, self.orig_layer.act_bits, "fp8", v=0.0, min_scale=1.0, max_scale=self.act_max_scale,
                                     act_max=self.orig_layer.act_max)
             # x, _, _ = quant_tensor(self.act_quant_func, x, self.act_bits, self.act_group_size,
             #                        scale_dtype=self.scale_dtype, q_scale_thresh=self.q_scale_thresh,
