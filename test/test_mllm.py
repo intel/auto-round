@@ -42,12 +42,12 @@ class TestAutoRoundMLLM(unittest.TestCase):
     def test_tune(self):
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
-        tokenizer.processor = processor
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             self.model_name, trust_remote_code=True, device_map="auto")
         bits, group_size = 4, 128
         autoround = AutoRoundMLLM(
-            model, tokenizer, bits=bits, group_size=group_size,
+            model, tokenizer, processor=processor, 
+            bits=bits, group_size=group_size,
             nsamples=1,
             batch_size=1, iters=2, dataset=self.dataset,seqlen=256)
         autoround.quantize()
@@ -57,12 +57,12 @@ class TestAutoRoundMLLM(unittest.TestCase):
     def test_quant_vision(self): ## bug need to fix
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
-        tokenizer.processor = processor
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             self.model_name, trust_remote_code=True, device_map="auto")
         bits, group_size = 4, 128
         autoround = AutoRoundMLLM(
-            model, tokenizer, bits=bits, group_size=group_size,
+            model, tokenizer, processor=processor,
+            bits=bits, group_size=group_size,
             nsamples=5,
             batch_size=3, iters=2, dataset=self.dataset, quant_nontext_module=False,seqlen=256)
         autoround.quantize()
@@ -72,7 +72,6 @@ class TestAutoRoundMLLM(unittest.TestCase):
         from auto_round.utils import get_multimodal_block_names,find_matching_blocks
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
-        tokenizer.processor = processor
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             self.model_name, trust_remote_code=True, device_map="auto")
         to_quant_block_names = 'visual.*12,layers.0,model.layers.*9'
