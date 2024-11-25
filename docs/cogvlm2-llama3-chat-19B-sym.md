@@ -89,7 +89,7 @@ auto-round-mllm --lmms --model Intel/cogvlm2-llama3-chat-19B-inc-private --tasks
 ### Generate the model
 Here is the sample command to reproduce the model.
 ```bash
-pip install auto_round
+pip install auto-round
 auto-round-mllm
 --model THUDM/cogvlm2-llama3-chat-19B \
 --device 0 \

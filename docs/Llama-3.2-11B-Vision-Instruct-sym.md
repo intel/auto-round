@@ -106,7 +106,7 @@ auto-round-mllm --eval --model Intel/Llama-3.2-11B-Vision-Instruct-inc-private -
 ### Generate the model
 Here is the sample command to reproduce the model.
 ```bash
-pip install auto_round
+pip install auto-round
 auto-round-mllm
 --model meta-llama/Llama-3.2-11B-Vision-Instruct \
 --device 0 \
