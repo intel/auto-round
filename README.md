@@ -10,7 +10,7 @@ AutoRound
 ---
 <div align="left">
 
-AutoRound is an advanced quantization algorithm for low-bits LLM inference. It's tailored for a wide range
+AutoRound is an advanced quantization algorithm for low-bits LLM/VLM inference. It's tailored for a wide range
 of models. AutoRound adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200
 steps,
 which competes impressively against recent methods without introducing any additional inference overhead and keeping low
@@ -26,7 +26,7 @@ more accuracy data and recipes across various models.
 <div align="left">
 
 ## What's New
-* [2024/11] We provide experimental support for VLLM quantization, please check out [MLLM README](./auto_round/mllm/README.md)
+* [2024/11] We provide experimental support for VLLM quantization, please check out the [README](./auto_round/mllm/README.md)
 * [2024/11] We provide some tips and tricks for LLM&VLM quantization, please check out [this blog](https://medium.com/@NeuralCompressor/10-tips-for-quantizing-llms-and-vlms-with-autoround-923e733879a7)
 * [2024/10] AutoRound has been integrated to [torch/ao](https://github.com/pytorch/ao), check out
   their [release note](https://github.com/pytorch/ao/releases/tag/v0.6.1)
