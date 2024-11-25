@@ -338,8 +338,10 @@ def tune(args):
         try:
             if args.model_dtype == "float16" or args.model_dtype == "fp16":
                 model = model.to(torch.float16)
-            if args.model_dtype == "bfloat16" or args.model_dtype == "bfp16":
+            elif args.model_dtype == "bfloat16" or args.model_dtype == "bfp16" or args.model_dtype=="bf16":
                 model = model.to(torch.bfloat16)
+            elif args.model_dtype=="float32" or args.model_dtype=="fp32":
+                model = model.to(torch.float32)
         except:
             logger.error("please use more device to fit the device or just use one device")
             exit()
@@ -458,7 +460,8 @@ def tune(args):
                 user_model = model
             else:
                 user_model = model.to(device_str)
-            if args.eval_bs is None or args.eval_bs == "auto" :
+
+            if args.eval_bs is None or args.eval_bs == "auto":
                 args.eval_bs = 16
             from auto_round.eval.evaluation import simple_evaluate_user_model
             res = simple_evaluate_user_model(user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs)
