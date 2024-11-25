@@ -144,7 +144,6 @@ class AutoRoundMLLM(AutoRound):
         self.to_quant_block_names = find_matching_blocks(model, all_blocks, to_quant_block_names)
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
-        self.processor = processor
         self.image_processor = image_processor
         self.template = template if template is not None else model.config.model_type
         if not isinstance(dataset, torch.utils.data.DataLoader):
