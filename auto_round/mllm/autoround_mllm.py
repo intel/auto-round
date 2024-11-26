@@ -163,7 +163,7 @@ class AutoRoundMLLM(AutoRound):
         if not isinstance(dataset, torch.utils.data.DataLoader) and (
                 quant_nontext_module or (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer))):
             if quant_nontext_module:
-                logger.warning(f"Plain text datasets are unsuitable for calibrating non-text modules,"
+                logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
                                "switching to liuhaotian/llava_conv_58k")
             else:
                 logger.warning(f"{model.config.model_type} not support for {dataset},"
