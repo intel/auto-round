@@ -126,13 +126,13 @@ class Qwen2VLProcessor(BasicProcessor):
 class CogVLM2Processor(BasicProcessor):
     def get_input(
             self, text, images, truncation=False,
-            squeeze=True, **kwargs):
+            squeeze=True, max_length=None, **kwargs):
 
         if images is not None:
             images = self.image_processor(images)
-
+        
         padding_len = 2303
-        max_length = 0
+        max_length = 0 if max_length is None else max_length
         max_length += padding_len
         padding = False
         input_data = self.model.build_conversation_input_ids(

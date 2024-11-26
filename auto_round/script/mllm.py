@@ -54,7 +54,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--dataset", type=str, default=None,
                           help="the dataset for quantization training."
-                               " current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k "
+                               " current support NeelNanda/pile-10k,liuhaotian/llava_conv_58k,"
+                               "liuhaotian/llava_instruct_80k,liuhaotian/llava_instruct_150k"
                                "It can be a custom one. Default is NeelNanda/pile-10k")
 
         self.add_argument("--lr", default=None, type=float,
@@ -175,8 +176,8 @@ def setup_parser():
     parser.add_argument("--iters", "--iter", default=200, type=int,
                         help=" iters")
 
-    parser.add_argument("--seqlen", "--seq_len", default=2048, type=int,
-                        help="sequence length")
+    parser.add_argument("--seqlen", "--seq_len", default=None, type=int,
+                        help="sequence length, default 2048 for text-only, 512 for liuhaotian/llava")
 
     parser.add_argument("--nsamples", default=128, type=int,
                         help="number of samples")
@@ -306,7 +307,6 @@ def tune(args):
     from auto_round import AutoRoundMLLM
 
     model = model.eval()
-    seqlen = args.seqlen
 
     if args.model_dtype != None:
         try:
@@ -374,10 +374,11 @@ def tune(args):
 
     if "--truncation" not in sys.argv:
         args.truncation = None
+    
 
     autoround = round(model, tokenizer, processor=processor, image_processor=image_processor, dataset=args.dataset,
                       extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,
-                      sym=not args.asym, batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks,
+                      sym=not args.asym, batch_size=args.batch_size, seqlen=args.seqlen, nblocks=args.nblocks,
                       iters=args.iters, lr=args.lr, minmax_lr=args.minmax_lr, amp=not args.disable_amp,
                       enable_quanted_input=not args.disable_quanted_input, truncation=args.truncation,
                       nsamples=args.nsamples, low_gpu_mem_usage=args.low_gpu_mem_usage,

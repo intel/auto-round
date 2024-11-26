@@ -50,6 +50,9 @@ class AutoRoundMLLM(AutoRound):
     Args:
         model: The PyTorch model to be quantized.
         tokenizer: An optional tokenizer for processing input data.
+        processor: Any multi-modal model will require an object to encode or
+                   decode the data that groups several modalities (among text, vision and audio).
+        image_processor: Image processor for special model like llava.
         bits (int): Number of bits for quantization (default is 4).
         group_size (int): Size of the quantization group (default is 128).
         sym (bool): Whether sym to be used (default is True).
@@ -143,31 +146,40 @@ class AutoRoundMLLM(AutoRound):
         self.quant_nontext_module = quant_nontext_module
         self.image_processor = image_processor
         self.template = template if template is not None else model.config.model_type
-        self.template = get_template(
-            self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
+        if not isinstance(dataset, torch.utils.data.DataLoader):
+            self.template = get_template(
+                self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
         
         dataset = self.template.default_dataset if dataset is None else dataset
-        from ..calib_dataset import CALIB_DATASETS
-        if truncation is None:
-            truncation = True if dataset in CALIB_DATASETS.keys() else False
-        self.truncation = truncation
-
+        
         if nsamples % batch_size != 0:
             nsamples = (nsamples // batch_size + 1) * batch_size
             logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
+            
+        from ..calib_dataset import CALIB_DATASETS
+        from .mllm_dataset import MLLM_DATASET
+        if isinstance(dataset, str):
+            if quant_nontext_module or (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer)):
+                if quant_nontext_module:
+                    logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
+                                "switching to liuhaotian/llava_conv_58k")
+                else:
+                    logger.warning(f"{model.config.model_type} not support for {dataset},"
+                             " will use liuhaotian/llava_conv_58k with default config as an alternative.")
+                dataset = "liuhaotian/llava_conv_58k"
 
-        if quant_nontext_module or (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer)):
-            if quant_nontext_module:
-                logger.warning(f"Quantitative nontext module is not supported for plain text datasets,"
-                               "will use liuhaotian/llava_conv_58k with default config as an alternative.")
-            else:
-                logger.warning(f"{model.config.model_type} not support for {dataset},"
-                               " will use liuhaotian/llava_conv_58k with default config as an alternative.")
-            dataset = "liuhaotian/llava_conv_58k"
-            self.truncation = False
+            if dataset in MLLM_DATASET.keys():
+                truncation = False
+                batch_size = 1
+                seqlen = 512 if seqlen is None else seqlen
+        if quant_nontext_module and batch_size != 1:
+            logger.warning(f"batch_size({batch_size}) cannot be used for calibrating non-text modules,"
+                           "reset to 1")
+            gradient_accumulate_steps = batch_size * gradient_accumulate_steps
             batch_size = 1
-            gradient_accumulate_steps = 4
-            seqlen = 512
+        seqlen = 2048 if seqlen is None else seqlen
+        truncation = True if truncation is None else truncation
+        self.truncation = truncation
 
         super(AutoRoundMLLM, self).__init__(
             model=model,
@@ -250,6 +262,7 @@ class AutoRoundMLLM(AutoRound):
         with tqdm(range(1, total + 1), desc="calib") as pbar:
             for data in self.dataloader:
                 if data is None:
+                    pbar.update(1)
                     continue
                 if isinstance(data, torch.Tensor):
                     input_ids = data.to(self.device)
@@ -297,6 +310,9 @@ class AutoRoundMLLM(AutoRound):
                             data_new[key] = to_dtype(data_new[key], self.model.dtype)
                     input_ids = data_new["input_ids"]
 
+                if input_ids.shape[-1] < self.seqlen:
+                    pbar.update(1)
+                    continue
                 try:
                     if isinstance(data_new, torch.Tensor):
                         self.model(data_new)
@@ -318,7 +334,7 @@ class AutoRoundMLLM(AutoRound):
                 f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
                 f"dataset or decease the sequence length"
             )
-            exit()
+            exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantification. "
@@ -338,3 +354,4 @@ class AutoRoundMLLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to("meta")
         # torch.cuda.empty_cache()
+
