@@ -175,6 +175,7 @@ class AutoRoundMLLM(AutoRound):
         if quant_nontext_module and batch_size != 1:
             logger.warning(f"batch_size({batch_size}) cannot be used for calibrating non-text modules,"
                            "reset to 1")
+            gradient_accumulate_steps = batch_size * gradient_accumulate_steps
             batch_size = 1
         seqlen = 2048 if seqlen is None else seqlen
         truncation = True if truncation is None else truncation
