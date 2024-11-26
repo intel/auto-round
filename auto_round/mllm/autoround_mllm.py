@@ -170,7 +170,7 @@ class AutoRoundMLLM(AutoRound):
         if dataset not in CALIB_DATASETS.keys():
             truncation = False
             batch_size = 1
-            seqlen = min(512, seqlen) if seqlen is not None else 512
+            seqlen = 512 if seqlen is None else seqlen
         else:
             seqlen = 2048 if seqlen is None else seqlen
             truncation = True if truncation is None else truncation
@@ -257,6 +257,7 @@ class AutoRoundMLLM(AutoRound):
         with tqdm(range(1, total + 1), desc="calib") as pbar:
             for data in self.dataloader:
                 if data is None:
+                    pbar.update(1)
                     continue
                 if isinstance(data, torch.Tensor):
                     input_ids = data.to(self.device)
@@ -305,6 +306,7 @@ class AutoRoundMLLM(AutoRound):
                     input_ids = data_new["input_ids"]
 
                 if input_ids.shape[-1] < self.seqlen:
+                    pbar.update(1)
                     continue
                 try:
                     if isinstance(data_new, torch.Tensor):
@@ -327,7 +329,7 @@ class AutoRoundMLLM(AutoRound):
                 f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
                 f"dataset or decease the sequence length"
             )
-            exit()
+            exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantification. "
