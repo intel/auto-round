@@ -94,8 +94,8 @@ class LlavaDataset(Dataset):
             else:
                 raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
             
-        self.seqlen = min(seqlen, self.MAX_SEQLEN)
-        self.questions = self.check(self.questions, seqlen, nsamples)
+        self.seqlen = seqlen
+        self.questions = self.check(self.questions, min(seqlen, self.MAX_SEQLEN), nsamples)
         self.padding = padding
         self.truncation = truncation
         self.extra_data_dir = extra_data_dir
@@ -109,8 +109,8 @@ class LlavaDataset(Dataset):
                 image_fold = image_fold['image']
             self.image_fold = image_fold
 
-    def check(self, questions, seqlen, nsamples):
-        def _check(questions, min_seqlen, max_seqlen, nsamples):
+    def check(self, questions, word_len, nsamples):
+        def _check(questions, min_word_len, max_word_len, nsamples):
             new_questions = []
             max_len = 0
             for source in questions:
@@ -121,21 +121,21 @@ class LlavaDataset(Dataset):
                     str_len += len(text['value'].split(' '))
                 if str_len > max_len:
                     max_len = str_len
-                if min_seqlen <= str_len < max_seqlen:
+                if min_word_len <= str_len < max_word_len:
                     new_questions.append(source)
                 if len(new_questions) >= nsamples:
                     return new_questions
-            if min_seqlen > max_len:
-                logger.warning(f"seqlen={min_seqlen} is greater than the max length of dataset {max_len},"
+            if min_word_len > max_len:
+                logger.debug(f"seqlen={min_word_len} is greater than the max length of dataset {max_len},"
                                 f" will change seqlen to {max_len - 128}")
-                new_min_seqlen = max_len - 128
+                new_min_word_len = max_len - 128
             else:
-                logger.warning(f"no enough sample for seqlen greater than {min_seqlen},"
-                                f" will decrease to {min_seqlen - 128}")
-                new_min_seqlen = min_seqlen - 128
-            return new_questions + _check(questions, new_min_seqlen, min_seqlen, nsamples - len(new_questions))
+                logger.debug(f"no enough sample for seqlen greater than {min_word_len},"
+                                f" will decrease to {min_word_len - 128}")
+                new_min_word_len = min_word_len - 128
+            return new_questions + _check(questions, new_min_word_len, min_word_len, nsamples - len(new_questions))
 
-        return _check(questions, seqlen, float("inf"), nsamples)
+        return _check(questions, word_len, float("inf"), nsamples)
 
     def __len__(self):
         return len(self.questions)

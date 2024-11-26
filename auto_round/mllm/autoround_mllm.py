@@ -302,6 +302,8 @@ class AutoRoundMLLM(AutoRound):
                             data_new[key] = to_dtype(data_new[key], self.model.dtype)
                     input_ids = data_new["input_ids"]
 
+                if input_ids.shape[-1] < self.seqlen:
+                    continue
                 try:
                     if isinstance(data_new, torch.Tensor):
                         self.model(data_new)

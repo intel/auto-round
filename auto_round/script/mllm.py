@@ -54,7 +54,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--dataset", type=str, default=None,
                           help="the dataset for quantization training."
-                               " current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k "
+                               " current support NeelNanda/pile-10k,liuhaotian/llava_conv_58k,"
+                               "liuhaotian/llava_instruct_80k,liuhaotian/llava_instruct_150k"
                                "It can be a custom one. Default is NeelNanda/pile-10k")
 
         self.add_argument("--lr", default=None, type=float,
@@ -229,6 +230,16 @@ def setup_lmeval_parser():
     return args
 
 
+def _default_args_check(args):
+    if 'liuhaotian/llava' in args.dataset:
+        args.truncation = False if "--trancation" not in sys.argv else args.truncation
+        args.batch_size = 1 if "--batch_size" not in sys.argv else args.batch_size
+        args.gradient_accumulate_steps = 4 if \
+            "--gradient_accumulate_steps" not in sys.argv else args.gradient_accumulate_steps
+        args.seqlen = 512 if "--seqlen" not in sys.argv else args.seqlen
+    return args
+
+
 def tune(args):
     if args.format is None:
         args.format = "auto_round"
@@ -306,7 +317,6 @@ def tune(args):
     from auto_round import AutoRoundMLLM
 
     model = model.eval()
-    seqlen = args.seqlen
 
     if args.model_dtype != None:
         try:
@@ -374,10 +384,12 @@ def tune(args):
 
     if "--truncation" not in sys.argv:
         args.truncation = None
+    
+    args = _default_args_check(args)
 
     autoround = round(model, tokenizer, processor=processor, image_processor=image_processor, dataset=args.dataset,
                       extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,
-                      sym=not args.asym, batch_size=args.batch_size, seqlen=seqlen, nblocks=args.nblocks,
+                      sym=not args.asym, batch_size=args.batch_size, seqlen=args.seqlen, nblocks=args.nblocks,
                       iters=args.iters, lr=args.lr, minmax_lr=args.minmax_lr, amp=not args.disable_amp,
                       enable_quanted_input=not args.disable_quanted_input, truncation=args.truncation,
                       nsamples=args.nsamples, low_gpu_mem_usage=args.low_gpu_mem_usage,
