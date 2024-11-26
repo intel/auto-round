@@ -231,6 +231,8 @@ def setup_lmeval_parser():
 
 
 def _default_args_check(args):
+    if args.dataset is None:
+        args.dataset = "NeelNanda/pile-10k"
     if 'liuhaotian/llava' in args.dataset:
         args.truncation = False if "--trancation" not in sys.argv else args.truncation
         args.batch_size = 1 if "--batch_size" not in sys.argv else args.batch_size
