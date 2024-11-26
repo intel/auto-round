@@ -177,7 +177,7 @@ def setup_parser():
                         help=" iters")
 
     parser.add_argument("--seqlen", "--seq_len", default=None, type=int,
-                        help="sequence length, defualt 2048 for text-only, 512 for liuhaotian/llava")
+                        help="sequence length, default 2048 for text-only, 512 for liuhaotian/llava")
 
     parser.add_argument("--nsamples", default=128, type=int,
                         help="number of samples")
