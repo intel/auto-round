@@ -64,7 +64,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
             model, tokenizer, processor=processor,
             bits=bits, group_size=group_size,
             nsamples=5,
-            batch_size=3, iters=2, dataset=self.dataset, quant_nontext_module=False,seqlen=256)
+            batch_size=3, iters=2, dataset=self.dataset, quant_nontext_module=True, seqlen=256)
         autoround.quantize()
         autoround.save_quantized("./saved/", format="auto_round", inplace=True)
         
@@ -80,7 +80,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
         blocks = find_matching_blocks(model, all_blocks, to_quant_block_names)
         assert target_blocks == blocks
         
-    def test_quant_block_names(self):
+    def test_dataset_check(self):
         from auto_round.mllm.mllm_dataset import MLLM_DATASET
         class Myclass:
             model_type=None
@@ -93,5 +93,6 @@ class TestAutoRoundMLLM(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

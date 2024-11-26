@@ -248,8 +248,8 @@ def get_mllm_dataloader(
             tokenizer, seqlen, dataset, seed, bs, nsamples)
         if quant_nontext_module:
             logger.error(
-                f"Quantitative nontext module is not supported for plain text datasets," \
-                " please disable arg '--quant_nontext_module'")
+                f"Plain text datasets are unsuitable for calibrating non-text modules,"
+                 " switching to liuhaotian/llava_conv_58k")
             exit(-1)
         return dataloader, bs, gradient_accumulate_steps
 
