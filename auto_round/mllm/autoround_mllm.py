@@ -157,23 +157,24 @@ class AutoRoundMLLM(AutoRound):
             logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
             
         from ..calib_dataset import CALIB_DATASETS
-        if not isinstance(dataset, torch.utils.data.DataLoader) and (
-                quant_nontext_module or (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer))):
-            if quant_nontext_module:
-                logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
-                               "switching to liuhaotian/llava_conv_58k")
-            else:
-                logger.warning(f"{model.config.model_type} not support for {dataset},"
-                            " will use liuhaotian/llava_conv_58k with default config as an alternative.")
-            dataset = "liuhaotian/llava_conv_58k"
+        from .mllm_dataset import MLLM_DATASET
+        if isinstance(dataset, str):
+            if quant_nontext_module or (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer)):
+                if quant_nontext_module:
+                    logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
+                                "switching to liuhaotian/llava_conv_58k")
+                else:
+                    logger.warning(f"{model.config.model_type} not support for {dataset},"
+                             " will use liuhaotian/llava_conv_58k with default config as an alternative.")
+                dataset = "liuhaotian/llava_conv_58k"
 
-        if dataset not in CALIB_DATASETS.keys():
-            truncation = False
-            batch_size = 1
-            seqlen = 512 if seqlen is None else seqlen
-        else:
-            seqlen = 2048 if seqlen is None else seqlen
-            truncation = True if truncation is None else truncation
+            if dataset in MLLM_DATASET.keys():
+                truncation = False
+                batch_size = 1
+                seqlen = 512 if seqlen is None else seqlen
+
+        seqlen = 2048 if seqlen is None else seqlen
+        truncation = True if truncation is None else truncation
         self.truncation = truncation
 
         super(AutoRoundMLLM, self).__init__(
