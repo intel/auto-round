@@ -152,8 +152,9 @@ class AutoRoundMLLM(AutoRound):
         
         dataset = self.template.default_dataset if dataset is None else dataset
         from ..calib_dataset import CALIB_DATASETS
-        if truncation is None:
-            truncation = True if dataset in CALIB_DATASETS.keys() else False
+        if dataset in CALIB_DATASETS.keys():
+            truncation = True if truncation is None else truncation
+            seqlen = 512 if seqlen is None else seqlen
         self.truncation = truncation
 
         if nsamples % batch_size != 0:
@@ -171,7 +172,7 @@ class AutoRoundMLLM(AutoRound):
             dataset = "liuhaotian/llava_conv_58k"
             self.truncation = False
             batch_size = 1
-            gradient_accumulate_steps = 4
+            gradient_accumulate_steps = 8
             seqlen = 512
 
         super(AutoRoundMLLM, self).__init__(

@@ -176,8 +176,8 @@ def setup_parser():
     parser.add_argument("--iters", "--iter", default=200, type=int,
                         help=" iters")
 
-    parser.add_argument("--seqlen", "--seq_len", default=2048, type=int,
-                        help="sequence length")
+    parser.add_argument("--seqlen", "--seq_len", default=None, type=int,
+                        help="sequence length, defualt 2048 for text-only, 512 for liuhaotian/llava")
 
     parser.add_argument("--nsamples", default=128, type=int,
                         help="number of samples")
@@ -227,18 +227,6 @@ def setup_lmeval_parser():
     parser.add_argument("--output_dir", default="./eval_result", type=str,
                           help="the directory to save quantized model")
     args = parser.parse_args()
-    return args
-
-
-def _default_args_check(args):
-    if args.dataset is None:
-        args.dataset = "NeelNanda/pile-10k"
-    if 'liuhaotian/llava' in args.dataset:
-        args.truncation = False if "--trancation" not in sys.argv else args.truncation
-        args.batch_size = 1 if "--batch_size" not in sys.argv else args.batch_size
-        args.gradient_accumulate_steps = 4 if \
-            "--gradient_accumulate_steps" not in sys.argv else args.gradient_accumulate_steps
-        args.seqlen = 512 if "--seqlen" not in sys.argv else args.seqlen
     return args
 
 
@@ -387,7 +375,6 @@ def tune(args):
     if "--truncation" not in sys.argv:
         args.truncation = None
     
-    args = _default_args_check(args)
 
     autoround = round(model, tokenizer, processor=processor, image_processor=image_processor, dataset=args.dataset,
                       extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,
