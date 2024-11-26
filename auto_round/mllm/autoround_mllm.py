@@ -151,16 +151,12 @@ class AutoRoundMLLM(AutoRound):
                 self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
         
         dataset = self.template.default_dataset if dataset is None else dataset
-        from ..calib_dataset import CALIB_DATASETS
-        if dataset in CALIB_DATASETS.keys():
-            truncation = True if truncation is None else truncation
-            seqlen = 512 if seqlen is None else seqlen
-        self.truncation = truncation
-
+        
         if nsamples % batch_size != 0:
             nsamples = (nsamples // batch_size + 1) * batch_size
             logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
             
+        from ..calib_dataset import CALIB_DATASETS
         if not isinstance(dataset, torch.utils.data.DataLoader) and (
                 quant_nontext_module or (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer))):
             if quant_nontext_module:
@@ -170,10 +166,15 @@ class AutoRoundMLLM(AutoRound):
                 logger.warning(f"{model.config.model_type} not support for {dataset},"
                             " will use liuhaotian/llava_conv_58k with default config as an alternative.")
             dataset = "liuhaotian/llava_conv_58k"
-            self.truncation = False
+
+        if dataset not in CALIB_DATASETS.keys():
+            truncation = False
             batch_size = 1
-            gradient_accumulate_steps = 8
-            seqlen = 512
+            seqlen = min(512, seqlen) if seqlen is not None else 512
+        else:
+            seqlen = 2048 if seqlen is None else seqlen
+            truncation = True if truncation is None else truncation
+        self.truncation = truncation
 
         super(AutoRoundMLLM, self).__init__(
             model=model,

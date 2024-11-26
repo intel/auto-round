@@ -59,7 +59,6 @@ class LlavaDataset(Dataset):
     }
     _COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
     IMAGE_TOKEN = "<image>"
-    MAX_SEQLEN = 512
 
     def __init__(
             self,
@@ -95,7 +94,7 @@ class LlavaDataset(Dataset):
                 raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
             
         self.seqlen = seqlen
-        self.questions = self.check(self.questions, min(seqlen, self.MAX_SEQLEN), nsamples)
+        self.questions = self.check(self.questions, self.seqlen, nsamples)
         self.padding = padding
         self.truncation = truncation
         self.extra_data_dir = extra_data_dir
