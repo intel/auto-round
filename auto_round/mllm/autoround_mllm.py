@@ -172,7 +172,10 @@ class AutoRoundMLLM(AutoRound):
                 truncation = False
                 batch_size = 1
                 seqlen = 512 if seqlen is None else seqlen
-
+        if quant_nontext_module and batch_size != 1:
+            logger.warning(f"batch_size({batch_size}) cannot be used for calibrating non-text modules,"
+                           "reset to 1")
+            batch_size = 1
         seqlen = 2048 if seqlen is None else seqlen
         truncation = True if truncation is None else truncation
         self.truncation = truncation
