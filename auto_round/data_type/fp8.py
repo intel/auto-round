@@ -14,7 +14,6 @@
 
 import torch
 
-from auto_round.data_type import get_quant_func
 from auto_round.data_type.register import register_dtype
 
 
@@ -106,8 +105,7 @@ def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
                                                                           min_scale=min_scale,
                                                                           max_scale=max_scale,
                                                                           scale_dtype=torch.bfloat16,
-                                                                          q_scale_thresh=q_scale_thresh,
-                                                                          **kwargs)
+                                                                          q_scale_thresh=q_scale_thresh)
     qdq_tensor = qdq_int4_tensor * scale_bf16_to_fp8
 
     return qdq_tensor, scale_fp8_to_int4 * scale_bf16_to_fp8, None,

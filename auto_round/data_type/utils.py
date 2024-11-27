@@ -82,6 +82,14 @@ def get_quant_func(dtype, bits, sym):
         return QUANT_FUNC_WITH_DTYPE[key], key
 
     if sym:
+        key = dtype  + "_sym"
+    else:
+        key = dtype  + "_asym"
+
+    if key in QUANT_FUNC_WITH_DTYPE.keys():
+        return QUANT_FUNC_WITH_DTYPE[key], key
+
+    if sym:
         key = dtype + str(bits)
     else:
         key = dtype + str(bits)

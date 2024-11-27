@@ -16,7 +16,6 @@ import torch
 from torch.functional import F
 import transformers
 from auto_round.data_type import get_quant_func
-from .data_type.fp8 import progressive_quant_fp8_int4
 from .utils import (
     check_to_quantized,
     get_scale_shape,
