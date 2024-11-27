@@ -4,7 +4,7 @@ py-cpuinfo
 sentencepiece
 torch
 transformers>=4.38
-triton>=2.0,< 3.0
+triton
 numpy < 2.0
 threadpoolctl
 lm-eval>=0.4.2,<0.5
