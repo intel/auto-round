@@ -64,7 +64,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
             model, tokenizer, processor=processor,
             bits=bits, group_size=group_size,
             nsamples=5,
-            batch_size=3, iters=2, dataset=self.dataset, quant_nontext_module=False,seqlen=256)
+            batch_size=3, iters=2, dataset=self.dataset, quant_nontext_module=True, seqlen=256)
         autoround.quantize()
         autoround.save_quantized("./saved/", format="auto_round", inplace=True)
         
@@ -80,8 +80,31 @@ class TestAutoRoundMLLM(unittest.TestCase):
         blocks = find_matching_blocks(model, all_blocks, to_quant_block_names)
         assert target_blocks == blocks
         
-
+    def test_dataset_check(self):
+        from auto_round.mllm.mllm_dataset import MLLM_DATASET
+        class Myclass:
+            model_type=None
+        dataset = MLLM_DATASET['liuhaotian/llava'](template=Myclass(), model=None, tokenzier=None, dataset_path="liuhaotian/llava", seqlen=32, nsamples=32)
+        self.assertEqual(len(dataset.questions), 32)
+        dataset = MLLM_DATASET['liuhaotian/llava'](template=Myclass(), model=None, tokenzier=None, dataset_path="liuhaotian/llava", seqlen=2048, nsamples=512)
+        self.assertEqual(len(dataset.questions), 512)
+        
+    def test_diff_dataset(self):
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            self.model_name, trust_remote_code=True, device_map="auto")
+        bits, group_size = 4, 128
+        dataset = ["dataset test", "list test"]
+        autoround = AutoRoundMLLM(
+            model, tokenizer, processor=processor,
+            bits=bits, group_size=group_size,
+            nsamples=2,
+            batch_size=1, iters=2, dataset=dataset, seqlen=1)
+        autoround.quantize()
 
 if __name__ == "__main__":
     unittest.main()
+
+
 

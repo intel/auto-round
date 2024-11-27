@@ -59,7 +59,6 @@ class LlavaDataset(Dataset):
     }
     _COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
     IMAGE_TOKEN = "<image>"
-    MAX_SEQLEN = 512
 
     def __init__(
             self,
@@ -78,23 +77,24 @@ class LlavaDataset(Dataset):
         self.model_type = template.model_type
         self.template = template
         self.tokenizer = tokenzier
-        if dataset_path == "liuhaotian/llava":
-            dataset_path = "llava_conv_58k"
-        else:
-            dataset_path = dataset_path.split("/")[-1]
         if os.path.exists(dataset_path):
             logger.info(f'use dataset {dataset_path}, loading from disk...')
             self.questions = json.load(open(dataset_path, "r"))
         else:
             import requests
+            if dataset_path == "liuhaotian/llava":
+                dataset_path = "llava_conv_58k"
+            else:
+                dataset_path = dataset_path.split("/")[-1]
             dataset_name = dataset_path.split('/')[-1]
             if dataset_name in self.LLAVA_DATASET:
                 logger.info(f'use dataset {dataset_name}, downloading ...')
                 self.questions = requests.get(self.LLAVA_DATASET[dataset_name], stream=True).json()
             else:
                 raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
-        self.seqlen = min(seqlen, self.MAX_SEQLEN)
-        self.questions = self.check(self.questions, seqlen, nsamples)
+            
+        self.seqlen = seqlen
+        self.questions = self.check(self.questions, self.seqlen, nsamples)
         self.padding = padding
         self.truncation = truncation
         self.extra_data_dir = extra_data_dir
@@ -108,8 +108,8 @@ class LlavaDataset(Dataset):
                 image_fold = image_fold['image']
             self.image_fold = image_fold
 
-    def check(self, questions, seqlen, nsamples):
-        def _check(questions, min_seqlen, max_seqlen, nsamples):
+    def check(self, questions, word_len, nsamples):
+        def _check(questions, min_word_len, max_word_len, nsamples):
             new_questions = []
             max_len = 0
             for source in questions:
@@ -120,22 +120,21 @@ class LlavaDataset(Dataset):
                     str_len += len(text['value'].split(' '))
                 if str_len > max_len:
                     max_len = str_len
-                if min_seqlen <= str_len < max_seqlen:
+                if min_word_len <= str_len < max_word_len:
                     new_questions.append(source)
-            if len(new_questions) >= nsamples:
-                return new_questions
+                if len(new_questions) >= nsamples:
+                    return new_questions
+            if min_word_len > max_len:
+                logger.debug(f"seqlen={min_word_len} is greater than the max length of dataset {max_len},"
+                                f" will change seqlen to {max_len - 128}")
+                new_min_word_len = max_len - 128
             else:
-                if seqlen > max_len:
-                    logger.warning(f"seqlen={seqlen} is greater than the max length of dataset {max_len},"
-                                   f" will change seqlen to {max_len - 128}")
-                    new_min_seqlen = max_len - 128
-                else:
-                    logger.warning(f"no enough sample for seqlen greater than {min_seqlen},"
-                                   f" will decrease to {min_seqlen - 128}")
-                    new_min_seqlen = min_seqlen - 128
-                return new_questions + _check(questions, new_min_seqlen, min_seqlen, nsamples - len(new_questions))
+                logger.debug(f"no enough sample for seqlen greater than {min_word_len},"
+                                f" will decrease to {min_word_len - 128}")
+                new_min_word_len = min_word_len - 128
+            return new_questions + _check(questions, new_min_word_len, min_word_len, nsamples - len(new_questions))
 
-        return _check(questions, seqlen, float("inf"), nsamples)
+        return _check(questions, word_len, float("inf"), nsamples)
 
     def __len__(self):
         return len(self.questions)
@@ -248,7 +247,8 @@ def get_mllm_dataloader(
             tokenizer, seqlen, dataset, seed, bs, nsamples)
         if quant_nontext_module:
             logger.error(
-                f"Quantitative nontext module is not supported for plain text datasets," \
-                " please disable arg '--quant_nontext_module'")
+                f"Text only dataset cannot be used for calibrating non-text modules,"
+                 " switching to liuhaotian/llava_conv_58k")
             exit(-1)
         return dataloader, bs, gradient_accumulate_steps
+
