@@ -15,10 +15,10 @@ RESET="echo -en \\E[0m \\n" # close color
 log_dir="/auto-round/.azure-pipelines/scripts/codeScan/scanLog"
 mkdir -p $log_dir
 
-pip install --user -r /auto-round/requirements.txt
+pip install -r /auto-round/requirements.txt
 
 echo "[DEBUG] list pipdeptree..."
-pip install --user pipdeptree
+pip install pipdeptree
 pipdeptree
 
 python -m pylint -f json --disable=R,C,W,E1129 --enable=line-too-long --max-line-length=120 --extension-pkg-whitelist=numpy --ignored-classes=TensorProto,NodeProto \

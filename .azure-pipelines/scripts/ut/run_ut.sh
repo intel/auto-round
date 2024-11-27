@@ -3,7 +3,7 @@ set -xe
 
 # install requirements
 echo "set up UT env..."
-pip install --user pytest-cov pytest-html
+pip install pytest-cov pytest-html
 pip list
 
 cd /auto-round/test || exit 1

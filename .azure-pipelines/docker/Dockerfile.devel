@@ -45,8 +45,8 @@ RUN groupadd -g ${GROUP_ID} hostgroup && \
 
 USER hostuser
 
-RUN python -m pip --user --no-cache-dir install --upgrade pip
-RUN python -m pip --user install --no-cache-dir setuptools
+RUN python -m pip install --no-cache-dir --upgrade pip
+RUN python -m pip install --no-cache-dir setuptools
 
 RUN pip list
 
