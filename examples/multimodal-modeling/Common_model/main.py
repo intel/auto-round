@@ -277,7 +277,7 @@ if __name__ == '__main__':
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--batch_size", default=1, type=int,
+    parser.add_argument("--batch_size", "--bs", default=1, type=int,
                         help="train batch size")
 
     parser.add_argument("--eval_bs", default=4, type=int,
