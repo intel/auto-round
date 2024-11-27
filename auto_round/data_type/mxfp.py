@@ -50,6 +50,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     Args:
         tensor (torch.Tensor): The tensor containing the tensors to be quantized.
         bits (int): The bit width to be used for quantization.
+        group_size (int): The group size of sharing scale and exponent.
         data_type (str): The data type for quantization (e.g., 'mx_fp4').
         v (float): A value used for adjusting the tensors.
         max_scale (float or torch.Tensor): The maximum scale to be applied to the tensors.

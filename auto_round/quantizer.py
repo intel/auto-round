@@ -45,59 +45,6 @@ def reshape_tensor(v, group_size=-1):
     return v
 
 
-#
-# def quant_tensor(
-#         quant_func, data, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-#         weight_min=None, weight_max=None, q_scale_thresh=1e-5, **kwargs,
-# ):
-#     """Quantizes and dequantizes weight, handing the group size issue .
-#
-#     Args:
-#         data: Tensor containing the weight to be quantized
-#         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-#         group_size: The number of elements shares scale and zero point
-#         sym: Sym or asym
-#         v: Rounding value perturbation
-#         min_scale: Minimum scale coefficient for weight
-#         max_scale: Maximum scale coefficient for weight
-#         weight_min (Tensor, optional): Minimum weight value for quantization. Defaults to None.
-#         weight_max (Tensor, optional): Maximum weight value for quantization. Defaults to None.
-#
-#     Returns:
-#         Quantized and dequantized weight, scale, zero-point
-#     """
-#     orig_shape = data.shape
-#     if len(data.shape) > 2:
-#         data = data.reshape(-1, orig_shape[-1])
-#     if group_size == -1 or data.shape[1] < group_size:
-#         data, scale, zp = quant_func(data, bits, v=v, min_scale=min_scale, max_scale=max_scale,
-#                                      scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
-#                                      q_scale_thresh=q_scale_thresh, **kwargs)
-#         data = data.reshape(orig_shape)
-#         return data, scale, zp
-#
-#     if data.shape[1] % group_size == 0:
-#         data = data.reshape(-1, group_size)
-#         data, scale, zp = quant_func(data, bits, v=v, min_scale=min_scale, max_scale=max_scale,
-#                                      scale_dtype=scale_dtype, weight_min=weight_min, weight_max=weight_max,
-#                                      q_scale_thresh=q_scale_thresh, **kwargs)
-#         data = data.reshape(orig_shape)
-#         return data, scale, zp
-#
-#     else:
-#         tmp_shape = data.shape
-#         pad_len = (data.shape[1] + group_size - 1) // group_size * group_size - data.shape[1]
-#         data_new = torch.nn.functional.pad(data, (0, pad_len))
-#         data_new = data_new.reshape(-1, group_size)
-#         data_new, scale, zp = quant_func(data_new, bits, v=v, min_scale=min_scale,
-#                                          max_scale=max_scale, scale_dtype=scale_dtype, weight_min=weight_min,
-#                                          weight_max=weight_max, q_scale_thresh=q_scale_thresh, **kwargs)
-#         data_new = data_new.reshape(tmp_shape[0], -1)
-#         data_new = data_new[:, :-pad_len]
-#         data_new = data_new.reshape(orig_shape)
-#         return data_new, scale, zp
-
-
 class WrapperWALayer(torch.nn.Module):
     def __init__(self, orig_layer):
         super(WrapperWALayer, self).__init__()
@@ -272,6 +219,7 @@ class WrapperLinear(torch.nn.Module):
             from auto_round.data_type.int import quant_tensor_asym_wo_round
             self.bias_quant_func = quant_tensor_asym_wo_round
             self.params["bias_v"] = self.bias_v
+
 
     def _init_params(self, name, dtype, shape, value, bool_condition):
         if bool_condition:

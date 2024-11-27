@@ -49,9 +49,7 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
 
     wmin_abs = -(wmin_tmp * min_scale)  # pylint: disable=E1130
     wmax_abs = wmax_tmp * max_scale
-
     max_v = (2 * (wmax_abs < wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
-
     scale = (max_v / maxq).to(scale_dtype)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
