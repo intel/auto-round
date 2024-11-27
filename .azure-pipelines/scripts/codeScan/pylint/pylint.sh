@@ -15,10 +15,6 @@ RESET="echo -en \\E[0m \\n" # close color
 log_dir="/auto-round/.azure-pipelines/scripts/codeScan/scanLog"
 mkdir -p $log_dir
 
-apt-get install -y --no-install-recommends --fix-missing \
-        autoconf \
-        build-essential
-
 pip install --user -r /auto-round/requirements.txt
 
 echo "[DEBUG] list pipdeptree..."
