@@ -152,10 +152,6 @@ class AutoRoundMLLM(AutoRound):
         
         dataset = self.template.default_dataset if dataset is None else dataset
         
-        if nsamples % batch_size != 0:
-            nsamples = (nsamples // batch_size + 1) * batch_size
-            logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
-            
         from ..calib_dataset import CALIB_DATASETS
         from .mllm_dataset import MLLM_DATASET
         if isinstance(dataset, str):
@@ -170,8 +166,11 @@ class AutoRoundMLLM(AutoRound):
 
             if dataset in MLLM_DATASET.keys():
                 truncation = False
-                batch_size = 1
                 seqlen = 512 if seqlen is None else seqlen
+                if batch_size != 1:
+                    logger.warning(f"batch_size({batch_size}) is not supported for dataset {dataset}, rest to 1")
+                    gradient_accumulate_steps = batch_size * gradient_accumulate_steps
+                    batch_size = 1
         if quant_nontext_module and batch_size != 1:
             logger.warning(f"batch_size({batch_size}) cannot be used for calibrating non-text modules,"
                            "reset to 1")
@@ -180,6 +179,10 @@ class AutoRoundMLLM(AutoRound):
         seqlen = 2048 if seqlen is None else seqlen
         truncation = True if truncation is None else truncation
         self.truncation = truncation
+
+        if nsamples % batch_size != 0:
+            nsamples = (nsamples // batch_size + 1) * batch_size
+            logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
 
         super(AutoRoundMLLM, self).__init__(
             model=model,
@@ -259,7 +262,7 @@ class AutoRoundMLLM(AutoRound):
                 m = m.to(self.device)
 
         total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
-        with tqdm(range(1, total + 1), desc="calib") as pbar:
+        with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for data in self.dataloader:
                 if data is None:
                     pbar.update(1)
@@ -337,7 +340,7 @@ class AutoRoundMLLM(AutoRound):
             exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
-                f"Insufficient number of samples collected may affect the quantification. "
+                f"Insufficient number of samples collected may affect the quantization. "
                 f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
             if total_cnt < self.batch_size:
