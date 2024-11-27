@@ -242,7 +242,7 @@ class WrapperLinear(torch.nn.Module):
         - torch.nn.Module: The original linear layer with updated weights after quantization and dequantization.
         """
         best_params = best_params or {}
-        v = best_params.get('v', torch.tensor(0.0, device=self.device))
+        v = best_params.get('value', torch.tensor(0.0, device=self.device))
         min_scale = best_params.get('min_scale', torch.tensor(1.0, device=self.device))
         max_scale = best_params.get('max_scale', torch.tensor(1.0, device=self.device))
         act_max_scale = best_params.get('act_max_scale', torch.tensor(1.0, device=self.device))
