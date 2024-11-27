@@ -196,6 +196,7 @@ class AutoRound(object):
         self.device = detect_device(device)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
+
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
         if not hasattr(self, 'to_quant_block_names'):
             all_blocks = get_block_names(model)
@@ -218,7 +219,12 @@ class AutoRound(object):
 
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
-        logger.info(f"using {self.model.dtype} for quantization tuning")
+        if self.act_bits <= 8 and self.amp_dtype == torch.float16:
+            logger.warning("force to use bf16 to for quantization tuning when enabling activation quantization")
+            self.amp_dtype = torch.bfloat16
+            self.model = self.model.to(torch.bfloat16)
+        else:
+            logger.info(f"using {self.model.dtype} for quantization tuning")
         self.enable_torch_compile = enable_torch_compile
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
@@ -1101,7 +1107,7 @@ class AutoRound(object):
 
                 total_loss += loss.item() / num_elm
                 self.scale_loss_and_backward(scaler, loss)
-                for p in round_params: ##TODO remove this
+                for p in round_params:  ##TODO remove this
                     if p.grad is not None and torch.any(torch.isnan(p.grad)):
                         logger.warning("NAN")
                 for p in minmax_params:

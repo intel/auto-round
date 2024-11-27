@@ -65,9 +65,9 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     if tensor_max is None:  ##dynamic per-te
         tensor = tensor.reshape(-1, orig_shape[-1])
         max_tensor = torch.max(torch.abs(tensor), dim=-1)[
-                         0] * max_scale  ## bug, dim is not matched,better train a ratio
+                         0] * max_scale
     else:
-        max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale  ## better train a ratio
+        max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)

@@ -26,6 +26,7 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
     Args:
         tensor: Tensor containing the tensor to be quantized
         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        group_size: Number of elements to share scale for quantization
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for tensor
         max_scale: Maximum scale coefficient for tensor
@@ -70,6 +71,7 @@ def quant_tensor_asym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_sca
     Args:
         tensor: Tensor containing the tensor to be quantized
         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        group_size: Number of elements to share scale for quantization
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for tensor
         max_scale: Maximum scale coefficient for tensor
@@ -116,6 +118,7 @@ def quant_tensor_sym_gptq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max
     Args:
         tensor: Tensor containing the tensor to be quantized
         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        group_size: Number of elements to share scale for quantization
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for tensor
         max_scale: Maximum scale coefficient for tensor
@@ -160,7 +163,7 @@ def quant_tensor_sym_gptq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max
     return qdq_result, scale, zp
 
 
-def quant_tensor_asym_wo_round(tensor, group_size=-1, bits=4, v=0, min_scale=1.0, max_scale=1.0,
+def quant_tensor_asym_wo_round(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0,
                                scale_dtype=torch.float16,
                                tensor_min=None, tensor_max=None, q_scale_thresh=1e-5, **kwargs):
     """Quantize and de-quantize tensor asymmetrically without rounding, this is mainly for tuning bias, norm.
@@ -168,6 +171,7 @@ def quant_tensor_asym_wo_round(tensor, group_size=-1, bits=4, v=0, min_scale=1.0
     Args:
         tensor: Tensor containing the tensor to be quantized
         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        group_size: Number of elements to share scale for quantization
         v: Rounding value perturbation
         min_scale: Minimum scale coefficient for tensor
         max_scale: Maximum scale coefficient for tensor

@@ -57,7 +57,8 @@ class WrapperWALayer(torch.nn.Module):
                                                  scale_dtype=self.orig_layer.scale_dtype,
                                                  q_scale_thresh=self.orig_layer.q_scale_thresh,
                                                  data_type=self.orig_layer.act_data_type,
-                                                 tensor_max=self.orig_layer.tensor_max if hasattr(self.orig_layer,"tensor_max") else None)
+                                                 tensor_max=self.orig_layer.tensor_max if hasattr(self.orig_layer,
+                                                                                                  "tensor_max") else None)
         return self.orig_layer.forward(x)
 
 
@@ -213,13 +214,10 @@ class WrapperLinear(torch.nn.Module):
 
         ## bias tuning
         if self.enable_norm_bias_tuning:
-            self.bias_bits = 4  ## hard code
-            self.bias_group_size = -1
-            self._init_params("bias_v", p_dtype, self.bias.shape, True)
+            self._init_params("bias_v", p_dtype, self.orig_layer.bias.shape, 0, True)
             from auto_round.data_type.int import quant_tensor_asym_wo_round
             self.bias_quant_func = quant_tensor_asym_wo_round
             self.params["bias_v"] = self.bias_v
-
 
     def _init_params(self, name, dtype, shape, value, bool_condition):
         if bool_condition:
@@ -229,6 +227,35 @@ class WrapperLinear(torch.nn.Module):
             p = torch.tensor(1.0 * value, device=self.device, dtype=dtype)
 
         setattr(self, name, p)
+
+    def _qdq_weight(self, value, min_scale, max_scale):
+        min_scale.data.clamp_(0, 1.0)
+        max_scale.data.clamp_(0, 1.0)
+        weight = self.orig_layer.weight
+        if weight.device.type == 'meta':
+            weight = self.orig_layer.get_weight().to(self.device)
+        weight_q, scale, zp = self.weight_quant_func(weight, bits=self.orig_layer.bits,
+                                                     group_size=self.orig_layer.group_size, v=value,
+                                                     min_scale=min_scale, max_scale=max_scale,
+                                                     scale_dtype=self.orig_layer.scale_dtype,
+                                                     tensor_min=self.weight_min, tensor_max=self.weight_max,
+                                                     data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
+        weight_q = weight_q.to(weight.dtype)
+        return weight_q, scale, zp
+
+    def _qdq_act(self, x, act_max_scale, act_max=None):
+        act_max_scale.data.clamp_(0, 1.0)
+        x, scale, zp = self.act_quant_func(x, bits=self.orig_layer.act_bits, group_size=self.orig_layer.act_group_size,
+                                           scale_dtype=self.orig_layer.scale_dtype, q_scale_thresh=self.q_scale_thresh,
+                                           data_type=self.act_data_type, max_scale=act_max_scale, tensor_max=act_max)
+        return x, scale, zp
+
+    def _qdq_bias(self, bias, bias_v):
+        bias_bits = 4  ## hard code
+        bias_group_size = -1
+        bias, scale, zp = self.bias_quant_func(bias, bits=bias_bits, group_size=bias_group_size, v=bias_v,
+                                               q_scale_thresh=self.q_scale_thresh)
+        return bias, scale, zp
 
     def unwrapper(self, best_params):
         """Unwrapper the layer to the original layer.
@@ -242,56 +269,48 @@ class WrapperLinear(torch.nn.Module):
         - torch.nn.Module: The original linear layer with updated weights after quantization and dequantization.
         """
         best_params = best_params or {}
-        v = best_params.get('value', torch.tensor(0.0, device=self.device))
-        min_scale = best_params.get('min_scale', torch.tensor(1.0, device=self.device))
-        max_scale = best_params.get('max_scale', torch.tensor(1.0, device=self.device))
-        act_max_scale = best_params.get('act_max_scale', torch.tensor(1.0, device=self.device))
-
-        min_scale.clamp_(0, 1.0)
-        max_scale.clamp_(0, 1.0)
-        act_max_scale.clamp_(0, 1.0)
-
-        v, min_scale, max_scale = v.to(self.device), min_scale.to(self.device), max_scale.to(self.device)
+        v = best_params.get('value', torch.tensor(0.0)).to(self.device)
+        min_scale = best_params.get('min_scale', torch.tensor(1.0)).to(self.device)
+        max_scale = best_params.get('max_scale', torch.tensor(1.0)).to(self.device)
+        act_max_scale = best_params.get('act_max_scale', torch.tensor(1.0)).to(self.device)
 
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
 
-        qdq_weight, scale, zp = self.weight_quant_func(self.orig_layer.weight, self.orig_layer.bits,
-                                                       self.orig_layer.group_size, v,
-                                                       min_scale, max_scale, self.orig_layer.scale_dtype, self.weight_min,
-                                                       self.weight_max,
-                                                       data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
-
-        qdq_weight = qdq_weight.to(self.orig_layer.weight.dtype)
-
+        ##unwrapper weight
+        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
+        self.orig_layer.weight.data.copy_(qdq_weight)
+        self.orig_layer.weight.grad = None
         scale = scale.reshape(qdq_weight.shape[0], -1)
         if zp is not None:
             zp = zp.reshape(qdq_weight.shape[0], -1)
-
-        self.orig_layer.weight.data.copy_(qdq_weight)
-        self.orig_layer.weight.grad = None
         self.orig_layer.scale = scale.to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+
+        ##unwrapper bias
         if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
-            bias_v = best_params["bias_v"]
-            bias, _, _ = self.bias_quant_func(self.orig_layer.bias, self.bias_bits, self.bias_group_size,
-                                              bias_v, q_scale_thresh=self.q_scale_thresh)
+            bias_v = best_params["bias_v"].to(self.device)
+            bias = self.orig_layer.bias
+            if bias is not None and bias.device.type == 'meta':
+                bias = self.orig_layer.get_bias().to(self.device)
+            bias, _, _ = self._qdq_bias(bias, bias_v)
             self.orig_layer.bias.grad = None
             self.orig_layer.bias.data.copy_(bias)
 
-        self.orig_layer.q_scale_thresh = self.q_scale_thresh
-        self.orig_layer.data_type = self.data_type
+        if hasattr(self.orig_layer, 'update'):
+            self.orig_layer.update()
+            self.orig_layer.to('meta')
+
+        ##unwrapper act
         if self.enable_act_quant:
+            self.orig_layer.q_scale_thresh = self.q_scale_thresh
+            self.orig_layer.data_type = self.data_type
             if not self.orig_layer.act_dynamic:
                 self.orig_layer.act_max = self.orig_layer.act_max * act_max_scale.item()
             self.orig_layer.act_data_type = self.act_data_type
             self.orig_layer.act_quant_func = self.act_quant_func
             wrapper_layer = WrapperWALayer(self.orig_layer)
             return wrapper_layer
-
-        if hasattr(self.orig_layer, 'update'):
-            self.orig_layer.update()
-            self.orig_layer.to('meta')
 
         return self.orig_layer
 
@@ -306,36 +325,19 @@ class WrapperLinear(torch.nn.Module):
         """
         from torch.functional import F
 
-        weight = self.orig_layer.weight
-        if weight.device.type == 'meta':
-            weight = self.orig_layer.get_weight().to(self.device)
-
-        # Clamp min/max scales
-        self.min_scale.data.clamp_(0, 1.0)
-        self.max_scale.data.clamp_(0, 1.0)
-        self.act_max_scale.data.clamp_(0, 1.0)
-
-        weight_q, _, _ = self.weight_quant_func(weight, bits=self.orig_layer.bits,
-                                                group_size=self.orig_layer.group_size, v=self.value,
-                                                min_scale=self.min_scale, max_scale=self.max_scale,
-                                                scale_dtype=self.orig_layer.scale_dtype, tensor_min=self.weight_min,
-                                                tensor_max=self.weight_max,
-                                                data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
-
-        weight_q = weight_q.to(weight.dtype)
+        weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
         if self.enable_act_quant:
-            x, _, _ = self.act_quant_func(x, bits=self.orig_layer.act_bits, group_size=self.orig_layer.act_group_size,
-                                          scale_dtype=self.orig_layer.scale_dtype, q_scale_thresh=self.q_scale_thresh,
-                                          data_type=self.act_data_type)
+            act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
+            x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_max=act_max)
 
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
         if bias is not None and bias.device.type == 'meta':
             bias = self.orig_layer.get_bias().to(self.device)
+
         if self.enable_norm_bias_tuning:
-            bias, _, _ = self.bias_quant_func(bias, bits=self.bias_bits, group_size=self.bias_group_size, v=self.bias_v,
-                                              q_scale_thresh=self.q_scale_thresh)
+            bias,_,_ = self._qdq_bias(bias, self.bias_v)
 
         return F.linear(x, weight_q, bias)
 
