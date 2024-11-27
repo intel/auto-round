@@ -169,14 +169,18 @@ class AutoRoundMLLM(AutoRound):
                 seqlen = 512 if seqlen is None else seqlen
                 if batch_size != 1:
                     logger.warning(
-                        f"batch_size({batch_size}) is not supported for dataset {dataset}, reset to 1" 
-                        f" and gradient_accumulate_steps reset to {batch_size * gradient_accumulate_steps}")
+                        f"rest batch_size({batch_size}) to 1 and "
+                        f"gradient_accumulate_steps({gradient_accumulate_steps}) "
+                        f"to {batch_size * gradient_accumulate_steps}, "
+                        f"cause batch_size={batch_size} cannot be used for {dataset}")
                     gradient_accumulate_steps = batch_size * gradient_accumulate_steps
                     batch_size = 1
         if quant_nontext_module and batch_size != 1:
             logger.warning(
-                f"batch_size({batch_size}) cannot be used for calibrating non-text modules, reset to 1"
-                f" and gradient_accumulate_steps reset to {batch_size * gradient_accumulate_steps}")
+                f"rest batch_size({batch_size}) to 1 and "
+                f"gradient_accumulate_steps({gradient_accumulate_steps}) "
+                f"to {batch_size * gradient_accumulate_steps}, "
+                f"cause batch_size={batch_size} cannot be used for calibrating non-text modules.")
             gradient_accumulate_steps = batch_size * gradient_accumulate_steps
             batch_size = 1
         seqlen = 2048 if seqlen is None else seqlen
