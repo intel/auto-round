@@ -120,7 +120,7 @@ class AutoRoundMLLM(AutoRound):
             low_gpu_mem_usage: bool = False,
             low_cpu_mem_usage: bool = False,
             iters: int = 200,
-            seqlen: int = 2048,
+            seqlen: int = None,
             nsamples: int = 128,
             sampler: str = "rand",
             seed: int = 42,
@@ -136,7 +136,7 @@ class AutoRoundMLLM(AutoRound):
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
-            truncation: bool = False,
+            truncation: bool = None,
             enable_torch_compile: bool = None,
             **kwargs,
     ):
