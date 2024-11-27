@@ -88,11 +88,11 @@ steps:
           targetType: "inline"
           script: |
             if [[ "${{ parameters.imageSource }}" == "build" ]]; then
-                docker run -dit --disable-content-trust --privileged --name=${{ parameters.containerName }} --shm-size="2g" \
+                docker run -dit --disable-content-trust --privileged --user $(id -u):$(id -g) --name=${{ parameters.containerName }} --shm-size="2g" \
                 -v ${BUILD_SOURCESDIRECTORY}:/auto-round -v /tf_dataset:/tf_dataset -v /tf_dataset2:/tf_dataset2 \
                 ${{ parameters.repoName }}:${{ parameters.repoTag }}
             else
-                docker run -dit --disable-content-trust --privileged --name=${{ parameters.containerName }} --shm-size="2g" \
+                docker run -dit --disable-content-trust --privileged --user $(id -u):$(id -g) --name=${{ parameters.containerName }} --shm-size="2g" \
                 --runtime=habana -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --net=host --ipc=host \
                 -v ${BUILD_SOURCESDIRECTORY}:/auto-round vault.habana.ai/gaudi-docker/1.18.0/ubuntu22.04/habanalabs/pytorch-installer-2.4.0:latest
             fi
