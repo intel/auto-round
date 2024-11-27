@@ -24,7 +24,7 @@ from packaging.version import Version
 from torch.autograd import Function
 from torch.nn import functional as F
 import numpy as np
-from auto_round.utils import logger
+from auto_round.utils import logger, can_pack_with_numba
 
 NF4 = [
     -1.0,
@@ -446,24 +446,9 @@ class WeightOnlyLinear(torch.nn.Module):
         # Try to pack with numba to accelerate the packing process.
         # If numba is not availabll or the packing method is not supported,
         # fallback to the torch implementation.
-        try:
-            import numba
+        if not can_pack_with_numba():
+            return self.pack_tensor_with_torch(torch.from_numpy(raw_array)).cpu().numpy()
 
-            numba.config.THREADING_LAYER = "safe"
-        except ImportError:
-            logger.warning(
-                "To accelerate packing, please install numba with `pip install numba tbb`."
-            )
-            return (
-                self.pack_tensor_with_torch(torch.from_numpy(raw_array)).cpu().numpy()
-            )
-        except Exception as e:
-            logger.warning(
-                f"Import numba failed with error: {e}, fallback to torch implementation."
-            )
-            return (
-                self.pack_tensor_with_torch(torch.from_numpy(raw_array)).cpu().numpy()
-            )
         from auto_round.export.export_to_itrex.bit_packer import bit_packers
 
         pack_func_name = (bits, compress_bits)
