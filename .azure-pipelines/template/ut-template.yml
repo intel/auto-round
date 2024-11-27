@@ -59,6 +59,10 @@ steps:
       artifact: ${{ parameters.utArtifact }}_coverage
       publishLocation: "pipeline"
 
+  - task: PublishCodeCoverageResults@2
+    inputs:
+      summaryFileLocation: ${{ parameters.uploadPath }}/coverage.xml
+
   - task: Bash@3
     condition: always()
     inputs:
