@@ -123,7 +123,7 @@ class AutoRound(object):
             tokenizer,
             bits: int = 4,
             group_size: int = 128,
-            sym: bool = False,
+            sym: bool = True,
             layer_config: dict = None,
             batch_size: int = 8,
             amp: bool = True,
