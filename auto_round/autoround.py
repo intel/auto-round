@@ -23,8 +23,7 @@ from torch import autocast
 from tqdm import tqdm
 import accelerate
 from packaging import version
-from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer, \
-    WrapperTransformerConv1d
+from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from .special_model_handler import (
     shareable_keywords,
     init_cache_for_special_model,
@@ -1025,7 +1024,7 @@ class AutoRound(object):
                     if "min" in key or "max" in key:
                         minmax_params.append(m.params[key])
                     else:
-                        round_params.append(m.value)
+                        round_params.append(m.params[key])
 
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
@@ -1102,11 +1101,11 @@ class AutoRound(object):
 
                 total_loss += loss.item() / num_elm
                 self.scale_loss_and_backward(scaler, loss)
-                for p in round_params:
-                    if torch.any(torch.isnan(p.grad)):
+                for p in round_params: ##TODO remove this
+                    if p.grad is not None and torch.any(torch.isnan(p.grad)):
                         logger.warning("NAN")
                 for p in minmax_params:
-                    if torch.any(torch.isnan(p.grad)):
+                    if p.grad is not None and torch.any(torch.isnan(p.grad)):
                         logger.warning("NAN")
 
             if i == 0:

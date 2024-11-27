@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import torch
-from .utils import floor_ste, round_ste
+from .utils import floor_ste, round_ste, reshape_pad_tensor_by_group, revert_tensor_by_pad
 from auto_round.data_type.register import register_dtype, QUANT_FUNC_WITH_DTYPE
 
 MXFP_FORMAT_CACHE = {
@@ -38,7 +38,8 @@ FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
-def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **kwargs):
+def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
+         mantissa_rounding="even", data_type="mx_fp", **kwargs):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -60,6 +61,7 @@ def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **
     Raises:
         KeyError: If `data_type` is not found in `MXFP_FORMAT_CACHE`.
     """
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group(tensor, group_size)
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
     orig_dtype = tensor.dtype
     shared_exp, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
@@ -113,6 +115,7 @@ def quant_mx(tensor, bits, data_type, v, max_scale, mantissa_rounding="even", **
 
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = tensor * (2 ** shared_exp)
+    tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
 
