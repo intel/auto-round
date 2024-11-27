@@ -19,10 +19,10 @@ apt-get install -y --no-install-recommends --fix-missing \
         autoconf \
         build-essential
 
-pip install -r /auto-round/requirements.txt
+pip install --user -r /auto-round/requirements.txt
 
 echo "[DEBUG] list pipdeptree..."
-pip install pipdeptree
+pip install --user pipdeptree
 pipdeptree
 
 python -m pylint -f json --disable=R,C,W,E1129 --enable=line-too-long --max-line-length=120 --extension-pkg-whitelist=numpy --ignored-classes=TensorProto,NodeProto \

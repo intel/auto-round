@@ -1,7 +1,7 @@
 source /auto-round/.azure-pipelines/scripts/change_color.sh
 
 set -e
-pip install coverage
+pip install --user coverage
 export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
 coverage_log="/auto-round/log_dir/coverage_log"
 coverage_log_base="/auto-round/log_dir/coverage_log_base"
@@ -26,8 +26,8 @@ git fetch
 git checkout main
 rm -rf build dist *egg-info
 echo y | pip uninstall auto_round
-pip install -r requirements.txt
-pip install -vvv --no-build-isolation -e .[cpu]
+pip install --user -r requirements.txt
+pip install --user -vvv --no-build-isolation -e .[cpu]
 
 coverage erase
 cd /auto-round/log_dir
