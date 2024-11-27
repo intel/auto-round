@@ -300,6 +300,7 @@ class AutoRound(object):
             accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         logger.info("caching done")
+        pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
@@ -324,6 +325,7 @@ class AutoRound(object):
                 block_names,
                 nblocks=self.nblocks,
                 device=self.device,
+                pbar=pbar
             )
 
         self.quant_layers(layer_names, all_inputs)
@@ -1171,6 +1173,7 @@ class AutoRound(object):
             block_names,
             nblocks=1,
             device=torch.device("cpu"),
+            pbar=None
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -1209,8 +1212,10 @@ class AutoRound(object):
                     to_dtype(input_others[key][i], tmp_dtype)
         quant_block = compile_func(self.quant_block, device, self.enable_torch_compile)
 
-        pbar = tqdm(range(0, len(block_names), nblocks))
-        for i in pbar:
+        if pbar is None:
+            pbar = tqdm(range(0, len(block_names), nblocks))
+        # for i in pbar:
+        for i in range(len(block_names)):
             if nblocks == 1:
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
@@ -1231,6 +1236,7 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
             )
+            pbar.update(1)
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
 

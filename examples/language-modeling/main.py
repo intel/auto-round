@@ -20,7 +20,7 @@ if __name__ == '__main__':
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--batch_size", "--train_bs", default=8, type=int,
+    parser.add_argument("--batch_size", "--bs", "--train_bs", default=8, type=int,
                         help="train batch size")
 
     parser.add_argument("--eval_bs", default=None, type=int,
@@ -136,7 +136,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     print(
-        "Warning, examples/language-modeling/main.py is deprecated, please use auto-round cmd line instead. The file will be deleted in the V0.4.1 release ")
+        "Warning, examples/language-modeling/main.py is deprecated, please use auto-round cmd line instead. The file will be deleted in the V0.4.2 release ")
 
     if args.enable_minmax_tuning:
         print(

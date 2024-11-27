@@ -170,7 +170,7 @@ def setup_parser():
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--batch_size", "--train_bs", default=8, type=int,
+    parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int,
                         help="train batch size")
 
     parser.add_argument("--iters", "--iter", default=200, type=int,
@@ -450,6 +450,7 @@ def setup_lmms_parser():
     )
     parser.add_argument(
         "--batch_size",
+        "--bs",
         "-b",
         type=str,
         default=1,

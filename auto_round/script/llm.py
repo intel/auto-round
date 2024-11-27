@@ -162,7 +162,7 @@ def setup_parser():
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--batch_size", "--train_bs", default=8, type=int,
+    parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int,
                         help="train batch size")
 
     parser.add_argument("--iters", "--iter", default=200, type=int,
@@ -184,7 +184,7 @@ def setup_best_parser():
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--batch_size", "--train_bs", default=8, type=int,
+    parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int,
                         help="train batch size")
 
     parser.add_argument("--iters", "--iter", default=1000, type=int,
@@ -208,7 +208,7 @@ def setup_fast_parser():
     parser.add_argument("--group_size", default=128, type=int,
                         help="group size")
 
-    parser.add_argument("--batch_size", "--train_bs", default=4, type=int,
+    parser.add_argument("--batch_size", "--train_bs", "--bs", default=4, type=int,
                         help="train batch size")
 
     parser.add_argument("--iters", default=200, type=int,

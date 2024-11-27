@@ -16,9 +16,39 @@ except Exception as error:
 version = __version__
 
 
-BUILD_CUDA_EXT = int(os.environ.get('BUILD_CUDA_EXT', '1')) == 1
-PYPI_RELEASE = os.environ.get('PYPI_RELEASE', None)
-BUILD_HPU_ONLY = os.environ.get('BUILD_HPU_ONLY', '0') == '1'
+# All BUILD_* flags are initially set to `False`` and
+# will be updated to `True` if the corresponding environment check passes.
+BUILD_CUDA_EXT = int(os.environ.get("BUILD_CUDA_EXT", "0")) == 1
+PYPI_RELEASE = os.environ.get("PYPI_RELEASE", None)
+BUILD_HPU_ONLY = os.environ.get("BUILD_HPU_ONLY", "0") == "1"
+
+
+def is_cuda_available():
+    try:
+        import torch
+
+        return torch.cuda.is_available()
+    except Exception as e:
+        print(f"Checking CUDA availability failed: {e}")
+        return False
+
+
+if is_cuda_available():
+    # When CUDA is available, we build CUDA extension by default
+    BUILD_CUDA_EXT = True
+
+
+@lru_cache(None)
+def is_habana_framework_installed():
+    """Check if Habana framework is installed.
+    Only check for the habana_frameworks package without importing it to avoid
+    initializing lazy-mode-related components.
+    """
+    from importlib.util import find_spec
+
+    package_spec = find_spec("habana_frameworks")
+    return package_spec is not None
+
 
 @lru_cache(None)
 def is_hpu_available():
@@ -28,7 +58,7 @@ def is_hpu_available():
     except ImportError:
         return False
 
-if is_hpu_available():
+if is_hpu_available() or is_habana_framework_installed():
     # When HPU is available, we build HPU only by default
     BUILD_HPU_ONLY = True
 
