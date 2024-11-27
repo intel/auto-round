@@ -45,7 +45,7 @@ def quant_fp8_sym(tensor, max_scale=1.0, **kwargs):
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)
-    if tensor.dtype == torch.float16:  ##easy NAN Value
+    if tensor.dtype == torch.float16:  ##easy NAN grad
         tensor = tensor.to(torch.bfloat16)
     scale = scale.unsqueeze(dim=-1)
     fp8_res = (tensor / scale)
