@@ -28,9 +28,9 @@ class TestWeightOnlyLinear:
         group_size = 32
         origin_shape = weight.shape
         from auto_round.data_type.int import quant_tensor_sym
-        from auto_round.quantizer import quant_tensor, reshape_tensor
+        from auto_round.quantizer import quant_tensor, reshape_and_pad_tensor
 
-        data = reshape_tensor(weight, group_size=group_size)
+        data = reshape_and_pad_tensor(weight, group_size=group_size)
         qdq, scale, zp = quant_tensor(
             quant_tensor_sym, data=data, group_size=group_size
         )
