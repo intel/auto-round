@@ -1107,12 +1107,6 @@ class AutoRound(object):
 
                 total_loss += loss.item() / num_elm
                 self.scale_loss_and_backward(scaler, loss)
-                for p in round_params:  ##TODO remove this
-                    if p.grad is not None and torch.any(torch.isnan(p.grad)):
-                        logger.warning("NAN")
-                for p in minmax_params:
-                    if p.grad is not None and torch.any(torch.isnan(p.grad)):
-                        logger.warning("NAN")
 
             if i == 0:
                 init_loss = total_loss
