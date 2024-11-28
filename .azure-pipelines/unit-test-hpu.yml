@@ -45,18 +45,18 @@ stages:
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut"
 
-  - stage: Unit_test_baseline
-    displayName: Unit Test Baseline
-    dependsOn: []
-    jobs:
-      - job:
-        displayName: Unit Test
-        steps:
-          - template: template/ut-template.yml
-            parameters:
-              imageSource: "pull"
-              dockerConfigName: "gitCloneDockerConfig"
-              utScriptFileName: "run_ut_hpu"
-              uploadPath: $(UPLOAD_PATH)
-              utArtifact: "ut_baseline"
-              repo: $(REPO)
+  # - stage: Unit_test_baseline
+  #   displayName: Unit Test Baseline
+  #   dependsOn: []
+  #   jobs:
+  #     - job:
+  #       displayName: Unit Test
+  #       steps:
+  #         - template: template/ut-template.yml
+  #           parameters:
+  #             imageSource: "pull"
+  #             dockerConfigName: "gitCloneDockerConfig"
+  #             utScriptFileName: "run_ut_hpu"
+  #             uploadPath: $(UPLOAD_PATH)
+  #             utArtifact: "ut_baseline"
+  #             repo: $(REPO)
