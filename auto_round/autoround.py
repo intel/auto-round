@@ -253,8 +253,8 @@ class AutoRound(object):
         # assert self.tokenizer != None or self.dataloader != None
         if self.act_bits <= 8:
             logger.warning(
-                "please save the quantized model to fake format "
-                "as real deployment is not supported for activation quantization currently")
+                "Activation quantization is an experimental feature with limited support and a complex API."
+                "And please save the quantized model to fake format as real deployment is not supported currently")
 
         if "mx_fp" in self.data_type:
             logger.warning(

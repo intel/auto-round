@@ -45,24 +45,26 @@ def reshape_and_pad_tensor(v, group_size=-1):
     return v
 
 
-##TODO merge conv1d
 class WrapperLinear(torch.nn.Module):
+    """A wrapper for linear/conv1d layers to enable quantization and tuning.
+
+    This module wraps an existing linear or conv1d layer and provides additional functionality
+    for quantization, parameter tuning, and activation/bias normalization.
+
+    Args:
+        orig_layer (torch.nn.Module): The original layer to be wrapped (linear or conv1d).
+        enable_minmax_tuning (bool): Whether to enable min-max scale tuning.
+        enable_norm_bias_tuning (bool): Whether to enable normalization and tuning of the bias term.
+        device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
+    """
     def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu'):
-        """A wrapper module for linear/conv1d layers that enables quantization and min-max tuning of weights.
+        """Initializes the WrapperLinear module.
 
         Args:
-        - orig_layer (torch.nn.Module): The original linear layer to be wrapped.
-        - enable_minmax_tuning (bool): Whether to enable min-max scaling tuning. Default is True.
-
-        Attributes:
-        - orig_layer (torch.nn.Module): The original linear layer being wrapped.
-        - bits (int): The number of bits for quantization.
-        - group_size (int): The size of the groups for quantization.
-        - sym (bool): Whether the symmetric quantization is to be used.
-        - value (torch.nn.Parameter): The learnable parameter for quantization.
-        - enable_minmax_tuning (bool): Whether min-max scaling tuning is enabled.
-        - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
-        - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
+            orig_layer (torch.nn.Module): The original layer to wrap.
+            enable_minmax_tuning (bool): Whether to enable min-max scale tuning.
+            enable_norm_bias_tuning (bool): Whether to enable normalization and tuning for the bias term.
+            device (str): The computation device, such as 'cpu' or 'cuda'.
         """
         super(WrapperLinear, self).__init__()
         self.orig_layer = orig_layer
@@ -75,7 +77,11 @@ class WrapperLinear(torch.nn.Module):
         self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
 
     def _init_tuning_params_and_quant_func(self):
-        ## Initialize tuning parameters
+        """Initializes tuning parameters and quantization functions.
+
+          This method sets up required parameters and functions for weight quantization,
+          activation quantization, and bias/normalization.
+          """
         self.params = {}
         p_dtype = torch.float32  ##parameter dtype
 
@@ -96,11 +102,11 @@ class WrapperLinear(torch.nn.Module):
         self.weight_quant_func, self.data_type = get_quant_func(orig_layer.data_type, orig_layer.bits,
                                                                 orig_layer.sym)
 
-        self._init_params("act_max_scale", p_dtype, (1), 1.0, self.enable_act_quant and (not orig_layer.act_dynamic))
         if self.enable_act_quant:
             self.act_quant_func, self.act_data_type = get_quant_func(orig_layer.act_data_type,
                                                                      orig_layer.act_bits,
                                                                      orig_layer.act_sym)
+            self._init_params("act_max_scale", p_dtype, (1), 1.0, not orig_layer.act_dynamic)
 
         ## bias tuning
         if self.enable_norm_bias_tuning:
@@ -110,6 +116,15 @@ class WrapperLinear(torch.nn.Module):
             self.params["bias_v"] = self.bias_v
 
     def _init_params(self, name, dtype, shape, value, bool_condition):
+        """Initializes a parameter for tuning or uses a constant if tuning is disabled.
+
+        Args:
+            name (str): Name of the parameter.
+            dtype (torch.dtype): Data type of the parameter.
+            shape (tuple): Shape of the parameter.
+            value (float): Initial value for the parameter.
+            bool_condition (bool): Whether the parameter should be tunable.
+        """
         if bool_condition:
             p = torch.nn.Parameter(torch.ones(shape, device=self.device, dtype=dtype) * value, requires_grad=True)
             self.params.update({name: p})
@@ -119,6 +134,16 @@ class WrapperLinear(torch.nn.Module):
         setattr(self, name, p)
 
     def _qdq_weight(self, value, min_scale, max_scale):
+        """Quantizes and dequantizes weights with tuning parameters.
+
+        Args:
+            value (torch.Tensor): Value added for rounding for tuning.
+            min_scale (torch.Tensor): Minimum scale for the min value of quantization.
+            max_scale (torch.Tensor): Maximum scale for the max value of quantization.
+
+        Returns:
+            tuple: Quantized weight, scale, and zero point.
+        """
         min_scale.data.clamp_(0, 1.0)
         max_scale.data.clamp_(0, 1.0)
         weight = self.orig_layer.weight
@@ -139,6 +164,16 @@ class WrapperLinear(torch.nn.Module):
         return weight_q, scale, zp
 
     def _qdq_act(self, x, act_max_scale, act_max=None):
+        """Quantizes and dequantizes activations.
+
+        Args:
+            x (torch.Tensor): Input activations.
+            act_max_scale (torch.Tensor): Maximum scale for the act_max
+            act_max (torch.Tensor, optional): Maximum value for activation quantization. Defaults to None.
+
+        Returns:
+            tuple: Quantized activation, scale, and zero point.
+        """
         act_max_scale.data.clamp_(0, 1.0)
         x, scale, zp = self.act_quant_func(x, bits=self.orig_layer.act_bits, group_size=self.orig_layer.act_group_size,
                                            scale_dtype=self.orig_layer.scale_dtype, q_scale_thresh=self.q_scale_thresh,
@@ -146,6 +181,15 @@ class WrapperLinear(torch.nn.Module):
         return x, scale, zp
 
     def _qdq_bias(self, bias, bias_v):
+        """Quantizes and dequantizes bias.
+
+        Args:
+            bias (torch.Tensor): Bias tensor to be quantized.
+            bias_v (torch.Tensor): Value added for rounding for tuning.
+
+        Returns:
+            tuple: Quantized bias, scale, and zero point.
+        """
         bias_bits = 4  ## hard code
         bias_group_size = -1
         bias, scale, zp = self.bias_quant_func(bias, bits=bias_bits, group_size=bias_group_size, v=bias_v,
@@ -153,21 +197,18 @@ class WrapperLinear(torch.nn.Module):
         return bias, scale, zp
 
     def unwrapper(self, best_params):
-        """Unwrapper the layer to the original layer.
+        """Restores the original layer by applying the best tuning parameters.
 
         Args:
-        - v (torch.Tensor): The rounding v parameter for quantization.
-        - min_scale (torch.nn.Parameter or torch.Tensor): The minimum scale for min-max tuning.
-        - max_scale (torch.nn.Parameter or torch.Tensor): The maximum scale for min-max tuning.
+            best_params (dict): Dictionary containing the best tuning parameters.
 
         Returns:
-        - torch.nn.Module: The original linear layer with updated weights after quantization and dequantization.
+            torch.nn.Module: The unwrapped and restored original layer.
         """
         best_params = best_params or {}
         v = best_params.get('value', torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get('min_scale', torch.tensor(1.0)).to(self.device)
         max_scale = best_params.get('max_scale', torch.tensor(1.0)).to(self.device)
-        act_max_scale = best_params.get('act_max_scale', torch.tensor(1.0)).to(self.device)
 
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
@@ -202,6 +243,7 @@ class WrapperLinear(torch.nn.Module):
 
         ##unwrapper act
         if self.enable_act_quant:
+            act_max_scale = best_params.get('act_max_scale', torch.tensor(1.0)).to(self.device)
             self.orig_layer.q_scale_thresh = self.q_scale_thresh
             self.orig_layer.data_type = self.data_type
             if not self.orig_layer.act_dynamic:
@@ -214,24 +256,43 @@ class WrapperLinear(torch.nn.Module):
         return self.orig_layer
 
     def linear_forward(self, x, weight, bias):
+        """Performs the forward pass for a linear layer.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+            weight (torch.Tensor): Weight tensor for the linear layer.
+            bias (torch.Tensor): Bias tensor for the linear layer.
+
+        Returns:
+            torch.Tensor: Output tensor after applying the linear layer.
+        """
         return F.linear(x, weight, bias)
 
     def conv1d_forward(self, x, weight, bias):
+        """Performs the forward pass for a Conv1D layer.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+            weight (torch.Tensor): Weight tensor for the Conv1D layer.
+            bias (torch.Tensor): Bias tensor for the Conv1D layer.
+
+        Returns:
+            torch.Tensor: Output tensor after applying the Conv1D layer.
+        """
         size_out = x.size()[:-1] + (self.orig_layer.nf,)
         x = torch.addmm(bias, x.view(-1, x.size(-1)), weight)
         x = x.view(*size_out)
         return x
 
     def forward(self, x):
-        """Performs forward pass through the wrapped linear layer with quantized weights.
+        """Executes the forward pass with quantized weights and optional bias/activation quantization.
 
         Args:
-        - x (torch.Tensor): The input tensor.
+            x (torch.Tensor): Input tensor.
 
         Returns:
-        - torch.Tensor: The output tensor after applying the linear transformation with quantized weights.
+            torch.Tensor: Output tensor after applying the wrapped layer.
         """
-
         weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
         if self.enable_act_quant:
@@ -247,6 +308,7 @@ class WrapperLinear(torch.nn.Module):
             bias, _, _ = self._qdq_bias(bias, self.bias_v)
 
         return self.orig_forward(x, weight_q, bias)
+
 
 class WrapperWALayer(torch.nn.Module):
     def __init__(self, orig_layer):
@@ -403,7 +465,6 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
                                   enable_norm_bias_tuning=enable_norm_bias_tuning, device=device)
             set_module(block, n, new_m)
             quantized_layers.append(n)
-
 
         if enable_norm_bias_tuning:
             if "norm" in m.__class__.__name__.lower():

@@ -18,13 +18,16 @@ from auto_round.data_type.register import register_dtype
 
 
 def float8_e4m3fn_ste(x: torch.Tensor):
-    """Straight-Through Estimator for float8.
+    """Straight-Through Estimator (STE) for float8.
+
+    Applies a quantization and dequantization step with float8 precision while maintaining
+    gradient flow using a straight-through estimator.
 
     Args:
-        x: torch.Tensor
+        x (torch.Tensor): Input tensor.
 
     Returns:
-        torch.Tensor
+        torch.Tensor: Quantized and dequantized tensor using float8 format.
     """
     fp8 = (x.to(torch.float8_e4m3fn).to(x.dtype) - x).detach() + x
 
@@ -33,6 +36,22 @@ def float8_e4m3fn_ste(x: torch.Tensor):
 
 @register_dtype("fp8_dynamic_per_token_sym")
 def quant_fp8_sym(tensor, max_scale=1.0, **kwargs):
+    """Dynamic per-token symmetric quantization using float8.
+
+    This function dynamically calculates a per-token scaling factor for each group of tokens
+    and applies symmetric quantization using float8 format.
+
+    Args:
+        tensor (torch.Tensor): Input tensor to quantize.
+        max_scale (float, optional): Maximum scaling factor. Defaults to 1.0.
+        **kwargs: Additional arguments for compatibility.
+
+    Returns:
+        tuple:
+            - Quantized and dequantized tensor (torch.Tensor).
+            - Scale tensor used for quantization (torch.Tensor).
+            - Placeholder for zp (None).
+    """
     orig_shape = tensor.shape
     info = torch.finfo(torch.float8_e4m3fn)
     orig_dtype = tensor.dtype
@@ -44,7 +63,7 @@ def quant_fp8_sym(tensor, max_scale=1.0, **kwargs):
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)
-    if tensor.dtype == torch.float16:  ##easy NAN grad
+    if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
     scale = scale.unsqueeze(dim=-1)
     fp8_res = (tensor / scale)
@@ -57,6 +76,22 @@ def quant_fp8_sym(tensor, max_scale=1.0, **kwargs):
 
 @register_dtype("fp8_sym")
 def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
+    """Symmetric quantization using float8 format.
+
+    Allows both dynamic per-token scaling and tensor-wide quantization depending on input.
+
+    Args:
+        tensor (torch.Tensor): Input tensor to quantize.
+        max_scale (float, optional): Maximum scaling factor. Defaults to 1.0.
+        tensor_max (float, optional): Maximum tensor value for precomputed scale. Defaults to None.
+        **kwargs: Additional arguments for compatibility.
+
+    Returns:
+        tuple:
+            - Quantized and dequantized tensor (torch.Tensor).
+            - Scale tensor used for quantization (torch.Tensor).
+            - Placeholder for zp (None).
+    """
     orig_shape = tensor.shape
     info = torch.finfo(torch.float8_e4m3fn)
     orig_dtype = tensor.dtype
@@ -70,7 +105,7 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)
-    if tensor.dtype == torch.float16:  ##easy NAN Value
+    if tensor.dtype == torch.float16: ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
     scale = scale.unsqueeze(dim=-1)
     fp8_res = (tensor / scale)
@@ -84,9 +119,29 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
 @register_dtype("fp8_to_int_sym")
 def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5,
                                weight_fp8_max_scale=1.0, **kwargs):
+    """Two-stage quantization: quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
+
+    This method first quantizes the input tensor into float8 format and then performs
+    a secondary quantization to int4 with grouping.
+
+    Args:
+        tensor (torch.Tensor): Input tensor to quantize.
+        bits (int, optional): Bit precision for secondary quantization. Defaults to 4.
+        group_size (int, optional): Group size for int4 quantization. Defaults to -1 (no grouping).
+        v (float, optional): Optional parameter for variance tuning. Defaults to 0.
+        min_scale (float, optional): Minimum scaling factor for int4 quantization. Defaults to 1.0.
+        max_scale (float, optional): Maximum scaling factor for int4 quantization. Defaults to 1.0.
+        q_scale_thresh (float, optional): Threshold for scaling. Defaults to 1e-5.
+        weight_fp8_max_scale (float, optional): Maximum scaling factor for float8 quantization. Defaults to 1.0.
+        **kwargs: Additional arguments for compatibility.
+
+    Returns:
+        tuple:
+            - Quantized and dequantized tensor (torch.Tensor).
+            - Combined scaling factor (torch.Tensor).
+            - Placeholder for zp (None).
     """
-    quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
-    """
+
     info = torch.finfo(torch.float8_e4m3fn)
     tensor_max = torch.max(torch.abs(tensor)).to(torch.float32) * weight_fp8_max_scale  ## better train a ratio
     scale = tensor_max.to(torch.float32) / info.max
