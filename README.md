@@ -26,20 +26,23 @@ more accuracy data and recipes across various models.
 <div align="left">
 
 ## What's New
-* [2024/11] We provide experimental support for VLLM quantization, please check out the [README](./auto_round/mllm/README.md)
-* [2024/11] We provide some tips and tricks for LLM&VLM quantization, please check out [this blog](https://medium.com/@NeuralCompressor/10-tips-for-quantizing-llms-and-vlms-with-autoround-923e733879a7)
+
+* [2024/11] We provide experimental support for VLLM quantization, please check out
+  the [README](./auto_round/mllm/README.md)
+* [2024/11] We provide some tips and tricks for LLM&VLM quantization, please check
+  out [this blog](https://medium.com/@NeuralCompressor/10-tips-for-quantizing-llms-and-vlms-with-autoround-923e733879a7)
 * [2024/10] AutoRound has been integrated to [torch/ao](https://github.com/pytorch/ao), check out
   their [release note](https://github.com/pytorch/ao/releases/tag/v0.6.1)
 * [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
   configuration. This configuration is typically better or comparable to asymmetric quantization and significantly
-  outperforms other symmetric variants, especially at low bit-widths like 2-bit, check out [some accuracy data](./docs/full_range_sym.md).
+  outperforms other symmetric variants, especially at low bit-widths like 2-bit, check
+  out [some accuracy data](./docs/full_range_sym.md).
 * [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
   to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
 * [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters (for 2-bit
   and W4A4, check out [more details](./docs/tuning_norm_bias.md)), activation quantization, and the mx_fp data type.
 
 ## Installation
-
 
 ### Install from pypi
 
@@ -53,7 +56,6 @@ pip install auto-round[cpu]
 # HPU
 pip install auto-round[hpu]
 ```
-
 
 <details>
   <summary>Build from Source</summary>
@@ -70,15 +72,17 @@ pip install auto-round[hpu]
   # HPU
   pip install -vvv --no-build-isolation -e .[hpu]
   ```
+
 </details>
 
 ## Model Quantization
 
 ### Basic Usage (Gaudi2/CPU/GPU)
 
- A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
- Set the format you want in `format` and
-multiple formats exporting has been supported. Please check out [step-by-step-instruction](./docs/step_by_step.md) for more details about calibration dataset or evaluation.
+A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
+Set the format you want in `format` and
+multiple formats exporting has been supported. Please check out [step-by-step-instruction](./docs/step_by_step.md) for
+more details about calibration dataset or evaluation.
 
 ```bash
 auto-round \
@@ -219,6 +223,37 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 </details>
 
+### API Usage for VLMs
+
+**This feature is experimental and may be subject to changes**, including potential bug fixes, API modifications, or
+adjustments to default hype-parameters
+
+By default, AutoRoundMLLM only quantizes the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
+quantize the entire model, you can enable `quant_nontext_module` by setting it to True, though support for this feature
+is limited. For more information, please refer to the AutoRoundMLLM [readme](./auto_round/mllm/README.md).
+
+```python
+from auto_round import AutoRoundMLLM
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
+
+## load the model
+model_name = "Qwen/Qwen2-VL-2B-Instruct"
+model = Qwen2VLForConditionalGeneration.from_pretrained(
+    model_name, trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+
+## quantize the model
+bits, group_size, sym = 4, 128, True
+autoround = AutoRoundMLLM(model, tokenizer, processor,
+                          bits=bits, group_size=group_size, sym=sym)
+autoround.quantize()
+
+# save the quantized model, set format='auto_gptq' to use AutoGPTQ format
+output_dir = "./tmp_autoround"
+autoround.save_quantized(output_dir, format='auto_round', inplace=True)
+```
+
 ### Quantization Costs
 
 Testing was conducted on the Nvidia A100 80G using the nightly version of PyTorch 2.6.0.dev20241029+cu124. Please note
@@ -247,7 +282,7 @@ Please run the quantization code first
 
 ### AutoRound format
 
-**CPU**: **auto_round version >0.3.1**, pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip
+**CPU**: pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip
 install intel-extension-for-transformers,
 
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
@@ -310,49 +345,47 @@ Please note that an asterisk (*) indicates third-party quantized models, which m
 different recipe. We greatly appreciate their efforts and encourage more users to share their models, as we cannot
 release most of the models ourselves.
 
- Model                                  | Supported                                                                                                                                                                                                                                                                                                                 |
-|----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| THUDM/cogvlm2-llama3-chinese-chat-19B | [recipe](./docs/cogvlm2-llama3-chat-19B-sym.md)                                                                                                                                                                                                                                                                           |
-| Qwen/Qwen2-VL-Instruct | [recipe](./docs/Qwen2-VL-7B-Instruct-sym.md)                                                                                                                                                                                                                                                                              |
+ Model                          | Supported                                                                                                                                                                                                                                                                                                                 |
+|--------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| THUDM/cogvlm2-llama3-chat-19B  | [recipe](./docs/cogvlm2-llama3-chat-19B-sym.md)                                                                                                                                                                                                                                                                           |
+| Qwen/Qwen2-VL-Instruct         | [recipe](./docs/Qwen2-VL-7B-Instruct-sym.md)                                                                                                                                                                                                                                                                              |
 | meta-llama/Llama-3.2-11B-Vision | [recipe](./docs/Llama-3.2-11B-Vision-Instruct-sym.md)                                                                                                                                                                                                                                                                     |
 | microsoft/Phi-3.5-vision-instruct | [recipe](./docs/Phi-3.5-vision-instruct-sym.md)                                                                                                                                                                                                                                                                           |
-| liuhaotian/llava-v1.5-7b | [recipe](./docs/llava-v1.5-7b-sym.md)                                                                                                                                                                                                                                                                                     |
-| Qwen/Qwen2.5-7B-Instruct | [model-kaitchup-autogptq-int4*](https://beta-index.hf-mirror.com/kaitchup/Qwen2.5-7B-Instruct-AutoRound-GPTQ-asym-4bit), [recipe](./docs/Qwen2.5-7B-Instruct-sym.md)                                                                                                                                                      |
-| Qwen/Qwen2.5-14B-Instruct | [recipe](./docs/Qwen2.5-14B-Instruct-sym.md)                                                                                                                                                                                                                                                                              |
-| Qwen/Qwen2.5-32B-Instruct | [recipe](./docs/Qwen2.5-32B-Instruct-sym.md)                                                                                                                                                                                                                                                                              |
+| liuhaotian/llava-v1.5-7b       | [recipe](./docs/llava-v1.5-7b-sym.md)                                                                                                                                                                                                                                                                                     |
+| Qwen/Qwen2.5-7B-Instruct       | [model-kaitchup-autogptq-int4*](https://beta-index.hf-mirror.com/kaitchup/Qwen2.5-7B-Instruct-AutoRound-GPTQ-asym-4bit), [recipe](./docs/Qwen2.5-7B-Instruct-sym.md)                                                                                                                                                      |
+| Qwen/Qwen2.5-14B-Instruct      | [recipe](./docs/Qwen2.5-14B-Instruct-sym.md)                                                                                                                                                                                                                                                                              |
+| Qwen/Qwen2.5-32B-Instruct      | [recipe](./docs/Qwen2.5-32B-Instruct-sym.md)                                                                                                                                                                                                                                                                              |
 | Qwen/Qwen2.5-Coder-32B-Instruct | [model-kaitchup-autogptq-int4*](https://beta-index.hf-mirror.com/kaitchup/Qwen2.5-Coder-32B-Instruct-AutoRound-GPTQ-4bit)                                                                                                                                                                                                 |
-| Qwen/Qwen2.5-72B-Instruct | [model-kaitchup-autogptq-int4*](https://beta-index.hf-mirror.com/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-4bit),  [model-kaitchup-autogptq-int2*](https://beta-index.hf-mirror.com/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-2bit), [recipe](./docs/Qwen2.5-72B-Instruct-sym.md)                                   |
+| Qwen/Qwen2.5-72B-Instruct      | [model-kaitchup-autogptq-int4*](https://beta-index.hf-mirror.com/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-4bit),  [model-kaitchup-autogptq-int2*](https://beta-index.hf-mirror.com/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-2bit), [recipe](./docs/Qwen2.5-72B-Instruct-sym.md)                                   |
 | meta-llama/Meta-Llama-3.1-70B-Instruct | [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-70B-Instruct-int4-inc)                                                                                                                                                                                                                                               |
-| meta-llama/Meta-Llama-3.1-8B-Instruct  | [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-asym), [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-sym), [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-8B-Instruct-int4-inc) |
-| meta-llama/Meta-Llama-3.1-8B           | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-autoround-gptq-4bit-sym)                                                                                                                                                                                                            |
-| Qwen/Qwen-VL                           | [accuracy](./examples/multimodal-modeling/Qwen-VL/README.md), [recipe](./examples/multimodal-modeling/Qwen-VL/run_autoround.sh)                                                                                                                                                                                           
-| Qwen/Qwen2-7B                          | [model-autoround-sym-int4](https://huggingface.co/Intel/Qwen2-7B-int4-inc), [model-autogptq-sym-int4](https://huggingface.co/Intel/Qwen2-7B-int4-inc)                                                                                                                                                                     |
-| THUDM/glm-4-9b-chat                    | [recipe](./docs/glm-4-9b-chat-recipe.md)                                                                                                                                                                                                                                                                                  |
-| Qwen/Qwen2-57B-A14B-Instruct           | [model-autoround-sym-int4](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc),[model-autogptq-sym-int4](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc)                                                                                                                                        |
-| 01-ai/Yi-1.5-9B                        | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/Yi-1.5-9B-4bit-gptq-autoround)                                                                                                                                                                                                                                |
-| 01-ai/Yi-1.5-9B-Chat                   | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/Yi-1.5-9B-Chat-4bit-gptq-autoround)                                                                                                                                                                                                                           |
-| Intel/neural-chat-7b-v3-3              | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc)                                                                                                                                                                                                                                          |
-| Intel/neural-chat-7b-v3-1              | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc)                                                                                                                                                                                                                                          |
-| TinyLlama-1.1B-intermediate            | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/TinyLlama-1.1B-intermediate-step-1341k-3T-autoround-lm_head-symFalse)                                                                                                                                                                                         |
-| mistralai/Mistral-7B-v0.1              | [model-autogptq-lmhead-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc-lmhead), [model-autogptq-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc)                                                                                                                                                  |
-| google/gemma-2b                        | [model-autogptq-int4](https://huggingface.co/Intel/gemma-2b-int4-inc)                                                                                                                                                                                                                                                     |
-| tiiuae/falcon-7b                       | [model-autogptq-int4-G64](https://huggingface.co/Intel/falcon-7b-int4-inc)                                                                                                                                                                                                                                                |
-| sapienzanlp/modello-italia-9b          | [model-fbaldassarri-autogptq-int4*](https://huggingface.co/fbaldassarri/modello-italia-9b-autoround-w4g128-cpu)                                                                                                                                                                                                           |
-| microsoft/phi-2                        | [model-autoround-sym-int4](https://huggingface.co/Intel/phi-2-int4-inc) [model-autogptq-sym-int4](https://huggingface.co/Intel/phi-2-int4-inc)                                                                                                                                                                            |
-| microsoft/Phi-3.5-mini-instruct        | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Phi-3.5-Mini-instruct-AutoRound-4bit)                                                                                                                                                                                                                 |
-| microsoft/Phi-3-vision-128k-instruct   | [recipe](./examples/multimodal-modeling/Phi-3-vision/run_autoround.sh)                                                                                                                                                                                                                                                    
-| mistralai/Mistral-7B-Instruct-v0.2     | [accuracy](./docs/Mistral-7B-Instruct-v0.2-acc.md), [recipe](./examples/language-modeling/scripts/Mistral-7B-Instruct-v0.2.sh)                                                                                                                                                                                            |
-| mistralai/Mixtral-8x7B-Instruct-v0.1   | [accuracy](./docs/Mixtral-8x7B-Instruct-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-Instruct-v0.1.sh)                                                                                                                                                                                        |
-| mistralai/Mixtral-8x7B-v0.1            | [accuracy](./docs/Mixtral-8x7B-v0.1-acc.md), [recipe](./examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh)                                                                                                                                                                                                          |
-| meta-llama/Meta-Llama-3-8B-Instruct    | [accuracy](./docs/Meta-Llama-3-8B-Instruct-acc.md), [recipe](./examples/language-modeling/scripts/Meta-Llama-3-8B-Instruct.sh)                                                                                                                                                                                            |
-| google/gemma-7b                        | [accuracy](./docs/gemma-7b-acc.md), [recipe](./examples/language-modeling/scripts/gemma-7b.sh)                                                                                                                                                                                                                            |
-| meta-llama/Llama-2-7b-chat-hf          | [accuracy](./docs/Llama-2-7b-chat-hf-acc.md), [recipe](./examples/language-modeling/scripts/Llama-2-7b-chat-hf.sh)                                                                                                                                                                                                        |
-| Qwen/Qwen1.5-7B-Chat                   | [accuracy](./docs/Qwen1.5-7B-Chat-acc.md), [sym recipe](./examples/language-modeling/scripts/Qwen1.5-7B-Chat-sym.sh), [asym recipe ](./examples/language-modeling/scripts/Qwen1.5-7B-Chat-asym.sh)                                                                                                                        |
-| baichuan-inc/Baichuan2-7B-Chat         | [accuracy](./docs/baichuan2-7b-chat-acc.md), [recipe](./examples/language-modeling/scripts/baichuan2-7b-chat.sh)                                                                                                                                                                                                          |         
-| 01-ai/Yi-6B-Chat                       | [accuracy](./docs/Yi-6B-Chat-acc.md), [recipe](./examples/language-modeling/scripts/Yi-6B-Chat.sh)                                                                                                                                                                                                                        |                                     
-| facebook/opt-2.7b                      | [accuracy](./docs/opt-2.7b-acc.md), [recipe](./examples/language-modeling/scripts/opt-2.7b.sh)                                                                                                                                                                                                                            |
-| bigscience/bloom-3b                    | [accuracy](./docs/bloom-3B-acc.md), [recipe](./examples/language-modeling/scripts/bloom-3b.sh)                                                                                                                                                                                                                            |
-| EleutherAI/gpt-j-6b                    | [accuracy](./docs/gpt-j-6B-acc.md), [recipe](./examples/language-modeling/scripts/gpt-j-6b.sh)                                                                                                                                                                                                                            | 
+| meta-llama/Meta-Llama-3.1-8B-Instruct | [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-asym), [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-sym), [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-8B-Instruct-int4-inc) |
+| meta-llama/Meta-Llama-3.1-8B   | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-autoround-gptq-4bit-sym)                                                                                                                                                                                                            |
+| Qwen/Qwen-VL                   | [accuracy](./examples/multimodal-modeling/Qwen-VL/README.md), [recipe](./examples/multimodal-modeling/Qwen-VL/run_autoround.sh)                                                                                                                                                                                           
+| Qwen/Qwen2-7B                  | [model-autoround-sym-int4](https://huggingface.co/Intel/Qwen2-7B-int4-inc), [model-autogptq-sym-int4](https://huggingface.co/Intel/Qwen2-7B-int4-inc)                                                                                                                                                                     |
+| THUDM/glm-4-9b-chat            | [recipe](./docs/glm-4-9b-chat-recipe.md)                                                                                                                                                                                                                                                                                  |
+| Qwen/Qwen2-57B-A14B-Instruct   | [model-autoround-sym-int4](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc),[model-autogptq-sym-int4](https://huggingface.co/Intel/Qwen2-57B-A14B-Instruct-int4-inc)                                                                                                                                        |
+| 01-ai/Yi-1.5-9B                | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/Yi-1.5-9B-4bit-gptq-autoround)                                                                                                                                                                                                                                |
+| 01-ai/Yi-1.5-9B-Chat           | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/Yi-1.5-9B-Chat-4bit-gptq-autoround)                                                                                                                                                                                                                           |
+| Intel/neural-chat-7b-v3-3      | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-3-int4-inc)                                                                                                                                                                                                                                          |
+| Intel/neural-chat-7b-v3-1      | [model-autogptq-int4](https://huggingface.co/Intel/neural-chat-7b-v3-1-int4-inc)                                                                                                                                                                                                                                          |
+| TinyLlama-1.1B-intermediate    | [model-LnL-AI-autogptq-int4*](https://huggingface.co/LnL-AI/TinyLlama-1.1B-intermediate-step-1341k-3T-autoround-lm_head-symFalse)                                                                                                                                                                                         |
+| mistralai/Mistral-7B-v0.1      | [model-autogptq-lmhead-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc-lmhead), [model-autogptq-int4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc)                                                                                                                                                  |
+| google/gemma-2b                | [model-autogptq-int4](https://huggingface.co/Intel/gemma-2b-int4-inc)                                                                                                                                                                                                                                                     |
+| tiiuae/falcon-7b               | [model-autogptq-int4-G64](https://huggingface.co/Intel/falcon-7b-int4-inc)                                                                                                                                                                                                                                                |
+| sapienzanlp/modello-italia-9b  | [model-fbaldassarri-autogptq-int4*](https://huggingface.co/fbaldassarri/modello-italia-9b-autoround-w4g128-cpu)                                                                                                                                                                                                           |
+| microsoft/phi-2                | [model-autoround-sym-int4](https://huggingface.co/Intel/phi-2-int4-inc) [model-autogptq-sym-int4](https://huggingface.co/Intel/phi-2-int4-inc)                                                                                                                                                                            |
+| microsoft/Phi-3.5-mini-instruct | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Phi-3.5-Mini-instruct-AutoRound-4bit)                                                                                                                                                                                                                 |
+| mistralai/Mistral-7B-Instruct-v0.2 | [outdated-recipe](./docs/Mistral-7B-Instruct-v0.2-asym-recipe.md)                                                                                                                                                                                                                                                         |
+| mistralai/Mixtral-8x7B-Instruct-v0.1 | [outdated-recipe](./docs/Mixtral-8x7B-Instruct-v0.1-asym-recipe.md)                                                                                                                                                                                                                                                       |
+| mistralai/Mixtral-8x7B-v0.1    | [outdated-recipe](./docs/Mixtral-8x7B-v0.1-asym-acc.md)                                                                                                                                                                                                                                                                   |
+| meta-llama/Meta-Llama-3-8B-Instruct | [outdated-recipe](./docs/Meta-Llama-3-8B-Instruct-asym-recipe.md)                                                                                                                                                                                                                                                         |
+| google/gemma-7b                | [outdated-recipe](./docs/gemma-7b-asym-recipe.md)                                                                                                                                                                                                                                                                         |
+| meta-llama/Llama-2-7b-chat-hf  | [outdated-recipe](./docs/Llama-2-7b-chat-hf-asym-recipe.md)                                                                                                                                                                                                                                                               | 
+| baichuan-inc/Baichuan2-7B-Chat | [outdated-recipe](./docs/baichuan2-7b-cha-asym-recipe.md)                                                                                                                                                                                                                                                                 |         
+| 01-ai/Yi-6B-Chat               | [outdated-recipe](./docs/Yi-6B-Chat-asym-recipe.md)                                                                                                                                                                                                                                                                       |                                     
+| facebook/opt-2.7b              | [outdated-recipe](./docs/opt-2.7b-asym-recipe.md)                                                                                                                                                                                                                                                                         |
+| bigscience/bloom-3b            | [outdated-recipe](./docs/bloom-3B-asym-recipe.md)                                                                                                                                                                                                                                                                         |
+| EleutherAI/gpt-j-6b            | [outdated-recipe](./docs/gpt-j-6B-asym-recipe.md)                                                                                                                                                                                                                                                                         | 
 
 ## Integration
 

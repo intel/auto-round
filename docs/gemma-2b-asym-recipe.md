@@ -1,4 +1,19 @@
-### Evaluate the model 
+**This recipe is outdated, we recommend using symmetric quantization.** You can remove --asym from the command.
+```bash
+auto-round \
+--model google/gemma-2b  \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--iters 400 \
+--model_dtype "float16" \
+--nsamples 512 \
+--asym \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
+```
+
+Evaluate the model 
 
 Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source, lm-eval 0.4.2 is used
 

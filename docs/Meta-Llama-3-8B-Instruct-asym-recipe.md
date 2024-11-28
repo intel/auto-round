@@ -1,16 +1,34 @@
-Due to licensing restrictions, we are unable to release the model. lm-eval 0.4.2 is used
+**This recipe is outdated, we recommend using symmetric quantization.** You can remove --asym from the command.
 
-For evaluating w4g128 without quantized lm-head, 
+A sample command to generate an INT4 model. 
 ```bash
-lm_eval --model hf --model_args pretrained="./",autogptq=True,gptq_use_triton=True --device cuda:0 --tasks lambada_openai,hellaswag,piqa,winogrande,truthfulqa_mc1,openbookqa,boolq,rte,arc_easy,arc_challenge,mmlu --batch_size 16
+auto-round \
+--model  meta-llama/Meta-Llama-3-8B-Instruct \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--iters 1000 \
+--nsamples 512 \
+--asym \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
 ```
 
-for evaluation with quantized lm-head
+quant lm-head
 ```bash
-git clone https://github.com/intel/auto-round
-cd auto-round/examples/language-modeling
-python3 eval_042/evaluation.py --model_name "./" --eval_bs 16
+auto-round \
+--model  meta-llama/Meta-Llama-3-8B-Instruct \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--iters 1000 \
+--nsamples 512 \
+--asym \
+--quant_lm_head \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
 ```
+lm-eval 0.4.2 is used
 
 | Metric           | **BF16** | w4g128 w/o lm-head | w4g128 with lm-head |
 | ---------------- | :------- |--------------------|-----------------------------|
@@ -26,3 +44,5 @@ python3 eval_042/evaluation.py --model_name "./" --eval_bs 16
 | boolq            | 0.8297   | 0.8309             | 0.8266                     |
 | arc_easy         | 0.8152   | 0.8089             | 0.8123                      |
 | arc_challenge    | 0.5299   | 0.5102             |  0.5111                          |
+
+

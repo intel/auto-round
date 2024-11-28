@@ -1,3 +1,22 @@
+ **This recipe is outdated, we recommend using symmetric quantization.** You can remove --asym from the command.
+
+A sample command to generate an INT4 model.
+```bash
+auto-round \
+--model  google/gemma-7b \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--minmax_lr 2e-3 \
+--model_dtype "float16" \
+--iters 1000 \
+--nsamples 512 \
+--asym \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
+```
+
+
 pip install lm-eval==0.4.2
 pip install auto-gptq
 

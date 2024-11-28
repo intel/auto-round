@@ -1,3 +1,21 @@
+ **This recipe is outdated, we recommend using symmetric quantization.** You can remove --asym from the command.
+
+A sample command to generate an INT4 model.
+```bash
+auto-round \
+--model   facebook/opt-2.7b \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--iters 1000 \
+--nsamples 512 \
+--minmax_lr 2e-3 \
+--asym \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
+```
+
+
 Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source, we used the git id 96d185fa6232a5ab685ba7c43e45d1dbb3bb906d
 ##pip install auto-gptq[triton] 
 ##pip install triton==2.2.0

@@ -109,7 +109,7 @@ messages = [
 ```
 
 ## Evaluation the model
-pip3 install git+https://github.com/open-compass/VLMEvalKit.git@7de2dcb
+pip3 install git+https://github.com/open-compass/VLMEvalKit.git@7de2dcb. The evaluation process may encounter errors that require changing model backend or evaluation code. Detailed instructions will be provided in a future update.
 ```bash
 auto-round-mllm --eval --model Intel/Qwen2-VL-7B-Instruct-inc-private --tasks MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE --output_dir "./eval_result"
 ```
@@ -125,7 +125,7 @@ auto-round-mllm --eval --model Intel/Qwen2-VL-7B-Instruct-inc-private --tasks MM
 Here is the sample command to reproduce the model.
 ```bash
 pip install auto_round
-auto-round-mllm
+auto-round-mllm \
 --model Qwen/Qwen2-VL-7B-Instruct \
 --device 0 \
 --group_size 128 \

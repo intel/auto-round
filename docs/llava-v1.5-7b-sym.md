@@ -80,7 +80,7 @@ messages = [{"from": "human", "value": "How many people and animals are there in
 ```
 
 ## Evaluation the model
-pip3 install lmms_eval
+pip3 install lmms_eval. The evaluation process may encounter errors that require changing model backend or evaluation code. Detailed instructions will be provided in a future update
 ```bash
 auto-round-mllm --lmms --model Intel/llava-v1.5-7b-inc-private --tasks pope,textvqa_val,scienceqa,mmbench_en  --output_dir "./eval_result" --device cuda:0 
 ```
@@ -96,7 +96,7 @@ auto-round-mllm --lmms --model Intel/llava-v1.5-7b-inc-private --tasks pope,text
 Here is the sample command to reproduce the model.
 ```bash
 pip install auto-round
-auto-round-mllm
+auto-round-mllm \
 --model liuhaotian/llava-v1.5-7b \
 --device 0 \
 --group_size 128 \
