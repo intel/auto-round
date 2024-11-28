@@ -57,6 +57,7 @@ class WrapperLinear(torch.nn.Module):
         enable_norm_bias_tuning (bool): Whether to enable normalization and tuning of the bias term.
         device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
     """
+
     def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu'):
         """Initializes the WrapperLinear module.
 
@@ -317,13 +318,13 @@ class WrapperWALayer(torch.nn.Module):
         self.act_quant_func = self.orig_layer.act_quant_func
 
     def forward(self, x):
+        tensor_max = self.orig_layer.tensor_max if hasattr(self.orig_layer, "tensor_max") else None
         x, _, _ = self.orig_layer.act_quant_func(x, bits=self.orig_layer.act_bits,
                                                  group_size=self.orig_layer.group_size,
                                                  scale_dtype=self.orig_layer.scale_dtype,
                                                  q_scale_thresh=self.orig_layer.q_scale_thresh,
                                                  data_type=self.orig_layer.act_data_type,
-                                                 tensor_max=self.orig_layer.tensor_max if hasattr(self.orig_layer,
-                                                                                                  "tensor_max") else None)
+                                                 tensor_max=tensor_max)
         return self.orig_layer.forward(x)
 
 

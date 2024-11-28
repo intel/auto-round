@@ -108,6 +108,8 @@ class AutoRound(object):
         act_bits (int): Number of bits for activation quantization. Default is 16.
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
+        act_data_type (str): Specifies the data type for activations.
+                             Defaults to None, in which case it inherits the weight data type.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
         to_quant_block_names (str|list): A string or list whose elements are list of 
                             block's layer names to be quantized.
@@ -150,7 +152,7 @@ class AutoRound(object):
             act_bits: int = 16,
             act_group_size: int = None,
             act_sym: bool = None,
-            act_data_type=None,
+            act_data_type: str = None,
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
@@ -1473,6 +1475,8 @@ class AutoRoundOPT(AutoRound):
         act_bits (int): Number of bits for activation quantization. Default is 16.
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
+        act_data_type (str): Specifies the data type for activations.
+                             Defaults to None, in which case it inherits the weight data type.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
         to_quant_block_names (str|list): A string or list whose elements are list of 
                             block's layer names to be quantized.
@@ -1517,6 +1521,7 @@ class AutoRoundOPT(AutoRound):
             act_bits: int = 16,
             act_group_size: int = None,
             act_sym: bool = None,
+            act_data_type: str = None,
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
@@ -1556,6 +1561,7 @@ class AutoRoundOPT(AutoRound):
             act_bits=act_bits,
             act_group_size=act_group_size,
             act_sym=act_sym,
+            act_data_type=act_data_type,
             act_dynamic=act_dynamic,
             to_quant_block_names=to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
@@ -1644,6 +1650,8 @@ class AutoRoundAdam(AutoRoundOPT):
         act_bits (int): Number of bits for activation quantization. Default is 16.
         act_group_size (int): Group size for activation quantization. Default is None.
         act_sym (bool): Whether to use symmetric activation quantization. Default is None.
+        act_data_type (str): Specifies the data type for activations.
+                             Defaults to None, in which case it inherits the weight data type.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
         to_quant_block_names (str|list): A list whose elements are list of block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
@@ -1685,6 +1693,7 @@ class AutoRoundAdam(AutoRoundOPT):
             act_bits: int = 16,
             act_group_size: int = None,
             act_sym: bool = None,
+            act_data_type: str = None,
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
@@ -1724,6 +1733,7 @@ class AutoRoundAdam(AutoRoundOPT):
             act_bits=act_bits,
             act_group_size=act_group_size,
             act_sym=act_sym,
+            act_data_type=act_data_type,
             act_dynamic=act_dynamic,
             to_quant_block_names=to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
