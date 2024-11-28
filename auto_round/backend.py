@@ -98,6 +98,7 @@ BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, Fa
                                                   packing_format="triton",
                                                   bits=[2, 4, 8], group_size=None,
                                                   priority=0, feature_checks=[feature_multiply_checker_32],
+                                                  requirements=["triton<3.0,>=2.0"]
                                                   )
 
 BackendInfos['gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
@@ -116,13 +117,13 @@ BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                             priority=0, feature_checks=[feature_multiply_checker_32],
                                             alias=["auto_round:gptq:tritonv2", "auto_round:auto_gptq:tritonv2",
                                                    "auto_gptq:tritonv2"],
-                                            requirements=["auto-gptq>=0.7.1"]
+                                            requirements=["auto-gptq>=0.7.1","triton<3.0,>=2.0"]
                                             )
 
 BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
                                             packing_format="triton_zp+-1",
                                             bits=[2, 3, 4, 8], group_size=None,
-                                            priority=0, feature_checks=[feature_multiply_checker_32],
+                                            priority=1, feature_checks=[feature_multiply_checker_32],
                                             alias=["auto_round:auto_gptq:cuda,auto_gptq:cuda, auto_round:gptq:cuda"],
                                             convertable_format=["triton_zp+-1"],
                                             requirements=["auto-gptq>=0.7.1"]
