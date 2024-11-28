@@ -33,8 +33,7 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
 
 - `dataset`: the dataset for quantization training. Currently only support NeelNanda/pile-10k, llava_conv_58k,
-  llava_instruct_80k and llava_instruct_150k. Please note that the effectiveness of the Llava calibration dataset has
-  only been validated on five models so far.
+  llava_instruct_80k and llava_instruct_150k. Please note that the feasibility of the Llava calibration dataset has only been validated on five models so far.
 
 - `quant_nontext_module`: whether to quantize non-text module, e.g. vision component.
 
