@@ -28,11 +28,9 @@ class TestWeightOnlyLinear:
         group_size = 32
         origin_shape = weight.shape
         from auto_round.data_type.int import quant_tensor_sym
-        from auto_round.quantizer import quant_tensor, reshape_tensor
-
-        data = reshape_tensor(weight, group_size=group_size)
-        qdq, scale, zp = quant_tensor(
-            quant_tensor_sym, data=data, group_size=group_size
+        origin_shape = weight.shape
+        weight = weight.reshape(-1, group_size)
+        qdq, scale, zp = quant_tensor_sym( weight, -1
         )
         int_weight = (
             qdq.div(scale)
@@ -41,8 +39,8 @@ class TestWeightOnlyLinear:
             .to(torch.int32)
             .reshape(origin_shape)
         )
-        scale = scale.reshape(weight.shape[0], -1)
-        zp = zp.reshape(weight.shape[0], -1).to(torch.int32).clamp(0, 2 ** (bits) - 1)
+        scale = scale.reshape(origin_shape[0], -1)
+        zp = zp.reshape(origin_shape[0], -1).to(torch.int32).clamp(0, 2 ** (bits) - 1)
         module_with_legacy_pack = WeightOnlyLinear(
             in_features=m.in_features,
             out_features=m.out_features,
