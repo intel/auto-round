@@ -4,8 +4,7 @@
 ## Quantization
 
 ### API Usage (Gaudi2/CPU/GPU) Recommended
-AutoRound uses the text module of MLLM (LLM component) as the main quantization target. with NeelNanda/pile-10k as the default calibration dataset.
-
+In default, AutoRoundMLLM only quantize the text module of VLMs and use NeelNanda/pile-10k" for calibration
 ```python
     from auto_round import AutoRoundMLLM
     from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer

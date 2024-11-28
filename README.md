@@ -219,6 +219,33 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 </details>
 
+### API Usage for VLMs 
+This feature is experimental and may be subject to changes, including potential bug fixes, API modifications, or adjustments to default hype-parameters
+
+In default, AutoRoundMLLM only quantize the text module of VLMs and use NeelNanda/pile-10k" for calibration. If you want to quantize the whole model, you can set `quant_nontext_module` to True, but the support is limited. For more details, please refer to [AutoRoundMLLM](./auto_round/mllm/README.md).
+
+```python
+from auto_round import AutoRoundMLLM
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
+
+## load the model
+model_name = "Qwen/Qwen2-VL-2B-Instruct"
+model = Qwen2VLForConditionalGeneration.from_pretrained(
+            model_name, trust_remote_code=True)  
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+
+## quantize the model
+bits, group_size, sym = 4, 128, True
+autoround = AutoRoundMLLM(model, tokenizer, processor, 
+                          bits=bits, group_size=group_size, sym=True)
+autoround.quantize()
+
+# save the quantized model, set format='auto_gptq' to use AutoGPTQ format
+output_dir = "./tmp_autoround"
+autoround.save_quantized(output_dir, format='auto_round', inplace=True)
+```
+
 ### Quantization Costs
 
 Testing was conducted on the Nvidia A100 80G using the nightly version of PyTorch 2.6.0.dev20241029+cu124. Please note
