@@ -7,7 +7,7 @@ This model is an int4 model with group_size 128 and symmetric quantization of [m
 
 ### Requirements
 Please use Transformers version 4.45.0 or later
-
+AutoRound version >= 0.4.1
 
 ### INT4 Inference
 ```python

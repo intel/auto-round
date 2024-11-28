@@ -1,4 +1,5 @@
 # AutoRound for MLLMs
+ This feature is experimental and may be subject to changes, including potential bug fixes, API modifications, or adjustments to default parameters
 
 ## Quantization
 
@@ -8,16 +9,17 @@ AutoRound uses the text module of MLLM (LLM component) as the main quantization 
 ```python
     from auto_round import AutoRoundMLLM
     from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
+    
     ## load the model
     model_name = "Qwen/Qwen2-VL-2B-Instruct"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
     model = Qwen2VLForConditionalGeneration.from_pretrained(
-        model_name, trust_remote_code=True)
-        
+        model_name, trust_remote_code=True)  
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+
     ## quantize the model
-    bits, group_size = 4, 128
-    autoround = AutoRoundMLLM(model, tokenizer, processor, bits=bits, group_size=group_size)
+    bits, group_size, sym = 4, 128, True
+    autoround = AutoRoundMLLM(model, tokenizer, processor, bits=bits, group_size=group_size, sym=True)
     autoround.quantize()
 
     # save the quantized model, set format='auto_gptq' to use AutoGPTQ format
@@ -25,31 +27,25 @@ AutoRound uses the text module of MLLM (LLM component) as the main quantization 
     autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
 
-- `dataset`: the dataset for quantization training. current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k and llava_instruct_150k. It can be a custom one. Please note that the effectiveness of the Llava calibration dataset has only been validated on five models so far.
+- `dataset`: the dataset for quantization training. current support NeelNanda/pile-10k,llava_conv_58k,llava_instruct_80k and llava_instruct_150k. Please note that the effectiveness of the Llava calibration dataset has only been validated on five models so far.
 
 - `quant_nontext_module`: whether to quantize non-text module, e.g. vision component. 
 
-- `extra_data_dir`:dataset dir for storing images/audio/videos, default to None. Can be a dir path or multiple dir path with format as 'image=path_to_image,video=path_to_video,audio=path_to_audio' By default, it will search in the relative path, and if not find, will automatic download.
-
 for more hyperparameters introduction, please refer [Homepage Detailed Hyperparameters](../../README.md#api-usage-gaudi2cpugpu)
 
-<details>
-<summary style="font-size:17px;">Basic Usage (Gaudi2/CPU/GPU)</summary>
-    A user guide detailing the full list of supported arguments is provided by calling ```auto-round-mllm -h``` on the terminal. Alternatively, you can use ```auto_round_mllm``` instead of ```auto-round-mllm```. Set the format you want in `format` and
-    multiple formats exporting has been supported.
+
+### Basic Usage 
+ A user guide detailing the full list of supported arguments is provided by calling ```auto-round-mllm -h``` on the terminal. Set the format you want in `format` and
+ multiple formats exporting has been supported. **Only five model families are supported now.
 
 ```bash
-    # experimental feature, default hyperparameters may be changed later
-    auto—round-mllm \
-        --model Qwen/Qwen2-VL-2B-Instruct \
-        --bits 4 \
-        --group_size 128 \
-        --format "auto_round" \
-        --output_dir ./tmp_autoround
+auto-round-mllm \
+    --model Qwen/Qwen2-VL-2B-Instruct \
+    --bits 4 \
+    --group_size 128 \
+    --format "auto_round" \
+    --output_dir ./tmp_autoround
 ```
-
-
-</details>
 
 
 <details>
