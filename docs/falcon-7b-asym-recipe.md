@@ -1,3 +1,18 @@
+**This recipe is outdated, we recommend using symmetric quantization.** You can remove --asym from the command.
+```bash
+auto-round \
+--model tiiuae/falcon-7b   \
+--device 0 \
+--group_size 64 \
+--bits 4 \
+--iters 1000 \
+--nsamples 512 \
+--asym \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
+```
+
+
 We generate the model with group_size 64 as there is an issue when evaluating with group_size 128.
 Evaluate the model
 pip3 install lm-eval==0.4.2

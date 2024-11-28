@@ -1,3 +1,20 @@
+ **This recipe is outdated, we recommend using symmetric quantization.** You can remove --asym from the command.
+
+A sample command to generate an INT4 model.
+```bash
+auto-round \
+--model  meta-llama/Llama-2-7b-chat-hf \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--iters 1000 \
+--nsamples 512 \
+--asym \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
+```
+
+
 Due to licensing restrictions, we are unable to release the model.
 
 Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source, and the git id 96d185fa6232a5ab685ba7c43e45d1dbb3bb906d.
@@ -19,3 +36,5 @@ Since we encountered an issue evaluating this model with lm-eval, we opted to ev
 | rte            | 0.6968 | 0.7292   |
 | arc_easy       | 0.7382 | 0.7336   |
 | arc_challenge  | 0.4420 | 0.4352   |
+
+

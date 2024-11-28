@@ -1,4 +1,20 @@
-### Evaluate the model
+ **This recipe is outdated, we recommend using symmetric quantization.** You can remove --asym from the command.
+
+A sample command to generate an INT4 model.
+```bash
+auto-round \
+--model   mistralai/Mixtral-8x7B-v0.1 \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--iters 1000 \
+--nsamples 512 \
+--asym \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
+```
+
+
 Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source, we used the git id f3b7917091afba325af3980a35d8a6dcba03dc3f
 
 Download the model from hf(coming soon) or follow examples/language-modeling/scripts/Mixtral-8x7B-v0.1.sh to generate the model

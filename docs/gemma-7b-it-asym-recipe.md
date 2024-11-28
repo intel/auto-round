@@ -1,3 +1,21 @@
+ **This recipe is outdated, we recommend using symmetric quantization.** You can remove --asym from the command.
+
+A sample command to generate an INT4 model.
+```bash
+auto-round \
+--model  google/gemma-7b-it \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--minmax_lr 2e-3 \
+--model_dtype "float16" \
+--iters 1000 \
+--nsamples 512 \
+--asym \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
+```
+
 Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source,  and the  git id 96d185fa6232a5ab685ba7c43e45d1dbb3bb906d, Install the latest [AutoGPTQ](https://github.com/AutoGPTQ/AutoGPTQ) from source first
 
 Please note that there is a discrepancy between the baseline result and the official data, which is a known issue within the official model card community.
