@@ -36,14 +36,14 @@ steps:
     - script: |
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
           && pip install -r requirements.txt \
-          && pip install -vvv --no-build-isolation -e .[cpu] \
+          && pip install -vvv --no-build-isolation .[cpu] \
           && pip list"
       displayName: "Env Setup"
 
   - ${{ if eq(parameters.imageSource, 'pull') }}:
     - script: |
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && pip install -vvv --no-build-isolation -e .[hpu] \
+          && pip install -vvv --no-build-isolation .[hpu] \
           && pip list"
       displayName: "HPU Env Setup"
 
@@ -58,6 +58,15 @@ steps:
       targetPath: ${{ parameters.uploadPath }}
       artifact: ${{ parameters.utArtifact }}_coverage
       publishLocation: "pipeline"
+
+  - task: UseDotNet@2
+    displayName: 'Use .NET Core sdk 7.0.x'
+    inputs:
+      version: 7.0.x
+
+  - task: PublishCodeCoverageResults@2
+    inputs:
+      summaryFileLocation: ${{ parameters.uploadPath }}/coverage.xml
 
   - task: Bash@3
     condition: always()

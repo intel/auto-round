@@ -26,9 +26,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     python3-pip \
     python3-dev \
     python3-distutils \
+    autoconf \
+    build-essential \
     wget
 
 RUN ln -sf $(which python3) /usr/bin/python
+
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+
+RUN groupadd -g ${GROUP_ID} hostgroup && \
+    useradd -m -u ${USER_ID} -g ${GROUP_ID} hostuser
+
+USER hostuser
 
 RUN python -m pip install --no-cache-dir pylint==2.12.1\
     bandit
