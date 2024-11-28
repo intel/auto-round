@@ -220,10 +220,9 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 </details>
 
 ### API Usage for VLMs 
-This feature is experimental and may be subject to changes, including potential bug fixes, API modifications, or adjustments to default hype-parameters
+**This feature is experimental and may be subject to changes**, including potential bug fixes, API modifications, or adjustments to default hype-parameters
 
-In default, AutoRoundMLLM only quantize the text module of VLMs and use NeelNanda/pile-10k" for calibration. If you want to quantize the whole model, you can set `quant_nontext_module` to True, but the support is limited. For more details, please refer to [AutoRoundMLLM](./auto_round/mllm/README.md).
-
+By default, AutoRoundMLLM only quantizes the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To quantize the entire model, you can enable `quant_nontext_module` by setting it to True, though support for this feature is limited. For more information, please refer to the AutoRoundMLLM [readme](./auto_round/mllm/README.md).
 ```python
 from auto_round import AutoRoundMLLM
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
@@ -238,7 +237,7 @@ processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 ## quantize the model
 bits, group_size, sym = 4, 128, True
 autoround = AutoRoundMLLM(model, tokenizer, processor, 
-                          bits=bits, group_size=group_size, sym=True)
+                          bits=bits, group_size=group_size, sym=sym)
 autoround.quantize()
 
 # save the quantized model, set format='auto_gptq' to use AutoGPTQ format
@@ -274,7 +273,7 @@ Please run the quantization code first
 
 ### AutoRound format
 
-**CPU**: **auto_round version >0.3.1**, pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip
+**CPU**: pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip
 install intel-extension-for-transformers,
 
 **HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
