@@ -16,8 +16,24 @@ import torch
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 
 
-def reshape_pad_tensor_by_group(data: torch.Tensor, group_size: int):
-    """Reshapes and pads the tensor to ensure that the tensor can be quantized in groups of `group_size`."""
+def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
+    """Reshapes and pads the tensor to ensure that it can be quantized in groups of `group_size`.
+
+    This function adjusts t
+    he input tensor's shape so that its last dimension is a multiple
+    of the specified `group_size`. If padding is required, it adds padding to the tensor
+    to achieve this. If the tensor's last dimension is already divisible by `group_size`,
+    no padding is applied.
+
+    Args:
+        data (torch.Tensor): The input tensor to be reshaped and padded.
+        group_size (int): The size of the groups that the tensor should be reshaped into.
+
+    Returns:
+        torch.Tensor: The reshaped and padded tensor, if necessary.
+        tuple: The original shape of the input tensor.
+        int: The padding length applied to the tensor. Returns 0 if no padding is applied.
+    """
     orig_shape = data.shape
     pad_len = 0
     if len(data.shape) > 2:
@@ -35,7 +51,19 @@ def reshape_pad_tensor_by_group(data: torch.Tensor, group_size: int):
 
 
 def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: int):
-    """Reverts the tensor to its original shape by removing padding."""
+    """Reverts the tensor to its original shape by removing padding.
+
+    This function removes the padding added during reshaping and returns the tensor to
+    its original shape.
+
+    Args:
+        data (torch.Tensor): The reshaped and possibly padded tensor.
+        orig_shape (tuple): The original shape of the tensor before reshaping.
+        pad_len (int): The length of the padding to be removed.
+
+    Returns:
+        torch.Tensor: The tensor restored to its original shape.
+    """
     if pad_len == 0:
         return data.reshape(orig_shape)
     else:

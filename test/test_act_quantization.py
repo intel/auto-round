@@ -20,7 +20,7 @@ class LLMDataLoader:
             yield torch.ones([1, 10], dtype=torch.long)
 
 
-class TestAutoRound(unittest.TestCase):
+class TestAutoRoundAct(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         model_name = "facebook/opt-125m"
