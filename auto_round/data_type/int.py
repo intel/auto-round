@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import torch
-from .utils import round_ste, reshape_pad_tensor_by_group, revert_tensor_by_pad
+from .utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.data_type.register import register_dtype
 
 
@@ -39,7 +39,7 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
         Quantized and de-quantized tensor, scale, zero-point
     """
 
-    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group(tensor, group_size)
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = torch.tensor(2 ** (bits - 1))
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
@@ -83,7 +83,7 @@ def quant_tensor_asym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_sca
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
-    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group(tensor, group_size)
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = torch.tensor(2 ** bits - 1)
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
@@ -130,7 +130,7 @@ def quant_tensor_sym_gptq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
-    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group(tensor, group_size)
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = torch.tensor(2 ** bits - 1)
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
@@ -183,7 +183,7 @@ def quant_tensor_asym_wo_round(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
     Returns:
         Quantized and de-quantize tensor, scale, zero-point
     """
-    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group(tensor, group_size)
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = torch.tensor(2 ** bits - 1)
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)

@@ -859,12 +859,8 @@ class AutoRound(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        if isinstance(layer, torch.nn.Linear):
-            wrapper_linear = WrapperLinear(layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device).to(
-                device)
-        else:
-            wrapper_linear = WrapperTransformerConv1d(layer, enable_minmax_tuning=self.enable_minmax_tuning,
-                                                      device=device).to(device)
+        wrapper_linear = WrapperLinear(layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device).to(
+            device)
         round_params = []
         minmax_params = []
         for key in wrapper_linear.params.keys():

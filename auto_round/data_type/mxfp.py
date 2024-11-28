@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import torch
-from .utils import floor_ste, round_ste, reshape_pad_tensor_by_group, revert_tensor_by_pad
+from .utils import floor_ste, round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.data_type.register import register_dtype, QUANT_FUNC_WITH_DTYPE
 
 MXFP_FORMAT_CACHE = {
@@ -62,7 +62,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     Raises:
         KeyError: If `data_type` is not found in `MXFP_FORMAT_CACHE`.
     """
-    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group(tensor, group_size)
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
     orig_dtype = tensor.dtype
     shared_exp, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)

@@ -35,7 +35,7 @@ def float8_e4m3fn_ste(x: torch.Tensor):
 
 
 @register_dtype("fp8_dynamic_per_token_sym")
-def quant_fp8_sym(tensor, max_scale=1.0, **kwargs):
+def fp8_dynamic_per_token_sym(tensor, max_scale=1.0, **kwargs):
     """Dynamic per-token symmetric quantization using float8.
 
     This function dynamically calculates a per-token scaling factor for each group of tokens
