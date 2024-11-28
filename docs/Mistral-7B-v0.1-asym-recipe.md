@@ -1,11 +1,37 @@
-Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source, we used 0.4.2
+ **This recipe is outdated, we recommend using symmetric quantization.** You can remove --asym from the command.
+ 
 
+A sample command to generate an INT4 model.
 ```bash
-lm_eval --model hf --model_args pretrained="Intel/Mistral-7B-v0.1-int4-inc",autogptq=True,gptq_use_triton=True --device cuda:0 --tasks lambada_openai,hellaswag,piqa,winogrande,truthfulqa_mc1,openbookqa,boolq,rte,arc_easy,arc_challenge,mmlu --batch_size 32
+auto-round \
+--model  mistralai/Mistral-7B-v0.1 \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--iters 1000 \
+--nsamples 512 \
+--asym \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
 ```
 
+quant_lm_head
 
+```bash
+auto-round \
+--model  mistralai/Mistral-7B-v0.1 \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--iters 1000 \
+--nsamples 512 \
+--asym \
+--quant_lm_head \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
+```
 
+lm-eval 0.4.2 is used
 
 | Metric         | BF16   | [INT4-lmhead](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc-lmhead) | [INT4](https://huggingface.co/Intel/Mistral-7B-v0.1-int4-inc) |
 | -------------- | ------ |-----------------| ------------------------------------------------------------ |

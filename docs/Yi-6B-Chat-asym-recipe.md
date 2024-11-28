@@ -1,3 +1,19 @@
+ **This recipe is outdated, we recommend using symmetric quantization.** You can remove --asym from the command.
+```bash
+auto-round \
+--model 01-ai/Yi-6B-Chat  \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--iters 1000 \
+--nsamples 512 \
+--asym \
+--minmax_lr 2e-3 \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
+```
+
+
 Due to licensing restrictions, we are unable to release the model. Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source, and the git id 96d185fa6232a5ab685ba7c43e45d1dbb3bb906d.
 
 We used the following command for evaluation.

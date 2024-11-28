@@ -7,7 +7,7 @@ This model is an int4 model with group_size 128 and symmetric quantization of [m
 
 ### Requirements
 Please use Transformers version 4.45.0 or later
-
+AutoRound version >= 0.4.1
 
 ### INT4 Inference
 ```python
@@ -91,7 +91,7 @@ messages = [
 ```
 
 ## Evaluation the model
-pip3 install git+https://github.com/open-compass/VLMEvalKit.git@7de2dcb
+pip3 install git+https://github.com/open-compass/VLMEvalKit.git@7de2dcb. The evaluation process may encounter errors that require changing model backend or evaluation code. Detailed instructions will be provided in a future update.
 ```bash
 auto-round-mllm --eval --model Intel/Llama-3.2-11B-Vision-Instruct-inc-private --tasks MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE --output_dir "./eval_result"
 ```
@@ -107,7 +107,7 @@ auto-round-mllm --eval --model Intel/Llama-3.2-11B-Vision-Instruct-inc-private -
 Here is the sample command to reproduce the model.
 ```bash
 pip install auto-round
-auto-round-mllm
+auto-round-mllm \
 --model meta-llama/Llama-3.2-11B-Vision-Instruct \
 --device 0 \
 --group_size 128 \

@@ -1,11 +1,18 @@
-Install [lm-eval-harness](https://github.com/EleutherAI/lm-evaluation-harness.git) from source, we used the git id 96d185fa6232a5ab685ba7c43e45d1dbb3bb906d
-##pip install auto-gptq[triton] 
-##pip install triton==2.2.0
+**This recipe is outdated, we recommend using symmetric quantization.** You can remove --asym from the command.
+
+A sample command to generate an INT4 model. 
 ```bash
-lm_eval --model hf --model_args pretrained="Intel/Mistral-7B-Instruct-v0.2-int4-inc",autogptq=True,gptq_use_triton=True --device cuda:0 --tasks lambada_openai,hellaswag,piqa,winogrande,truthfulqa_mc1,openbookqa,boolq,rte,arc_easy,arc_challenge,mmlu --batch_size 32
+auto-round \
+--model  mistralai/Mistral-7B-Instruct-v0.2 \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--iters 1000 \
+--nsamples 512 \
+--asym \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
 ```
-
-
 
 | Metric         | BF16   | INT4   |
 | -------------- | ------ | ------ |
@@ -21,3 +28,4 @@ lm_eval --model hf --model_args pretrained="Intel/Mistral-7B-Instruct-v0.2-int4-
 | rte            | 0.7040 | 0.7148 |
 | arc_easy       | 0.8161 | 0.8165 |
 | arc_challenge  | 0.5435 | 0.5435 |
+

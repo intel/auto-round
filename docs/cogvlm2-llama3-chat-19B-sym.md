@@ -80,17 +80,11 @@ content = "这张图片代表哪家公司？"
 
 
 
-## Evaluation the model
-pip3 install lmms_eval
-```bash
-auto-round-mllm --lmms --model Intel/cogvlm2-llama3-chat-19B-inc-private --tasks pope,textvqa_val,scienceqa,mmbench_en  --output_dir "./eval_result" --device cuda:0 
-```
-
 ### Generate the model
 Here is the sample command to reproduce the model.
 ```bash
 pip install auto-round
-auto-round-mllm
+auto-round-mllm \
 --model THUDM/cogvlm2-llama3-chat-19B \
 --device 0 \
 --group_size 128 \

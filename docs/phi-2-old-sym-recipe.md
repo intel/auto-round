@@ -1,3 +1,19 @@
+ **This recipe is outdated, we recommend using the latest full range symmetric quantization.** You can remove --asym from the command.
+
+A sample command to generate an INT4 model.
+```bash
+auto-round \
+--model   facebook/opt-2.7b \
+--device 0 \
+--group_size 128 \
+--bits 4 \
+--iters 1000 \
+--nsamples 512 \
+--format 'auto_gptq,auto_round' \
+--output_dir "./tmp_autoround"
+```
+
+
 pip install lm-eval==0.4.2
 
 Due to the significant accuracy drop with the asymmetric kernel for this model, we opted to use symmetric quantization.

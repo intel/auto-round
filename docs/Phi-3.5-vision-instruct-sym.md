@@ -103,9 +103,9 @@ content = "This image represents which company?"
 
 
 ## Evaluation the model
-pip3 install git+https://github.com/open-compass/VLMEvalKit.git@7de2dcb
+pip3 install git+https://github.com/open-compass/VLMEvalKit.git@7de2dcb. The evaluation process may encounter errors that require changing model backend or evaluation code. Detailed instructions will be provided in a future update
 ```bash
-auto-round-mllm --eval --model Intel/Qwen2-VL-7B-Instruct-inc-private --tasks MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE --output_dir "./eval_result"
+auto-round-mllm --eval --model Intel/Phi-3.5-vision-instruct-inc-private --tasks MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE --output_dir "./eval_result"
 ```
 |Metric             |16bits|Pile Calib INT4  | Llava Calib INT4  |
 |-------------------|:------|:------|:------|
@@ -119,7 +119,7 @@ auto-round-mllm --eval --model Intel/Qwen2-VL-7B-Instruct-inc-private --tasks MM
 Here is the sample command to reproduce the model.
 ```bash
 pip install auto-round
-auto-round-mllm
+auto-round-mllm \
 --model microsoft/Phi-3.5-vision-instruct \
 --device 0 \
 --group_size 128 \
