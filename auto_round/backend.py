@@ -80,12 +80,11 @@ def feature_num_greater_checker(in_feature, out_feature, num):
     return in_feature * out_feature > num
 
 
-# @functools.lru_cache(None)
+@functools.lru_cache(None)
 def check_auto_round_exllamav2_installed():
     try:
         from autoround_exllamav2_kernels import gemm_half_q_half, make_q_matrix
-    except:
-
+    except ImportError:
         return False, ("please install from source to enable auto-round exllamav2 kernel."
                        "`git clone https://github.com/intel/auto-round && cd auto-round &&"
                        " pip install -vvv --no-build-isolation -e .`")

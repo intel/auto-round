@@ -36,6 +36,7 @@ from .special_model_handler import shareable_keywords
 def warning_once(self, msg: str):
     self.warning(msg)
 
+
 class AutoRoundFormatter(logging.Formatter):
     grey = "\x1b[38;20m"
     yellow = "\x1b[33;1m"
@@ -56,6 +57,7 @@ class AutoRoundFormatter(logging.Formatter):
         log_fmt = self.FORMATS.get(record.levelno)
         formatter = logging.Formatter(log_fmt, "%Y-%m-%d %H:%M:%S")
         return formatter.format(record)
+
 
 logging.Logger.warning_once = warning_once
 logger = logging.getLogger("autoround")
@@ -309,7 +311,7 @@ def validate_modules(module_names, quant_vision=False, vison_blocks_names=None):
                          " as dependent, {shortest_module} and {longest_module}")
     flag = False
     if quant_vision:
-        for n,_ in module_names:
+        for n, _ in module_names:
             flag = any(key not in n.lower() for key in (vison_blocks_names))
     if quant_vision and not flag:
         raise ValueError(f"Cannot find the visual block. Please reset the quant_nontext_module parameter to False, " \
@@ -332,7 +334,7 @@ def find_matching_blocks(model, all_blocks, to_quant_block_names):
     if not to_quant_block_names:
         return all_blocks
     to_quant_block_list = to_quant_block_names
-    if isinstance(to_quant_block_names, list) or isinstance(to_quant_block_names,tuple):
+    if isinstance(to_quant_block_names, list) or isinstance(to_quant_block_names, tuple):
         return to_quant_block_names
     if isinstance(to_quant_block_names, str):
         to_quant_block_list = [name.strip() for name in to_quant_block_names.split(",")]
@@ -349,8 +351,8 @@ def find_matching_blocks(model, all_blocks, to_quant_block_names):
             raise ValueError("No block names matched. Please check the input for to_quant_block_name," \
                              "or set to_quant_block_name to None to automatically match quantizable blocks.")
     return target_blocks
-    
-    
+
+
 def get_block_names(model):
     """Get the block names for transformers-like networks.
 
@@ -491,7 +493,7 @@ def check_to_quantized(config):
             False otherwise.
     """
     if isinstance(config, dict):
-        
+
         if int(config["bits"]) > 8:
             return False
         return True
@@ -967,7 +969,7 @@ def compile_func_on_hpu(func):
 
 
 def compile_func_on_cuda_or_cpu(func, enable_torch_compile):
-    if enable_torch_compile or (TORCH_VERSION_AT_LEAST_2_6_PRE_RELEASE and enable_torch_compile!=False):
+    if enable_torch_compile or (TORCH_VERSION_AT_LEAST_2_6_PRE_RELEASE and enable_torch_compile != False):
         return torch.compile(func)
     else:
         return func
@@ -978,7 +980,6 @@ def compile_func(fun, device, enable_torch_compile):
         return compile_func_on_hpu(fun)  ## use auto by default
     else:
         return compile_func_on_cuda_or_cpu(fun, enable_torch_compile)
-
 
 
 def is_numba_available():  # pragma: no cover
@@ -1030,6 +1031,7 @@ def is_tbb_available():  # pragma: no cover
         return False
     return True
 
+
 def can_pack_with_numba():  # pragma: no cover
     """Check if Numba and TBB are available for packing.
 
@@ -1041,3 +1043,39 @@ def can_pack_with_numba():  # pragma: no cover
     if not is_tbb_available():
         return False
     return True
+
+
+def set_layer_config_by_fp_layers(model, fp_layers):
+    """Identifies and returns layers in the model to exclude from quantization.
+
+    This function processes a comma-separated list of fully precision (FP) layers,
+    matches them to the names of layers in the model, and returns a list of such
+    layers to exclude from quantization.
+
+    Args:
+        model (torch.nn.Module): The model whose layers will be inspected.
+        fp_layers (str): A comma-separated string of layer names to be excluded
+            from quantization. Whitespace is ignored in this string.
+
+    Returns:
+        list: A list of layer names that match the specified FP layers or are
+        subcomponents of those layers.
+    """
+    fp_layers = fp_layers.replace(" ", "").split(",")
+    all_layer_names = []
+    for n, m in model.named_modules():
+        if isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D)):
+            all_layer_names.append(n)
+    not_to_quantized_layers = []
+
+    for fp_layer in fp_layers:
+        if fp_layer in all_layer_names:
+            not_to_quantized_layers.append(fp_layer)
+            continue
+        if fp_layer[-1]!=".":
+            fp_layer = fp_layer + "."  ##ticky setting
+        for name in all_layer_names:
+            if fp_layer in name:
+                not_to_quantized_layers.append(name)
+
+    return not_to_quantized_layers
