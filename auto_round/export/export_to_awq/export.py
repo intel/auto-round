@@ -123,7 +123,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     with ThreadPoolExecutor(max_workers=2) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
-                pack_layer(name, model, layer_config, backend, pbar)
+                pack_layer(name, compressed_model, layer_config, backend, pbar)
 
             for _ in executor.map(wrapper, names):
                 pass
