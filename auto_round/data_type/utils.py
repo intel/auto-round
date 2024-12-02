@@ -67,7 +67,11 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: int):
     if pad_len == 0:
         return data.reshape(orig_shape)
     else:
-        data_new = data.reshape(data.shape[0], -1)
+        if len(orig_shape) > 2:
+            tmp_shape = torch.prod(torch.tensor(orig_shape[:-1])).item()
+        else:
+            tmp_shape = orig_shape[0]
+        data_new = data.reshape(tmp_shape, -1)
         data_new = data_new[:, :-pad_len]
         data_new = data_new.reshape(orig_shape)
         return data_new
@@ -150,3 +154,4 @@ def floor_ste(x: torch.Tensor):
         torch.Tensor
     """
     return (x.floor() - x).detach() + x
+
