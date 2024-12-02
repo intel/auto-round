@@ -13,24 +13,25 @@
 # limitations under the License.
 
 import functools
-import logging
 from dataclasses import dataclass, field
 from typing import List, Any, Optional
 
 from transformers.utils.versions import require_version
 
-from auto_round.utils import get_library_version
+from auto_round.utils import get_library_version, logger
 
 BackendInfos = {}
 
 import cpuinfo
 
+
 def get_cpu_manufacturer():
     cpu_info = cpuinfo.get_cpu_info()
-    if "brand_raw" in cpu_info and "intel"  in cpu_info["brand_raw"].lower():
+    if "brand_raw" in cpu_info and "intel" in cpu_info["brand_raw"].lower():
         return "intel"
     else:
         return "others"
+
 
 @dataclass
 class BackendInfo:
@@ -79,6 +80,18 @@ def feature_num_greater_checker(in_feature, out_feature, num):
     return in_feature * out_feature > num
 
 
+# @functools.lru_cache(None)
+def check_auto_round_exllamav2_installed():
+    try:
+        from autoround_exllamav2_kernels import gemm_half_q_half, make_q_matrix
+    except:
+
+        return False, ("please install from source to enable auto-round exllamav2 kernel."
+                       "`git clone https://github.com/intel/auto-round && cd auto-round &&"
+                       " pip install -vvv --no-build-isolation -e .`")
+    return True, ""
+
+
 feature_multiply_checker_32 = functools.partial(feature_multiply_checker, in_feature_multiplier=32)
 
 feature_multiply_checker_marlin = functools.partial(feature_multiply_checker, in_feature_multiplier=128,
@@ -91,15 +104,16 @@ BackendInfos['auto_round:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, F
                                                    bits=[4], group_size=None,
                                                    priority=5,
                                                    feature_checks=[feature_multiply_checker_32],
-                                                   alias=["auto_round"]
+                                                   alias=["auto_round"],
+                                                   requirements=[check_auto_round_exllamav2_installed]
                                                    )
-
-BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
-                                                  packing_format="triton",
-                                                  bits=[2, 4, 8], group_size=None,
-                                                  priority=0, feature_checks=[feature_multiply_checker_32],
-                                                  requirements=["triton<3.0,>=2.0"]
-                                                  )
+#
+# BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
+#                                                   packing_format="triton",
+#                                                   bits=[2, 4, 8], group_size=None,
+#                                                   priority=0, feature_checks=[feature_multiply_checker_32],
+#                                                   requirements=["triton<3.0,>=2.0"]
+#                                                   )
 
 BackendInfos['gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              packing_format="triton_zp+-1",
@@ -117,17 +131,17 @@ BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                             priority=0, feature_checks=[feature_multiply_checker_32],
                                             alias=["auto_round:gptq:tritonv2", "auto_round:auto_gptq:tritonv2",
                                                    "auto_gptq:tritonv2"],
-                                            requirements=["auto-gptq>=0.7.1","triton<3.0,>=2.0"]
+                                            requirements=["auto-gptq>=0.7.1", "triton<3.0,>=2.0"]
                                             )
 
 BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
-                                            packing_format="triton_zp+-1",
-                                            bits=[2, 3, 4, 8], group_size=None,
-                                            priority=1, feature_checks=[feature_multiply_checker_32],
-                                            alias=["auto_round:auto_gptq:cuda,auto_gptq:cuda, auto_round:gptq:cuda"],
-                                            convertable_format=["triton_zp+-1"],
-                                            requirements=["auto-gptq>=0.7.1"]
-                                            )
+                                        packing_format="triton_zp+-1",
+                                        bits=[2, 3, 4, 8], group_size=None,
+                                        priority=1, feature_checks=[feature_multiply_checker_32],
+                                        alias=["auto_round:auto_gptq:cuda,auto_gptq:cuda, auto_round:gptq:cuda"],
+                                        convertable_format=["triton_zp+-1"],
+                                        requirements=["auto-gptq>=0.7.1"]
+                                        )
 
 BackendInfos['awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##actrally is gemm
                                        packing_format="awq",
@@ -156,23 +170,23 @@ BackendInfos['auto_round:qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, Fal
                                                   )
 
 BackendInfos['auto_round:ipex_gptq'] = BackendInfo(device=["cpu"], sym=[True, False],
-                                              packing_format="ipex_gptq",
-                                              bits=[4], group_size=None,
-                                              priority=5 if "intel" in get_cpu_manufacturer() else 5,
-                                              feature_checks=[],
-                                              convertable_format=["triton_zp+-1"],
-                                              requirements=["intel-extension-for-pytorch>=2.4"]
-                                              )
+                                                   packing_format="ipex_gptq",
+                                                   bits=[4], group_size=None,
+                                                   priority=5 if "intel" in get_cpu_manufacturer() else 5,
+                                                   feature_checks=[],
+                                                   convertable_format=["triton_zp+-1"],
+                                                   requirements=["intel-extension-for-pytorch>=2.4"]
+                                                   )
 
 BackendInfos['auto_round:ipex_awq'] = BackendInfo(device=["cpu"], sym=[True, False],
-                                              packing_format="ipex_awq",
-                                              bits=[4], group_size=None,
-                                              priority=5 if "intel" in get_cpu_manufacturer() else 5,
-                                              feature_checks=[],
-                                              ##convertable_format=["triton_zp+-1", "awq"],
-                                              convertable_format=["awq"],
-                                              requirements=["intel-extension-for-pytorch>=2.4"]
-                                              )
+                                                  packing_format="ipex_awq",
+                                                  bits=[4], group_size=None,
+                                                  priority=5 if "intel" in get_cpu_manufacturer() else 5,
+                                                  feature_checks=[],
+                                                  ##convertable_format=["triton_zp+-1", "awq"],
+                                                  convertable_format=["awq"],
+                                                  requirements=["intel-extension-for-pytorch>=2.4"]
+                                                  )
 
 # BackendInfos['auto_round:marlin'] = BackendInfo(device=["gpu"], sym=[True],
 #                                                 packing_format="marlin",
@@ -256,10 +270,14 @@ def check_compatible(backend_name, device, bits, group_size, sym, packing_format
 
     if check_requirements and backend.requirements is not None:
         for requirement in backend.requirements:
-            try:
-                require_version(requirement)
-            except ImportError:
-                return False
+            if isinstance(requirement, str):
+                try:
+                    require_version(requirement)
+                except ImportError:
+                    return False
+            else:
+                res, _ = requirement()
+                return res
 
     return True
 
@@ -507,8 +525,16 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
                                                      key=lambda support_backend: BackendInfos[support_backend].priority,
                                                      reverse=True)
             backend_info = BackendInfos[supported_backends_need_package[0]]
-            str_info = ",".join(backend_info.requirements)
-            logging.error(f"`pip install {str_info}` to support inference")
+            logger.error("please install all the following packages to support inference")
+            for requirement in backend_info.requirements:
+                if isinstance(requirement, str):
+                    try:
+                        require_version(requirement)
+                    except ImportError:
+                        logger.error(f"pip install {requirement}")
+                else:
+                    str_info = requirement()[1]
+                    logger.error(str_info)
             exit(-1)
 
         raise ValueError(f"None of the backends support this layer")
