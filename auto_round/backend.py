@@ -106,13 +106,13 @@ BackendInfos['auto_round:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, F
                                                    alias=["auto_round"],
                                                    requirements=[check_auto_round_exllamav2_installed]
                                                    )
-#
-# BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
-#                                                   packing_format="triton",
-#                                                   bits=[2, 4, 8], group_size=None,
-#                                                   priority=0, feature_checks=[feature_multiply_checker_32],
-#                                                   requirements=["triton<3.0,>=2.0"]
-#                                                   )
+
+BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
+                                                  packing_format="triton",
+                                                  bits=[2, 4, 8], group_size=None,
+                                                  priority=0, feature_checks=[feature_multiply_checker_32],
+                                                  requirements=["triton<3.0,>=2.0"]
+                                                  )
 
 BackendInfos['gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              packing_format="triton_zp+-1",
