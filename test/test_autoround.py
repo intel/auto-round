@@ -350,8 +350,24 @@ class TestAutoRound(unittest.TestCase):
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=1)[0])
 
+    def test_tensor_reshape(self):
+        model_name = "facebook/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, trust_remote_code=True, device_map='auto')
+        bits, group_size, sym = 4, 100, False
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
 
 
 if __name__ == "__main__":
     unittest.main()
+
 
