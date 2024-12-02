@@ -27,7 +27,7 @@
 # limitations under the License.
 import argparse
 
-from auto_round.utils import detect_device
+from auto_round.utils import detect_device, set_layer_config_by_fp_layers
 
 
 class BasicArgumentParser(argparse.ArgumentParser):
@@ -376,21 +376,16 @@ def tune(args):
                     " resulting in an exporting issue to autogptq")
 
     layer_config = {}
-    if args.fp_layers != "":
-        fp_layers = args.fp_layers.replace(" ", "").split(",")
-        for n, m in model.named_modules():
-            if not isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D)):
-                continue
-            for fp_layer in fp_layers:
-                if fp_layer in n:
-                    layer_config[n] = {"bits": 16}
-                    logger.info(
-                        f"{n} will not be quantized.")
-        if len(layer_config) > 0:
-            for format in formats:
-                if "auto_round" not in format and "fake" not in format:
-                    ##TODO gptq, awq could support some mixed precision config
-                    logger.warning(f"mixed precision exporting does not support {format} currently")
+    not_quantize_layer_names = set_layer_config_by_fp_layers(model, args.fp_layers)
+    for name in not_quantize_layer_names:
+        layer_config[name] = {"bits": 16}
+    if len(not_quantize_layer_names) > 0:
+        logger.info(
+            f"{not_quantize_layer_names} will not be quantized.")
+        for format in formats:
+            if "auto_round" not in format and "fake" not in format and "awq" not in format:
+                ##TODO gptq could support some mixed precision config
+                logger.warning(f"mixed precision exporting does not support {format} currently")
 
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():

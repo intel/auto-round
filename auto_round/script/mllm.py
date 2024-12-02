@@ -24,7 +24,7 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoProcessor
 
-from auto_round.utils import detect_device
+from auto_round.utils import detect_device, set_layer_config_by_fp_layers
 from auto_round.utils import logger
 
 
@@ -321,6 +321,18 @@ def tune(args):
             exit()
 
     round = AutoRoundMLLM
+
+    layer_config = {}
+    not_quantize_layer_names = set_layer_config_by_fp_layers(model, args.fp_layers)
+    for name in not_quantize_layer_names:
+        layer_config[name] = {"bits": 16}
+    if len(not_quantize_layer_names) > 0:
+        logger.info(
+            f"{not_quantize_layer_names} will not be quantized.")
+        for format in formats:
+            if "auto_round" not in format and "fake" not in format and "awq" not in format:
+                ##TODO gptq could support some mixed precision config
+                logger.warning(f"mixed precision exporting does not support {format} currently")
 
     layer_config = {}
     if args.fp_layers != "":

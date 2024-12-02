@@ -45,7 +45,6 @@ import os
 import torch.nn as nn
 import transformers
 
-from auto_round.export.register import register_format
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
