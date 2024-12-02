@@ -269,6 +269,8 @@ def tune(args):
             args.device = ",".join(map(str, range(len(devices))))
             devices = args.device.replace(" ", "").split(',')
         use_auto_mapping = True
+    elif args.device == "auto":
+        use_auto_mapping == True
 
     device_str = detect_device(devices[0])
 
