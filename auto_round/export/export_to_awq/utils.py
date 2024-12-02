@@ -59,7 +59,9 @@ def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
 
     return iweights, izeros
 
+
 AWQ_REVERSE_ORDER = [0, 4, 1, 5, 2, 6, 3, 7]
+
 
 def reverse_awq_order(iweights: torch.Tensor, izeros: torch.Tensor, bits: int):
     reverse_order_tensor = torch.arange(
@@ -85,8 +87,8 @@ def dequantize_gemm(qweight, qzeros, scales, bits, group_size):
     iweight, izeros = reverse_awq_order(iweight, izeros, bits)
 
     # overflow checks
-    iweight = torch.bitwise_and(iweight, (2**bits) - 1)
-    izeros = torch.bitwise_and(izeros, (2**bits) - 1)
+    iweight = torch.bitwise_and(iweight, (2 ** bits) - 1)
+    izeros = torch.bitwise_and(izeros, (2 ** bits) - 1)
 
     # fp16 weights
     scales = scales.repeat_interleave(group_size, dim=0)
@@ -109,15 +111,15 @@ class WQLinearMMFunction(Function):
     @staticmethod
     # ctx is the first argument to forward
     def forward(
-        ctx,
-        x,
-        qweight,
-        qzeros,
-        scales,
-        w_bit=4,
-        group_size=128,
-        bias=None,
-        out_features=0,
+            ctx,
+            x,
+            qweight,
+            qzeros,
+            scales,
+            w_bit=4,
+            group_size=128,
+            bias=None,
+            out_features=0,
     ):
         # The forward pass can use ctx.
         ctx.save_for_backward(x, qweight, qzeros, scales, bias)
@@ -141,7 +143,7 @@ class WQLinearMMFunction(Function):
 
 class WQLinear_GEMM(nn.Module):
     def __init__(
-        self, w_bit, group_size, in_features, out_features, bias, dev, training=False
+            self, w_bit, group_size, in_features, out_features, bias, dev, training=False
     ):
         super().__init__()
 
@@ -196,7 +198,7 @@ class WQLinear_GEMM(nn.Module):
 
     @classmethod
     def from_linear(
-        cls, linear, w_bit, group_size, init_only=False, scales=None, zeros=None
+            cls, linear, w_bit, group_size, init_only=False, scales=None, zeros=None
     ):
         awq_linear = cls(
             w_bit,
@@ -329,58 +331,3 @@ def clear_memory(weight=None):
         del weight
     gc.collect()
     torch.cuda.empty_cache()
-
-
-MODEL_LAYERS_BY_MODEL_TYPE = {
-    'aquila': 'model.layers',
-    'baichuan': 'model.layers',
-    'bloom': 'transformer.h',
-    'cohere': 'model.layers',
-    'deepseek_v2': 'model.layers',
-    'falcon': 'transformer.h',
-    'gemma': 'model.layers',
-    'gemma2': 'model.layers',
-    'gpt2': 'transformer.h',
-    'gpt_bigcode': 'transformer.h',
-    'gpt_neo': 'transformer.h',
-    'gpt_neox': 'gpt_neox.layers',
-    'gptj': 'transformer.h',
-    'internlm2': 'model.layers',
-    'llama': 'model.layers',
-    'llava': 'language_model.model.layers',
-    'llava_next': 'language_model.model.layers',
-    'minicpm': 'model.layers',
-    'mistral': 'model.layers',
-    'mixtral': 'model.layers',
-    'mpt': 'transformer.blocks',
-    'opt': 'model.decoder.layers',
-    'phi': 'model.layers',
-    'phi3': 'model.layers',
-    'qwen': 'transformer.h',
-    'qwen2': 'model.layers',
-    'roberta': 'roberta.encoder',
-    'stablelm': 'model.layers',
-    'starcoder2': 'model.layers',
-    'xlm-roberta': 'roberta.encoder',
-    'yi': 'model.layers',
-}
-
-def get_self_modules(model):
-    def _get(model, self_modules):
-        module = model
-        for m in self_modules.split('.'):
-            module = getattr(module, m)
-        return module
-
-    model_type = model.config.model_type
-    if model_type not in MODEL_LAYERS_BY_MODEL_TYPE:
-        for tmp_self_modules in set(MODEL_LAYERS_BY_MODEL_TYPE.values()):
-            try:
-                return _get(model, tmp_self_modules)
-            except:
-                continue
-        warnings.warn(f"Model type {model_type} may be not supported by auto_awq,"
-                      " please checkout the auto_awq repository.")
-        return None
-    self_modules = MODEL_LAYERS_BY_MODEL_TYPE.get(model_type)
-    return _get(model, self_modules)
