@@ -1069,10 +1069,12 @@ def set_layer_config_by_fp_layers(model, fp_layers):
     not_to_quantized_layers = []
 
     for fp_layer in fp_layers:
+        if fp_layer == "":
+            continue
         if fp_layer in all_layer_names:
             not_to_quantized_layers.append(fp_layer)
             continue
-        if fp_layer[-1]!=".":
+        if fp_layer[-1] != ".":
             fp_layer = fp_layer + "."  ##ticky setting
         for name in all_layer_names:
             if fp_layer in name:
