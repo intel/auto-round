@@ -157,7 +157,8 @@ class AutoRoundMLLM(AutoRound):
         from ..calib_dataset import CALIB_DATASETS
         from .mllm_dataset import MLLM_DATASET
         if isinstance(dataset, str):
-            if quant_nontext_module or (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer, device)):
+            if quant_nontext_module or \
+                (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer, device)):
                 if quant_nontext_module:
                     logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
                                 "switching to liuhaotian/llava_conv_58k")
