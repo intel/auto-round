@@ -113,8 +113,8 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     quantization_config["modules_to_not_convert"] = modules_to_not_convert
     ##check module quantized in block, this may have bug for mixed precision quantization
 
-    if hasattr(model, "config"):
-        model.config.quantization_config = quantization_config
+    if hasattr(compressed_model, "config"):
+        compressed_model.config.quantization_config = quantization_config
     save(compressed_model, output_dir, safe_serialization=True)
 
     return compressed_model
