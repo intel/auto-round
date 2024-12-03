@@ -45,10 +45,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--eval_bs", default=None, type=int,
                           help="batch size in evaluation")
 
-        self.add_argument("--device", "--devices", default="auto", type=str,
-                          help="the device to be used for tuning. The default is set to auto,"
-                               "allowing for automatic detection."
-                               "Currently, device settings support CPU, GPU, and HPU.")
+        self.add_argument("--device", "--devices", default="0", type=str,
+                          help="the device to be used for tuning. "
+                          "Currently, device settings support CPU, GPU, and HPU."
+                          "The default is set to cuda:0,"
+                          "allowing for automatic detection and switch to HPU or CPU."
+                          "set --device 0,1,2 to use multiple cards.")
 
         self.add_argument("--asym", action='store_true',
                           help="whether to use asym quantization")
@@ -268,6 +270,8 @@ def tune(args):
             devices = args.device.replace(" ", "").split(',')
         if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
             use_auto_mapping = True
+    elif args.device == "auto":
+        use_auto_mapping == True
 
     import re
     import torch
