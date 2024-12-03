@@ -296,7 +296,7 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRoundConfig
 
-backend = "auto"  ##cpu, hpu, cuda, cuda:marlin(supported in auto_round>0.3.1 and 'pip install -v gptqmodel --no-build-isolation')
+backend = "auto"  ##cpu, hpu, cuda
 quantization_config = AutoRoundConfig(
     backend=backend
 )
