@@ -44,7 +44,7 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
 
         ##test auto_round format
-        autoround.save_quantized(self.save_dir, format="auto_round",inplace=False)
+        autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
         res = simple_evaluate(model="hf", model_args=model_args,
                               tasks=self.tasks,
@@ -81,8 +81,11 @@ class TestAutoRound(unittest.TestCase):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        from auto_round.utils import set_layer_config_by_fp_layers
-        set_layer_config_by_fp_layers(model,"model.decoder.layers.0,model.decoder.layers.1")
+        from auto_round.utils import get_fp_layer_names
+        layer_names = get_fp_layer_names(model, "model.decoder.layers.0,model.decoder.layers.1")
+        layer_configs = {}
+        for name in layer_names:
+            layer_configs[name] = {"bits": 16}
         autoround = AutoRound(model, tokenizer, bits=4, group_size=128)
         autoround.quantize()
 
@@ -116,4 +119,3 @@ class TestAutoRound(unittest.TestCase):
 
         autoround = AutoRound(model, tokenizer, bits=4, group_size=128, nsamples=1, iters=1)
         autoround.quantize()
-
