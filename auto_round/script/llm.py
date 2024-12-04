@@ -27,7 +27,7 @@
 # limitations under the License.
 import argparse
 
-from auto_round.utils import detect_device, set_layer_config_by_fp_layers
+from auto_round.utils import detect_device, get_fp_layer_names
 
 
 class BasicArgumentParser(argparse.ArgumentParser):
@@ -380,7 +380,7 @@ def tune(args):
                     " resulting in an exporting issue to autogptq")
 
     layer_config = {}
-    not_quantize_layer_names = set_layer_config_by_fp_layers(model, args.fp_layers)
+    not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
         layer_config[name] = {"bits": 16}
     if len(not_quantize_layer_names) > 0:

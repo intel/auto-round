@@ -24,7 +24,7 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoProcessor
 
-from auto_round.utils import detect_device, set_layer_config_by_fp_layers
+from auto_round.utils import detect_device, get_fp_layer_names
 from auto_round.utils import logger
 
 
@@ -327,7 +327,7 @@ def tune(args):
     round = AutoRoundMLLM
 
     layer_config = {}
-    not_quantize_layer_names = set_layer_config_by_fp_layers(model, args.fp_layers)
+    not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
         layer_config[name] = {"bits": 16}
     if len(not_quantize_layer_names) > 0:
