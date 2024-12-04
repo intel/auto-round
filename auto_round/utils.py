@@ -318,6 +318,22 @@ def validate_modules(module_names, quant_vision=False, vison_blocks_names=None):
                          "or raise an issue at https://github.com/intel/auto-round/issues.")
     return
 
+def get_common_prefix(paths):
+    # Split each path into components and find the common prefix
+    split_paths = [path.split('.') for path in paths]
+    common_prefix = split_paths[0]
+    for path in split_paths[1:]:
+        common_prefix = [comp for comp, other in zip(common_prefix, path) if comp == other]
+    return '.'.join(common_prefix)
+
+def extract_block_names_to_str(quant_block_list):
+    if not isinstance(quant_block_list, (list,tuple)):
+        return None
+    # Extract common prefix for each list
+    prefixes = [get_common_prefix(blocks) for blocks in quant_block_list]
+    # Join prefixes into a single string
+    return ','.join(prefixes)
+    
 
 def find_matching_blocks(model, all_blocks, to_quant_block_names):
     """
@@ -347,9 +363,9 @@ def find_matching_blocks(model, all_blocks, to_quant_block_names):
                 matched_sublist.extend(matches)
         if matched_sublist:
             target_blocks.append(matched_sublist)
-        if not target_blocks:
-            raise ValueError("No block names matched. Please check the input for to_quant_block_name," \
-                             "or set to_quant_block_name to None to automatically match quantizable blocks.")
+    if not target_blocks:
+        raise ValueError("No block names matched. Please check the input for to_quant_block_name," \
+                            "or set to_quant_block_name to None to automatically match quantizable blocks.")
     return target_blocks
 
 
@@ -776,7 +792,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D], to_quant_block_names=None):
+                                                     transformers.modeling_utils.Conv1D], quant_block_list=None):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -787,8 +803,8 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
         if isinstance(m, tuple(supported_types)):
             m.tmp_name = n
     layers_in_block = []
-    if bool(to_quant_block_names):
-        all_blocks = to_quant_block_names
+    if bool(quant_block_list):
+        all_blocks = quant_block_list
     else:
         all_blocks = get_block_names(model)
     for block_names in all_blocks:
@@ -1081,3 +1097,4 @@ def get_fp_layer_names(model, fp_layers):
                 not_to_quantized_layers.append(name)
 
     return not_to_quantized_layers
+
