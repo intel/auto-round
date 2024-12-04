@@ -26,8 +26,8 @@ more accuracy data and recipes across various models.
 <div align="left">
 
 ## What's New
-* [2024/12] Many quantized models utilizing AutoRound are released in [OPEA Space](https://huggingface.co/OPEA)
-* [2024/11] We provide experimental support for VLLM quantization, please check out
+* [2024/12] Many quantized LLMs/VLMs AutoRound are released in [OPEA Space](https://huggingface.co/OPEA)
+* [2024/11] We provide experimental support for VLM quantization, please check out
   the [README](./auto_round/mllm/README.md)
 * [2024/11] We provide some tips and tricks for LLM&VLM quantization, please check
   out [this blog](https://medium.com/@NeuralCompressor/10-tips-for-quantizing-llms-and-vlms-with-autoround-923e733879a7)
