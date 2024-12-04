@@ -506,6 +506,9 @@ def eval(args):
         if len(devices) > 1:
             parallelism = True
         device_str = None
+    elif args.device == "auto":
+        device_str = None
+        parallelism = True
     else:
         device_str = detect_device(args.device.replace(" ", ""))
 
