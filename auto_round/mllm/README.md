@@ -12,7 +12,7 @@ quantize the entire model, you can enable `quant_nontext_module` by setting it t
 is limited.
 
 ```python
-    from auto_round import AutoRoundMLLM
+from auto_round import AutoRoundMLLM
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
 
 ## load the model
