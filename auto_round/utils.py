@@ -968,11 +968,11 @@ TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
-# 1. Compile Mode (Recommended)
+# 1. Compile Mode
 #   1) Use PyTorch version ≥ 2.4 (Intel® Gaudi® v1.18 or later)
 #   2) Set `PT_HPU_LAZY_MODE=0` and `PT_ENABLE_INT64_SUPPORT=1`
-# 2. Lazy Mode
-#   1) Set `PT_HPU_LAZY_MODE=1`
+#   The compile mode can speed up quantization process but still in experimental stage.
+# 2. Lazy Mode (By default)
 
 
 def _check_hpu_compile_mode():
@@ -986,7 +986,7 @@ def _check_hpu_compile_mode():
 
 
 def is_hpu_lazy_mode():
-    return os.getenv("PT_HPU_LAZY_MODE") == "1"
+    return os.getenv("PT_HPU_LAZY_MODE") != "0"
 
 
 def _use_hpu_compile_mode():
