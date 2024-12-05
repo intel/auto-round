@@ -42,7 +42,8 @@ from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
-from auto_round.utils import get_module, set_module, is_hpu_supported
+from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
+                              get_multimodal_block_names, find_matching_blocks)
 
 from auto_round.backend import get_layer_backend, dynamic_import_inference_linear
 
@@ -409,7 +410,15 @@ class AutoRoundQuantizer(HfQuantizer):
         sym = quantization_config.sym
         to_quant_block_names = quantization_config.to_quant_block_names if hasattr(quantization_config,
                                                                                    "to_quant_block_names") else None
-        layer_names = get_layer_names_in_block(model, to_quant_block_names=to_quant_block_names)
+        quant_block_list = quantization_config.quant_block_list if hasattr(quantization_config,
+                                                                                   "quant_block_list") else None
+        if to_quant_block_names is None: # TODO check compatibility
+            all_blocks = get_block_names(model)
+        else:
+            all_blocks = get_multimodal_block_names(model, quant_vision=True)
+        if quant_block_list is None:
+            quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
+        layer_names = get_layer_names_in_block(model, quant_block_list=quant_block_list)
 
         extra_config = {}
         if hasattr(quantization_config, "extra_config"):
@@ -734,3 +743,4 @@ if version.parse(transformers.__version__) < version.parse("4.38.0"):
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
+

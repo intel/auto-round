@@ -189,10 +189,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     model = kwargs["model"]
     to_quant_block_names = kwargs["to_quant_block_names"]
+    quant_block_list = kwargs.get("quant_block_list", None)
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-    layer_names_in_block = get_layer_names_in_block(model, to_quant_block_names=to_quant_block_names)
+    layer_names_in_block = get_layer_names_in_block(model, quant_block_list=quant_block_list)
 
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
@@ -277,5 +278,6 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
 
 

@@ -198,11 +198,12 @@ class AutoRound(object):
         self.device = detect_device(device)
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
-
-        self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-        if not hasattr(self, 'to_quant_block_names'):
+        self.to_quant_block_names = to_quant_block_names
+        if not hasattr(self, 'quant_block_list'):
             all_blocks = get_block_names(model)
-            self.to_quant_block_names = find_matching_blocks(model, all_blocks, to_quant_block_names)
+            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
+        self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
+        
 
         ##activation
         self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
@@ -281,8 +282,8 @@ class AutoRound(object):
         The quantized model and layer configurations.
         """
 
-        if bool(self.to_quant_block_names):
-            all_blocks = self.to_quant_block_names
+        if bool(self.quant_block_list):
+            all_blocks = self.quant_block_list
         else:
             all_blocks = get_block_names(self.model)
 
@@ -434,7 +435,7 @@ class AutoRound(object):
         Returns:
         None
         """
-        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.to_quant_block_names)
+        layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
         keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
                 "act_dynamic", "act_data_type"]
         for n, m in self.model.named_modules():
@@ -1333,6 +1334,7 @@ class AutoRound(object):
             serialization_dict=serialization_dict,
             backend=backend,
             to_quant_block_names=self.to_quant_block_names,
+            quant_block_list=self.quant_block_list,
             **kwargs
         )
         return compressed_model
@@ -1347,7 +1349,7 @@ class AutoRound(object):
             return []
 
         layer_names = []
-        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.to_quant_block_names)
+        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
 
         for key in self.layer_config.keys():
             if key in all_layers_in_block:
@@ -1735,3 +1737,4 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer=optimizer,
             **kwargs,
         )
+

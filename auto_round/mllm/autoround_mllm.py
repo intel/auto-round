@@ -22,7 +22,8 @@ from ..utils import (
     to_device,
     to_dtype,
     get_multimodal_block_names,
-    find_matching_blocks
+    find_matching_blocks,
+    extract_block_names_to_str
 )
 from ..autoround import AutoRound
 from .template import get_template, Template
@@ -143,7 +144,10 @@ class AutoRoundMLLM(AutoRound):
             **kwargs,
     ):
         all_blocks = get_multimodal_block_names(model, quant_nontext_module)
-        self.to_quant_block_names = find_matching_blocks(model, all_blocks, to_quant_block_names)
+        self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
+        if to_quant_block_names is None:
+            to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
+        self.to_quant_block_names = to_quant_block_names
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
         self.image_processor = image_processor
@@ -367,4 +371,5 @@ class AutoRoundMLLM(AutoRound):
             for n, m in embed_layers:
                 m = m.to("meta")
         # torch.cuda.empty_cache()
+
 
