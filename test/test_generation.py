@@ -33,9 +33,8 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
     def test_llm_generation_sym_gpu_gptq(self):
-        if not torch.cuda.is_available():
-            return
         bits = 4
         group_size = 32
         autoround = AutoRound(
@@ -67,11 +66,9 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         assert (
                     res == """</s>There is a girl who likes adventure, and I'm not sure if she's into it, but I'm sure she's into it.\nI'm not sure if she's into adventure, but I'm sure she's into it.\nI'm not sure if she's into adventure""")
 
-    # #
     #
+    # @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
     # def test_llm_generation_sym_gpu_gptq_marlin(self): ##need auto_gptq >0.7.1
-    #     if not torch.cuda.is_available():
-    #         return
     #     bits = 4
     #     group_size = 128
     #     autoround = AutoRound(
@@ -103,10 +100,8 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
     #     assert (
     #                 res == """</s>There is a girl who likes adventure, and I'm not sure if she's into it, but I'm sure she's into it.\nI'm not sure if she's into adventure, but I'm sure she's into it.\nI'm not sure if she's into adventure""")
 
-
+    @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
     def test_llm_generation_asym_gpu_awq(self):
-        if not torch.cuda.is_available():
-            return
         bits = 4
         group_size = 32
         autoround = AutoRound(
@@ -172,6 +167,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         assert ("!!!" not in res)
+
 
 
 
