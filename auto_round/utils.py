@@ -333,7 +333,7 @@ def extract_block_names_to_str(quant_block_list):
     prefixes = [get_common_prefix(blocks) for blocks in quant_block_list]
     # Join prefixes into a single string
     return ','.join(prefixes)
-    
+
 
 def find_matching_blocks(model, all_blocks, to_quant_block_names):
     """
@@ -966,19 +966,35 @@ TORCH_VERSION_AT_LEAST_2_6 = torch_version_at_least("2.6.0")
 TORCH_VERSION_AT_LEAST_2_5 = torch_version_at_least("2.5.0")
 TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
+# Note on HPU usage:
+# There are two modes available for enabling auto-round on HPU:
+# 1. Compile Mode (Recommended)
+#   1) Use PyTorch version ≥ 2.4 (Intel® Gaudi® v1.18 or later)
+#   2) Set `PT_HPU_LAZY_MODE=0` and `PT_ENABLE_INT64_SUPPORT=1`
+# 2. Lazy Mode
+#   1) Set `PT_HPU_LAZY_MODE=1`
+
 
 def check_hpu_compile_mode():
     assert (
-            os.getenv("PT_HPU_LAZY_MODE") == "0"
+        os.getenv("PT_HPU_LAZY_MODE") == "0"
     ), "Please set `PT_HPU_LAZY_MODE=0` to use HPU compile mode"
     # Note: this is a temporary solution, will be removed in the future
     assert (
-            os.getenv("PT_ENABLE_INT64_SUPPORT") == "1"
+        os.getenv("PT_ENABLE_INT64_SUPPORT") == "1"
     ), "Please set `PT_ENABLE_INT64_SUPPORT=1` to use HPU compile mode"
 
 
+def is_hpu_lazy_mode():
+    return os.getenv("PT_HPU_LAZY_MODE") == "1"
+
+
+def _use_hpu_compile_mode():
+    return TORCH_VERSION_AT_LEAST_2_4 and not is_hpu_lazy_mode()
+
+
 def compile_func_on_hpu(func):
-    if TORCH_VERSION_AT_LEAST_2_4:
+    if _use_hpu_compile_mode():
         check_hpu_compile_mode()
         return torch.compile(func, backend="hpu_backend")
     return func
@@ -1097,4 +1113,3 @@ def get_fp_layer_names(model, fp_layers):
                 not_to_quantized_layers.append(name)
 
     return not_to_quantized_layers
-
