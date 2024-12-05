@@ -975,7 +975,7 @@ TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 #   1) Set `PT_HPU_LAZY_MODE=1`
 
 
-def check_hpu_compile_mode():
+def _check_hpu_compile_mode():
     assert (
         os.getenv("PT_HPU_LAZY_MODE") == "0"
     ), "Please set `PT_HPU_LAZY_MODE=0` to use HPU compile mode"
@@ -995,7 +995,7 @@ def _use_hpu_compile_mode():
 
 def compile_func_on_hpu(func):
     if _use_hpu_compile_mode():
-        check_hpu_compile_mode()
+        _check_hpu_compile_mode()
         return torch.compile(func, backend="hpu_backend")
     return func
 
