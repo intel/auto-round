@@ -53,9 +53,6 @@ def run_lmms():
     lmms_eval(args)
 
 def switch():
-    # if "--lmms" in sys.argv:
-    #     sys.argv.remove("--lmms")
-    #     run_lmms()
     if "--mllm" in sys.argv:
         sys.argv.remove("--mllm")
         run_mllm()
