@@ -88,8 +88,8 @@ def pack_layer(name, model, layer_config, backend, pbar):
             in_features = layer.weight.shape[0]
             out_features = layer.weight.shape[1]
 
-        ##bias = layer.bias is not None and torch.any(layer.bias)
-        bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
+        bias = layer.bias is not None
+        ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
         new_layer = QuantLinear(  ##pylint: disable=E1123
             bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
         )

@@ -418,13 +418,11 @@ def tune(args):
     inplace = False if len(format_list) > 1 else True
     for format_ in format_list:
         eval_folder = f'{export_dir}-{format_}'
-        if processor is not None and not hasattr(processor, "chat_template"):
-            processor.chat_template = None
         safe_serialization = True
         if "phi3_v" in model_type:
             safe_serialization = False
         autoround.save_quantized(
-            eval_folder, format=format_, inplace=inplace, processor=processor, safe_serialization=safe_serialization)
+            eval_folder, format=format_, inplace=inplace, safe_serialization=safe_serialization)
 
 
 def eval(args):
