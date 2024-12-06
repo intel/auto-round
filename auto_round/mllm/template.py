@@ -22,7 +22,6 @@ from ..utils import logger
 from .processor import BasicProcessor, PROCESSORS
 
 TEMPLATES: Dict[str, "Template"] = {}
-SUPPORT_TEXT_ONLY_DATALIST = []
 
 
 def fill_content(target, **kwargs):
@@ -114,8 +113,6 @@ def _register_template(
         default_dataset=default_dataset,
         processor=processor()
     )
-    if default_dataset in ["NeelNanda/pile-10k"] and model_type != "default":
-        SUPPORT_TEXT_ONLY_DATALIST.append(model_type)
     return TEMPLATES[model_type]
 
 

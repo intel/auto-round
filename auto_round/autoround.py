@@ -1263,6 +1263,9 @@ class AutoRound(object):
             self.model.save_pretrained(output_dir)
             if self.tokenizer is not None:
                 self.tokenizer.save_pretrained(output_dir)
+            processor = kwargs.get("processor", None)
+            if processor is not None:
+                processor.save_pretrained(output_dir)
             return
 
         from auto_round.export import EXPORT_FORMAT

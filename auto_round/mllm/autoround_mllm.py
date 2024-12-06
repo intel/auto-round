@@ -26,15 +26,13 @@ from ..utils import (
     extract_block_names_to_str
 )
 from ..autoround import AutoRound
-from .template import get_template, Template, SUPPORT_TEXT_ONLY_DATALIST
+from .template import get_template, Template
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
 
 
-def _only_text_test(model, tokenizer, device, model_type):
+def _only_text_test(model, tokenizer, device):
     """Test if the model whether can use text-only datasets."""
-    if model_type in SUPPORT_TEXT_ONLY_DATALIST:
-        return True
     try:
         text = ["only text", "test"]
         tokenizer.padding_side = 'left'
@@ -167,7 +165,7 @@ class AutoRoundMLLM(AutoRound):
         if isinstance(dataset, str):
             if quant_nontext_module or \
                 (dataset in CALIB_DATASETS.keys() and not \
-                 _only_text_test(model, tokenizer, device, self.template.model_type)):
+                 _only_text_test(model, tokenizer, device)):
                 if quant_nontext_module:
                     logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
                                 "switching to liuhaotian/llava_conv_58k")
@@ -389,92 +387,6 @@ class AutoRoundMLLM(AutoRound):
         Returns:
             object: The compressed model object.
         """
-        if self.low_cpu_mem_usage:
-            self.model = self.model.to('cpu')
-
-        if not self.quantized:
-            logger.warning("please run autoround.quantize first")
-            return
-        if format == "fake" or format == "qdq" or self.act_bits <= 8:  ##TODO fix act quantizaiton later
-            self.model = self.model.to("cpu")
-            self.model.save_pretrained(output_dir)
-            if self.tokenizer is not None:
-                self.tokenizer.save_pretrained(output_dir)
-            if self.processor is not None:
-                self.processor.save_pretrained(output_dir)
-            return
-
-        from auto_round.export import EXPORT_FORMAT
-        backend = format
-        format = format.split(":")[0]
-        if format not in EXPORT_FORMAT:
-            logger.error(f"export format only supports {EXPORT_FORMAT.keys()}")
-            raise ValueError(f"export format only supports {EXPORT_FORMAT.keys()}, but got {format}")
-        save_quantized_as_format = EXPORT_FORMAT.get(format)
-        if "gptq" in format and not self.sym:
-            logger.warning(
-                "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
-                " particularly for 2-bit quantization and smaller models."
-                " We recommend exporting to either the AutoAWQ format (4 bits) or "
-                "the AutoRound format (2 bits) to enhance performance."
-            )
-        if "awq" in format and not self.bits == 4:
-            raise ValueError("The AWQ format only supports W4 quantization ")
-
-        serialization_keys = [
-            "bits",
-            "group_size",
-            "sym",
-            "data_type",
-            "enable_quanted_input",
-            "enable_minmax_tuning",
-            "data_type",
-            "seqlen",
-            "batch_size",
-            "scale_dtype",
-            "lr",
-            "minmax_lr",
-            "gradient_accumulate_steps",
-            "iters",
-            "amp",
-            "nsamples",
-            "low_gpu_mem_usage",
-            "to_quant_block_names",
-            "enable_norm_bias_tuning"
-        ]
-        if isinstance(self.dataset, str):
-            serialization_keys.append("dataset")
-        serialization_dict = {}
-        for key in serialization_keys:
-            serialization_dict[key] = getattr(self, key)
-        from ..version import __version__
-
-        serialization_dict["autoround_version"] = __version__
-        if "scale_dtype" in serialization_dict.keys():
-            serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
-
-        compressed_model = save_quantized_as_format(  ##TODO refine the code
-            output_dir,
-            model=self.model,
-            layer_config=self.layer_config,
-            inplace=inplace,
-            bits=self.bits,
-            group_size=self.group_size,
-            sym=self.sym,
-            iters=self.iters,
-            lr=self.lr,
-            minmax_lr=self.minmax_lr,
-            enable_minmax_tuning=self.enable_minmax_tuning,
-            enable_quanted_input=self.enable_quanted_input,
-            scale_dtype=self.scale_dtype,
-            tokenizer=self.tokenizer,
-            processor=self.processor,
-            supported_types=self.supported_types,
-            data_type=self.data_type,
-            serialization_dict=serialization_dict,
-            backend=backend,
-            to_quant_block_names=self.to_quant_block_names,
-            quant_block_list=self.quant_block_list,
-            **kwargs
-        )
+        compressed_model = super().save_quantized(
+            output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs)
         return compressed_model
