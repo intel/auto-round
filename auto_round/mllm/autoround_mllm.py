@@ -19,6 +19,7 @@ import torch
 
 from ..utils import (
     logger,
+    detect_device,
     to_device,
     to_dtype,
     get_multimodal_block_names,
@@ -34,6 +35,7 @@ from ..low_cpu_mem.utils import get_layers_before_block
 def _only_text_test(model, tokenizer, device):
     """Test if the model whether can use text-only datasets."""
     try:
+        device = detect_device(device)
         text = ["only text", "test"]
         tokenizer.padding_side = 'left'
         if tokenizer.pad_token is None:
