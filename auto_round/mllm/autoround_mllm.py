@@ -151,8 +151,6 @@ class AutoRoundMLLM(AutoRound):
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
         self.processor = processor
-        if not hasattr(self.processor, "chat_template"):
-            self.processor.chat_template = None
         self.image_processor = image_processor
         self.template = template if template is not None else model.config.model_type
         if not isinstance(dataset, torch.utils.data.DataLoader):
@@ -387,6 +385,8 @@ class AutoRoundMLLM(AutoRound):
         Returns:
             object: The compressed model object.
         """
+        if not hasattr(self.processor, "chat_template"):
+            self.processor.chat_template = None
         compressed_model = super().save_quantized(
             output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs)
         return compressed_model
