@@ -118,24 +118,25 @@ def _register_template(
 
 def load_template(path: str):
     """Load template information from a json file."""
-    data = json.load(open(path, "r"))
-    if "model_type" not in data:
-        data["model_type"] = "user_define"
-    if "replace_tokens" in data and data["replace_tokens"] is not None:
-        assert len(data["replace_tokens"]) % 2 == 0, \
-            "the format of replace_tokens should be [old_tag1, replace_tag1, old_tag2, replace_tag2]"
-        temp = []
-        for i in range(0, len(data["replace_tokens"]), 2):
-            temp.append((data["replace_tokens"][i], data["replace_tokens"][i + 1]))
-        data["replace_tokens"] = temp
-    if "processor" in data:
-        assert data["processor"] in PROCESSORS.keys(), \
-            "{} is not supported, current support: {}".format(data["processor"], ",".join(PROCESSORS.keys()))
-        data["processor"] = PROCESSORS[data["processor"]]
-    template = _register_template(
-        **data
-    )
-    return template
+    with open(path, "r") as file:
+        data = json.load(file)
+        if "model_type" not in data:
+            data["model_type"] = "user_define"
+        if "replace_tokens" in data and data["replace_tokens"] is not None:
+            assert len(data["replace_tokens"]) % 2 == 0, \
+                "the format of replace_tokens should be [old_tag1, replace_tag1, old_tag2, replace_tag2]"
+            temp = []
+            for i in range(0, len(data["replace_tokens"]), 2):
+                temp.append((data["replace_tokens"][i], data["replace_tokens"][i + 1]))
+            data["replace_tokens"] = temp
+        if "processor" in data:
+            assert data["processor"] in PROCESSORS.keys(), \
+                "{} is not supported, current support: {}".format(data["processor"], ",".join(PROCESSORS.keys()))
+            data["processor"] = PROCESSORS[data["processor"]]
+        template = _register_template(
+            **data
+        )
+        return template
 
 
 def _load_preset_template():
