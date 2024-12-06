@@ -385,7 +385,7 @@ class AutoRoundMLLM(AutoRound):
         Returns:
             object: The compressed model object.
         """
-        if not hasattr(self.processor, "chat_template"):
+        if self.processor is not None and not hasattr(self.processor, "chat_template"):
             self.processor.chat_template = None
         compressed_model = super().save_quantized(
             output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs)
