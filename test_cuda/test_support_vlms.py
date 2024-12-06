@@ -217,7 +217,6 @@ class TestSupportVLMS(unittest.TestCase):
         DEVICE = f"cuda:{self.device}"
         from transformers import AutoModelForCausalLM, AutoTokenizer
         quantized_model_path = os.path.join(self.save_dir, "cogvlm2-llama3-chat-19B-w4g128-auto_round")
-        res = os.system(f"cp /models/Phi-3.5-vision-instruct/*.py {quantized_model_path}")
         tokenizer = AutoTokenizer.from_pretrained(
             quantized_model_path,
             trust_remote_code=True
