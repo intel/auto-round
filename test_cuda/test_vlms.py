@@ -8,6 +8,7 @@ import os
 sys.path.insert(0, "..")
 
 from PIL import Image
+from auto_round import AutoRoundConfig
 import requests
 
 
