@@ -26,19 +26,21 @@ from ..utils import (
     extract_block_names_to_str
 )
 from ..autoround import AutoRound
-from .template import get_template, Template
+from .template import get_template, Template, SUPPORT_TEXT_ONLY_DATALIST
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
 
 
-def _only_text_test(model, tokenizer, device):
+def _only_text_test(model, tokenizer, device, model_type):
     """Test if the model whether can use text-only datasets."""
+    if model_type in SUPPORT_TEXT_ONLY_DATALIST:
+        return True
     try:
         text = ["only text", "test"]
         tokenizer.padding_side = 'left'
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        if device != model.device.type:
+        if device.split(':')[0] != model.device.type:
             model = model.to(device)
         inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(model.device)
         model(**inputs)
@@ -164,7 +166,8 @@ class AutoRoundMLLM(AutoRound):
         from .mllm_dataset import MLLM_DATASET
         if isinstance(dataset, str):
             if quant_nontext_module or \
-                (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer, device)):
+                (dataset in CALIB_DATASETS.keys() and not \
+                 _only_text_test(model, tokenizer, device, self.template.model_type)):
                 if quant_nontext_module:
                     logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
                                 "switching to liuhaotian/llava_conv_58k")
