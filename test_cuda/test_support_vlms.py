@@ -15,7 +15,7 @@ class TestSupportVLMS(unittest.TestCase):
     def setUpClass(self):
         self.save_dir = os.path.join(os.path.dirname(__file__), "./ut_saved")
         self.python_path = sys.executable
-        self.device = 6
+        self.device = 0
 
     @classmethod
     def tearDownClass(self):
@@ -84,7 +84,7 @@ class TestSupportVLMS(unittest.TestCase):
         self.assertFalse(res > 0 or res == -1, msg="Phi-3.5 tuning fail")
 
         ## test infer
-        from transformers import AutoModelForCausalLM, AutoTokenizer, AutoProcessor
+        from transformers import AutoModelForCausalLM, AutoProcessor
         quantized_model_path = os.path.join(self.save_dir, "Phi-3.5-vision-instruct-w4g128-auto_round")
         res = os.system(f"cp /models/Phi-3.5-vision-instruct/*.py {quantized_model_path}")
         model = AutoModelForCausalLM.from_pretrained(
@@ -142,7 +142,7 @@ class TestSupportVLMS(unittest.TestCase):
     
         ## test infer
         from llava.model.builder import load_pretrained_model
-        from llava.train.train import preprocess, preprocess_multimodal, DataCollatorForSupervisedDataset
+        from llava.train.train import preprocess, preprocess_multimodal
         class DataArgs:
             is_multimodal = True
             mm_use_im_start_end = False
