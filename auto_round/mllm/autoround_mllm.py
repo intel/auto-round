@@ -38,7 +38,7 @@ def _only_text_test(model, tokenizer, device):
         tokenizer.padding_side = 'left'
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        if device != model.device.type:
+        if device.split(':')[0] != model.device.type:
             model = model.to(device)
         inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(model.device)
         model(**inputs)
@@ -150,19 +150,20 @@ class AutoRoundMLLM(AutoRound):
         self.to_quant_block_names = to_quant_block_names
         self.extra_data_dir = extra_data_dir
         self.quant_nontext_module = quant_nontext_module
+        self.processor = processor
         self.image_processor = image_processor
         self.template = template if template is not None else model.config.model_type
         if not isinstance(dataset, torch.utils.data.DataLoader):
             self.template = get_template(
                 self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
-        
-        dataset = self.template.default_dataset if dataset is None else dataset
+            dataset = self.template.default_dataset if dataset is None else dataset
         
         from ..calib_dataset import CALIB_DATASETS
         from .mllm_dataset import MLLM_DATASET
         if isinstance(dataset, str):
             if quant_nontext_module or \
-                (dataset in CALIB_DATASETS.keys() and not _only_text_test(model, tokenizer, device)):
+                (dataset in CALIB_DATASETS.keys() and not \
+                 _only_text_test(model, tokenizer, device)):
                 if quant_nontext_module:
                     logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
                                 "switching to liuhaotian/llava_conv_58k")
@@ -372,4 +373,20 @@ class AutoRoundMLLM(AutoRound):
                 m = m.to("meta")
         # torch.cuda.empty_cache()
 
+    def save_quantized(self, output_dir=None, format="auto_round", inplace=True, **kwargs):
+        """Save the quantized model to the specified output directory in the specified format.
 
+        Args:
+            output_dir (str, optional): The directory to save the quantized model. Defaults to None.
+            format (str, optional): The format in which to save the model. Defaults to "auto_round".
+            inplace (bool, optional): Whether to modify the model in place. Defaults to True.
+            **kwargs: Additional keyword arguments specific to the export format.
+
+        Returns:
+            object: The compressed model object.
+        """
+        if self.processor is not None and not hasattr(self.processor, "chat_template"):
+            self.processor.chat_template = None
+        compressed_model = super().save_quantized(
+            output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs)
+        return compressed_model
