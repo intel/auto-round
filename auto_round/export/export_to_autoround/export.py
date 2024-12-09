@@ -97,9 +97,11 @@ def pack_layer(name, model, layer_config, backend, pbar):
         sym = config["sym"]
 
         layer = get_module(model, name)
+
         device = layer.weight.device
 
-        QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
+        ##QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
+        from auto_round.export.export_to_autoround.qlinear_trition_gptq import QuantLinear
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features
@@ -121,6 +123,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
             qlayer = new_layer
             scale = layer_config[name]["scale"]
             zero = layer_config[name]["zp"]
+            act_scale = layer_config[name]["act_scale"]
             # so far can only pack layer on CPU
             qlayer.to("cpu")
             ##force to float32 to be compatible with torch 2.0
@@ -128,9 +131,9 @@ def pack_layer(name, model, layer_config, backend, pbar):
             sig = inspect.signature(qlayer.pack)
             param_count = len(sig.parameters)
             if param_count == 2:
-                qlayer.pack(layer, scale)
+                qlayer.pack(layer, scale, act_scale)
             else:
-                qlayer.pack(layer, scale, zero, None)
+                qlayer.pack(layer, scale, zero, act_scale, None)
             qlayer.to(device)
         else:
             from ..export_to_awq.utils import clear_memory
@@ -238,7 +241,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         model.config.quantization_config = quantization_config
     if output_dir is None:
         return model
-    
+
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
@@ -278,6 +281,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-
-

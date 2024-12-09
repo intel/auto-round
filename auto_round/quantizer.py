@@ -72,7 +72,7 @@ class WrapperLinear(torch.nn.Module):
         self.device = device
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
-        self.enable_act_quant = self.orig_layer.act_bits <= 8
+        self.enable_act_quant = self.orig_layer.act_bits <= 8 or "fp8" in self.orig_layer.act_data_type or "int8" in self.orig_layer.act_data_type
         self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
         self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
@@ -245,10 +245,13 @@ class WrapperLinear(torch.nn.Module):
         ##unwrapper act
         if self.enable_act_quant:
             act_max_scale = best_params.get('act_max_scale', torch.tensor(1.0)).to(self.device)
+            act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
+            _, act_scale, _ = self._qdq_act(torch.zeros((1)).to(self.device), act_max_scale=self.act_max_scale, act_max=act_max)
             self.orig_layer.q_scale_thresh = self.q_scale_thresh
             self.orig_layer.data_type = self.data_type
             if not self.orig_layer.act_dynamic:
-                self.orig_layer.act_max = self.orig_layer.act_max * act_max_scale.item()
+                self.orig_layer.act_max = torch.tensor(self.orig_layer.act_max * act_max_scale.item()).to("cpu")
+            self.orig_layer.act_scale = act_scale.to("cpu")
             self.orig_layer.act_data_type = self.act_data_type
             self.orig_layer.act_quant_func = self.act_quant_func
             wrapper_layer = WrapperWALayer(self.orig_layer)

@@ -1258,7 +1258,7 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
-        if format == "fake" or format == "qdq" or self.act_bits <= 8:  ##TODO fix act quantizaiton later
+        if format == "fake" or format == "qdq":  ##TODO fix act quantizaiton later
             self.model = self.model.to("cpu")
             self.model.save_pretrained(output_dir)
             if self.tokenizer is not None:
