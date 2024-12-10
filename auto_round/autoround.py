@@ -373,6 +373,8 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if n not in self.layer_config.keys():
                 continue
+            if hasattr(m,"orig_layer"):
+                m = m.orig_layer
             if hasattr(m, "scale"):
                 self.layer_config[n]["scale"] = m.scale
                 self.layer_config[n]["zp"] = m.zp

@@ -287,4 +287,4 @@ def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
                                                                           q_scale_thresh=q_scale_thresh)
     qdq_tensor = qdq_int4_tensor * scale_bf16_to_fp8
 
-    return qdq_tensor, scale_fp8_to_int4 * scale_bf16_to_fp8, None,
+    return qdq_tensor, scale_fp8_to_int4 * scale_bf16_to_fp8, zp_fp8_to_int4
