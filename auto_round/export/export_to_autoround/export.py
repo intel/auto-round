@@ -102,7 +102,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
         device = layer.weight.device
 
         ##QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
-        from auto_round.export.export_to_autoround.qlinear_trition_gptq import QuantLinear
+        from auto_round.export.export_to_autoround.qlinear_triton_gptq import QuantLinear
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features

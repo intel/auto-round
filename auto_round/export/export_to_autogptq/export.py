@@ -74,9 +74,12 @@ def pack_layer(name, model, layer_config, backend, pbar):
         sym = config["sym"]
 
         layer = get_module(model, name)
+        if hasattr(layer,"orig_layer"):
+            layer = layer.orig_layer
         device = layer.weight.device
 
-        QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
+        ##QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
+        from auto_round.export.export_to_autoround.qlinear_triton_gptq import QuantLinear
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features
@@ -106,9 +109,9 @@ def pack_layer(name, model, layer_config, backend, pbar):
         sig = inspect.signature(qlayer.pack)
         param_count = len(sig.parameters)
         if param_count == 2:
-            qlayer.pack(layer, scale)
+            qlayer.pack(layer, scale,layer.act_scale)
         else:
-            qlayer.pack(layer, scale, zero, None)
+            qlayer.pack(layer, scale, zero, layer.act_scale,None)
         qlayer.to(device)
         pbar.update(1)
 
@@ -118,6 +121,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
     model = kwargs["model"]
+    model = model.to(torch.float16)
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     to_quant_block_names = kwargs["to_quant_block_names"]
