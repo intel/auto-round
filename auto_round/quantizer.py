@@ -94,7 +94,8 @@ class WrapperLinear(torch.nn.Module):
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
         self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
         self._init_params("value", p_dtype, weight_reshape.shape, 0, True)
-
+        self.weight = weight_reshape
+        self.bias = orig_layer.bias
         # Min-max scale initialization
         shape = get_scale_shape(orig_weight, orig_layer.group_size)
         self._init_params("min_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
@@ -304,7 +305,8 @@ class WrapperLinear(torch.nn.Module):
         bias = self.orig_layer.bias
         if bias is not None and bias.device.type == 'meta':
             bias = self.orig_layer.get_bias().to(self.device)
-
+        self.weight.data = weight_q
+        self.bias = bias
         if self.enable_norm_bias_tuning:
             bias, _, _ = self._qdq_bias(bias, self.bias_v)
 
@@ -520,3 +522,4 @@ def unwrapper_block(block, best_params):
                 best_param = None
             orig_layer = m.unwrapper(best_param)
             set_module(block, n, orig_layer)
+
