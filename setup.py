@@ -25,6 +25,7 @@ BUILD_HPU_ONLY = os.environ.get("BUILD_HPU_ONLY", "0") == "1"
 
 def is_cuda_available():
     try:
+        os.system("pip install torch")
         import torch
 
         return torch.cuda.is_available()
@@ -112,10 +113,6 @@ def detect_local_sm_architectures():
 
 
 def detect_hardware():
-    try:
-        os.system("pip install torch")
-    except:
-        print("Failed to install torch")
     if is_hpu_available():
         return "requirements-hpu.txt"
     elif is_cuda_available():
