@@ -121,7 +121,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     to_quant_block_names = kwargs["to_quant_block_names"]
-    quant_block_list = kwargs.get("quant_block_list", None)
+    quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
@@ -131,19 +131,14 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         processor.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
     quantization_config = kwargs["serialization_dict"]
-    if bool(quant_block_list):
-        all_blocks = quant_block_list
-        flattened_list = [item for sublist in all_blocks for item in sublist]
-        common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
-        if common_prefix not in BLOCK_PATTERNS:
-            logger.error(f"auto-gptq format may not support loading this quantized model")
-            quantization_config['block_name_to_quantize'] = common_prefix
-    else:
-        all_blocks = get_block_names(model)
-        flattened_list = [item for sublist in all_blocks for item in sublist]
-        common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
-        if common_prefix not in BLOCK_PATTERNS:
-            quantization_config['block_name_to_quantize'] = common_prefix
+    all_blocks = quant_block_list
+    flattened_list = [item for sublist in all_blocks for item in sublist]
+    common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
+    if common_prefix not in BLOCK_PATTERNS:
+        logger.error(f"auto-gptq format may not support loading this quantized model")
+        quantization_config['block_name_to_quantize'] = common_prefix
+        quantization_config.pop("to_quant_block_names", None)
+        
 
     all_to_quantized = True
     modules_in_block_to_quantize = []
@@ -220,5 +215,6 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
 
 
