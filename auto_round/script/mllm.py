@@ -284,7 +284,7 @@ def tune(args):
     processor, image_processor = None, None
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     if "llava" in model_name and config.architectures[0] != "LlavaForConditionalGeneration":
-        from llava.model.builder import load_pretrained_model
+        from llava.model.builder import load_pretrained_model   # pylint: disable=E0401
         tokenizer, model, image_processor, _ = load_pretrained_model(
             model_name, model_base=None, model_name=model_name,
             torch_dtype=torch_dtype)
