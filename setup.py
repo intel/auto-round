@@ -232,7 +232,7 @@ PKG_INSTALL_CFG = {
             "auto_round_extension.*",
         ],
     ),
-    "install_requires": fetch_requirements("requirements.txt"),
+    "install_requires": fetch_requirements(detect_hardware()),
 }
 
 if __name__ == "__main__":
