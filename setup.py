@@ -111,6 +111,19 @@ def detect_local_sm_architectures():
     return arch_list
 
 
+def detect_hardware():
+    try:
+        os.system("pip install torch")
+    except:
+        print("Failed to install torch")
+    if is_hpu_available():
+        return "requirements-hpu.txt"
+    elif is_cuda_available():
+        return "requirements.txt"
+    else:
+        return "requirements-cpu.txt"
+
+
 UNSUPPORTED_COMPUTE_CAPABILITIES = ['3.5', '3.7', '5.0', '5.2', '5.3']
 
 if BUILD_CUDA_EXT:
@@ -220,10 +233,6 @@ PKG_INSTALL_CFG = {
         ],
     ),
     "install_requires": fetch_requirements("requirements.txt"),
-    "extras_require": {
-        "hpu": fetch_requirements("requirements-hpu.txt"),
-        "cpu": fetch_requirements("requirements-cpu.txt"),
-    },
 }
 
 if __name__ == "__main__":
@@ -248,7 +257,6 @@ if __name__ == "__main__":
         url="https://github.com/intel/auto-round",
         packages=include_packages,
         include_dirs=include_dirs,
-        ##include_package_data=False,
         install_requires=install_requires,
         extras_require=extras_require,
         python_requires=">=3.7.0",
