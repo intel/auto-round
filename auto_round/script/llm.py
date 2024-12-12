@@ -485,6 +485,9 @@ def eval(args):
     devices = args.device.replace(" ", "").split(',')
     parallelism = False
 
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        args.device = "auto"
+
     if all(s.isdigit() for s in devices):
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
