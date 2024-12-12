@@ -16,8 +16,7 @@ steps,
 which competes impressively against recent methods without introducing any additional inference overhead and keeping low
 tuning cost. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
-details and visit [low_bit_open_llm_leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for
-more accuracy data and recipes across various models.
+details and quantized huggingface space models in [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup) and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 <div align="center">
 
@@ -396,5 +395,6 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
