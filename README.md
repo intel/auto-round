@@ -16,7 +16,7 @@ steps,
 which competes impressively against recent methods without introducing any additional inference overhead and keeping low
 tuning cost. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
-details and quantized models in several huggingface space, e.g. [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup) and [fbaldassarri](https://huggingface.co/fbaldassarri).
+details and quantized models in several Hugging Face Spaces, e.g. [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup) and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 <div align="center">
 
