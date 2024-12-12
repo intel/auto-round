@@ -276,14 +276,20 @@ def tune(args):
     import re
     import torch
     import transformers
-
+    from loguru import logger
+    def pacth_optimum_habana():
+        from optimum.habana.transformers.modeling_utils import adapt_transformers_to_gaudi
+        adapt_transformers_to_gaudi()
+        logger.warning("Patched transformers to work with Habana Gaudi")
+        
+    # pacth_optimum_habana()
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     torch.use_deterministic_algorithms(True, warn_only=True)
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
-    from lm_eval.utils import make_table  # pylint: disable=E0401
+     # pylint: disable=E0401
 
     from auto_round import AutoRoundConfig
-    from auto_round.eval.evaluation import simple_evaluate
+
     from auto_round.utils import detect_device, get_library_version, detect_device_count
     from auto_round.utils import logger
 
@@ -330,6 +336,7 @@ def tune(args):
     else:
         model = model_cls.from_pretrained(
             model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+            attn_implementation="eager",
             trust_remote_code=not args.disable_trust_remote_code, device_map="auto" if use_auto_mapping else None
         )
 
@@ -447,7 +454,8 @@ def tune(args):
         save_format_ = save_format_.replace("_", "-")
         eval_folder = f'{export_dir}-{save_format_}'
         autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
-
+    from lm_eval.utils import make_table 
+    from auto_round.eval.evaluation import simple_evaluate
     lm_eval_version = get_library_version("lm-eval")
 
     if isinstance(tasks, str):
@@ -458,25 +466,25 @@ def tune(args):
 
         model_args = f"pretrained={eval_folder}"
         model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
-        if args.act_bits <= 8:
-            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                from accelerate.big_modeling import dispatch_model
-
-                dispatch_model(model, model.hf_device_map)
-                user_model = model
-            else:
-                user_model = model.to(device_str)
-
-            if args.eval_bs is None or args.eval_bs == "auto":
-                args.eval_bs = 16
-            from auto_round.eval.evaluation import simple_evaluate_user_model
-            res = simple_evaluate_user_model(user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs)
-        else:
-            if use_auto_mapping:
-                model_args += ",parallelize=True"
-            res = simple_evaluate(model="hf", model_args=model_args,
-                                  tasks=tasks,
-                                  batch_size=args.eval_bs)
+        # if args.act_bits <= 8:
+        #     if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+        #         from accelerate.big_modeling import dispatch_model
+        #
+        #         dispatch_model(model, model.hf_device_map)
+        #         user_model = model
+        #     else:
+        #         user_model = model.to(device_str)
+        #
+        #     if args.eval_bs is None or args.eval_bs == "auto":
+        #         args.eval_bs = 16
+        #     from auto_round.eval.evaluation import simple_evaluate_user_model
+        #     res = simple_evaluate_user_model(user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs)
+        # else:
+        if use_auto_mapping:
+            model_args += ",parallelize=True"
+        res = simple_evaluate(model="hf", model_args=model_args,
+                              tasks=tasks,
+                              batch_size=args.eval_bs)
         print(make_table(res))
 
 

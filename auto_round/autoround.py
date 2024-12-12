@@ -373,6 +373,8 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if n not in self.layer_config.keys():
                 continue
+            if hasattr(m,"orig_layer"):
+                m = m.orig_layer
             if hasattr(m, "scale"):
                 self.layer_config[n]["scale"] = m.scale
                 self.layer_config[n]["zp"] = m.zp
@@ -1073,6 +1075,7 @@ class AutoRound(object):
         total_loss = 0
 
         for i in range(self.iters):
+            logger.warning(f"iter {i}")
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
@@ -1258,7 +1261,7 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
-        if format == "fake" or format == "qdq" or self.act_bits <= 8:  ##TODO fix act quantizaiton later
+        if format == "fake" or format == "qdq":  ##TODO fix act quantizaiton later
             self.model = self.model.to("cpu")
             self.model.save_pretrained(output_dir)
             if self.tokenizer is not None:
