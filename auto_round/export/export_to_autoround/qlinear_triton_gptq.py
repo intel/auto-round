@@ -41,45 +41,46 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round_extension.cuda.triton_utils.mixin import TritonModuleMixin
+# from auto_round_extension.cuda.triton_utils.mixin import TritonModuleMixin
 
 logger = getLogger(__name__)
 
-try:
-    from auto_gptq.nn_modules.triton_utils.kernels import (
-        QuantLinearFunction,
-        QuantLinearInferenceOnlyFunction,
-        quant_matmul_248,
-        quant_matmul_inference_only_248,
-        transpose_quant_matmul_248,
-    )
-except ImportError as e:
-    triton_import_exception = e
+# try:
+#     from auto_gptq.nn_modules.triton_utils.kernels import (
+#         QuantLinearFunction,
+#         QuantLinearInferenceOnlyFunction,
+#         quant_matmul_248,
+#         quant_matmul_inference_only_248,
+#         transpose_quant_matmul_248,
+#     )
+# except ImportError as e:
+#     triton_import_exception = e
 
 
-    def error_raiser_triton(*args, **kwargs):
-        raise ValueError(
-            f'Trying to use the triton backend, but could not import triton '
-            f'dependencies with the following error: {triton_import_exception}'
-        )
+#     def error_raiser_triton(*args, **kwargs):
+#         raise ValueError(
+#             f'Trying to use the triton backend, but could not import triton '
+#             f'dependencies with the following error: {triton_import_exception}'
+#         )
 
 
-    class FakeTriton:
-        def __getattr__(self, name):
-            raise ImportError(
-                f"Trying to use the triton backend, but could not import triton "
-                f"dependencies with the following error: {triton_import_exception}"
-            )
+#     class FakeTriton:
+#         def __getattr__(self, name):
+#             raise ImportError(
+#                 f"Trying to use the triton backend, but could not import triton "
+#                 f"dependencies with the following error: {triton_import_exception}"
+#             )
 
 
-    quant_matmul_248 = error_raiser_triton
-    transpose_quant_matmul_248 = error_raiser_triton
-    quant_matmul_inference_only_248 = error_raiser_triton
-    QuantLinearFunction = FakeTriton
-    QuantLinearInferenceOnlyFunction = FakeTriton
+#     quant_matmul_248 = error_raiser_triton
+#     transpose_quant_matmul_248 = error_raiser_triton
+#     quant_matmul_inference_only_248 = error_raiser_triton
+#     QuantLinearFunction = FakeTriton
+#     QuantLinearInferenceOnlyFunction = FakeTriton
 
 
-class QuantLinear(nn.Module, TritonModuleMixin):
+# class QuantLinear(nn.Module, TritonModuleMixin):
+class QuantLinear(nn.Module):
     QUANT_TYPE = "triton"
 
     def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs):
@@ -112,14 +113,14 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             "scales",
             torch.zeros(
                 (math.ceil(infeatures / self.group_size), outfeatures),
-                dtype=torch.float16,
+                dtype=torch.bfloat16,
             ),
         )
         self.register_buffer(
             "act_scales",
             torch.zeros(
                 (1),
-                dtype=torch.float32,
+                dtype=torch.bfloat16,
             ),
         )
 

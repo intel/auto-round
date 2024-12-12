@@ -121,7 +121,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
     model = kwargs["model"]
-    model = model.to(torch.float16)
+    model = model.to(torch.bfloat16)
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     to_quant_block_names = kwargs["to_quant_block_names"]
@@ -197,7 +197,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     return model
 
 
-def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
+def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "50GB", safe_serialization: bool = True):
     """Save model state dict and configs.
 
     Args:
