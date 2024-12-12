@@ -45,6 +45,7 @@ import transformers
 
 logger = getLogger(__name__)
 
+
 # try:
 #     from auto_gptq.nn_modules.triton_utils.kernels import (
 #         QuantLinearFunction,
@@ -117,6 +118,13 @@ class QuantLinear(nn.Module):
             ),
         )
         self.register_buffer(
+            "w_bf16_to_fp8_scale",
+            torch.zeros(
+                (1),
+                dtype=torch.bfloat16,
+            ),
+        )
+        self.register_buffer(
             "act_scales",
             torch.zeros(
                 (1),
@@ -138,7 +146,7 @@ class QuantLinear(nn.Module):
     def post_init(self):
         pass
 
-    def pack(self, linear, scales, zeros, act_scales, g_idx=None):
+    def pack(self, linear, scales, zeros, act_scales, w_bf16_to_fp8_scale, g_idx=None):
         W = linear.weight.data.clone()
         if isinstance(linear, nn.Conv2d):
             W = W.flatten(1)
@@ -152,6 +160,7 @@ class QuantLinear(nn.Module):
         scale_zeros = zeros * scales
         self.scales = scales.clone().half()
         self.act_scales = act_scales.clone().contiguous()
+        self.w_bf16_to_fp8_scale = w_bf16_to_fp8_scale.clone().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
 

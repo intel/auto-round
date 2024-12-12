@@ -221,11 +221,12 @@ class WrapperLinear(torch.nn.Module):
         shape = qdq_weight.shape
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             shape = qdq_weight.t().shape
-        scale = scale.reshape(shape[0], -1)
+        bf16_to_int4_scale = scale[0].reshape(shape[0], -1)
         if zp is not None:
             zp = zp.reshape(shape[0], -1)
 
-        self.orig_layer.scale = scale.to("cpu")
+        self.orig_layer.scale = bf16_to_int4_scale.to("cpu")
+        self.orig_layer.w_bf16_to_fp8_scale = scale[1].to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
 
         ##unwrapper bias

@@ -74,7 +74,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
         sym = config["sym"]
 
         layer = get_module(model, name)
-        if hasattr(layer,"orig_layer"):
+        if hasattr(layer, "orig_layer"):
             layer = layer.orig_layer
         device = layer.weight.device
 
@@ -109,9 +109,9 @@ def pack_layer(name, model, layer_config, backend, pbar):
         sig = inspect.signature(qlayer.pack)
         param_count = len(sig.parameters)
         if param_count == 2:
-            qlayer.pack(layer, scale,layer.act_scale)
+            qlayer.pack(layer, scale, layer.act_scale, layer.w_bf16_to_fp8_scale)
         else:
-            qlayer.pack(layer, scale, zero, layer.act_scale,None)
+            qlayer.pack(layer, scale, zero, layer.act_scale, layer.w_bf16_to_fp8_scale, None)
         qlayer.to(device)
         pbar.update(1)
 
@@ -224,5 +224,3 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "50GB", sa
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-

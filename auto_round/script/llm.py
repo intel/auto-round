@@ -276,7 +276,7 @@ def tune(args):
     import re
     import torch
     import transformers
-    from loguru import logger
+    from auto_round.utils import logger
     def pacth_optimum_habana():
         from optimum.habana.transformers.modeling_utils import adapt_transformers_to_gaudi
         adapt_transformers_to_gaudi()
@@ -291,7 +291,6 @@ def tune(args):
     from auto_round import AutoRoundConfig
 
     from auto_round.utils import detect_device, get_library_version, detect_device_count
-    from auto_round.utils import logger
 
     model_name = args.model
     if model_name[-1] == "/":
