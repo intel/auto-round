@@ -132,15 +132,15 @@ BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                                    "auto_gptq:tritonv2"],
                                             requirements=["auto-gptq>=0.7.1", "triton<3.0,>=2.0"]
                                             )
-
-BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
-                                        packing_format="triton_zp+-1",
-                                        bits=[2, 3, 4, 8], group_size=None,
-                                        priority=1, feature_checks=[feature_multiply_checker_32],
-                                        alias=["auto_round:auto_gptq:cuda,auto_gptq:cuda, auto_round:gptq:cuda"],
-                                        convertable_format=["triton_zp+-1"],
-                                        requirements=["auto-gptq>=0.7.1"]
-                                        )
+#
+# BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
+#                                         packing_format="triton_zp+-1",
+#                                         bits=[2, 3, 4, 8], group_size=None,
+#                                         priority=1, feature_checks=[feature_multiply_checker_32],
+#                                         alias=["auto_round:auto_gptq:cuda,auto_gptq:cuda, auto_round:gptq:cuda"],
+#                                         convertable_format=["triton_zp+-1"],
+#                                         requirements=["auto-gptq>=0.7.1"]
+#                                         )
 
 BackendInfos['awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##actrally is gemm
                                        packing_format="awq",
@@ -530,7 +530,7 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
                     try:
                         require_version(requirement)
                     except ImportError:
-                        logger.error(f"pip install {requirement}")
+                        logger.error(f"pip install '{requirement}' ")
                 else:
                     str_info = requirement()[1]
                     logger.error(str_info)
