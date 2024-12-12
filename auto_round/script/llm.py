@@ -157,6 +157,26 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--disable_act_dynamic", action='store_true',
                           help="activation static quantization")
 
+class EvalArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.add_argument("--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m",
+                          help="model name or path")
+        self.add_argument("--device", "--devices", default="auto", type=str,
+                          help="the device to be used for tuning. "
+                          "Currently, device settings support CPU, GPU, and HPU."
+                          "The default is set to cuda:0,"
+                          "allowing for automatic detection and switch to HPU or CPU."
+                          "set --device 0,1,2 to use multiple cards.")
+        self.add_argument("--tasks",
+                          default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
+                                  "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
+                          help="lm-eval tasks")
+        self.add_argument("--disable_trust_remote_code", action='store_true',
+                          help="whether to disable trust_remote_code")
+        self.add_argument("--eval_bs", default=None, type=int,
+                          help="batch size in evaluation")
+        
 
 def setup_parser():
     parser = BasicArgumentParser()
@@ -226,6 +246,11 @@ def setup_fast_parser():
 
     return args
 
+
+def setup_eval_parser():
+    parser = EvalArgumentParser()
+    args = parser.parse_args()
+    return args
 
 def tune(args):
     tasks = args.tasks
@@ -484,9 +509,6 @@ def eval(args):
     import os
     devices = args.device.replace(" ", "").split(',')
     parallelism = False
-
-    if "CUDA_VISIBLE_DEVICES" in os.environ:
-        args.device = "auto"
 
     if all(s.isdigit() for s in devices):
         if "CUDA_VISIBLE_DEVICES" in os.environ:
