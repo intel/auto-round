@@ -95,7 +95,7 @@ class WrapperLinear(torch.nn.Module):
         self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
         self._init_params("value", p_dtype, weight_reshape.shape, 0, True)
         self.weight = weight_reshape
-        self.bias = orig_layer.bias
+        self.bias = self.orig_layer.get_bias()
         # Min-max scale initialization
         shape = get_scale_shape(orig_weight, orig_layer.group_size)
         self._init_params("min_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
