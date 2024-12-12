@@ -363,7 +363,14 @@ class AutoRoundQuantizer(HfQuantizer):
         if backend is None:
             raise ValueError("Backend not found, please set it to 'auto' to have a try ")
 
-        return BackendInfos[backend].device[0]
+        device = BackendInfos[backend].device[0]
+        if "cuda" in device and torch.cuda.is_available():
+            return device
+        elif "hpu" in device and is_hpu_supported():
+            return device
+        else:
+            return "cpu"
+        
 
     def convert_model(self, model: nn.Module):
         """Converts the given model to an AutoRound model by replacing its layers with quantized layers.
@@ -392,6 +399,7 @@ class AutoRoundQuantizer(HfQuantizer):
             quantization_config.target_backend = quantization_config.backend
 
         target_device = self.detect_device(quantization_config.target_backend, quantization_config.backend)
+        
         self.target_device = target_device
 
         if hasattr(quantization_config, "backend"):  # pragma: no cover
@@ -743,4 +751,5 @@ if version.parse(transformers.__version__) < version.parse("4.38.0"):
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
+
 
