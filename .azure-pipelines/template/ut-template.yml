@@ -35,14 +35,15 @@ steps:
   - ${{ if eq(parameters.imageSource, 'build') }}:
     - script: |
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && pip install -vvv --no-build-isolation . \
+          && python setup.py bdist_wheel \
+          && pip install $(ls dist/*.whl | head -n 1)[cpu] \
           && pip list"
       displayName: "Env Setup"
 
   - ${{ if eq(parameters.imageSource, 'pull') }}:
     - script: |
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && pip install -vvv --no-build-isolation . \
+          && pip install $(ls dist/*.whl | head -n 1)[hpu] \
           && pip list"
       displayName: "HPU Env Setup"
 
