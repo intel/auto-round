@@ -1075,7 +1075,7 @@ class AutoRound(object):
         total_loss = 0
 
         for i in range(self.iters):
-            # logger.warning(f"iter {i}")
+            logger.warning(f"iter {i}")
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]

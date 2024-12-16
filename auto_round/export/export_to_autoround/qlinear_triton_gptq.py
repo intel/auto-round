@@ -158,9 +158,9 @@ class QuantLinear(nn.Module):
         scales = scales.t().contiguous()
         zeros = zeros.t().contiguous()
         scale_zeros = zeros * scales
-        self.scales = scales.clone().half()
-        self.act_scales = act_scales.clone().contiguous()
-        self.w_bf16_to_fp8_scale = w_bf16_to_fp8_scale.clone().contiguous()
+        self.scales.data.copy_(scales.clone().contiguous())
+        self.act_scales.data.copy_(act_scales.squeeze().clone())
+        self.w_bf16_to_fp8_scale.data.copy_(w_bf16_to_fp8_scale.squeeze().clone())
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
 

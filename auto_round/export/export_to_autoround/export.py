@@ -191,7 +191,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         logger.info(f"AutoRound format does not support {backend}, try to pack each layer with AutoGPTQ")
         backend = backend.replace("auto_round", "auto_gptq")
 
-    model = kwargs["model"].to(torch.float16) ##TODO change
+    model = kwargs["model"].to(torch.bfloat16)
     to_quant_block_names = kwargs["to_quant_block_names"]
     quant_block_list = kwargs.get("quant_block_list", None)
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
