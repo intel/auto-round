@@ -5,7 +5,7 @@ AutoRound
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.4.2-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.4.3-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-blue)](https://github.com/intel/auto-round/blob/main/LICENSE)
 ---
 <div align="left">
@@ -47,30 +47,14 @@ details and quantized models in several Hugging Face Spaces, e.g. [OPEA](https:/
 ### Install from pypi
 
 ```bash
-# GPU
 pip install auto-round
-
-# CPU
-pip install auto-round[cpu]
-
-# HPU
-pip install auto-round[hpu]
 ```
 
 <details>
   <summary>Build from Source</summary>
 
   ```bash
-  pip install -r requirements.txt
-
-  # GPU
-  pip install -vvv --no-build-isolation -e .
-
-  # CPU
-  pip install -vvv --no-build-isolation -e .[cpu]
-
-  # HPU
-  pip install -vvv --no-build-isolation -e .[hpu]
+  pip install -vvv --no-build-isolation .
   ```
 
 </details>
