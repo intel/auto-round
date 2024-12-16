@@ -35,16 +35,14 @@ steps:
   - ${{ if eq(parameters.imageSource, 'build') }}:
     - script: |
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && python setup.py bdist_wheel \
-          && pip install $(ls dist/*.whl | head -n 1)[cpu] \
+          && pip install .[cpu] \
           && pip list"
       displayName: "Env Setup"
 
   - ${{ if eq(parameters.imageSource, 'pull') }}:
     - script: |
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && python setup.py bdist_wheel \
-          && pip install $(ls dist/*.whl | head -n 1)[hpu] \
+          && pip install .[hpu] \
           && pip list"
       displayName: "HPU Env Setup"
 
