@@ -35,6 +35,7 @@ steps:
   - ${{ if eq(parameters.imageSource, 'build') }}:
     - script: |
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
+          && pip install torch --index-url https://download.pytorch.org/whl/cpu \
           && pip install .[cpu] \
           && pip list"
       displayName: "Env Setup"
