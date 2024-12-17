@@ -15,7 +15,9 @@ RESET="echo -en \\E[0m \\n" # close color
 log_dir="/auto-round/.azure-pipelines/scripts/codeScan/scanLog"
 mkdir -p $log_dir
 
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r /auto-round/requirements.txt
+pip install -r /auto-round/requirements-cpu.txt
 
 echo "[DEBUG] list pipdeptree..."
 pip install pipdeptree
