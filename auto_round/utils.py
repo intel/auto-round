@@ -402,11 +402,16 @@ def get_multimodal_block_names(model, quant_vision=False):
     """
     block_names = []
     target_modules = []
-    vison_blocks_tuple = ("vision", "visual",)
+    vison_blocks_tuple = ("vision", "visual", "projector")
+    module_list_type = ("ModuleList", "Sequential")
+    last_module_list = None
     for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            if quant_vision or all(key not in n.lower() for key in (vison_blocks_tuple)):
-                target_modules.append((n, m))
+        # if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+        if hasattr(type(m), "__name__") and any(key in type(m).__name__ for key in module_list_type):
+            if quant_vision or all(key not in n.lower() for key in vison_blocks_tuple):
+                if last_module_list is None or last_module_list not in n:
+                    last_module_list = n
+                    target_modules.append((n, m))
     validate_modules(target_modules, quant_vision, vison_blocks_tuple)
     for i, target_m in enumerate(target_modules):
         block_names.append([])
