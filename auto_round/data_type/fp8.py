@@ -145,7 +145,7 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
 
 
 @register_dtype("fp8_to_int_sym")
-def progressive_quant_fp8_int4_bas(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5,
+def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5,
                                weight_fp8_max_scale=1.0, fp8_func=float8_e4m3fn_ste,**kwargs):
     """Two-stage quantization: quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
 
@@ -191,7 +191,7 @@ def progressive_quant_fp8_int4_bas(tensor, bits=4, group_size=-1, v=0, min_scale
                                                                           q_scale_thresh=q_scale_thresh)
     qdq_tensor = qdq_int4_tensor * scale_bf16_to_fp8
 
-    return qdq_tensor, scale_fp8_to_int4 * scale_bf16_to_fp8, None
+    return qdq_tensor, (scale_fp8_to_int4 * scale_bf16_to_fp8, scale_bf16_to_fp8), None
 
 
 
