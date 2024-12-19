@@ -111,6 +111,51 @@ class BasicProcessor:
         return ret
 
 
+@regist_processor("hf")
+class HFProcessor(BasicProcessor):
+    IMAGE_TOKEN = '<image>'
+    def __init__(self):
+        pass
+    
+    def post_init(self, model, tokenizer, processor=None, image_processor=None, **kwargs):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.processor = processor
+        if image_processor is not None:
+            self.image_processor = image_processor
+        else:
+            self.image_processor = self.default_image_processor
+
+    def get_input(
+            self,
+            text,
+            images,
+            return_tensors="pt",
+            squeeze=True,
+            max_length=None,
+            truncation=False,
+            truncation_strategy="text",
+            **kwargs):
+
+        messages = []
+        for content in text:
+            messages.append({
+                "role": content['role'],
+                "content": [
+                    {"text": content["content"].replace(self.IMAGE_TOKEN, ""), "type": "text"}
+                ]
+            })
+            if self.IMAGE_TOKEN in content['content']:
+                messages[-1]["content"].append({"text": None, "type": "image"})
+        text = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+        if images is not None:
+            images = self.image_processor(images)
+        ret = self.processor(text=text, images=images, return_tensors="pt") 
+        if squeeze:
+            ret = self.squeeze_result(ret)
+        return ret
+                
+
 @regist_processor("qwen2_vl")
 class Qwen2VLProcessor(BasicProcessor):
     @staticmethod

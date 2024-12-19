@@ -270,7 +270,8 @@ def tune(args):
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
             args.device = ",".join(map(str, range(len(devices))))
             devices = args.device.replace(" ", "").split(',')
-        use_auto_mapping = True
+        if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
+            use_auto_mapping = True
     elif args.device == "auto":
         use_auto_mapping == True
 
@@ -288,6 +289,13 @@ def tune(args):
             model_name, model_base=None, model_name=model_name,
             torch_dtype=torch_dtype)
         model_type = "llava"
+    elif "deepseek" in model_name.lower():
+        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM
+        processor = DeepseekVLV2Processor.from_pretrained(model_name)
+        tokenizer = processor.tokenizer
+        model: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
+            model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
+            device_map="auto" if use_auto_mapping else None)
     else:
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -299,6 +307,9 @@ def tune(args):
         elif "mllama" in model_type:
             from transformers import MllamaForConditionalGeneration
             cls = MllamaForConditionalGeneration
+        elif "idefics3" in model_type:
+            from transformers import  AutoModelForVision2Seq 
+            cls = AutoModelForVision2Seq
         else:
             cls = AutoModelForCausalLM
 
