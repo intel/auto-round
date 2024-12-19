@@ -322,6 +322,8 @@ class WrapperWALayer(torch.nn.Module):
         self.act_quant_func = self.orig_layer.act_quant_func
 
     def forward(self, x):
+        # FIXME: (Yi) for static quant, remove it later
+        assert hasattr(self.orig_layer, "act_max"), f"For static quant, expecting act_max in {self.orig_layer}"
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
         x, _, _ = self.orig_layer.act_quant_func(x, bits=self.orig_layer.act_bits,
                                                  group_size=self.orig_layer.group_size,

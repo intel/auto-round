@@ -14,7 +14,7 @@
 from functools import lru_cache
 
 import torch
-
+from auto_round.utils import logger
 from auto_round.config import global_config
 STANDARD_FP8E4M3FN_MAX = torch.finfo(torch.float8_e4m3fn).max
 
@@ -27,10 +27,12 @@ import torch
 def get_gaudi2_fp8_ste_func():
     from auto_round.utils import is_hpu_supported
     if is_hpu_supported():
-        return  float8_e4m3fn_hpu_ste
+        fn = float8_e4m3fn_hpu_ste
+        logger.warning("Using HPU STE for FP8")
     else:
-        return float8_e4m3fn_ste
-
+        fn = float8_e4m3fn_ste
+        logger.warning("Using CUDA/CPU STE for FP8")
+    return fn
 
 def float8_e4m3fn_ste(x: torch.Tensor):
     """Straight-Through Estimator (STE) for float8.

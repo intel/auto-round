@@ -15,9 +15,12 @@ global_config = GlobalConfig()
 global_config.FP8_INPUT_BACKOFF = float(os.environ.get("AR_FP8_INPUT_BACKOFF", 1.0))
 global_config.FP8_WEIGHT_BACKOFF = float(os.environ.get("AR_FP8_WEIGHT_BACKOFF", 1.0))
 
-from loguru import logger
 
-logger.info(f"Global config: {global_config}")
+# AR_FP8_INPUT_BACKOFF=0.5 AR_FP8_WEIGHT_BACKOFF=1
+import logging
+logger = logging.getLogger(__name__)
+
+logger.warning(f"Global config: {global_config}")
 
 inc_default_config = GlobalConfig(FP8_INPUT_BACKOFF=0.25, FP8_WEIGHT_BACKOFF=0.5)
 config4_in_result_table = inc_default_config
