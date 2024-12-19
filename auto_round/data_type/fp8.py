@@ -142,25 +142,27 @@ def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
             - Placeholder for zp (None).
     """
 
-    info = torch.finfo(torch.float8_e4m3fn)
-    tensor_max = torch.max(torch.abs(tensor)).to(torch.float32) * weight_fp8_max_scale  ## better train a ratio
-    scale = tensor_max.to(torch.float32) / info.max
-    min_scaling_factor = 1.0 / (info.max * 512.0)  ##copy from vllm
-    scale_bf16_to_fp8 = torch.clip(scale, min=min_scaling_factor)
-    fp8_res = tensor / scale_bf16_to_fp8
-    fp8_res = torch.clip(fp8_res, info.min, info.max)
-    fp8_res = float8_e4m3fn_ste(fp8_res)
 
-    ##convert to bf16
-    fp8_res_using_16bit = fp8_res.to(tensor.dtype)
     ##convert to int4
     from auto_round.data_type.int import quant_tensor_sym
-    qdq_int4_tensor, scale_fp8_to_int4, zp_fp8_to_int4 = quant_tensor_sym(fp8_res_using_16bit, bits=bits,
+    qdq_int4_tensor, scale_fp8_to_int4, zp_fp8_to_int4 = quant_tensor_sym(tensor, bits=bits,
                                                                           group_size=group_size, v=v,
                                                                           min_scale=min_scale,
                                                                           max_scale=max_scale,
                                                                           scale_dtype=torch.bfloat16,
                                                                           q_scale_thresh=q_scale_thresh)
-    qdq_tensor = qdq_int4_tensor * scale_bf16_to_fp8
 
-    return qdq_tensor, scale_fp8_to_int4 * scale_bf16_to_fp8, None,
+    info = torch.finfo(torch.float8_e4m3fn)
+    tensor_max = torch.max(torch.abs(qdq_int4_tensor)).to(torch.float32) * weight_fp8_max_scale  ## better train a ratio
+    scale = tensor_max.to(torch.float32) / info.max
+    min_scaling_factor = 1.0 / (info.max * 512.0)  ##copy from vllm
+    scale_bf16_to_fp8 = torch.clip(scale, min=min_scaling_factor)
+    fp8_res = qdq_int4_tensor / scale_bf16_to_fp8
+    fp8_res = torch.clip(fp8_res, info.min, info.max)
+    fp8_res = float8_e4m3fn_ste(fp8_res)
+
+    ##convert to bf16
+    fp8_res_using_16bit = fp8_res.to(tensor.dtype)
+    qdq_tensor = fp8_res_using_16bit * scale_bf16_to_fp8
+
+    return qdq_tensor, scale_fp8_to_int4 * scale_bf16_to_fp8, None
