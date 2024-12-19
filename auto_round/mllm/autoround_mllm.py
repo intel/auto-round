@@ -19,6 +19,7 @@ import torch
 
 from ..utils import (
     logger,
+    detect_device,
     to_device,
     to_dtype,
     get_multimodal_block_names,
@@ -34,6 +35,7 @@ from ..low_cpu_mem.utils import get_layers_before_block
 def _only_text_test(model, tokenizer, device):
     """Test if the model whether can use text-only datasets."""
     try:
+        device = detect_device(device)
         text = ["only text", "test"]
         tokenizer.padding_side = 'left'
         if tokenizer.pad_token is None:
@@ -180,7 +182,7 @@ class AutoRoundMLLM(AutoRound):
                 seqlen = 512 if seqlen is None else seqlen
                 if batch_size != 1:
                     logger.warning(
-                        f"rest batch_size({batch_size}) to 1 and "
+                        f"reset batch_size({batch_size}) to 1 and "
                         f"gradient_accumulate_steps({gradient_accumulate_steps}) "
                         f"to {batch_size * gradient_accumulate_steps}, "
                         f"because batch_size={batch_size} cannot be used for {dataset}")
@@ -188,7 +190,7 @@ class AutoRoundMLLM(AutoRound):
                     batch_size = 1
         if quant_nontext_module and batch_size != 1:
             logger.warning(
-                f"rest batch_size({batch_size}) to 1 and "
+                f"reset batch_size({batch_size}) to 1 and "
                 f"gradient_accumulate_steps({gradient_accumulate_steps}) "
                 f"to {batch_size * gradient_accumulate_steps}, "
                 f"because batch_size={batch_size} cannot be used for calibrating non-text modules.")

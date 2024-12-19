@@ -530,7 +530,7 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
                     try:
                         require_version(requirement)
                     except ImportError:
-                        logger.error(f"pip install {requirement}")
+                        logger.error(f"pip install '{requirement}' ")
                 else:
                     str_info = requirement()[1]
                     logger.error(str_info)

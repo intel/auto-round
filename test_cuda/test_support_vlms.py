@@ -74,6 +74,7 @@ class TestSupportVLMS(unittest.TestCase):
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
         print(output_text[0])
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_phi3(self):
         model_path = "/models/Phi-3.5-vision-instruct/"
@@ -129,8 +130,8 @@ class TestSupportVLMS(unittest.TestCase):
         response = processor.batch_decode(generate_ids, 
         skip_special_tokens=True, 
         clean_up_tokenization_spaces=False)[0] 
-
         print(response)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     def test_llava(self):
         model_path = "/models/llava-v1.5-7b/"
@@ -166,6 +167,7 @@ class TestSupportVLMS(unittest.TestCase):
 
         output = model.generate(inputs['input_ids'].to(model.device), images=image_input.unsqueeze(0).half(), max_new_tokens=50)
         print(tokenizer.batch_decode(output))
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
     
     def test_llama(self):
         model_path = "/models/Llama-3.2-11B-Vision-Instruct/"
@@ -204,6 +206,7 @@ class TestSupportVLMS(unittest.TestCase):
 
         output = model.generate(**inputs, max_new_tokens=50)
         print(processor.decode(output[0]))
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
     
     def test_cogvlm(self):
         model_path = "/models/cogvlm2-llama3-chat-19B/"
@@ -257,6 +260,7 @@ class TestSupportVLMS(unittest.TestCase):
         response = tokenizer.decode(outputs[0])
         response = response.split("<|end_of_text|>")[0]
         print(response)     
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()

@@ -283,8 +283,9 @@ def tune(args):
 
     # load_model
     processor, image_processor = None, None
-    if "llava" in model_name:
-        from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+    if "llava" in model_name and config.architectures[0] != "LlavaForConditionalGeneration":
+        from llava.model.builder import load_pretrained_model   # pylint: disable=E0401
         tokenizer, model, image_processor, _ = load_pretrained_model(
             model_name, model_base=None, model_name=model_name,
             torch_dtype=torch_dtype)
@@ -297,11 +298,13 @@ def tune(args):
             model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
             device_map="auto" if use_auto_mapping else None)
     else:
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
         processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
         model_type = config.model_type
-        if "qwen2_vl" in model_type:
+        if "llava" in model_type:
+            from transformers import LlavaForConditionalGeneration
+            cls = LlavaForConditionalGeneration
+        elif "qwen2_vl" in model_type:
             from transformers import Qwen2VLForConditionalGeneration
             cls = Qwen2VLForConditionalGeneration
         elif "mllama" in model_type:
@@ -522,3 +525,4 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+

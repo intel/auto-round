@@ -13,12 +13,18 @@
 # limitations under the License.
 import sys
 
+def run_eval():
+    from auto_round.script.llm import setup_eval_parser, eval
+    args = setup_eval_parser()
+    eval(args)
+
 def run():
-    from auto_round.script.llm import setup_parser, tune, eval
-    args = setup_parser()
-    if args.eval:
-        eval(args)
+    if "--eval" in sys.argv:
+        sys.argv.remove("--eval")
+        run_eval()
     else:
+        from auto_round.script.llm import setup_parser, tune
+        args = setup_parser()
         tune(args)
 
 def run_best():

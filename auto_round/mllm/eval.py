@@ -81,6 +81,7 @@ MODEL_TYPE_TO_VLMEVAL_MODEL = {
     "llava_next": dict(cls="LLaVA_Next"),
     "phi3_v": dict(cls="Phi3Vision"),
     "mllama": dict(cls="llama_vision"),
+    "glm-4v-9b": dict(cls="GLM4v"),
 }
 
 
@@ -409,3 +410,4 @@ def lmms_eval(
         json.dump(results, open(output_file, 'w'), indent=4, default=_handle_non_serializable)
 
     return results
+
