@@ -15,6 +15,10 @@ from functools import lru_cache
 
 import torch
 
+from auto_round.config import global_config
+STANDARD_FP8E4M3FN_MAX = torch.finfo(torch.float8_e4m3fn).max
+
+
 from auto_round.data_type.register import register_dtype
 
 import torch
@@ -198,7 +202,7 @@ def progressive_quant_fp8_int4_bas(tensor, bits=4, group_size=-1, v=0, min_scale
 ##ugly code, need to refine later
 
 @register_dtype("fp8_gaudi2_sym")
-def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
+def quant_fp8_sym_gaudi(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     """Symmetric quantization using float8 format.
 
     Allows both dynamic per-token scaling and tensor-wide quantization depending on input.
@@ -216,7 +220,7 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
             - Placeholder for zp (None).
     """
     orig_shape = tensor.shape
-    fp8_max = 240.0
+    fp8_max = STANDARD_FP8E4M3FN_MAX * global_config.FP8_INPUT_BACKOFF
     orig_dtype = tensor.dtype
 
     if tensor_max is None:  ##dynamic per-te
@@ -264,8 +268,7 @@ def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
             - Combined scaling factor (torch.Tensor).
             - Placeholder for zp (None).
     """
-
-    fp8_max = 240.0
+    fp8_max = STANDARD_FP8E4M3FN_MAX * global_config.FP8_WEIGHT_BACKOFF
     tensor_max = torch.max(torch.abs(tensor)).to(torch.float32) * weight_fp8_max_scale  ## better train a ratio
     scale = tensor_max.to(torch.float32) / fp8_max
     min_scaling_factor = 1.0 / (fp8_max* 512.0)  ##copy from vllm
