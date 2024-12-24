@@ -84,7 +84,7 @@ class Model:
     ftype: gguf.LlamaFileType
     fname_out: Path
     is_big_endian: bool
-    endianess: gguf.GGUFEndian
+    endianness: gguf.GGUFEndian
     use_temp_file: bool
     lazy: bool
     part_names: list[str]
@@ -115,7 +115,7 @@ class Model:
         self.fname_out = fname_out
         self.layer_config = layer_config
         self.is_big_endian = is_big_endian
-        self.endianess = gguf.GGUFEndian.BIG if is_big_endian else gguf.GGUFEndian.LITTLE
+        self.endianness = gguf.GGUFEndian.BIG if is_big_endian else gguf.GGUFEndian.LITTLE
         self.use_temp_file = use_temp_file
         self.lazy = not eager
         self.part_names = Model.get_model_part_names(self.dir_model, "model", ".safetensors")
@@ -142,7 +142,7 @@ class Model:
                 self.ftype = gguf.LlamaFileType.MOSTLY_BF16
 
         # Configure GGUF Writer
-        self.gguf_writer = gguf.GGUFWriter(path=None, arch=gguf.MODEL_ARCH_NAMES[self.model_arch], endianess=self.endianess, use_temp_file=self.use_temp_file,
+        self.gguf_writer = gguf.GGUFWriter(path=None, arch=gguf.MODEL_ARCH_NAMES[self.model_arch], endianness=self.endianness, use_temp_file=self.use_temp_file,
                                            split_max_tensors=split_max_tensors, split_max_size=split_max_size, dry_run=dry_run, small_first_shard=small_first_shard)
 
     @classmethod
@@ -1479,13 +1479,13 @@ class StableLMModel(Model):
         return [(self.map_tensor_name(name), data_torch)]
 
     def _stack_qk_norm(self, bid: int, n_head: int, norms: dict[str, Tensor], layer_name: str = "q_layernorm"):
-        datas: list[Tensor] = []
+        data: list[Tensor] = []
         # extract the norms in order
         for xid in range(n_head):
             ename = f"model.layers.{bid}.self_attn.{layer_name}.norms.{xid}.weight"
-            datas.append(norms[ename])
+            data.append(norms[ename])
             del norms[ename]
-        data_torch = torch.stack(datas, dim=0)
+        data_torch = torch.stack(data, dim=0)
 
         merged_name = f"model.layers.{bid}.self_attn.{layer_name}.weight"
         new_name = self.map_tensor_name(merged_name)
@@ -1594,14 +1594,14 @@ class LlamaModel(Model):
 
                 # merge the experts into a single 3d tensor
                 for wid in ["w1", "w2", "w3"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.block_sparse_moe.experts.{xid}.{wid}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"layers.{bid}.feed_forward.experts.{wid}.weight"
 
@@ -1726,14 +1726,14 @@ class GrokModel(Model):
 
                 # merge the experts into a single 3d tensor
                 for wid in ["linear", "linear_1", "linear_v"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"transformer.decoder_layer.{bid}.moe.{xid}.{wid}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"transformer.decoder_layer.{bid}.moe.{wid}.weight"
 
@@ -1999,14 +1999,14 @@ class Qwen2MoeModel(Model):
 
                 # merge the experts into a single 3d tensor
                 for w_name in ["down_proj", "gate_proj", "up_proj"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
 
@@ -2386,7 +2386,7 @@ class InternLM2Model(Model):
                 toktype = SentencePieceTokenTypes.UNUSED
             elif tokenizer.IsByte(token_id):
                 toktype = SentencePieceTokenTypes.BYTE
-            # take care of ununsed raw token
+            # take care of unused raw token
             if piece.startswith('[UNUSED'):
                 toktype = SentencePieceTokenTypes.UNUSED
 
@@ -3064,14 +3064,14 @@ class OlmoeModel(Model):
 
                 # merge the experts into a single 3d tensor
                 for w_name in ["down_proj", "gate_proj", "up_proj"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
 
@@ -3338,14 +3338,14 @@ class ArcticModel(Model):
 
                 # merge the experts into a single 3d tensor
                 for wid in ["w1", "w2", "w3"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.block_sparse_moe.experts.{xid}.{wid}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"layers.{bid}.feed_forward.experts.{wid}.weight"
 
@@ -3417,14 +3417,14 @@ class DeepseekV2Model(Model):
 
                 # merge the experts into a single 3d tensor
                 for w_name in ["down_proj", "gate_proj", "up_proj"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
 
