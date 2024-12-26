@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gguf
 import numpy as np
 
 QK_K = 256
@@ -31,7 +32,7 @@ def register_block(name):
     return register
 
 
-def ggml_quant(data: np.array, ggml_type, scale = None):
+def ggml_quant(data: np.array, ggml_type, scale = None, zp = None):
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
 
     data = data.astype(np.float32, copy=False)
@@ -39,12 +40,12 @@ def ggml_quant(data: np.array, ggml_type, scale = None):
     n_blocks = data.size // block_size
     blocks = data.reshape((n_blocks, block_size))
     
-    new_data = GGML_QUANT_BLOCK[ggml_type](blocks, scale)
+    new_data = GGML_QUANT_BLOCK[ggml_type](blocks, scale, zp)
     new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)
     return new_data
 
 @register_block("bf16")
-def bf16_quant_block(blocks: np.array, scale = None):
+def bf16_quant_block(blocks: np.array, scale = None, zp = None):
     n = blocks.view(np.uint32)
     # force nan to quiet
     n = np.where((n & 0x7fffffff) > 0x7f800000, (n & np.uint32(0xffff0000)) | np.uint32(64 << 16), n)
@@ -53,9 +54,9 @@ def bf16_quant_block(blocks: np.array, scale = None):
     return n.astype(np.uint16).view(np.uint8)
 
 @register_block("q4_0")
-def q4_0_quant_block(blocks: np.array, scale = None):
+def q4_0_quant_block(blocks: np.array, scale = None, zp = None):
     if scale is not None:
-        d = scale
+        d = scale.reshape((-1,1))
     else:
         imax = abs(blocks).argmax(axis=-1, keepdims=True)
         max = np.take_along_axis(blocks, imax, axis=-1)
@@ -76,9 +77,10 @@ def q4_0_quant_block(blocks: np.array, scale = None):
 
 
 @register_block("q4_1")
-def q4_1_quant_block(blocks: np.array, scale = None):
+def q4_1_quant_block(blocks: np.array, scale = None, zp = None):
     if scale is not None:
-        d = scale
+        d = scale.reshape((-1,1))
+        min = zp.reshape((-1,1))
     else:
         max = blocks.max(axis=-1, keepdims=True)
         min = blocks.min(axis=-1, keepdims=True)

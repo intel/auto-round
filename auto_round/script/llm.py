@@ -257,8 +257,8 @@ def tune(args):
     if args.format is None:
         args.format = "auto_round"
     supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq",
-                         "auto_gptq:marlin", "itrex", "iterx_xpu", "fake"]
-    formats = args.format.replace(' ', '').split(",")
+                         "auto_gptq:marlin", "itrex", "iterx_xpu", "fake", "gguf:q4_0", "gguf:q4_1"]
+    formats = args.format.lower().replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
@@ -311,6 +311,19 @@ def tune(args):
     from auto_round.eval.evaluation import simple_evaluate
     from auto_round.utils import detect_device, get_library_version, detect_device_count
     from auto_round.utils import logger
+
+    if args.format in ["gguf:q4_0", "gguf:q4_1"]:
+        if args.group_size != 32:
+            logger.warning(f"{args.format} not support for group_size: {args.group_size}."
+                "Reset group_size to 32.")
+            args.group_size = 32
+        if args.format.endswith("_0"):
+            args.asym = False
+        if args.format.endswith("_1"):
+            args.asym = True
+
+    if "gguf" in args.format:
+        args.disable_eval = True
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -553,3 +566,59 @@ def eval(args):
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
     print(make_table(res))
+
+def eval_sequence(args):
+    import os
+    devices = args.device.replace(" ", "").split(',')
+    parallelism = False
+
+    if all(s.isdigit() for s in devices):
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
+            current_visible_devices = current_visible_devices.split(',')
+            indices = [int(device) for device in devices]
+            try:
+                pick_device = [current_visible_devices[i] for i in indices]
+            except:
+                raise ValueError(
+                    "Invalid '--device' value: It must be smaller than the number of available devices. "
+                    "For example, with CUDA_VISIBLE_DEVICES=4,5, "
+                    "--device 0,1 is valid, but --device 4,5 is not supported.")
+            visible_devices = ','.join(pick_device)
+            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+            args.device = ",".join(map(str, range(len(devices))))
+            devices = args.device.replace(" ", "").split(',')
+        if len(devices) > 1:
+            parallelism = True
+        device_str = None
+    elif args.device == "auto":
+        device_str = None
+        parallelism = True
+    else:
+        device_str = detect_device(args.device.replace(" ", ""))
+
+    from auto_round.eval.evaluation import simple_evaluate
+
+    model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
+    if parallelism:
+        model_args += ",parallelize=True"
+    if isinstance(args.tasks, str):
+        tasks = args.tasks.split(',')
+
+    from lm_eval.utils import make_table  # pylint: disable=E04
+    all_res = {}
+    for task in tasks:
+        res = simple_evaluate(
+            model="hf",
+            model_args=model_args,
+            tasks=task,
+            device=device_str,
+            batch_size=args.eval_bs)
+        if all_res == {}:
+            all_res = res 
+        else:
+            for key in ['results', "versions", "n-shot", "higher_is_better"]:
+                all_res[key].update(res[key])
+        print(make_table(all_res))

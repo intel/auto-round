@@ -18,6 +18,7 @@ import shutil
 import torch
 from .convert import Model
 from auto_round.utils import logger
+from pathlib import Path
 
 import gguf
 
@@ -29,7 +30,7 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
         "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0,
         "q4_0": gguf.LlamaFileType.MOSTLY_Q4_0,
         "q4_1": gguf.LlamaFileType.MOSTLY_Q4_1,
-        "q4_k": gguf.LlamaFileType.MOSTLY_Q4_K,
+        "q4_k": gguf.LlamaFileType.MOSTLY_Q4_K_S,
         "auto": gguf.LlamaFileType.GUESSED,
     }
 
@@ -40,7 +41,7 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
     tokenizer = kwargs.get("tokenizer", None)
     config = model.config
 
-    tmp_work_dir = os.path.join(output_dir, 'tmp_dir')
+    tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
     if tokenizer is not None:
         tokenizer.save_pretrained(tmp_work_dir)
     config.save_pretrained(tmp_work_dir)
@@ -65,7 +66,7 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
 
         layer_config = kwargs.get("layer_config")
 
-        model_instance = model_class(model, dir_model=tmp_work_dir, ftype=output_type, fname_out=output_dir,
+        model_instance = model_class(model, dir_model=tmp_work_dir, ftype=output_type, fname_out=Path(output_dir),
                                      layer_config=layer_config, is_big_endian=False, model_name=model_name,
                                      split_max_tensors=False, split_max_size=0, dry_run=False,
                                      small_first_shard=False)
