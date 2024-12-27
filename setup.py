@@ -233,7 +233,7 @@ PKG_INSTALL_CFG = {
 }
 
 ###############################################################################
-# Configuration for auto_round_lin
+# Configuration for auto_round_lib
 ###############################################################################
 LIB_REQUIREMENTS_FILE = "requirements-lib.txt"
 LIB_INSTALL_CFG = {
