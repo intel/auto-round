@@ -24,61 +24,48 @@ from ..utils import (
     to_dtype,
     get_multimodal_block_names,
     find_matching_blocks,
-    extract_block_names_to_str
+    extract_block_names_to_str,
+    clear_memory
 )
 from ..autoround import AutoRound
-from .template import get_template, Template
+from .template import get_template, Template, SUPPORT_ONLY_TEXT_MODELS
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
 
 
-def _only_text_test(model, tokenizer, device):
+def _only_text_test(model, tokenizer, device, model_type):
     """Test if the model whether can use text-only datasets."""
 
-    def get_children(model):
-        module_list = []
-        children = list(model.children())
-        if len(children) == 0:
-            return [model]
-        for child in children:
-            module_list += get_children(child)
-        return module_list
+    if model_type in SUPPORT_ONLY_TEXT_MODELS:  # save time
+        return True
 
     device = detect_device(device)
     text = ["only text", "test"]
     tokenizer.padding_side = 'left'
     inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-    from functools import partial
-
-    def _foward(module, *args, **kwargs):
-        if hasattr(module, "weight"):
-            ori_device = module.weight.device
-            module = module.to(device)
-            result = module.ori_forward(*args, **kwargs)
-            module.to(ori_device)
-        else:
-            module.to(device)
-            result = module.ori_forward(*args, **kwargs)
-        return result
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     try:
-        module_list = get_children(model)
-        for module in module_list:
-            module.ori_forward = module.forward
-            module.forward = partial(_foward, module)
-            
-        # if device.split(':')[0] != model.device.type:
-        #     model = model.to(device)
         inputs = inputs.to(device)
+        model = model.to(device)
         model(**inputs)
-        for module in module_list:
-            module.forward = module.ori_forward
-            delattr(module, "ori_foward")
         return True
+    except RuntimeError as e:
+        if "CUDA out of memory" in str(e):
+            logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
+                            f"set `--device '0,1'` in our cmd line usage or "
+                            f"load the model with `device_mapping=auto`,"
+                            f" for optimal performance during calibration "
+                            f"Otherwise, the process may be significantly slower.")
+            model = model.to("cpu")
+            inputs = inputs.to("cpu")
+            try:
+                model(**input)
+            except:
+                return False
+        return False
     except:
-        raise
         return False
 
 
@@ -198,7 +185,7 @@ class AutoRoundMLLM(AutoRound):
         if isinstance(dataset, str):
             if quant_nontext_module or \
                 (dataset in CALIB_DATASETS.keys() and not \
-                 _only_text_test(model, tokenizer, device)):
+                 _only_text_test(model, tokenizer, device, self.template.model_type)):
                 if quant_nontext_module:
                     logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
                                 "switching to liuhaotian/llava_conv_58k")
