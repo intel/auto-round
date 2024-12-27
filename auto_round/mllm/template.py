@@ -22,15 +22,6 @@ from ..utils import logger
 from .processor import BasicProcessor, PROCESSORS
 
 TEMPLATES: Dict[str, "Template"] = {}
-SUPPORT_ONLY_TEXT_MODELS = [
-    "phi3_v",
-    "cogvlm2",
-    "llava",
-    "qwen2_vl",
-    "deepseek_vl_v2",
-    "chatglm",
-    "idefics3"
-]
 
 
 def fill_content(target, **kwargs):

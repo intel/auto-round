@@ -28,7 +28,8 @@ from ..utils import (
     clear_memory
 )
 from ..autoround import AutoRound
-from .template import get_template, Template, SUPPORT_ONLY_TEXT_MODELS
+from .template import get_template, Template
+from auto_round.special_model_handler import  SUPPORT_ONLY_TEXT_MODELS
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
 
@@ -41,8 +42,10 @@ def _only_text_test(model, tokenizer, device, model_type):
 
     device = detect_device(device)
     text = ["only text", "test"]
+    ori_padding_size = tokenizer.padding_side
     tokenizer.padding_side = 'left'
     inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+    tokenizer.padding_size = ori_padding_size
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -53,19 +56,14 @@ def _only_text_test(model, tokenizer, device, model_type):
         return True
     except RuntimeError as e:
         if "CUDA out of memory" in str(e):
-            logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
-                            f"set `--device '0,1'` in our cmd line usage or "
-                            f"load the model with `device_mapping=auto`,"
-                            f" for optimal performance during calibration "
-                            f"Otherwise, the process may be significantly slower.")
             model = model.to("cpu")
             inputs = inputs.to("cpu")
             try:
-                model(**input)
+                model(**inputs)
             except:
                 return False
         return False
-    except:
+    except Exception as e:
         return False
 
 
