@@ -232,6 +232,22 @@ PKG_INSTALL_CFG = {
     "install_requires": fetch_requirements(detect_hardware()),
 }
 
+###############################################################################
+# Configuration for auto_round_lin
+###############################################################################
+LIB_REQUIREMENTS_FILE = "requirements-lib.txt"
+LIB_INSTALL_CFG = {
+    "include_packages": find_packages(
+        include=[
+            "auto_round",
+            "auto_round.*",
+            "auto_round_extension",
+            "auto_round_extension.*",
+        ],
+    ),
+    "install_requires": fetch_requirements(LIB_REQUIREMENTS_FILE),
+}
+
 if __name__ == "__main__":
     # There are two ways to install hpu-only package:
     # 1. pip install -vvv --no-build-isolation -e .[hpu]
