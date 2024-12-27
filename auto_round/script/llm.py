@@ -442,9 +442,9 @@ def tune(args):
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
 
-    if "awq" in args.format:
-        from auto_round.utils import check_awq_gemm_export_compatibility
-        awq_supported, info = check_awq_gemm_export_compatibility(model,args.bits,args.group_size, not args.asym, layer_config)
+    if "auto_awq" in args.format:
+        from auto_round.utils import check_awq_gemm_compatibility
+        awq_supported, info = check_awq_gemm_compatibility(model,args.bits,args.group_size, not args.asym, layer_config)
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 

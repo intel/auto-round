@@ -76,6 +76,15 @@ class TestLocalCalibDataset(unittest.TestCase):
         )
         autoround.quantize()
 
+
+    def test_stream_dataset(self):
+        dataset = self.text_file + "," + "NeelNanda/pile-10k" + "," + "BAAI/CCI3-HQ"
+        bits, group_size, sym = 4, 128, True
+        autoround = AutoRound(
+            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=128, dataset=dataset
+        )
+        autoround.quantize()
+
     @classmethod
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)

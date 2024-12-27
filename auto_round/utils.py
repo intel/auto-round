@@ -1118,7 +1118,7 @@ def get_fp_layer_names(model, fp_layers):
     return not_to_quantized_layers
 
 
-def check_awq_gemm_export_compatibility(model, bits, group_size, sym, layer_configs=None):
+def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=None):
     if bits != 4:
         return False, f"AutoAWQ GEMM kernel only supports 4 bits"
     for n, m in model.named_modules():

@@ -16,6 +16,8 @@ import json
 import random
 
 import torch
+from datasets import IterableDataset
+
 torch.use_deterministic_algorithms(True, warn_only=True)
 from torch.utils.data import DataLoader
 
@@ -96,6 +98,33 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_template=apply_template)
 
     calib_dataset = load_dataset(dataset_name, split=split)
+    calib_dataset = calib_dataset.shuffle(seed=seed)
+    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+
+    return calib_dataset
+
+
+@register_dataset("BAAI/CCI3-HQ")
+def get_pile_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_template=False):
+    """Returns a dataloader for the specified dataset and split.
+
+    Args:
+    tokenizer: The tokenizer to be used for tokenization.
+    seqlen: The maximum sequence length.
+    data_name: The name of the dataset.
+    split: The data split to be used (e.g., "train", "test").
+    seed: The random seed for shuffling the dataset.
+    apply_template: Whether to apply chat template in tokenization.
+
+    Returns:
+    A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
+    """
+    from datasets import load_dataset
+
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_template=apply_template)
+
+    calib_dataset = load_dataset(dataset_name, split='train', streaming=True)
+    calib_dataset = calib_dataset.take(10000)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
@@ -266,6 +295,31 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
     return calib_dataset
 
+def get_dataset_len(dataset):
+    try:
+        dataset_len = len(dataset)
+        return dataset_len
+    except:
+        cnt = 0
+        for _ in dataset:
+            cnt += 1
+        return cnt
+
+
+def select(dataset, indices):
+    indices = set(indices)
+    for idx, sample in enumerate(dataset):
+        if idx in indices:
+            yield sample
+        if idx > max(indices):
+            break
+
+def select_dataset(dataset, indices):
+    try:
+        return dataset.select(indices)
+    except:
+        return select(dataset, indices)
+
 
 def get_dataloader(
         tokenizer,
@@ -386,42 +440,54 @@ def get_dataloader(
             dataset_name=name,
             apply_template=apply_template,
         )
-        dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+        if not isinstance(dataset, IterableDataset):
+            dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
         if do_concat:
             dataset = concat_dataset_element(dataset)
         dataset = dataset.filter(filter_func)
         if name in data_lens:
-            dataset = dataset.select(range(data_lens[name]))
+            dataset = select_dataset(dataset,range(data_lens[name]))
         datasets.append(dataset)
-    indices = range(len(datasets))
-    res = sorted(zip(indices, datasets), key=lambda x: len(x[1]))
-    indices = [item[0] for item in res]
-    datasets = [item[1] for item in res]
-    dataset_names = [dataset_names[index] for index in indices]
-    cnt = 0 if not data_lens else sum(data_lens.values())
-    dataset_cnt_info = {}
-    if cnt > nsamples:
-        cnt = 0
-
-    for i in range(len(datasets)):
-        name = dataset_names[i].split(':')[0]
-        if name not in data_lens:
-            target_cnt = (nsamples - cnt) // (len(datasets) - len(data_lens)) if data_lens \
-                else (nsamples - cnt) // (len(datasets) - i)
-            target_cnt = min(target_cnt, len(datasets[i]))
-            cnt += target_cnt
-        else:
-            target_cnt = data_lens[name]
-        datasets[i] = datasets[i].select(range(target_cnt))
-        dataset_cnt_info[name] = target_cnt
-    if len(datasets) > 1:
-        from datasets import concatenate_datasets
-
-        dataset_final = concatenate_datasets(datasets)
-        dataset_final = dataset_final.shuffle(seed=seed)
-        logger.info(dataset_cnt_info)
-    else:
+    if len(datasets)==1:
         dataset_final = datasets[0]
+    else:
+        indices = range(len(datasets))
+        lens = []
+        for i in range(len(datasets)):
+            cnt = get_dataset_len(datasets[i])
+            lens.append(cnt)
+        res = sorted(zip(indices, lens), key=lambda x: x[1])
+
+        # res = sorted(zip(indices, datasets), key=lambda x: len(x[1]))
+        indices = [item[0] for item in res]
+        datasets = [datasets[item[0]] for item in res]
+        dataset_names = [dataset_names[index] for index in indices]
+        cnt = 0 if not data_lens else sum(data_lens.values())
+        dataset_cnt_info = {}
+        if cnt > nsamples:
+            cnt = 0
+
+        for i in range(len(datasets)):
+            name = dataset_names[i].split(':')[0]
+            if name not in data_lens:
+                target_cnt = (nsamples - cnt) // (len(datasets) - len(data_lens)) if data_lens \
+                    else (nsamples - cnt) // (len(datasets) - i)
+                target_cnt = min(target_cnt, lens[i])
+                cnt += target_cnt
+            else:
+                target_cnt = data_lens[name]
+            datasets[i] = select_dataset(dataset, range(target_cnt))
+            dataset_cnt_info[name] = target_cnt
+        if len(datasets) > 1:
+            from datasets import concatenate_datasets
+
+            dataset_final = concatenate_datasets(datasets)
+            dataset_final = dataset_final.shuffle(seed=seed)
+            logger.info(dataset_cnt_info)
+        else:
+            dataset_final = datasets[0]
+
+    # dataset_final = datasets[0]
 
     @torch.no_grad()
     def collate_batch(batch):
