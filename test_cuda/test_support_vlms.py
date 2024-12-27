@@ -269,8 +269,7 @@ class TestSupportVLMS(unittest.TestCase):
             f"--model {model_path} --iter 1 --nsamples 1 --bs 1 --output_dir {self.save_dir} --device {self.device}"
             )
         self.assertFalse(res > 0 or res == -1, msg="qwen2-72b tuning fail")
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
-        quantized_model_path = os.path.join(self.save_dir, "Qwen2-VL-72B-Instruct-w4g128-auto_round")
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()
