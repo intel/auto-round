@@ -249,7 +249,9 @@ LIB_INSTALL_CFG = {
 }
 
 if __name__ == "__main__":
-    # Build the auto_round_lib if the user explicitly requests it or if running in a Gaudi Docker environment.
+    # There are two ways to install hpu-only package:
+    # 1. python setup.py lib install
+    # 2. Within the gaudi docker where the HPU is available, we install the auto_round_lib by default.
     is_user_requesting_library_build = "lib" in sys.argv
 
     should_build_library = is_user_requesting_library_build or BUILD_HPU_ONLY
