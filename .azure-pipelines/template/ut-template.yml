@@ -43,7 +43,8 @@ steps:
   - ${{ if eq(parameters.imageSource, 'pull') }}:
     - script: |
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && pip install .[hpu] \
+          && python setup.py bdist_wheel lib \
+          && pip install dist/*.whl \
           && pip list"
       displayName: "HPU Env Setup"
 
