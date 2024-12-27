@@ -393,7 +393,12 @@ def tune(args):
 
     if "--truncation" not in sys.argv:
         args.truncation = None
-    
+
+    # if "awq" in args.format:
+    #     from auto_round.utils import check_awq_gemm_export_compatibility
+    #     awq_supported, info = check_awq_gemm_export_compatibility(model,args.bits,args.group_size, not args.asym, layer_config)
+    #     if not awq_supported:
+    #         logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
     autoround = round(model, tokenizer, processor=processor, image_processor=image_processor, dataset=args.dataset,
                       extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,
