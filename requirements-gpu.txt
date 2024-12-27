@@ -1,5 +1,1 @@
-torch
-transformers>=4.38
-threadpoolctl
-lm-eval>=0.4.2,<0.5
 auto-gptq>=0.7.1

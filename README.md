@@ -54,7 +54,7 @@ pip install auto-round[gpu]
 pip install auto-round[cpu]
 
 # HPU
-pip install auto-round[hpu]
+pip install auto-round-lib
 ```
 
 <details>
@@ -62,13 +62,13 @@ pip install auto-round[hpu]
 
   ```bash
   # GPU
-  pip install -vvv --no-build-isolation .[gpu]
+  pip install .[gpu]
 
   # CPU
-  pip install -vvv --no-build-isolation .[cpu]
+  pip install .[cpu]
 
   # HPU
-  pip install -vvv --no-build-isolation .[hpu]
+  python setup.py install lib
   ```
 
 </details>

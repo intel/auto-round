@@ -221,26 +221,32 @@ PKG_INSTALL_CFG = {
     ),
     "install_requires": fetch_requirements("requirements.txt"),
     "extras_require": {
-        "hpu": fetch_requirements("requirements-hpu.txt"),
         "gpu": fetch_requirements("requirements-gpu.txt"),
         "cpu": fetch_requirements("requirements-cpu.txt"),
     },
 }
 
-if __name__ == "__main__":
-    # There are two ways to install hpu-only package:
-    # 1. pip install -vvv --no-build-isolation -e .[hpu]
-    # 2. Within the gaudi docker where the HPU is available, we install the hpu package by default.
+LIB_INSTALL_CFG = {}
 
-    include_packages = PKG_INSTALL_CFG.get("include_packages", {})
-    install_requires = PKG_INSTALL_CFG.get("install_requires", [])
-    extras_require = PKG_INSTALL_CFG.get("extras_require", {})
+if __name__ == "__main__":
+    if "lib" in sys.argv:
+        sys.argv.remove("lib")
+        package_name = "auto_round_lib"
+        INSTALL_CFG = LIB_INSTALL_CFG
+    else:
+        package_name = "auto_round"
+        INSTALL_CFG = PKG_INSTALL_CFG
+
+
+    include_packages = INSTALL_CFG.get("include_packages", {})
+    install_requires = INSTALL_CFG.get("install_requires", [])
+    extras_require = INSTALL_CFG.get("extras_require", {})
 
     setup(
-        name="auto_round",
+        name=package_name,
         author="Intel AIPT Team",
         version=version,
-        author_email="wenhua.cheng@intel.com, weiwei1.zhang@intel.com",
+        author_email="wenhua.cheng@intel.com, weiwei1.zhang@intel.com, heng.guo@intel.com",
         description="Repository of AutoRound: Advanced Weight-Only Quantization Algorithm for LLMs",
         long_description=open("README.md", "r", encoding="utf-8").read(),
         long_description_content_type="text/markdown",
