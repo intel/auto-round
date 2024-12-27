@@ -226,7 +226,27 @@ PKG_INSTALL_CFG = {
     },
 }
 
-LIB_INSTALL_CFG = {}
+###############################################################################
+# Configuration for auto_round_lib
+# From pip:
+# pip install auto-round-lib
+# From source:
+# python setup.py lib install
+###############################################################################
+
+
+LIB_REQUIREMENTS_FILE = "requirements-lib.txt"
+LIB_INSTALL_CFG = {
+    "include_packages": find_packages(
+        include=[
+            "auto_round",
+            "auto_round.*",
+            "auto_round_extension",
+            "auto_round_extension.*",
+        ],
+    ),
+    "install_requires": fetch_requirements(LIB_REQUIREMENTS_FILE),
+}
 
 if __name__ == "__main__":
     if "lib" in sys.argv:
