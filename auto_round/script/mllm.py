@@ -270,7 +270,8 @@ def tune(args):
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
             args.device = ",".join(map(str, range(len(devices))))
             devices = args.device.replace(" ", "").split(',')
-        use_auto_mapping = True
+        if len(devices) > 1:
+            use_auto_mapping = True  ##for 70B model on single card, use auto will cause some layer offload to cpu
     elif args.device == "auto":
         use_auto_mapping == True
 

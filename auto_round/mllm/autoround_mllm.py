@@ -34,18 +34,51 @@ from ..low_cpu_mem.utils import get_layers_before_block
 
 def _only_text_test(model, tokenizer, device):
     """Test if the model whether can use text-only datasets."""
+
+    def get_children(model):
+        module_list = []
+        children = list(model.children())
+        if len(children) == 0:
+            return [model]
+        for child in children:
+            module_list += get_children(child)
+        return module_list
+
+    device = detect_device(device)
+    text = ["only text", "test"]
+    tokenizer.padding_side = 'left'
+    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+    from functools import partial
+
+    def _foward(module, *args, **kwargs):
+        if hasattr(module, "weight"):
+            ori_device = module.weight.device
+            module = module.to(device)
+            result = module.ori_forward(*args, **kwargs)
+            module.to(ori_device)
+        else:
+            module.to(device)
+            result = module.ori_forward(*args, **kwargs)
+        return result
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     try:
-        device = detect_device(device)
-        text = ["only text", "test"]
-        tokenizer.padding_side = 'left'
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        if device.split(':')[0] != model.device.type:
-            model = model.to(device)
-        inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(model.device)
+        module_list = get_children(model)
+        for module in module_list:
+            module.ori_forward = module.forward
+            module.forward = partial(_foward, module)
+            
+        # if device.split(':')[0] != model.device.type:
+        #     model = model.to(device)
+        inputs = inputs.to(device)
         model(**inputs)
+        for module in module_list:
+            module.forward = module.ori_forward
+            delattr(module, "ori_foward")
         return True
     except:
+        raise
         return False
 
 
