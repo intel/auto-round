@@ -14,6 +14,7 @@
 
 from typing import Optional, Union
 from tqdm import tqdm
+from copy import deepcopy
 
 import torch
 
@@ -42,13 +43,11 @@ def _only_text_test(model, tokenizer, device, model_type):
 
     device = detect_device(device)
     text = ["only text", "test"]
-    ori_padding_size = tokenizer.padding_side
     tokenizer.padding_side = 'left'
-    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-    tokenizer.padding_size = ori_padding_size
-
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+
     try:
         inputs = inputs.to(device)
         model = model.to(device)
@@ -183,7 +182,7 @@ class AutoRoundMLLM(AutoRound):
         if isinstance(dataset, str):
             if quant_nontext_module or \
                 (dataset in CALIB_DATASETS.keys() and not \
-                 _only_text_test(model, tokenizer, device, self.template.model_type)):
+                 _only_text_test(model, deepcopy(tokenizer), device, self.template.model_type)):
                 if quant_nontext_module:
                     logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
                                 "switching to liuhaotian/llava_conv_58k")
