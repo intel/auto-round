@@ -105,7 +105,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
 
 
 @register_dataset("BAAI/CCI3-HQ")
-def get_pile_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_template=False):
+def get_CCI3_HQ_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_template=False):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -244,7 +244,7 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
     Args:
     tokenizer: The tokenizer to be used for tokenization.
     seqlen: The maximum sequence length.
-    data_name: The name or path of the dataset, which is a jsonl file.
+    data_name: The name or path of the dataset, which is a json or jsonl file.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
     apply_template: Whether to apply chat template in tokenization.
@@ -259,12 +259,15 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
             with open(data_path, "r") as f:
                 data = json.load(f)
             return data
-        elif data_path.endswith(".txt"):
+        elif data_path.endswith(".jsonl"):
+            data = []
             with open(data_path) as f:
-                data = [line for line in f]
+                for line in f:
+                    sample = json.loads(line)
+                    data.append(sample)
             return data
         else:
-            logger.error("invalid local file type, for now only support json format data file.")
+            logger.error("invalid local file type, for now only support json/jsonl format data file.")
 
     samples = []
     dataset = load_local_data(dataset_name)
@@ -295,6 +298,7 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
     return calib_dataset
 
+
 def get_dataset_len(dataset):
     try:
         dataset_len = len(dataset)
@@ -313,6 +317,7 @@ def select(dataset, indices):
             yield sample
         if idx > max(indices):
             break
+
 
 def select_dataset(dataset, indices):
     try:
@@ -356,7 +361,7 @@ def get_dataloader(
             return False
         input_ids = example["input_ids"][:seqlen]
         input_ids_list = input_ids.tolist()
-        if input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
+        if len(input_ids_list) > 1 and input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
             return False
         return True
 
@@ -446,9 +451,9 @@ def get_dataloader(
             dataset = concat_dataset_element(dataset)
         dataset = dataset.filter(filter_func)
         if name in data_lens:
-            dataset = select_dataset(dataset,range(data_lens[name]))
+            dataset = select_dataset(dataset, range(data_lens[name]))
         datasets.append(dataset)
-    if len(datasets)==1:
+    if len(datasets) == 1:
         dataset_final = datasets[0]
     else:
         indices = range(len(datasets))
