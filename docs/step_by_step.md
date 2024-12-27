@@ -105,17 +105,27 @@ Please use ',' to split datasets, ':' to split parameters of a dataset and '+' t
     ```
 
 - **Enable marlin kernel:**
-  - We support inference repacking for auto_round sym quantized models
-  ```python
-  from transformers import AutoModelForCausalLM, AutoTokenizer
-  from auto_round import AutoRoundConfig
-  backend = "cuda_marlin" #supported in auto_round>0.3.1 and 'pip install -v gptqmodel --no-build-isolation')
-  quantization_config = AutoRoundConfig(backend=backend)
-  quantized_model_path = "./tmp_autoround"
-  model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                               device_map=backend.split(':')[0], quantization_config=quantization_config)
-  ```
-  - To leverage auto-gptq marlin kernel, you need to install auto-gptq from source
+
+[//]: # (  - We support inference repacking for auto_round sym quantized models)
+
+[//]: # (  ```python)
+
+[//]: # (  from transformers import AutoModelForCausalLM, AutoTokenizer)
+
+[//]: # (  from auto_round import AutoRoundConfig)
+
+[//]: # (  backend = "cuda_marlin" #supported in auto_round>0.3.1 and 'pip install -v gptqmodel --no-build-isolation'&#41;)
+
+[//]: # (  quantization_config = AutoRoundConfig&#40;backend=backend&#41;)
+
+[//]: # (  quantized_model_path = "./tmp_autoround")
+
+[//]: # (  model = AutoModelForCausalLM.from_pretrained&#40;quantized_model_path,)
+
+[//]: # (                               device_map=backend.split&#40;':'&#41;[0], quantization_config=quantization_config&#41;)
+
+[//]: # (  ```)
+  - To leverage auto-gptq marlin kernel, you need to install auto-gptq from source and export the model without sharding.
 
     ```bash
     auto-round --model facebook/opt-125m  --sym --bits 4 --group_size 128  --format "gptq:marlin"
