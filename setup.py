@@ -249,14 +249,18 @@ LIB_INSTALL_CFG = {
 }
 
 if __name__ == "__main__":
-    if "lib" in sys.argv:
+    # Build the auto_round_lib if the user explicitly requests it or if running in a Gaudi Docker environment.
+    is_user_requesting_library_build = "lib" in sys.argv
+
+    should_build_library = is_user_requesting_library_build or BUILD_HPU_ONLY
+
+    if should_build_library:
         sys.argv.remove("lib")
         package_name = "auto_round_lib"
         INSTALL_CFG = LIB_INSTALL_CFG
     else:
         package_name = "auto_round"
         INSTALL_CFG = PKG_INSTALL_CFG
-
 
     include_packages = INSTALL_CFG.get("include_packages", {})
     install_requires = INSTALL_CFG.get("install_requires", [])
