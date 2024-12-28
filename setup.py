@@ -253,7 +253,7 @@ if __name__ == "__main__":
     # 1. python setup.py lib install
     # 2. Within the gaudi docker where the HPU is available, we install the auto_round_lib by default.
     is_user_requesting_library_build = "lib" in sys.argv
-    if is_habana_framework_installed:
+    if is_user_requesting_library_build:
         sys.argv.remove("lib")
     should_build_library = is_user_requesting_library_build or BUILD_HPU_ONLY
 
