@@ -20,7 +20,7 @@ from .convert import Model
 from auto_round.utils import logger
 from pathlib import Path
 
-import gguf
+import gguf  # pylint: disable=E0401
 
 
 FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
