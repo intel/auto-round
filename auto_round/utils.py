@@ -1119,6 +1119,21 @@ def get_fp_layer_names(model, fp_layers):
 
 
 def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=None):
+    """Checks if a model is compatible with the AutoAWQ GEMM kernel.
+
+    Args:
+        model: The model object to evaluate, typically a PyTorch model.
+        bits (int): The number of bits for quantization (must be 4 for compatibility).
+        group_size (int): The group size for quantization.
+        sym (bool): Whether symmetric quantization is used (not utilized in the current function logic).
+        layer_configs (dict, optional): A dictionary mapping layer names to configurations, where each
+            configuration can specify a custom number of bits for the layer.
+
+    Returns:
+        tuple: A tuple containing:
+            - bool: `True` if the model is compatible, `False` otherwise.
+            - str: An error message describing why the model is incompatible, or an empty string if compatible.
+    """
     if bits != 4:
         return False, f"AutoAWQ GEMM kernel only supports 4 bits"
     for n, m in model.named_modules():
