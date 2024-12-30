@@ -313,8 +313,12 @@ def tune(args):
     from auto_round.utils import logger
 
     if args.format in ["gguf:q4_0", "gguf:q4_1"]:
+        args.bits = 4
+        if args.act_bits <= 8:
+            logger.warning(f"{args.format} not support for activation quantization. Reset act_bits to 16.")
+            args.act_bits = 16
         if args.group_size != 32:
-            logger.warning(f"{args.format} not support for group_size: {args.group_size}."
+            logger.warning(f"{args.format} not support for group_size: {args.group_size}. "
                 "Reset group_size to 32.")
             args.group_size = 32
         if args.format.endswith("_0"):
