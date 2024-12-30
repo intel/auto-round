@@ -170,7 +170,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
                           "set --device 0,1,2 to use multiple cards.")
         self.add_argument("--tasks",
                           default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                                  "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
+                                  "openbookqa,boolq,arc_easy,arc_challenge",
                           help="lm-eval tasks")
         self.add_argument("--disable_trust_remote_code", action='store_true',
                           help="whether to disable trust_remote_code")
@@ -270,6 +270,8 @@ def tune(args):
 
     if "marlin" in args.format and args.asym is True:
         assert False, "marlin backend only supports sym quantization, please remove --asym"
+
+
 
     ##must set this before import torch
     import os
@@ -416,6 +418,7 @@ def tune(args):
                 ##TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
 
+
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():
         lm_head_layer_name = n
@@ -430,6 +433,7 @@ def tune(args):
                         f"reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
                         f"supported currently")
                     break
+
     if args.quant_lm_head:
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
@@ -437,6 +441,12 @@ def tune(args):
                 auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
+
+    if "auto_awq" in args.format:
+        from auto_round.utils import check_awq_gemm_compatibility
+        awq_supported, info = check_awq_gemm_compatibility(model,args.bits,args.group_size, not args.asym, layer_config)
+        if not awq_supported:
+            logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
     autoround = round(
         model, tokenizer, args.bits, args.group_size, sym=not args.asym, batch_size=args.batch_size,

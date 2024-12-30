@@ -145,7 +145,7 @@ BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
 BackendInfos['awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##actrally is gemm
                                        packing_format="awq",
                                        bits=[4], group_size=None,
-                                       priority=4, feature_checks=[feature_num_greater_checker_1024],
+                                       priority=4,
                                        alias=["auto_awq:gemm", "auto_round:awq:gemm", "auto_round:auto_awq:gemm", "awq",
                                               "auto_awq", "auto_round:awq", "auto_round:auto_awq"],
                                        requirements=["autoawq"]
