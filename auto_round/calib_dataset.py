@@ -139,8 +139,8 @@ def get_CCI3_HQ_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=No
 
 
 @register_dataset("codeparrot/github-code-clean")
-def get_CCI3_HQ_dataset(tokenizer, seqlen, dataset_name="codeparrot/github-code-clean", split=None, seed=42,
-                        apply_chat_template=False):
+def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/github-code-clean", split=None, seed=42,
+                                  apply_chat_template=False):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -163,8 +163,8 @@ def get_CCI3_HQ_dataset(tokenizer, seqlen, dataset_name="codeparrot/github-code-
         seqlen: The maximum sequence length.
         apply_chat_template: Whether to apply chat template in tokenization.
 
-        Returns: A default tokenizer function that applies the provided tokenizer with truncation and a maximum length of
-        seqlen to the "text" field of examples.
+        Returns: A default tokenizer function that applies the provided tokenizer with truncation and a maximum length
+         of seqlen to the "code" field of examples.
         """
 
         def default_tokenizer_function(examples, apply_chat_template=apply_chat_template):
