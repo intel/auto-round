@@ -8,3 +8,4 @@ packaging
 pillow
 numba
 tbb
+transformers
