@@ -170,7 +170,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
                           "set --device 0,1,2 to use multiple cards.")
         self.add_argument("--tasks",
                           default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                                  "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
+                                  "openbookqa,boolq,arc_easy,arc_challenge",
                           help="lm-eval tasks")
         self.add_argument("--disable_trust_remote_code", action='store_true',
                           help="whether to disable trust_remote_code")
