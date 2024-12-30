@@ -45,7 +45,7 @@ def register_dataset(name):
     return register
 
 
-def apply_chat_templte_to_samples(samples, tokenizer, seqlen):
+def apply_chat_template_to_samples(samples, tokenizer, seqlen):
     from jinja2 import Template
     chat_template = tokenizer.chat_template if tokenizer.chat_template is not None \
         else tokenizer.default_chat_template
@@ -77,7 +77,7 @@ def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False):
         if not apply_chat_template:
             example = tokenizer(examples["text"], truncation=True, max_length=seqlen)
         else:
-            example = apply_chat_templte_to_samples(examples["text"], tokenizer, seqlen)
+            example = apply_chat_template_to_samples(examples["text"], tokenizer, seqlen)
         return example
 
     return default_tokenizer_function
@@ -171,7 +171,7 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
             if not apply_chat_template:
                 example = tokenizer(examples["code"], truncation=True, max_length=seqlen)
             else:
-                example = apply_chat_templte_to_samples(examples["code"], tokenizer, seqlen)
+                example = apply_chat_template_to_samples(examples["code"], tokenizer, seqlen)
             return example
 
         return default_tokenizer_function
@@ -227,7 +227,7 @@ def get_new_chinese_title_dataset(
             if not apply_chat_template:
                 example = tokenizer(examples["content"], truncation=True, max_length=seqlen)
             else:
-                example = apply_chat_templte_to_samples(examples["content"], tokenizer, seqlen)
+                example = apply_chat_template_to_samples(examples["content"], tokenizer, seqlen)
             return example
 
         return default_tokenizer_function
