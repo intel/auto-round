@@ -582,7 +582,7 @@ def eval_sequence(args):
     tasks, model_args, device_str = _eval_init(args)
 
     from lm_eval.utils import make_table  # pylint: disable=E04
-    all_res = {}
+    all_res = None
     res_keys = ["results", "versions", "n-shot", "higher_is_better"]
     for task in tasks:
         res = simple_evaluate(
@@ -591,7 +591,7 @@ def eval_sequence(args):
             tasks=task,
             device=device_str,
             batch_size=args.eval_bs)
-        if len(all_res) == 0:
+        if all_res is None:
             all_res = res 
         else:
             for key in res_keys:
