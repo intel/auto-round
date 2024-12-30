@@ -58,10 +58,10 @@ if TYPE_CHECKING:
 
 if 'NO_LOCAL_GGUF' not in os.environ:
     sys.path.insert(1, str(Path(__file__).parent / 'gguf-py'))
-import gguf  # pylint: disable=E0401
 
-from auto_round.utils import logger
+from auto_round.utils import logger, LazyImport
 from .quant import ggml_quant
+gguf = LazyImport("gguf")
 
 
 ###### MODEL DEFINITIONS ######

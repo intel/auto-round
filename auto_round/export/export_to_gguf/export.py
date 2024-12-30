@@ -17,10 +17,10 @@ import sys
 import shutil
 import torch
 from .convert import Model
-from auto_round.utils import logger
+from auto_round.utils import logger, LazyImport
 from pathlib import Path
 
-import gguf  # pylint: disable=E0401
+gguf = LazyImport("gguf")
 
 
 FTYPE_MAP: dict[str, gguf.LlamaFileType] = {

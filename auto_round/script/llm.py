@@ -315,8 +315,7 @@ def tune(args):
     if args.format in ["gguf:q4_0", "gguf:q4_1"]:
         args.bits = 4
         if args.act_bits <= 8:
-            logger.warning(f"{args.format} not support for activation quantization. Reset act_bits to 16.")
-            args.act_bits = 16
+            logger.warning(f"{args.format} not support for activation quantization.")
         if args.group_size != 32:
             logger.warning(f"{args.format} not support for group_size: {args.group_size}. "
                 "Reset group_size to 32.")
@@ -613,6 +612,7 @@ def eval_sequence(args):
 
     from lm_eval.utils import make_table  # pylint: disable=E04
     all_res = {}
+    res_keys = ["results", "versions", "n-shot", "higher_is_better"]
     for task in tasks:
         res = simple_evaluate(
             model="hf",
@@ -623,6 +623,6 @@ def eval_sequence(args):
         if all_res == {}:
             all_res = res 
         else:
-            for key in ['results', "versions", "n-shot", "higher_is_better"]:
+            for key in res_keys:
                 all_res[key].update(res[key])
         print(make_table(all_res))
