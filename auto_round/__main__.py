@@ -14,8 +14,8 @@
 import sys
 
 def run_eval():
-    if "--non_sequence" in sys.argv:
-        sys.argv.remove("--non_sequence")
+    if "--native" in sys.argv:
+        sys.argv.remove("--natve")
         from auto_round.script.llm import setup_eval_parser, eval
         args = setup_eval_parser()
         eval(args)

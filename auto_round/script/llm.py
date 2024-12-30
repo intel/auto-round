@@ -257,7 +257,7 @@ def tune(args):
     if args.format is None:
         args.format = "auto_round"
     supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq",
-                         "auto_gptq:marlin", "itrex", "iterx_xpu", "fake", "gguf:q4_0", "gguf:q4_1"]
+                         "auto_gptq:marlin", "gguf:q4_0", "gguf:q4_1", "itrex", "iterx_xpu", "fake"]
     formats = args.format.lower().replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
