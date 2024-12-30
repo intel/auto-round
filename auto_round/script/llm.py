@@ -520,8 +520,7 @@ def tune(args):
                                   batch_size=args.eval_bs)
         print(make_table(res))
 
-
-def eval(args):
+def _eval_init(args):
     import os
     devices = args.device.replace(" ", "").split(',')
     parallelism = False
@@ -553,13 +552,19 @@ def eval(args):
     else:
         device_str = detect_device(args.device.replace(" ", ""))
 
-    from auto_round.eval.evaluation import simple_evaluate
-
     model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
     if parallelism:
         model_args += ",parallelize=True"
     if isinstance(args.tasks, str):
         tasks = args.tasks.split(',')
+
+    return tasks, model_args, device_str
+
+def eval(args):
+    from auto_round.eval.evaluation import simple_evaluate
+
+    tasks, model_args, device_str = _eval_init(args)
+
     res = simple_evaluate(
         model="hf",
         model_args=model_args,
@@ -570,45 +575,11 @@ def eval(args):
     from lm_eval.utils import make_table  # pylint: disable=E0401
     print(make_table(res))
 
+
+
 def eval_sequence(args):
-    import os
-    devices = args.device.replace(" ", "").split(',')
-    parallelism = False
-
-    if all(s.isdigit() for s in devices):
-        if "CUDA_VISIBLE_DEVICES" in os.environ:
-            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
-            current_visible_devices = current_visible_devices.split(',')
-            indices = [int(device) for device in devices]
-            try:
-                pick_device = [current_visible_devices[i] for i in indices]
-            except:
-                raise ValueError(
-                    "Invalid '--device' value: It must be smaller than the number of available devices. "
-                    "For example, with CUDA_VISIBLE_DEVICES=4,5, "
-                    "--device 0,1 is valid, but --device 4,5 is not supported.")
-            visible_devices = ','.join(pick_device)
-            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
-        else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = args.device
-            args.device = ",".join(map(str, range(len(devices))))
-            devices = args.device.replace(" ", "").split(',')
-        if len(devices) > 1:
-            parallelism = True
-        device_str = None
-    elif args.device == "auto":
-        device_str = None
-        parallelism = True
-    else:
-        device_str = detect_device(args.device.replace(" ", ""))
-
-    from auto_round.eval.evaluation import simple_evaluate
-
-    model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
-    if parallelism:
-        model_args += ",parallelize=True"
-    if isinstance(args.tasks, str):
-        tasks = args.tasks.split(',')
+    from auto_round.eval.evaluation import simple_evaluate 
+    tasks, model_args, device_str = _eval_init(args)
 
     from lm_eval.utils import make_table  # pylint: disable=E04
     all_res = {}

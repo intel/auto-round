@@ -15,7 +15,7 @@ import sys
 
 def run_eval():
     if "--native" in sys.argv:
-        sys.argv.remove("--natve")
+        sys.argv.remove("--native")
         from auto_round.script.llm import setup_eval_parser, eval
         args = setup_eval_parser()
         eval(args)
