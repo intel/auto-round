@@ -30,12 +30,6 @@ class TestLocalCalibDataset(unittest.TestCase):
         with open(self.json_file, "w") as json_file:
             json.dump(json_data, json_file, indent=4)
 
-        self.text_file = "./saved/tmp.txt"
-        txt_data = ["awefdsfsddfd", "fdfdfsdfdfdfd", "dfdsfsdfdfdfdf"]
-        with open(self.text_file, "w") as text_file:
-            for data in txt_data:
-                text_file.write(data + "\n")
-
         jsonl_data = [{"text": "哈哈，開心點"}, {"text": "hello world"}]
         os.makedirs("./saved", exist_ok=True)
         self.jsonl_file = "./saved/tmp.jsonl"
@@ -43,7 +37,6 @@ class TestLocalCalibDataset(unittest.TestCase):
             for item in jsonl_data:
                 json.dump(item, jsonl_file, ensure_ascii=False)
                 jsonl_file.write('\n')
-
 
         model_name = "facebook/opt-125m"
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
@@ -78,13 +71,12 @@ class TestLocalCalibDataset(unittest.TestCase):
         autoround.quantize()
 
     def test_combine_dataset(self):
-        dataset = self.text_file + "," + "NeelNanda/pile-10k" + "," + "madao33/new-title-chinese" + "," + "mbpp"
+        dataset = "NeelNanda/pile-10k" + "," + "madao33/new-title-chinese" + "," + "mbpp"
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=128, dataset=dataset
         )
         autoround.quantize()
-
 
     @classmethod
     def tearDownClass(self):
