@@ -620,7 +620,7 @@ def eval_sequence(args):
             tasks=task,
             device=device_str,
             batch_size=args.eval_bs)
-        if all_res == {}:
+        if len(all_res) == 0:
             all_res = res 
         else:
             for key in res_keys:
