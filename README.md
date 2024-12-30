@@ -113,25 +113,40 @@ auto-round-fast \
 
 </details>
 
-#### Formats
+[//]: # (#### Formats)
 
-**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
-inference. [2,4]
-bits are supported. It also benefits
-from the Marlin kernel, which can boost inference performance notably. However, it has not yet gained widespread
-community adoption.
+[//]: # ()
+[//]: # (**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision)
 
-**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
-community, [2,3,4,8] bits are supported. It also benefits
-from the Marlin kernel, which can boost inference performance notably. However, **the
-asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
-models.
-Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
+[//]: # (inference. [2,4])
 
-**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
-adopted
-within the community, only 4-bits quantization is supported. It features
-specialized layer fusion tailored for Llama models.
+[//]: # (bits are supported. It also benefits)
+
+[//]: # (from the Marlin kernel, which can boost inference performance notably. However, it has not yet gained widespread)
+
+[//]: # (community adoption.)
+
+[//]: # ()
+[//]: # (**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the)
+
+[//]: # (community, [2,3,4,8] bits are supported. It also benefits)
+
+[//]: # (from the Marlin kernel, which can boost inference performance notably. However, **the)
+
+[//]: # (asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small)
+
+[//]: # (models.)
+
+[//]: # (Additionally, symmetric quantization tends to perform poorly at 2-bit precision.)
+
+[//]: # ()
+[//]: # (**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely)
+
+[//]: # (adopted)
+
+[//]: # (within the community, only 4-bits quantization is supported. It features)
+
+[//]: # (specialized layer fusion tailored for Llama models.)
 
 ### API Usage (Gaudi2/CPU/GPU)
 

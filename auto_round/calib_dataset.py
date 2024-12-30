@@ -77,7 +77,7 @@ def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False):
         if not apply_chat_template:
             example = tokenizer(examples["text"], truncation=True, max_length=seqlen)
         else:
-            apply_chat_templte_to_samples(examples["text"], tokenizer, seqlen)
+            example = apply_chat_templte_to_samples(examples["text"], tokenizer, seqlen)
         return example
 
     return default_tokenizer_function
@@ -227,7 +227,7 @@ def get_new_chinese_title_dataset(
             if not apply_chat_template:
                 example = tokenizer(examples["content"], truncation=True, max_length=seqlen)
             else:
-                apply_chat_templte_to_samples(examples["content"], tokenizer, seqlen)
+                example = apply_chat_templte_to_samples(examples["content"], tokenizer, seqlen)
             return example
 
         return default_tokenizer_function
