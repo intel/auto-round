@@ -235,7 +235,7 @@ def setup_lmeval_parser():
 def tune(args):
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = ["auto_round", "auto_round:auto_gptq", "auto_round:auto_awq"]
+    supported_formats = ["auto_round", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_awq"]
     if not args.quant_nontext_module:
         supported_formats.extend(["auto_gptq", "auto_gptq:marlin"])
 
@@ -514,4 +514,5 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+
 

@@ -24,7 +24,11 @@ import os
 import torch
 import torch.nn as nn
 
-from auto_round.utils import logger, get_module, set_module, check_to_quantized
+from auto_round.utils import (logger, get_module,
+                              set_module,
+                              check_to_quantized,
+                              get_multimodal_block_names,
+                              extract_block_names_to_str)
 import copy
 import json
 from .utils import WQLinear_GEMM, clear_memory
@@ -69,15 +73,22 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
     model = kwargs["model"]
     layer_config = kwargs["layer_config"]
-
+    to_quant_block_names = kwargs.get("to_quant_block_names", None)
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
-
+    modules_to_not_convert = []
+    
     logger.info("Saving quantized model to auto_awq format")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     if processor is not None:
         processor.save_pretrained(output_dir)
+        # mllm models
+        all_blocks = get_multimodal_block_names(model, quant_vision=True)
+        all_block_names = extract_block_names_to_str(all_blocks)
+        all_block_names = all_block_names.split(',')
+        to_quant_block_names = to_quant_block_names.split(',')
+        modules_to_not_convert = list(set(all_block_names) - set(to_quant_block_names))
 
     if inplace:
         compressed_model = model.to("cpu")
@@ -101,11 +112,13 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
 
     if output_dir is None:
         return compressed_model
-    modules_to_not_convert = []
+    
     layer_config = kwargs["layer_config"]
     for key in layer_config.keys():
-        if not check_to_quantized(layer_config[key]):
+        if not check_to_quantized(layer_config[key]) and \
+                not any(name in key for name in modules_to_not_convert):
             modules_to_not_convert.append(key)
+    
     quantization_config["quant_method"] = "awq"
     quantization_config["zero_point"] = not quantization_config["sym"]
     quantization_config["version"] = "gemm"
@@ -115,7 +128,8 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
 
     if hasattr(compressed_model, "config"):
         compressed_model.config.quantization_config = quantization_config
-    save(compressed_model, output_dir, safe_serialization=True)
+    safe_serialization = kwargs.get('safe_serialization', True)
+    save(compressed_model, output_dir, safe_serialization=safe_serialization)
 
     return compressed_model
 
@@ -146,3 +160,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
