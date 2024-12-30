@@ -46,10 +46,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--device", "--devices", default="0", type=str,
                           help="the device to be used for tuning. "
-                          "Currently, device settings support CPU, GPU, and HPU."
-                          "The default is set to cuda:0,"
-                          "allowing for automatic detection and switch to HPU or CPU."
-                          "set --device 0,1,2 to use multiple cards.")
+                               "Currently, device settings support CPU, GPU, and HPU."
+                               "The default is set to cuda:0,"
+                               "allowing for automatic detection and switch to HPU or CPU."
+                               "set --device 0,1,2 to use multiple cards.")
 
         self.add_argument("--asym", action='store_true',
                           help="whether to use asym quantization")
@@ -163,8 +163,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--to_quant_block_names", default=None, type=str,
                           help="Names of quantitative blocks, please use commas to separate them.")
 
-        
-
 
 def setup_parser():
     parser = BasicArgumentParser()
@@ -191,24 +189,24 @@ def setup_parser():
 def setup_lmeval_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", "--model_name", "--model_name_or_path",
-                          help="model name or path")
+                        help="model name or path")
     parser.add_argument("--tasks", type=str,
                         default="MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE",
                         help="eval tasks for VLMEvalKit.")
     # Args that only apply to Video Dataset
     parser.add_argument("--nframe", type=int, default=8,
                         help="the number of frames to sample from a video,"
-                            " only applicable to the evaluation of video benchmarks.")
+                             " only applicable to the evaluation of video benchmarks.")
     parser.add_argument("--pack", action='store_true',
                         help="a video may associate with multiple questions, if pack==True,"
-                            " will ask all questions for a video in a single")
+                             " will ask all questions for a video in a single")
     parser.add_argument("--fps", type=float, default=-1,
                         help="set the fps for a video.")
     # Work Dir
     # Infer + Eval or Infer Only
     parser.add_argument("--mode", type=str, default='all', choices=['all', 'infer'],
                         help="when mode set to 'all', will perform both inference and evaluation;"
-                            " when set to 'infer' will only perform the inference.")
+                             " when set to 'infer' will only perform the inference.")
     parser.add_argument('--eval_data_dir', type=str, default=None,
                         help='path for VLMEvalKit to store the eval data. Default will store in ~/LMUData')
     # API Kwargs, Apply to API VLMs and Judge API LLMs
@@ -227,7 +225,7 @@ def setup_lmeval_parser():
     parser.add_argument('--rerun', action='store_true',
                         help="if true, will remove all evaluation temp files and rerun.")
     parser.add_argument("--output_dir", default="./eval_result", type=str,
-                          help="the directory to save quantized model")
+                        help="the directory to save quantized model")
     args = parser.parse_args()
     return args
 
@@ -270,7 +268,8 @@ def tune(args):
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
             args.device = ",".join(map(str, range(len(devices))))
             devices = args.device.replace(" ", "").split(',')
-        use_auto_mapping = True
+        if len(devices) > 1:
+            use_auto_mapping = True  ##for 70B model on single card, use auto will cause some layer offload to cpu
     elif args.device == "auto":
         use_auto_mapping == True
 
@@ -284,7 +283,7 @@ def tune(args):
     processor, image_processor = None, None
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
     if "llava" in model_name and config.architectures[0] != "LlavaForConditionalGeneration":
-        from llava.model.builder import load_pretrained_model   # pylint: disable=E0401
+        from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
         tokenizer, model, image_processor, _ = load_pretrained_model(
             model_name, model_base=None, model_name=model_name,
             torch_dtype=torch_dtype)
@@ -394,6 +393,11 @@ def tune(args):
     if "--truncation" not in sys.argv:
         args.truncation = None
     
+    if "auto_awq" in args.format:
+        from auto_round.utils import check_awq_gemm_compatibility
+        awq_supported, info = check_awq_gemm_compatibility(model,args.bits,args.group_size, not args.asym, layer_config)
+        if not awq_supported:
+            logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
     autoround = round(model, tokenizer, processor=processor, image_processor=image_processor, dataset=args.dataset,
                       extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,
@@ -458,7 +462,7 @@ def setup_lmms_parser():
         help="To get full list of tasks, use the command lmms-eval --tasks list",
     )
     parser.add_argument("--output_dir", default="./eval_result", type=str,
-                          help="the directory to save quantized model")
+                        help="the directory to save quantized model")
     parser.add_argument(
         "--num_fewshot",
         type=int,
@@ -514,5 +518,4 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-
 

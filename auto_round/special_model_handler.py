@@ -18,6 +18,16 @@ shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama") # Limitations on batch_size
 skippable_cache_keys = ("past_key_value",)
 
+SUPPORT_ONLY_TEXT_MODELS = [
+    "phi3_v",
+    "cogvlm2",
+    "llava",
+    "qwen2_vl",
+    "deepseek_vl_v2",
+    "chatglm",
+    "idefics3"
+]
+
 def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
 
