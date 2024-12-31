@@ -81,7 +81,7 @@ class TestSupportVLMS(unittest.TestCase):
         ## test tune
         res = os.system(
             f"cd .. && {self.python_path} -m auto_round --mllm "
-            f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
+            f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}")
         self.assertFalse(res > 0 or res == -1, msg="Phi-3.5 tuning fail")
 
         ## test infer
@@ -114,11 +114,74 @@ class TestSupportVLMS(unittest.TestCase):
         image_inputs = Image.open(requests.get(image_url, stream=True).raw)
         inputs = processor(prompt, image_inputs, return_tensors="pt").to(model.device) 
 
-        generation_args = { 
+        generation_args = {
             "max_new_tokens": 1000, 
             "temperature": 0.0, 
             "do_sample": False, 
-        } 
+        }
+
+        generate_ids = model.generate(**inputs, 
+        eos_token_id=processor.tokenizer.eos_token_id, 
+        **generation_args
+        )
+
+        # remove input tokens 
+        generate_ids = generate_ids[:, inputs['input_ids'].shape[1]:]
+        response = processor.batch_decode(generate_ids, 
+        skip_special_tokens=True, 
+        clean_up_tokenization_spaces=False)[0] 
+        print(response)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+        
+    def test_phi3_vision_awq(self):
+        model_path = "/models/Phi-3.5-vision-instruct/"
+        ## test tune
+        res = os.system(
+            f"cd .. && {self.python_path} -m auto_round --mllm "
+            f"--model {model_path} --iter 2 --quant_nontext_module "
+            f"--nsample 64 --seqlen 32 "
+            f"--format auto_awq --output_dir {self.save_dir} --device {self.device}")
+        self.assertFalse(res > 0 or res == -1, msg="Phi-3.5 tuning fail")
+
+        ## test infer
+        from transformers import AutoModelForCausalLM, AutoProcessor
+        from auto_round.export.export_to_awq import WQLinear_GEMM
+        quantized_model_path = os.path.join(self.save_dir, "Phi-3.5-vision-instruct-w4g128-auto_awq")
+        res = os.system(f"cp /models/Phi-3.5-vision-instruct/*.py {quantized_model_path}")
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, 
+            device_map=f"cuda:{self.device}", 
+            trust_remote_code=True, 
+            torch_dtype="auto"
+        )
+        assert "WQLinear_GEMM" in str(
+                type(model.model.vision_embed_tokens.img_processor.vision_model.encoder.layers[0].mlp.fc1)), \
+                "model quantization failed."
+        processor = AutoProcessor.from_pretrained(quantized_model_path, 
+        trust_remote_code=True, 
+        num_crops=4
+        )
+
+        image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
+        content = "Describe this image."
+        messages = [
+            {"role": "user", 
+            "content": "<|image_1|>\n"+content},
+        ]
+
+        prompt = processor.tokenizer.apply_chat_template(
+        messages, 
+        tokenize=False, 
+        add_generation_prompt=True
+        )
+        image_inputs = Image.open(requests.get(image_url, stream=True).raw)
+        inputs = processor(prompt, image_inputs, return_tensors="pt").to(model.device) 
+
+        generation_args = {
+            "max_new_tokens": 1000, 
+            "temperature": 0.0, 
+            "do_sample": False, 
+        }
 
         generate_ids = model.generate(**inputs, 
         eos_token_id=processor.tokenizer.eos_token_id, 
@@ -261,6 +324,15 @@ class TestSupportVLMS(unittest.TestCase):
         response = response.split("<|end_of_text|>")[0]
         print(response)     
         shutil.rmtree(quantized_model_path, ignore_errors=True)
+    
+    def test_72b(self):
+        model_path = "/data5/models/Qwen2-VL-72B-Instruct/"
+        res = os.system(
+            f"cd .. && {self.python_path} -m auto_round --mllm "
+            f"--model {model_path} --iter 1 --nsamples 1 --bs 1 --output_dir {self.save_dir} --device {self.device}"
+            )
+        self.assertFalse(res > 0 or res == -1, msg="qwen2-72b tuning fail")
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()

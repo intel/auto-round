@@ -14,6 +14,7 @@
 
 from typing import Optional, Union
 from tqdm import tqdm
+from copy import deepcopy
 
 import torch
 
@@ -24,28 +25,45 @@ from ..utils import (
     to_dtype,
     get_multimodal_block_names,
     find_matching_blocks,
-    extract_block_names_to_str
+    extract_block_names_to_str,
+    clear_memory
 )
 from ..autoround import AutoRound
 from .template import get_template, Template
+from auto_round.special_model_handler import  SUPPORT_ONLY_TEXT_MODELS
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
 
 
-def _only_text_test(model, tokenizer, device):
+def _only_text_test(model, tokenizer, device, model_type):
     """Test if the model whether can use text-only datasets."""
+
+    if model_type in SUPPORT_ONLY_TEXT_MODELS:  # save time
+        return True
+
+    new_tokenizer = deepcopy(tokenizer)
+    device = detect_device(device)
+    text = ["only text", "test"]
+    new_tokenizer.padding_side = 'left'
+    if new_tokenizer.pad_token is None:
+        new_tokenizer.pad_token = new_tokenizer.eos_token
+    inputs = new_tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+
     try:
-        device = detect_device(device)
-        text = ["only text", "test"]
-        tokenizer.padding_side = 'left'
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        if device.split(':')[0] != model.device.type:
-            model = model.to(device)
-        inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(model.device)
+        inputs = inputs.to(device)
+        model = model.to(device)
         model(**inputs)
         return True
-    except:
+    except RuntimeError as e:
+        if "CUDA out of memory" in str(e):
+            model = model.to("cpu")
+            inputs = inputs.to("cpu")
+            try:
+                model(**inputs)
+            except:
+                return False
+        return False
+    except Exception as e:
         return False
 
 
@@ -165,7 +183,7 @@ class AutoRoundMLLM(AutoRound):
         if isinstance(dataset, str):
             if quant_nontext_module or \
                 (dataset in CALIB_DATASETS.keys() and not \
-                 _only_text_test(model, tokenizer, device)):
+                 _only_text_test(model, tokenizer, device, self.template.model_type)):
                 if quant_nontext_module:
                     logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
                                 "switching to liuhaotian/llava_conv_58k")
