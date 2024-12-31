@@ -555,6 +555,7 @@ def _eval_init(args):
     model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
     if parallelism:
         model_args += ",parallelize=True"
+    tasks = args.tasks
     if isinstance(args.tasks, str):
         tasks = args.tasks.split(',')
 
