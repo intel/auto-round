@@ -13,3 +13,4 @@ auto-gptq>=0.7.1
 pillow
 numba
 tbb
+gguf
