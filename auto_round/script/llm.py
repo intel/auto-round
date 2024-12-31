@@ -257,7 +257,7 @@ def tune(args):
     if args.format is None:
         args.format = "auto_round"
     supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq",
-                         "auto_gptq:marlin", "itrex", "iterx_xpu", "fake"]
+                         "auto_gptq:marlin", "itrex", "itrex_xpu", "fake"]
     formats = args.format.replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
@@ -363,13 +363,7 @@ def tune(args):
     from auto_round import AutoRound, AutoRoundAdam
 
     model = model.eval()
-    # align with GPTQ to eval ppl
     seqlen = args.seqlen
-    if "opt" in model_name:
-        seqlen = model.config.max_position_embeddings
-        model.seqlen = model.config.max_position_embeddings
-    else:
-        seqlen = 2048
 
     if args.model_dtype != None:
         try:
@@ -563,3 +557,4 @@ def eval(args):
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
     print(make_table(res))
+
