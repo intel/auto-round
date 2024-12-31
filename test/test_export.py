@@ -159,7 +159,6 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     def test_autoawq_format(self):
         try:
             import awq
@@ -221,3 +220,26 @@ class TestAutoRound(unittest.TestCase):
     #     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
     #     shutil.rmtree("./saved", ignore_errors=True)
     #
+
+    def test_gguf_format(self):
+        bits, group_size, sym = 4, 32, False
+        model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            nsamples=2,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+        quantized_model_path = "./saved"    
+        autoround.save_quantized(output_dir=quantized_model_path, format="gguf:q4_1")
+
+if __name__ == "__main__":
+    unittest.main()
