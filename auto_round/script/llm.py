@@ -498,6 +498,10 @@ def tune(args):
         save_format_ = save_format_.replace("_", "-")
         eval_folder = f'{export_dir}-{save_format_}'
         autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
+        if 'gguf' in format_:
+            gguf_format = format_.upper().split(":")[-1]
+            if not any([file.endswith(f"{gguf_format}.gguf") for file in os.listdir(eval_folder)]):
+                logger.error(f"fail to export {format_}")
 
     lm_eval_version = get_library_version("lm-eval")
 
