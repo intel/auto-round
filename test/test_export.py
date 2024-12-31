@@ -159,7 +159,6 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     def test_autoawq_format(self):
         try:
             import awq

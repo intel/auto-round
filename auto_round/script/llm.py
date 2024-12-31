@@ -257,8 +257,8 @@ def tune(args):
     if args.format is None:
         args.format = "auto_round"
     supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq",
-                         "auto_gptq:marlin", "itrex", "iterx_xpu", "fake"]
-    formats = args.format.replace(' ', '').split(",")
+                         "auto_gptq:marlin", "gguf:q4_0", "gguf:q4_1", "itrex", "iterx_xpu", "fake"]
+    formats = args.format.lower().replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
@@ -313,6 +313,22 @@ def tune(args):
     from auto_round.eval.evaluation import simple_evaluate
     from auto_round.utils import detect_device, get_library_version, detect_device_count
     from auto_round.utils import logger
+
+    if args.format in ["gguf:q4_0", "gguf:q4_1"]:
+        args.bits = 4
+        if args.act_bits <= 8:
+            logger.warning(f"{args.format} not support for activation quantization.")
+        if args.group_size != 32:
+            logger.warning(f"{args.format} not support for group_size: {args.group_size}. "
+                "Reset group_size to 32.")
+            args.group_size = 32
+        if args.format.endswith("_0"):
+            args.asym = False
+        if args.format.endswith("_1"):
+            args.asym = True
+
+    if "gguf" in args.format:
+        args.disable_eval = True
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -482,6 +498,10 @@ def tune(args):
         save_format_ = save_format_.replace("_", "-")
         eval_folder = f'{export_dir}-{save_format_}'
         autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
+        if 'gguf' in format_:
+            gguf_format = format_.upper().split(":")[-1]
+            if not any([file.endswith(f"{gguf_format}.gguf") for file in os.listdir(eval_folder)]):
+                logger.error(f"fail to export {format_}")
 
     lm_eval_version = get_library_version("lm-eval")
 
@@ -514,8 +534,7 @@ def tune(args):
                                   batch_size=args.eval_bs)
         print(make_table(res))
 
-
-def eval(args):
+def _eval_init(args):
     import os
     devices = args.device.replace(" ", "").split(',')
     parallelism = False
@@ -547,13 +566,20 @@ def eval(args):
     else:
         device_str = detect_device(args.device.replace(" ", ""))
 
-    from auto_round.eval.evaluation import simple_evaluate
-
     model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
     if parallelism:
         model_args += ",parallelize=True"
+    tasks = args.tasks
     if isinstance(args.tasks, str):
         tasks = args.tasks.split(',')
+
+    return tasks, model_args, device_str
+
+def eval(args):
+    from auto_round.eval.evaluation import simple_evaluate
+
+    tasks, model_args, device_str = _eval_init(args)
+
     res = simple_evaluate(
         model="hf",
         model_args=model_args,
@@ -563,3 +589,26 @@ def eval(args):
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
     print(make_table(res))
+
+
+
+def eval_sequence(args):
+    from auto_round.eval.evaluation import simple_evaluate 
+    tasks, model_args, device_str = _eval_init(args)
+
+    from lm_eval.utils import make_table  # pylint: disable=E0401
+    res_all = {}
+    res_keys = ["results", "versions", "n-shot", "higher_is_better"]
+    for task in tasks:
+        res = simple_evaluate(
+            model="hf",
+            model_args=model_args,
+            tasks=task,
+            device=device_str,
+            batch_size=args.eval_bs)
+        if not res_all:
+            res_all = res 
+        else:
+            for key in res_keys:
+                res_all[key].update(res[key])
+        print(make_table(res_all))

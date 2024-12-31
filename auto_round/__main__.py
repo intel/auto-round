@@ -14,9 +14,15 @@
 import sys
 
 def run_eval():
-    from auto_round.script.llm import setup_eval_parser, eval
-    args = setup_eval_parser()
-    eval(args)
+    if "--native" in sys.argv:
+        sys.argv.remove("--native")
+        from auto_round.script.llm import setup_eval_parser, eval
+        args = setup_eval_parser()
+        eval(args)
+    else:
+        from auto_round.script.llm import setup_eval_parser, eval_sequence
+        args = setup_eval_parser()
+        eval_sequence(args)
 
 def run():
     if "--eval" in sys.argv:
