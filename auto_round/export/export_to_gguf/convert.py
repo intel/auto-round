@@ -1035,7 +1035,7 @@ class BloomModel(Model):
             assert self.tensor_names is not None
 
             # TODO: tie them at runtime, don't duplicate in the model file
-            if all(s not in self.tensor_names for s in ("lm_head.weight", "output.weight")):
+            if all(s not in self.tensor_names for s in ("lm_head.weight", "output.weight")): # pylint: disable=E1135
                 tensors.append((self.format_tensor_name(gguf.MODEL_TENSOR.OUTPUT), data_torch))
 
         return tensors
@@ -2365,7 +2365,7 @@ class CodeShellModel(Model):
         if new_name == self.format_tensor_name(gguf.MODEL_TENSOR.TOKEN_EMBD):
             assert self.tensor_names is not None
 
-            if all(s not in self.tensor_names for s in ("lm_head.weight", "output.weight")):
+            if all(s not in self.tensor_names for s in ("lm_head.weight", "output.weight")): # pylint: disable=E1135
                 # copy tok_embd.weight to output.weight
                 tensors.append((self.format_tensor_name(gguf.MODEL_TENSOR.OUTPUT), data_torch))
 
@@ -2394,7 +2394,7 @@ class InternLM2Model(Model):
             logger.error(f'Error: Missing {tokenizer_path}')
             sys.exit(1)
 
-        sentencepiece_model = model.ModelProto()  # pyright: ignore[reportAttributeAccessIssue]
+        sentencepiece_model = model.ModelProto()  # pylint: disable=E1101
         sentencepiece_model.ParseFromString(open(tokenizer_path, "rb").read())
         add_prefix = sentencepiece_model.normalizer_spec.add_dummy_prefix
 
@@ -2677,7 +2677,7 @@ class XLMRobertaModel(BertModel):
         if not tokenizer_path.is_file():
             raise FileNotFoundError(f"File not found: {tokenizer_path}")
 
-        sentencepiece_model = model.ModelProto()  # pyright: ignore[reportAttributeAccessIssue]
+        sentencepiece_model = model.ModelProto()  # pylint: disable=E1101
         sentencepiece_model.ParseFromString(open(tokenizer_path, "rb").read())
         assert sentencepiece_model.trainer_spec.model_type == 1  # UNIGRAM
 
@@ -3518,7 +3518,7 @@ class T5Model(Model):
         if not tokenizer_path.is_file():
             raise FileNotFoundError(f"File not found: {tokenizer_path}")
 
-        sentencepiece_model = model.ModelProto()  # pyright: ignore[reportAttributeAccessIssue]
+        sentencepiece_model = model.ModelProto()  # pylint: disable=E1101
         sentencepiece_model.ParseFromString(open(tokenizer_path, "rb").read())
 
         # some models like Pile-T5 family use BPE tokenizer instead of Unigram
@@ -3654,7 +3654,7 @@ class T5EncoderModel(Model):
         if not tokenizer_path.is_file():
             raise FileNotFoundError(f"File not found: {tokenizer_path}")
 
-        sentencepiece_model = model.ModelProto()  # pyright: ignore[reportAttributeAccessIssue]
+        sentencepiece_model = model.ModelProto()  # pylint: disable=E1101
         sentencepiece_model.ParseFromString(open(tokenizer_path, "rb").read())
 
         # some models like Pile-T5 family use BPE tokenizer instead of Unigram

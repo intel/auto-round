@@ -63,7 +63,9 @@ def q4_0_quant_block(blocks: np.array, scale = None, zp = None):
     with np.errstate(divide="ignore"):
         id = np.where(d == 0, 0, 1 / d)
 
-    qs = np.trunc((np.float64(blocks) * np.float64(id)) + np.float64(8.5), dtype=np.float32).astype(np.uint8).clip(0, 15)
+    qs = np.trunc(
+        (np.float64(blocks) * np.float64(id)) + np.float64(8.5),
+        dtype=np.float32).astype(np.uint8).clip(0, 15)
 
     n_blocks = blocks.shape[0]
     block_size = GGML_QUANT_SIZES["q4_0"][0]
