@@ -58,7 +58,7 @@ class WrapperLinear(torch.nn.Module):
         device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
     """
 
-    def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu'):
+    def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu',output_device="cpu"):
         """Initializes the WrapperLinear module.
 
         Args:
@@ -70,6 +70,8 @@ class WrapperLinear(torch.nn.Module):
         super(WrapperLinear, self).__init__()
         self.orig_layer = orig_layer
         self.device = device
+        self.output_device = device
+        self.orig_layer.to(self.device)
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
@@ -84,7 +86,7 @@ class WrapperLinear(torch.nn.Module):
           activation quantization, and bias/normalization.
           """
         self.params = {}
-        p_dtype = torch.float32  ##parameter dtype
+        p_dtype = torch.bfloat16  ##parameter dtype
 
         orig_layer = self.orig_layer
         orig_weight = getattr(orig_layer, "get_weight", lambda: orig_layer.weight)()
@@ -293,6 +295,7 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
+        x = x.to(self.device)
         weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
         if self.enable_act_quant:
@@ -306,7 +309,7 @@ class WrapperLinear(torch.nn.Module):
         if self.enable_norm_bias_tuning:
             bias, _, _ = self._qdq_bias(bias, self.bias_v)
 
-        return self.orig_forward(x, weight_q, bias)
+        return self.orig_forward(x, weight_q, bias).to(self.output_device)
 
 
 class WrapperWALayer(torch.nn.Module):
@@ -460,8 +463,40 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
+            if "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2])<63  and "down_proj" not in n :
+                device ="cuda:1"
+                output_device = "cuda:1"
+            elif "experts" in n and ("shared_experts" not in n) and "down_proj" in n and int(n.split('.')[-2])<63:
+                device = "cuda:1"
+                output_device = "cuda:0"
+            elif "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2]) >= 63 and  int(n.split('.')[-2]) < 128 and "down_proj" not in n:
+                device = "cuda:2"
+                output_device = "cuda:2"
+            elif "experts" in n and ("shared_experts" not in n) and "down_proj" in n and int(n.split('.')[-2]) >= 63 and  int(n.split('.')[-2]) < 128:
+                device = "cuda:2"
+                output_device = "cuda:0"
+            elif "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2]) >= 128 and int(
+                    n.split('.')[-2]) < 192 and "down_proj" not in n:
+                device = "cuda:3"
+                output_device = "cuda:3"
+            elif "experts" in n and ("shared_experts" not in n) and "down_proj"  in n and int(
+                    n.split('.')[-2]) >= 128 and int(n.split('.')[-2]) < 192:
+                device = "cuda:3"
+                output_device = "cuda:0"
+            elif "experts" in n and ("shared_experts" not in n) and "down_proj" not in n and int(
+                    n.split('.')[-2]) >= 192:
+                device = "cuda:4"
+                output_device = "cuda:4"
+            elif "experts" in n and ("shared_experts" not in n) and "down_proj" in n and int(
+                    n.split('.')[-2]) >= 192:
+                device = "cuda:4"
+                output_device = "cuda:0"
+            else:
+                device = "cuda:0"
+                output_device = "cuda:0"
+
             new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning,
-                                  enable_norm_bias_tuning=enable_norm_bias_tuning, device=device)
+                                  enable_norm_bias_tuning=enable_norm_bias_tuning, device=device,output_device=output_device)
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
@@ -518,4 +553,3 @@ def unwrapper_block(block, best_params):
                 best_param = None
             orig_layer = m.unwrapper(best_param)
             set_module(block, n, orig_layer)
-

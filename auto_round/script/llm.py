@@ -298,8 +298,8 @@ def tune(args):
         if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
             use_auto_mapping = True
     elif args.device == "auto":
-        use_auto_mapping == True
-
+        use_auto_mapping = True
+    use_auto_mapping=False
     import re
     import torch
     import transformers
@@ -359,17 +359,18 @@ def tune(args):
             model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
             trust_remote_code=not args.disable_trust_remote_code, device_map="auto" if use_auto_mapping else None
         )
-
     from auto_round import AutoRound, AutoRoundAdam
 
-    model = model.eval()
+    # model = model.eval()
+    # for n,m in model.named_modules():
+    #     if isinstance(m,torch.nn.Linear):
+    #         print(n,m.in_features,m.out_features)
+    #     else:
+    #         print(n)
+
+    # exit()
     # align with GPTQ to eval ppl
     seqlen = args.seqlen
-    if "opt" in model_name:
-        seqlen = model.config.max_position_embeddings
-        model.seqlen = model.config.max_position_embeddings
-    else:
-        seqlen = 2048
 
     if args.model_dtype != None:
         try:

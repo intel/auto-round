@@ -203,7 +203,6 @@ class AutoRound(object):
             all_blocks = get_block_names(model)
             self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-        
 
         ##activation
         self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
@@ -619,34 +618,33 @@ class AutoRound(object):
         """
         if layer_names is None:
             layer_names = []
-        try:
-            if not self.model.device.type == "meta":
-                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                    pass
-                else:
-                    self.model = self.model.to(self.device)
-            all_inputs = self.cache_inter_data(
-                block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
-            )
-            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-            clear_memory()
-        except RuntimeError as e:
-            if "CUDA out of memory" in str(e):
-                logger.info("switch to cpu to cache block inputs")
-                if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 16) or
-                        self.__class__.__name__ == "AutoRoundMLLM"):
-                    logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
-                                   f"set `--device '0,1'` in our cmd line usage or "
-                                   f"load the model with `device_mapping=auto`,"
-                                   f" for optimal performance during calibration "
-                                   f"Otherwise, the process may be significantly slower.")
-                self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-                clear_memory()
-                all_inputs = self.cache_inter_data(
-                    block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
-                )
-            else:
-                raise
+        # try:
+        #     if not self.model.device.type == "meta":
+        #         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+        #             pass
+        #         else:
+        #             self.model = self.model.to(self.device)
+        #     all_inputs = self.cache_inter_data(
+        #         block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
+        #     )
+        #     self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        #     clear_memory()
+        # except RuntimeError as e:
+        #     if "CUDA out of memory" in str(e):
+        logger.info("switch to cpu to cache block inputs")
+        if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 16) or
+                self.__class__.__name__ == "AutoRoundMLLM"):
+            logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
+                           f"set `--device '0,1'` in our cmd line usage or "
+                           f"load the model with `device_mapping=auto`,"
+                           f" for optimal performance during calibration "
+                           f"Otherwise, the process may be significantly slower.")
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        clear_memory()
+        all_inputs = self.cache_inter_data(
+            block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
+        )
+
         return all_inputs
 
     @torch.no_grad()
@@ -997,6 +995,25 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+
+        def move_to_device(data, device):
+            if isinstance(data, torch.Tensor):
+                return data.to(device)
+            elif isinstance(data, tuple):
+                return tuple([move_to_device(x, device) for x in data])
+            elif isinstance(data, list):
+                return list([move_to_device(x, device) for x in data])
+            elif isinstance(data, dict):
+                res = {}
+                for key in data.keys():
+                    res[key] = move_to_device(data[key], device)
+                return res
+            else:
+                return data
+
+        # for n,m in block.named_modules():
+        #     print(n)
+
         if q_input is None:
             hook_handles = self.register_act_max_hook(block)
 
@@ -1019,6 +1036,28 @@ class AutoRound(object):
 
         if q_input is not None:
             input_ids = q_input
+
+        def pre_forward_hook_to_device(module, device):
+
+            def pre_forward_hook(module, inputs):
+                return move_to_device(inputs, device)
+
+            return pre_forward_hook
+
+        def post_forward_hook_to_device(module, device):
+
+            def post_forward_hook(module, input, output):
+                return move_to_device(output, device)
+
+            return post_forward_hook
+
+        forward_hooks = []
+        for n, m in block.named_modules():
+            if isinstance(m, torch.nn.Linear):
+                pre_hook = m.register_forward_pre_hook(pre_forward_hook_to_device(m, "cuda:0"))
+                post_hook = m.register_forward_hook(post_forward_hook_to_device(m, "cuda:0"))
+                forward_hooks.append(pre_hook)
+                forward_hooks.append(post_hook)
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
             block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device)
@@ -1045,7 +1084,7 @@ class AutoRound(object):
                 f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
                 f"layers in the block"
             )
-            logger.debug(dump_info)
+            logger.info(dump_info)
             return output, output
 
         if self.lr_scheduler is None:
@@ -1136,14 +1175,18 @@ class AutoRound(object):
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
-        logger.debug(dump_info)
+        logger.info(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_params)
+            for hook in forward_hooks:
+                hook.remove()
+
         if self.enable_quanted_input:
             if self.low_cpu_mem_usage:
                 block = block.to(device)
+            block=block.to("cuda:0")
             clear_memory()
             q_outputs = self.get_block_outputs(
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device,
@@ -1740,4 +1783,3 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer=optimizer,
             **kwargs,
         )
-
