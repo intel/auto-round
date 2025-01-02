@@ -548,7 +548,7 @@ class AutoRoundQuantizer(HfQuantizer):
                 )
             if "gptq" in layer_backend and "exllamav2" in layer_backend:
                 try:
-                    from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611
+                    from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
                 except:
                     logger.warning_once(
                         "For better inference performance, please install exllamav2 kernel "
