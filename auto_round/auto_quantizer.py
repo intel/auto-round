@@ -501,6 +501,8 @@ class AutoRoundQuantizer(HfQuantizer):
         target_backend = remove_device_str(target_backend, "hpu")
         target_backend = remove_device_str(target_backend, "cuda")
         orig_backend = self.find_backend(orig_backend)
+        if orig_backend is None:
+            orig_backend = "gptq:exllamav2"
 
         if target_backend == "":
             target_backend = orig_backend
