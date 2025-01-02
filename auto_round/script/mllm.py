@@ -271,7 +271,7 @@ def tune(args):
         if len(devices) > 1:
             use_auto_mapping = True  ##for 70B model on single card, use auto will cause some layer offload to cpu
     elif args.device == "auto":
-        use_auto_mapping == True
+        use_auto_mapping = True
 
     device_str = detect_device(devices[0])
 
