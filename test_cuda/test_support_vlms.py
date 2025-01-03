@@ -17,9 +17,9 @@ class TestSupportVLMS(unittest.TestCase):
         self.python_path = sys.executable
         self.device = 0
 
-    # @classmethod
-    # def tearDownClass(self):
-    #     shutil.rmtree(self.save_dir, ignore_errors=True)
+    @classmethod
+    def tearDownClass(self):
+        shutil.rmtree(self.save_dir, ignore_errors=True)
     
     def test_qwen2(self):
         model_path = "/models/Qwen2-VL-2B-Instruct/"
@@ -339,7 +339,7 @@ class TestSupportVLMS(unittest.TestCase):
         res = os.system(
             f"cd .. && {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 3 --nsamples 10 --bs 4 --output_dir {self.save_dir} --device auto --group_size 32 "
-            f"--fp_layers language.model.layer.4,language.model.layer.6"
+            f"--fp_layers language.model.layers.4,language.model.layers.6"
             )
         self.assertFalse(res > 0 or res == -1, msg="deepseek vl2 tuning fail")
 
