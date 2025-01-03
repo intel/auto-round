@@ -559,12 +559,20 @@ class AutoRoundQuantizer(HfQuantizer):
             layer_device = get_device(layer)
 
             bias = layer.bias is not None
-            if "awq" in layer_backend:
+            if "awq" in layer_backend and target_device=="cuda":
                 new_layer = QuantLinear.from_linear(  # pylint: disable=E1123
                     layer,
                     bits,
                     group_size,
                     init_only=True
+                )
+            elif "awq" in layer_backend and target_device=="cpu":
+                new_layer =  QuantLinear.from_linear(  # pylint: disable=E1123
+                    layer,
+                    bits,
+                    group_size,
+                    init_only=True,
+                    has_zero_points=not sym
                 )
             else:
                 try:
@@ -599,14 +607,16 @@ class AutoRoundQuantizer(HfQuantizer):
 
         for n, layer in tqdm(layers, desc=message, total=len(layers),
                              leave=True):
-            from auto_round_extension.qbits import qbits_qlinear_classes
+            from auto_round_extension.qbits import qbits_qlinear_classes,qbits_awq_classes
             from auto_round_extension.ipex import ipex_qlinear_classes
             if isinstance(layer, qbits_qlinear_classes):
                 if dep_check:
                     layer.req_check()
                 layer.post_init()
                 dep_check = False
-            if isinstance(layer, ipex_qlinear_classes):
+            elif isinstance(layer, ipex_qlinear_classes):
+                layer.post_init()
+            elif isinstance(layer, qbits_awq_classes):
                 layer.post_init()
 
         return model
