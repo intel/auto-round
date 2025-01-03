@@ -168,6 +168,14 @@ BackendInfos['auto_round:qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, Fal
                                                   requirements=["intel-extension-for-transformers"]
                                                   )
 
+BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True, False],
+                                                  packing_format="awq",
+                                                  bits=[2, 4, 8], group_size=None,
+                                                  priority=0 if "intel" in get_cpu_manufacturer() else 5,
+                                                  feature_checks=[],
+                                                  requirements=["intel-extension-for-transformers"]
+                                                  )
+
 BackendInfos['auto_round:ipex_gptq'] = BackendInfo(device=["cpu"], sym=[True, False],
                                                    packing_format="ipex_gptq",
                                                    bits=[4], group_size=None,
@@ -317,6 +325,9 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         if "zp" in backend:
             import auto_round_extension.qbits.qlinear_qbits_gptq as qlinear_qbits_gptq
             return qlinear_qbits_gptq.QuantLinear
+        elif "awq" in backend:
+            import auto_round_extension.qbits.qbits_awq as qlinear_qbits_awq
+            return qlinear_qbits_awq.QuantLinear
         else:  # auto_round must be at the end
             import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits_autoround
             return qlinear_qbits_autoround.QuantLinear
