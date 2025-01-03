@@ -33,6 +33,7 @@ def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
     block_names = []
     if quant_vision:
         block_names.append([f"vision.blocks.{i}" for i in range(len(model.vision.blocks))])
+        block_names.append([f"projector.layers.{i}" for i in range(len(model.projector.layers))])
     block_names.append([f"language.model.layers.{i}" for i in range(len(model.language.model.layers))])
     return block_names
 
