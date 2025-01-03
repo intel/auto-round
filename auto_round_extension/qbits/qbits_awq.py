@@ -86,7 +86,7 @@ class QuantLinear(nn.Module):
         self.zero_point = zero_point
         self.scale_dtype = torch.float32
 
-        # quick sanity check (make sure aligment)
+        # quick sanity check (make sure alignment)
         assert self.in_features % self.group_size == 0
         assert out_features % (32 // self.w_bit) == 0
         self.pack_num = 32 // self.w_bit
@@ -158,7 +158,7 @@ class QuantLinear(nn.Module):
         assert QBITS_INSTALLED, (
             "QBits kernels could not be loaded. "
             "Please install with `pip install intel-extension-for-transformers` and "
-            "refer to the detial https://github.com/intel/intel-extension-for-transformers/blob/main/docs/qbits.md")
+            "refer to the detail https://github.com/intel/intel-extension-for-transformers/blob/main/docs/qbits.md")
 
         input_dtype = x.dtype
         out_shape = x.shape[:-1] + (self.out_features,)
