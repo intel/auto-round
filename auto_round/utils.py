@@ -402,7 +402,7 @@ def get_multimodal_block_names(model, quant_vision=False):
     Returns:
     block_names: A list whose elements are list of block's layer names
     """
-    if model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
+    if hasattr(model, "config") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
         return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
     block_names = []
     target_modules = []

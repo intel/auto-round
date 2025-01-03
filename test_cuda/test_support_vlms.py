@@ -352,7 +352,7 @@ class TestSupportVLMS(unittest.TestCase):
         vl_gpt: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
             quantized_model_path,
             trust_remote_code=True,
-            device_map="auto",
+            device_map=f"cuda:{self.device}",
             torch_dtype="auto",
         )
         vl_gpt = vl_gpt.eval()
