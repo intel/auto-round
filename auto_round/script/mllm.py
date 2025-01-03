@@ -283,42 +283,44 @@ def tune(args):
 
     # load_model
     processor, image_processor = None, None
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-    if "llava" in model_name and config.architectures[0] != "LlavaForConditionalGeneration":
-        from llava.model.builder import load_pretrained_model   # pylint: disable=E0401
-        tokenizer, model, image_processor, _ = load_pretrained_model(
-            model_name, model_base=None, model_name=model_name,
-            torch_dtype=torch_dtype)
-        model_type = "llava"
-    elif "deepseek" in model_name.lower():
-        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM
-        processor = DeepseekVLV2Processor.from_pretrained(model_name)
+    if "deepseek" in model_name.lower():
+        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM # pylint: disable=E0401
+        processor = DeepseekVLV2Processor.from_pretrained(model_name) 
         tokenizer = processor.tokenizer
         model: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
             model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
             device_map="auto" if use_auto_mapping else None)
+        model_type = "deepseek_vl_v2"
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-        model_type = config.model_type
-        if "llava" in model_type:
-            from transformers import LlavaForConditionalGeneration
-            cls = LlavaForConditionalGeneration
-        elif "qwen2_vl" in model_type:
-            from transformers import Qwen2VLForConditionalGeneration
-            cls = Qwen2VLForConditionalGeneration
-        elif "mllama" in model_type:
-            from transformers import MllamaForConditionalGeneration
-            cls = MllamaForConditionalGeneration
-        elif "idefics3" in model_type:
-            from transformers import  AutoModelForVision2Seq 
-            cls = AutoModelForVision2Seq
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        if "llava" in model_name and config.architectures[0] != "LlavaForConditionalGeneration":
+            from llava.model.builder import load_pretrained_model   # pylint: disable=E0401
+            tokenizer, model, image_processor, _ = load_pretrained_model(
+                model_name, model_base=None, model_name=model_name,
+                torch_dtype=torch_dtype)
+            model_type = "llava"
         else:
-            cls = AutoModelForCausalLM
+            tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+            processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+            model_type = config.model_type
+            if "llava" in model_type:
+                from transformers import LlavaForConditionalGeneration
+                cls = LlavaForConditionalGeneration
+            elif "qwen2_vl" in model_type:
+                from transformers import Qwen2VLForConditionalGeneration
+                cls = Qwen2VLForConditionalGeneration
+            elif "mllama" in model_type:
+                from transformers import MllamaForConditionalGeneration
+                cls = MllamaForConditionalGeneration
+            elif "idefics3" in model_type:
+                from transformers import  AutoModelForVision2Seq 
+                cls = AutoModelForVision2Seq
+            else:
+                cls = AutoModelForCausalLM
 
-        model = cls.from_pretrained(
-            model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
-            device_map="auto" if use_auto_mapping else None)
+            model = cls.from_pretrained(
+                model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
+                device_map="auto" if use_auto_mapping else None)
     if "cogvlm2" in model_name:
         model.config.model_type = "cogvlm2"
 

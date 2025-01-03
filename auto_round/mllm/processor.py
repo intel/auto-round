@@ -157,7 +157,7 @@ class HFProcessor(BasicProcessor):
                 
 
 @regist_processor("qwen2_vl")
-class Qwen2VLProcessor(BasicProcessor):
+class Qwen2VLProcessor(HFProcessor):
     @staticmethod
     def squeeze_result(ret):
         for key in ret:
@@ -290,3 +290,14 @@ class LlavaProcessor(BasicProcessor):
 
     def data_collator(self, batch):
         return self.collator_func(batch)
+
+
+@regist_processor("deepseek_vl_v2")
+class DeepseekVL2Processor(BasicProcessor):
+    def get_input(
+        self, 
+        text,
+        images,
+        return_tensors="pt",
+        squeeze=True, max_length=None, truncation=False, truncation_strategy="text", **kwargs):
+        breakpoint()
