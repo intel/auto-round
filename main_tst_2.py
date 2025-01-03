@@ -4,7 +4,7 @@ from auto_round import AutoRoundConfig  ##must import for autoround format
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
-quantized_model_dir = "/data5/wenhuach/Qwen2.5-0.5B-Instruct-w4g128-auto-awq"
+quantized_model_dir = "/data5/wenhuach/Qwen2.5-0.5B-Instruct-w4g128-auto-round-auto-awq"
 
 quantization_config = AutoRoundConfig(
     backend="cpu"
@@ -13,7 +13,7 @@ quantization_config = AutoRoundConfig(
 model = AutoModelForCausalLM.from_pretrained(
     quantized_model_dir,
     torch_dtype=torch.float16,
-    trust_remote_code=True,
+    # trust_remote_code=True,
     device_map="cpu",
     # revision="8fe0735",  ##use autoround format, the only difference is config.json
     quantization_config=quantization_config,  ##cpu only machine could not set this

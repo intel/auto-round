@@ -559,12 +559,20 @@ class AutoRoundQuantizer(HfQuantizer):
             layer_device = get_device(layer)
 
             bias = layer.bias is not None
-            if "awq" in layer_backend:
+            if "awq" in layer_backend and target_device=="cuda":
                 new_layer = QuantLinear.from_linear(  # pylint: disable=E1123
                     layer,
                     bits,
                     group_size,
                     init_only=True
+                )
+            elif "awq" in layer_backend and target_device=="cpu":
+                new_layer =  QuantLinear.from_linear(  # pylint: disable=E1123
+                    layer,
+                    bits,
+                    group_size,
+                    init_only=True,
+                    has_zero_points=not sym
                 )
             else:
                 try:
