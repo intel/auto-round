@@ -29,7 +29,7 @@ from torch.amp import autocast
 from functools import lru_cache
 from packaging import version
 import gc
-from .special_model_handler import shareable_keywords
+from .special_model_handler import shareable_keywords, SPECIAL_MULTIMODAL_BLOCK
 
 
 @lru_cache(None)
@@ -402,6 +402,8 @@ def get_multimodal_block_names(model, quant_vision=False):
     Returns:
     block_names: A list whose elements are list of block's layer names
     """
+    if hasattr(model, "config") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
+        return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
     block_names = []
     target_modules = []
     vison_blocks_tuple = ("vision", "visual",)
