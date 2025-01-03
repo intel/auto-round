@@ -333,6 +333,15 @@ class TestSupportVLMS(unittest.TestCase):
             )
         self.assertFalse(res > 0 or res == -1, msg="qwen2-72b tuning fail")
         shutil.rmtree(self.save_dir, ignore_errors=True)
+    
+    def test_deepseek_vl2(self):
+        model_path = "/models/deepseek-vl2-tiny"
+        res = os.system(
+            f"cd .. && {self.python_path} -m auto_round --mllm "
+            f"--model {model_path} --iter 3 --nsamples 10 --bs 4 --output_dir {self.save_dir} --device auto"
+            )
+        self.assertFalse(res > 0 or res == -1, msg="deepseek vl2 tuning fail")
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()
