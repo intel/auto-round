@@ -599,14 +599,16 @@ class AutoRoundQuantizer(HfQuantizer):
 
         for n, layer in tqdm(layers, desc=message, total=len(layers),
                              leave=True):
-            from auto_round_extension.qbits import qbits_qlinear_classes
+            from auto_round_extension.qbits import qbits_qlinear_classes,qbits_awq_classes
             from auto_round_extension.ipex import ipex_qlinear_classes
             if isinstance(layer, qbits_qlinear_classes):
                 if dep_check:
                     layer.req_check()
                 layer.post_init()
                 dep_check = False
-            if isinstance(layer, ipex_qlinear_classes):
+            elif isinstance(layer, ipex_qlinear_classes):
+                layer.post_init()
+            elif isinstance(layer, qbits_awq_classes):
                 layer.post_init()
 
         return model
