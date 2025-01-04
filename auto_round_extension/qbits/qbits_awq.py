@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 AWQ_REVERSE_ORDER = [0, 4, 1, 5, 2, 6, 3, 7]
 def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
-    shifts = torch.arange(0, 32, bits, device=qzeros.device)
+    shifts = torch.arange(0, 32, bits, device="cpu")
 
     # unpacking columnwise
     iweights = torch.bitwise_right_shift(qweight[:, :, None], shifts[None, None, :]).to(
@@ -135,7 +135,11 @@ class QuantLinear(nn.Module):
         intweight, zeros = reverse_awq_order(intweight, zeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
         if self.zero_point:
             intweight = torch.bitwise_and(intweight, (2 ** self.w_bit) - 1) - (2 ** (self.w_bit - 1))
+            # if torch.min(intweight) < -8  or  torch.max(intweight)>7:
+            #     print(torch.min(intweight),torch.max(intweight))
             zeros = torch.bitwise_and(zeros, (2 ** self.w_bit) - 1) - (2 ** (self.w_bit - 1))
+            # if torch.min(zeros) < -8 or torch.max(zeros) > 7:
+            #     print(torch.min(zeros), torch.max(zeros))
         else:
             ##symmetric, our default zp is 8
             intweight = torch.bitwise_and(intweight, (2 ** self.w_bit) - 1) - (2 ** (self.w_bit - 1))
