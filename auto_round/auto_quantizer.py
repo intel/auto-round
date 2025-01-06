@@ -285,8 +285,6 @@ class AutoRoundQuantizer(HfQuantizer):
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:
             torch_dtype = torch.float16
-        elif torch_dtype != torch.float16 and not is_hpu_supported():
-            logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
         return torch_dtype
 
     def find_backend(self, target_backend: str):
@@ -406,8 +404,7 @@ class AutoRoundQuantizer(HfQuantizer):
             if ("hpu" == target_device or "cpu" == target_device) and model.dtype != torch.bfloat16:
                 logger.info(f"Change the dtype to `bfloat16` as {target_device.upper()} does not support float16")
                 model = model.to(torch.bfloat16)
-            else:
-                if model.dtype != torch.float16:
+            elif "cuda" == target_device and model.dtype != torch.float16:
                     logger.info(f"Change the dtype to `float16` for better performance")
                     model = model.to(torch.float16)
 
