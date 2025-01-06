@@ -26,7 +26,7 @@ def reverse_awq_order(iweights: torch.Tensor, izeros: torch.Tensor, bits: int):
     reverse_order_tensor = torch.arange(
         iweights.shape[-1],
         dtype=torch.int32,
-        device=izeros.device,
+        device="cpu",
     )
     reverse_order_tensor = reverse_order_tensor.view(-1, 32 // bits)
     reverse_order_tensor = reverse_order_tensor[:, AWQ_REVERSE_ORDER]
@@ -96,7 +96,7 @@ class QuantLinear(nn.Module):
                 (in_features // self.group_size, out_features // self.pack_num),
                 dtype=torch.int8,
                 device=dev,
-            ) if self.zero_point else None,
+            )
         )
         self.register_buffer(
             "scales",
@@ -123,13 +123,9 @@ class QuantLinear(nn.Module):
 
         intweight, zeros = unpack_awq(self.qweight, self.qzeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
         intweight, zeros = reverse_awq_order(intweight, zeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
-        if self.zero_point:
+        if self.zero_point: ## asym has accuracy issue, have not root caused yet
             intweight = torch.bitwise_and(intweight, (2 ** self.w_bit) - 1) - (2 ** (self.w_bit - 1))
-            # if torch.min(intweight) < -8  or  torch.max(intweight)>7:
-            #     print(torch.min(intweight),torch.max(intweight))
             zeros = torch.bitwise_and(zeros, (2 ** self.w_bit) - 1) - (2 ** (self.w_bit - 1))
-            # if torch.min(zeros) < -8 or torch.max(zeros) > 7:
-            #     print(torch.min(zeros), torch.max(zeros))
         else:
             ##symmetric, our default zp is 8
             intweight = torch.bitwise_and(intweight, (2 ** self.w_bit) - 1) - (2 ** (self.w_bit - 1))
