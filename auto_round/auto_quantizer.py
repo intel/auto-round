@@ -285,8 +285,6 @@ class AutoRoundQuantizer(HfQuantizer):
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:
             torch_dtype = torch.float16
-        elif torch_dtype != torch.float16 and not is_hpu_supported():
-            logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
         return torch_dtype
 
     def find_backend(self, target_backend: str):
