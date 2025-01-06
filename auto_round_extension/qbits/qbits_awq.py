@@ -90,24 +90,14 @@ class QuantLinear(nn.Module):
         assert self.in_features % self.group_size == 0
         assert out_features % (32 // self.w_bit) == 0
         self.pack_num = 32 // self.w_bit
-        if self.zero_point:
-            self.register_buffer(
-                "qzeros",
-                torch.zeros(
-                    (in_features // self.group_size, out_features // self.pack_num),
-                    dtype=torch.int8,
-                    device=dev,
-                )
-            )
-        else:
-            self.register_buffer(
-                "qzeros",
-                torch.ones(
-                    (in_features // self.group_size, out_features // self.pack_num),
-                    dtype=torch.int8,
-                    device=dev,
-                )*8
-            )
+        self.register_buffer(
+            "qzeros",
+            torch.zeros(
+                (in_features // self.group_size, out_features // self.pack_num),
+                dtype=torch.int8,
+                device=dev,
+            ) if self.zero_point else None,
+        )
         self.register_buffer(
             "scales",
             torch.zeros(
