@@ -81,7 +81,7 @@ def q4_0_quant_block(blocks: np.array, scale = None, zp = None):
 def q4_1_quant_block(blocks: np.array, scale = None, zp = None):
     if scale is not None:
         d = scale.reshape((-1,1))
-        min = zp.reshape((-1,1))
+        min = zp.reshape((-1,1)) * d * -1
     else:
         max = blocks.max(axis=-1, keepdims=True)
         min = blocks.min(axis=-1, keepdims=True)

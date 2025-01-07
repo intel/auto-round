@@ -269,23 +269,26 @@ def tune(args):
     if args.format is None:
         args.format = "auto_round"
     supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq",
-                         "auto_gptq:marlin", "gguf:q4_0", "gguf:q4_1", "itrex", "iterx_xpu", "fake"]
+                         "auto_gptq:marlin", "gguf:q4_0", "gguf:q4_1", "itrex", "itrex_xpu", "fake"]
     formats = args.format.lower().replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
         if format in ["gguf:q4_0", "gguf:q4_1"]:
             args.bits = 4
-        if args.act_bits <= 8:
-            logger.warning(f"{args.format} not support for activation quantization.")
-        if args.group_size != 32:
-            logger.warning(f"{args.format} not support for group_size: {args.group_size}. "
-                "Reset group_size to 32.")
-            args.group_size = 32
-        if args.format.endswith("_0"):
-            args.asym = False
-        if args.format.endswith("_1"):
-            args.asym = True
+            if args.act_bits <= 8:
+                logger.warning(f"{args.format} not support for activation quantization.")
+            if args.group_size != 32:
+                logger.warning(f"{args.format} not support for group_size: {args.group_size}. "
+                    "Reset group_size to 32.")
+                args.group_size = 32
+            if args.format.endswith("_0") and args.asym:
+                logger.warning(f"{args.format} not support for asymmetric quantization, will reset to sym.")
+                args.asym = False
+            if args.format.endswith("_1") and not args.asym:
+                logger.warning(f"{args.format} not support for symmetric quantization, will reset to asym.")
+                args.asym = True
+            logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
 
     if "auto_gptq" in args.format and args.asym is True:
         print(
