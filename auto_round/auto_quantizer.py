@@ -413,16 +413,24 @@ class AutoRoundQuantizer(HfQuantizer):
         data_type = quantization_config.data_type if hasattr(quantization_config,
                                                              "data_type") else "int"  # pragma: no cover
         sym = quantization_config.sym
-        to_quant_block_names = quantization_config.to_quant_block_names if hasattr(quantization_config,
-                                                                                   "to_quant_block_names") else None
+        
         quant_block_list = quantization_config.quant_block_list if hasattr(quantization_config,
                                                                                    "quant_block_list") else None
-        if to_quant_block_names is None: # TODO check compatibility
-            all_blocks = get_block_names(model)
-        else:
-            all_blocks = get_multimodal_block_names(model, quant_vision=True)
+        
         if quant_block_list is None:
-            quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
+            to_quant_block_names = quantization_config.to_quant_block_names if hasattr(quantization_config,
+                                                                                   "to_quant_block_names") else None
+            if to_quant_block_names is not None:
+                if isinstance(to_quant_block_names, (list, tuple)):
+                    quant_block_list = to_quant_block_names
+                else:
+                    quant_block_list = []
+                    for block in to_quant_block_names.split(','):
+                        quant_block_list.append([f'{block}.{i}' for i in range(len(get_module(model, block)))])
+            else:
+                all_blocks = get_block_names(model)
+                quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
+
         layer_names = get_layer_names_in_block(model, quant_block_list=quant_block_list)
 
         extra_config = {}
