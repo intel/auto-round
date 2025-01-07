@@ -1035,10 +1035,11 @@ class AutoRound(object):
             if hasattr(m, "orig_layer"):
                 for key in m.params.keys():
                     if "min" in key or "max" in key:
+                        logger.info(f"add minmax param {key} in module{n} to optimizer, shape: {m.params[key].shape}")
                         minmax_params.append(m.params[key])
                     else:
+                        logger.info(f"add minmax param {key} in module{n} to optimizer, shape {m.params[key].shape}")
                         round_params.append(m.params[key])
-
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0

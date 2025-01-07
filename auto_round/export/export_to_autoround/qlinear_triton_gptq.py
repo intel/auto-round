@@ -81,6 +81,9 @@ logger = getLogger(__name__)
 
 
 # class QuantLinear(nn.Module, TritonModuleMixin):
+
+from auto_round.config import global_config
+
 class QuantLinear(nn.Module):
     QUANT_TYPE = "triton"
 
@@ -117,8 +120,8 @@ class QuantLinear(nn.Module):
                 dtype=torch.bfloat16,
             ),
         )
-
-        _shape = (1, self.outfeatures) if os.environ.get("W4A8_PC", "0") == "1" else (1)
+        _use_pc = global_config.W4A8_PC
+        _shape = (1, self.outfeatures) if _use_pc else (1)
         self.register_buffer(
             "w_bf16_to_fp8_scale",
             torch.zeros(
