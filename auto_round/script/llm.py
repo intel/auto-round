@@ -400,7 +400,6 @@ def tune(args):
                     f"{n} will not be quantized due to its shape not being divisible by 32,"
                     " resulting in an exporting issue to autogptq")
 
-    layer_config = {}
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
         layer_config[name] = {"bits": 16}
