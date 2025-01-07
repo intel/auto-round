@@ -1,16 +1,2 @@
-accelerate
-datasets
-py-cpuinfo
-sentencepiece
-torch
-transformers>=4.38
-numpy < 2.0
-threadpoolctl
-lm-eval>=0.4.2,<0.5
-tqdm
-packaging
-pillow
-numba
-tbb
 intel-extension-for-pytorch
 intel-extension-for-transformers

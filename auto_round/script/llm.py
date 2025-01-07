@@ -295,8 +295,6 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         assert False, "marlin backend only supports sym quantization, please remove --asym"
 
-
-
     ##must set this before import torch
     import os
     devices = args.device.replace(" ", "").split(',')
@@ -376,13 +374,7 @@ def tune(args):
     from auto_round import AutoRound, AutoRoundAdam
 
     model = model.eval()
-    # align with GPTQ to eval ppl
     seqlen = args.seqlen
-    if "opt" in model_name:
-        seqlen = model.config.max_position_embeddings
-        model.seqlen = model.config.max_position_embeddings
-    else:
-        seqlen = 2048
 
     if args.model_dtype != None:
         try:
@@ -419,7 +411,6 @@ def tune(args):
                     f"{n} will not be quantized due to its shape not being divisible by 32,"
                     " resulting in an exporting issue to autogptq")
 
-    layer_config = {}
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
         layer_config[name] = {"bits": 16}
@@ -589,7 +580,6 @@ def eval(args):
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
     print(make_table(res))
-
 
 
 def eval_sequence(args):
