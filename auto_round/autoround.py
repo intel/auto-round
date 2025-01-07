@@ -203,7 +203,6 @@ class AutoRound(object):
             all_blocks = get_block_names(model)
             self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-        
 
         ##activation
         self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
@@ -864,8 +863,13 @@ class AutoRound(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        wrapper_linear = WrapperLinear(layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device).to(
-            device)
+        wrapper_linear = WrapperLinear(
+            layer,
+            enable_minmax_tuning=self.enable_minmax_tuning,
+            device=device,
+            _inner_layer_name=layer_name,
+        ).to(device)
+
         round_params = []
         minmax_params = []
         for key in wrapper_linear.params.keys():
@@ -1212,6 +1216,8 @@ class AutoRound(object):
             pbar = tqdm(range(0, len(block_names), nblocks))
         # for i in pbar:
         for i in range(len(block_names)):
+            if os.getenv("DEBUG_QUANT_BLOCK", "0") == "1" and i > 2: 
+                break
             if nblocks == 1:
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
@@ -1743,4 +1749,3 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer=optimizer,
             **kwargs,
         )
-

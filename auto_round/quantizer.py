@@ -22,6 +22,7 @@ from .utils import (
     set_module,
     logger
 )
+from loguru import logger as rich_logger
 
 
 def reshape_and_pad_tensor(v, group_size=-1):
@@ -58,7 +59,14 @@ class WrapperLinear(torch.nn.Module):
         device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
     """
 
-    def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu'):
+    def __init__(
+        self,
+        orig_layer,
+        enable_minmax_tuning=True,
+        enable_norm_bias_tuning=False,
+        device="cpu",
+        _inner_layer_name=None,
+    ):
         """Initializes the WrapperLinear module.
 
         Args:
@@ -68,6 +76,7 @@ class WrapperLinear(torch.nn.Module):
             device (str): The computation device, such as 'cpu' or 'cuda'.
         """
         super(WrapperLinear, self).__init__()
+        self._inner_layer_name = _inner_layer_name
         self.orig_layer = orig_layer
         self.device = device
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -152,7 +161,6 @@ class WrapperLinear(torch.nn.Module):
             weight = self.orig_layer.get_weight().to(self.device)
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             weight = weight.t()
-
         weight_q, scale, zp = self.weight_quant_func(weight, bits=self.orig_layer.bits,
                                                      group_size=self.orig_layer.group_size, v=value,
                                                      min_scale=min_scale, max_scale=max_scale,
@@ -468,8 +476,13 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning,
-                                  enable_norm_bias_tuning=enable_norm_bias_tuning, device=device)
+            new_m = WrapperLinear(
+                m,
+                enable_minmax_tuning=enable_minmax_tuning,
+                enable_norm_bias_tuning=enable_norm_bias_tuning,
+                device=device,
+                _inner_layer_name=n,
+            )
             set_module(block, n, new_m)
             quantized_layers.append(n)
 

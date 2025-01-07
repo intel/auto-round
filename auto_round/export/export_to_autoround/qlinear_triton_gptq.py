@@ -40,7 +40,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-
+import os
 # from auto_round_extension.cuda.triton_utils.mixin import TritonModuleMixin
 
 logger = getLogger(__name__)
@@ -117,10 +117,12 @@ class QuantLinear(nn.Module):
                 dtype=torch.bfloat16,
             ),
         )
+
+        _shape = (1, self.outfeatures) if os.environ.get("W4A8_PC", "0") == "1" else (1)
         self.register_buffer(
             "w_bf16_to_fp8_scale",
             torch.zeros(
-                (1),
+                _shape,
                 dtype=torch.bfloat16,
             ),
         )
@@ -142,6 +144,14 @@ class QuantLinear(nn.Module):
             self.bias = None
 
         self.trainable = trainable
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}({self.infeatures}, {self.outfeatures}, "
+            f"bits={self.bits}, group_size={self.group_size},"
+            f"scales shape: {self.scales.shape}, act_scales shape: {self.act_scales.shape}, w_bf16_to_fp8_scale shape: {self.w_bf16_to_fp8_scale.shape}"
+            f")"
+        )
 
     def post_init(self):
         pass
