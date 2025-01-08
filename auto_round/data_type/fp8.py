@@ -24,7 +24,7 @@ from auto_round.data_type.register import register_dtype
 import torch
 
 @lru_cache(None)
-def get_gaudi2_fp8_ste_func():
+def get_gaudi_fp8_ste_func():
     from auto_round.utils import is_hpu_supported
     if is_hpu_supported():
         fn = float8_e4m3fn_hpu_ste
@@ -201,7 +201,7 @@ def progressive_quant_fp8_int4_bas(tensor, bits=4, group_size=-1, v=0, min_scale
 
 ##ugly code, need to refine later
 
-@register_dtype("fp8_gaudi2_sym")
+@register_dtype("fp8_gaudi3_sym")
 def quant_fp8_sym_gaudi(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     """Symmetric quantization using float8 format.
 
@@ -237,13 +237,14 @@ def quant_fp8_sym_gaudi(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     scale = scale.unsqueeze(dim=-1)
     fp8_res = (tensor / scale)
     fp8_res = torch.clip(fp8_res, -fp8_max, fp8_max)
-    float8_e4m3fn_ste_gaudi2 = get_gaudi2_fp8_ste_func()
-    fp8_res = float8_e4m3fn_ste_gaudi2(fp8_res)
+    float8_e4m3fn_ste_gaudi = get_gaudi_fp8_ste_func()
+    fp8_res = float8_e4m3fn_ste_gaudi(fp8_res)
     qdq_res = fp8_res * scale
     qdq_res = qdq_res.to(orig_dtype).reshape(orig_shape)
     return qdq_res, scale, None
 
-@register_dtype("fp8_gaudi2_to_int_sym")
+
+@register_dtype("fp8_gaudi3_to_int_sym")
 def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5,
                                weight_fp8_max_scale=1.0,**kwargs):
     """Two-stage quantization: quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
@@ -275,8 +276,8 @@ def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
     scale_bf16_to_fp8 = torch.clip(scale, min=min_scaling_factor)
     fp8_res = tensor / scale_bf16_to_fp8
     fp8_res = torch.clip(fp8_res, -fp8_max, fp8_max)
-    float8_e4m3fn_ste_gaudi2 = get_gaudi2_fp8_ste_func()
-    fp8_res = float8_e4m3fn_ste_gaudi2(fp8_res)
+    float8_e4m3fn_ste_gaudi = get_gaudi_fp8_ste_func()
+    fp8_res = float8_e4m3fn_ste_gaudi(fp8_res)
 
     ##convert to bf16
     fp8_res_using_16bit = fp8_res.to(tensor.dtype)
@@ -289,11 +290,11 @@ def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
                                                                           scale_dtype=torch.bfloat16,
                                                                           q_scale_thresh=q_scale_thresh)
     qdq_tensor = qdq_int4_tensor * scale_bf16_to_fp8
+    scale_bf16_to_int4 = scale_fp8_to_int4 * scale_bf16_to_fp8
+    return qdq_tensor, (scale_bf16_to_int4, scale_bf16_to_fp8), zp_fp8_to_int4
 
-    return qdq_tensor, (scale_fp8_to_int4 * scale_bf16_to_fp8, scale_bf16_to_fp8), zp_fp8_to_int4
 
-
-@register_dtype("fp8_gaudi2_to_int_sym_pc")
+@register_dtype("fp8_gaudi3_to_int_sym_pc")
 def progressive_quant_fp8_int4_per_channel(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5,
                                weight_fp8_max_scale=1.0,**kwargs):
     """
@@ -332,8 +333,8 @@ def progressive_quant_fp8_int4_per_channel(tensor, bits=4, group_size=-1, v=0, m
     scale_bf16_to_fp8 = torch.clip(scale, min=min_scaling_factor)
     fp8_res = tensor / scale_bf16_to_fp8
     fp8_res = torch.clip(fp8_res, -fp8_max, fp8_max)
-    float8_e4m3fn_ste_gaudi2 = get_gaudi2_fp8_ste_func()
-    fp8_res = float8_e4m3fn_ste_gaudi2(fp8_res)
+    float8_e4m3fn_ste_gaudi = get_gaudi_fp8_ste_func()
+    fp8_res = float8_e4m3fn_ste_gaudi(fp8_res)
 
     ##convert to bf16
     fp8_res_using_16bit = fp8_res.to(tensor.dtype)
@@ -353,7 +354,7 @@ def progressive_quant_fp8_int4_per_channel(tensor, bits=4, group_size=-1, v=0, m
     return qdq_tensor, (scale_bf16_to_int4_with_group, scale_bf16_to_fp8), zp_fp8_to_int4
     # return qdq_tensor, (scale_fp8_to_int4 * scale_bf16_to_fp8, scale_bf16_to_fp8), zp_fp8_to_int4
 
-@register_dtype("fp8_gaudi2_to_int_sym_v2")
+@register_dtype("fp8_gaudi3_to_int_sym_v2")
 def progressive_quant_fp8_int4_v2(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5,
                                weight_fp8_max_scale=1.0,**kwargs):
     """Two-stage quantization: quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
@@ -399,8 +400,8 @@ def progressive_quant_fp8_int4_v2(tensor, bits=4, group_size=-1, v=0, min_scale=
     scale_bf16_to_fp8 = torch.clip(scale, min=min_scaling_factor)
     fp8_res = qdq_int4_tensor / scale_bf16_to_fp8
     fp8_res = torch.clip(fp8_res, -fp8_max, fp8_max)
-    float8_e4m3fn_ste_gaudi2 = get_gaudi2_fp8_ste_func()
-    fp8_res = float8_e4m3fn_ste_gaudi2(fp8_res)
+    float8_e4m3fn_ste_gaudi = get_gaudi_fp8_ste_func()
+    fp8_res = float8_e4m3fn_ste_gaudi(fp8_res)
 
     ##convert to bf16
     fp8_res_using_16bit = fp8_res.to(tensor.dtype)

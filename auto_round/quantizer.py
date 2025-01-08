@@ -349,6 +349,7 @@ class WrapperLinear(torch.nn.Module):
             bias, _, _ = self._qdq_bias(bias, self.bias_v)
 
         return self.orig_forward(x, weight_q, bias)
+from auto_round.config import global_config
 
 
 class WrapperWALayer(torch.nn.Module):
@@ -359,7 +360,8 @@ class WrapperWALayer(torch.nn.Module):
 
     def forward(self, x):
         # FIXME: (Yi) for static quant, remove it later
-        assert hasattr(self.orig_layer, "act_max"), f"For static quant, expecting act_max in {self.orig_layer}"
+        if not global_config.W4A8_DYNAMIC:
+            assert hasattr(self.orig_layer, "act_max"), f"For static quant, expecting act_max in {self.orig_layer}"
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
         x, _, _ = self.orig_layer.act_quant_func(x, bits=self.orig_layer.act_bits,
                                                  group_size=self.orig_layer.group_size,
