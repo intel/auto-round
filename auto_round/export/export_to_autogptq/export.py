@@ -102,7 +102,11 @@ def pack_layer(name, model, layer_config, backend, pbar):
         # so far can only pack layer on CPU
         qlayer.to("cpu")
         ##force to float32 to be compatible with torch 2.0
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
+        if sym:
+            zero = 2**(bits-1)
+            layer, scale = layer.to("cpu"), scale.to("cpu")
+        else:
+            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
         sig = inspect.signature(qlayer.pack)
         param_count = len(sig.parameters)
         if param_count == 2:
