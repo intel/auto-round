@@ -25,6 +25,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+import re
 import argparse
 
 from auto_round.utils import detect_device, get_fp_layer_names
@@ -253,8 +255,6 @@ def setup_eval_parser():
     return args
 
 def tune(args):
-    import re
-    import torch
     import transformers
 
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
@@ -299,7 +299,6 @@ def tune(args):
         assert False, "marlin backend only supports sym quantization, please remove --asym"
 
     ##must set this before import torch
-    import os
     devices = args.device.replace(" ", "").split(',')
     use_auto_mapping = False
     if all(s.isdigit() for s in devices):
@@ -323,9 +322,11 @@ def tune(args):
         if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
             use_auto_mapping = True
     elif args.device == "auto":
-        use_auto_mapping == True
+        use_auto_mapping = True
 
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+    import torch
     torch.use_deterministic_algorithms(True, warn_only=True)
 
     model_name = args.model
@@ -529,7 +530,6 @@ def tune(args):
         print(make_table(res))
 
 def _eval_init(args):
-    import os
     devices = args.device.replace(" ", "").split(',')
     parallelism = False
 
