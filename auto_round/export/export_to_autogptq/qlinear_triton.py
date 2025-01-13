@@ -18,6 +18,29 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
+import numba
+
+
+##TODO different bits
+# @numba.jit(nopython=True, parallel=True)
+# def pack_array_with_numba_b4_c32(
+#         raw_array: np.ndarray, packed_array: np.ndarray
+# ) -> np.ndarray:
+#     """Pack the array with numba when bits=4 and compress_bits=32."""
+#     bits = 4
+#     n_pack = 32 // bits
+#
+#     for row in range(packed_array.shape[0]):
+#         packed_array[row] = ((((raw_array[row * n_pack + 7]) << 28)
+#                               | ((raw_array[row * n_pack + 6]) << 24)
+#                               | ((raw_array[row * n_pack + 5]) << 20)
+#                               | ((raw_array[row * n_pack + 4]) << 16)
+#                               | ((raw_array[row * n_pack + 3]) << 12)
+#                               | (raw_array[row * n_pack + 2]) << 8)
+#                              | ((raw_array[row * n_pack + 1]) << 4)
+#                              | ((raw_array[row * n_pack]) << 0))
+#
+#     return packed_array
 
 
 class TritonModuleMixin:
@@ -147,19 +170,20 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
 
-        W = W.to("cuda")
         repeat_scales = scales.to("cuda").repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to("cuda").repeat_interleave(self.group_size, 1)
         else:
             repeat_zeros = zeros
 
-        intweight_cuda = torch.round(W / repeat_scales + repeat_zeros).to(torch.int).t().contiguous().to("cpu")
-        intweight = intweight_cuda.numpy().astype(np.uint32)
+        intweight = torch.round(W.to("cuda") / repeat_scales + repeat_zeros).to(torch.int).t().contiguous().to("cpu")
+        intweight = intweight.numpy().astype(np.uint32)
+        ##torch.cuda.empty_cache()
 
         i = 0
         row = 0
         qweight = np.zeros((intweight.shape[0] // 32 * self.bits, intweight.shape[1]), dtype=np.uint32)
+        # pack_array_with_numba_b4_c32(intweight, qweight)
         while row < qweight.shape[0]:
             for j in range(i, i + (32 // self.bits)):
                 qweight[row] |= intweight[j] << (self.bits * (j - i))
