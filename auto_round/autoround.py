@@ -1267,6 +1267,14 @@ class AutoRound(object):
             if processor is not None:
                 processor.save_pretrained(output_dir)
             return
+        if format in ["gguf:q4_0", "gguf:q4_1"]:
+            if self.group_size != 32:
+                logger.error(f"{format} need group_size=32, but it is {self.group_size}, cannot export.")
+                return
+            if format == "gguf:q4_0" and not self.sym:
+                logger.warning(f"incorrect format choose, will reset to gguf:q4_1")
+            if format == "gguf:q4_1" and self.sym:
+                logger.warning(f"incorrect format choose, will reset to gguf:q4_0")
 
         from auto_round.export import EXPORT_FORMAT
         backend = format
