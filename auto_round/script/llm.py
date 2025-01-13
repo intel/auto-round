@@ -254,33 +254,34 @@ def setup_eval_parser():
     args = parser.parse_args()
     return args
 
-def _gguf_config_check(args):
+def _gguf_args_check(args):
     from auto_round.utils import logger
 
+    _GGUF_CONFIG = {
+        "gguf:q4_0": {
+            "bits": 4,
+            "act_bits": 16,
+            "group_size": 32,
+            "asym": False,
+        },
+        "gguf:q4_1": {
+            "bits": 4,
+            "act_bits": 16,
+            "group_size": 32,
+            "asym": True,
+        }
+    }
+
     formats = args.format.lower().replace(' ', '').split(",")
-    for format in formats:
-        if format in ["gguf:q4_0", "gguf:q4_1"]:
+    for format in _GGUF_CONFIG:
+        if format in formats:
             unsupport_list, reset_list = [],[]
-            if args.bits != 4:
-                unsupport_list.append(f"bits={args.bits}")
-                reset_list.append(f"bits=4")
-                args.bits = 4
-            if args.act_bits <= 8:
-                unsupport_list.append(f"act_bits={args.act_bits}")
-                reset_list.append(f"act_bits=16")
-                args.act_bits = 8
-            if args.group_size != 32:
-                unsupport_list.append(f"group_size={args.group_size}")
-                reset_list.append(f"group_size=32")
-                args.group_size = 32
-            if format.endswith("_0") and args.asym:
-                unsupport_list.append(f"asym={args.asym}")
-                reset_list.append(f"asym=False")
-                args.asym = False
-            if format.endswith("_1") and not args.asym:
-                unsupport_list.append(f"asym={args.asym}")
-                reset_list.append(f"asym=True")
-                args.asym = True
+            gguf_config = _GGUF_CONFIG[format]
+            for k, v in gguf_config.items():
+                if getattr(args, k) != v:
+                    unsupport_list.append(f"{k}={getattr(args, k)}")
+                    reset_list.append(f"{k}={v}")
+                    setattr(args, k, v)
             if len(unsupport_list) > 0:
                 if len(formats) > 1:
                     logger.error(f"format {format} not support for {', '.join(unsupport_list)},"
@@ -314,7 +315,7 @@ def tune(args):
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
 
-    args = _gguf_config_check(args)
+    args = _gguf_args_check(args)
 
     if "auto_gptq" in args.format and args.asym is True:
         print(
