@@ -228,7 +228,8 @@ class WQLinear_GEMM(nn.Module):
                 repeat_zeros = zeros.to("cuda:0").t().repeat_interleave(group_size, 1)
             else:
                 repeat_zeros = zeros
-            intweight = torch.round(linear.weight.to("cuda:0") / repeat_scales + repeat_zeros).to(torch.int).t().contiguous().to("cpu")
+            intweight = torch.round(linear.weight.to("cuda:0") / repeat_scales + repeat_zeros).to(
+                torch.int).t().contiguous().to("cpu")
             intweight = intweight.to(dtype=torch.int32)
             del repeat_scales
         else:
