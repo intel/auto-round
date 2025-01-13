@@ -221,23 +221,28 @@ class WQLinear_GEMM(nn.Module):
 
         pack_num = 32 // awq_linear.w_bit
 
-        intweight = []
-        for idx in range(awq_linear.in_features):
-            intweight.append(
-                torch.round(
-                    (linear.weight.data[:, idx] + scale_zeros[idx // group_size])
-                    / awq_linear.scales[idx // group_size]
-                ).to(torch.int)[:, None]
-            )
-        intweight = torch.cat(intweight, dim=1)
-        intweight = intweight.t().contiguous()
-        intweight = intweight.to(dtype=torch.int32)
+        if torch.cuda.is_available():
 
-        best_device = get_best_device()
-
-        # Avoid: The operator 'aten::__lshift__.Scalar' is not currently implemented for the MPS device
-        if "mps" in best_device:
-            intweight = intweight.to("cpu")
+            repeat_scales = scales.to("cuda:0").t().repeat_interleave(group_size, 1)
+            if isinstance(zeros, torch.Tensor):
+                repeat_zeros = zeros.to("cuda:0").t().repeat_interleave(group_size, 1)
+            else:
+                repeat_zeros = zeros
+            intweight = torch.round(linear.weight.to("cuda:0") / repeat_scales + repeat_zeros).to(torch.int).t().contiguous().to("cpu")
+            intweight = intweight.to(dtype=torch.int32)
+            del repeat_scales
+        else:
+            intweight = []
+            for idx in range(awq_linear.in_features):
+                intweight.append(
+                    torch.round(
+                        (linear.weight.data[:, idx] + scale_zeros[idx // group_size])
+                        / awq_linear.scales[idx // group_size]
+                    ).to(torch.int)[:, None]
+                )
+            intweight = torch.cat(intweight, dim=1)
+            intweight = intweight.t().contiguous()
+            intweight = intweight.to(dtype=torch.int32)
 
         qweight = torch.zeros(
             (intweight.shape[0], intweight.shape[1] // 32 * awq_linear.w_bit),
@@ -246,34 +251,35 @@ class WQLinear_GEMM(nn.Module):
         )
 
         for col in range(intweight.shape[1] // pack_num):
-            if awq_linear.w_bit == 4:
-                order_map = [0, 2, 4, 6, 1, 3, 5, 7]
-            else:
-                raise NotImplementedError("Only 4-bit are supported for now.")
+            order_map = [0, 2, 4, 6, 1, 3, 5, 7]
             for i in range(pack_num):
                 qweight_col = intweight[:, col * pack_num + order_map[i]]
                 qweight[:, col] |= qweight_col << (i * awq_linear.w_bit)
         awq_linear.qweight = qweight
 
-        zeros = zeros.to(dtype=torch.int32, device=best_device)
+        if isinstance(zeros, torch.Tensor):
+            qzeros = torch.zeros(
+                (scales.shape[0], scales.shape[1] // 32 * awq_linear.w_bit),
+                dtype=torch.int32,
+                device=zeros.device,
+            )
+            zeros = zeros.to(dtype=torch.int32, device="cpu")
 
-        if "mps" in best_device:
-            zeros = zeros.to("cpu")
-
-        qzeros = torch.zeros(
-            (zeros.shape[0], zeros.shape[1] // 32 * awq_linear.w_bit),
-            dtype=torch.int32,
-            device=zeros.device,
-        )
-
-        for col in range(zeros.shape[1] // pack_num):
-            if awq_linear.w_bit == 4:
+            for col in range(zeros.shape[1] // pack_num):
                 order_map = [0, 2, 4, 6, 1, 3, 5, 7]
-            else:
-                raise NotImplementedError("Only 4-bit are supported for now.")
+                for i in range(pack_num):
+                    qzero_col = zeros[:, col * pack_num + order_map[i]]
+                    qzeros[:, col] |= qzero_col << (i * awq_linear.w_bit)
+        else:
+            value = 0
             for i in range(pack_num):
-                qzero_col = zeros[:, col * pack_num + order_map[i]]
-                qzeros[:, col] |= qzero_col << (i * awq_linear.w_bit)
+                value |= zeros << (i * awq_linear.w_bit)
+            qzeros = torch.ones(
+                (scales.shape[0], scales.shape[1] // 32 * awq_linear.w_bit),
+                dtype=torch.int32,
+                device=qweight.device,
+            ) * value
+
         awq_linear.qzeros = qzeros
 
         return awq_linear

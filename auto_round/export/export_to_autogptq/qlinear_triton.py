@@ -170,15 +170,15 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
 
-        repeat_scales = scales.to("cuda").repeat_interleave(self.group_size, 1)
+        repeat_scales = scales.to("cuda:0").repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
-            repeat_zeros = zeros.to("cuda").repeat_interleave(self.group_size, 1)
+            repeat_zeros = zeros.to("cuda:0").repeat_interleave(self.group_size, 1)
         else:
             repeat_zeros = zeros
 
-        intweight = torch.round(W.to("cuda") / repeat_scales + repeat_zeros).to(torch.int).t().contiguous().to("cpu")
+        intweight = torch.round(W.to("cuda:0") / repeat_scales + repeat_zeros).to(torch.int).t().contiguous().to("cpu")
         intweight = intweight.numpy().astype(np.uint32)
-        ##torch.cuda.empty_cache()
+        del repeat_scales
 
         i = 0
         row = 0
