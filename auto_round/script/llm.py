@@ -275,7 +275,9 @@ def tune(args):
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
         if format in ["gguf:q4_0", "gguf:q4_1"]:
-            args.bits = 4
+            if args.bits != 4:
+                args.bits = 4
+                logger.warning(f"reset bits to 4 as choose export format {format}")
             if args.act_bits <= 8:
                 logger.warning(f"{args.format} not support for activation quantization.")
             if args.group_size != 32:
