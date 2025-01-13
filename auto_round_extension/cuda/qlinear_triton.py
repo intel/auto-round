@@ -127,7 +127,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
     def post_init(self):
         pass
 
-    def pack(self, linear, scales, zeros, g_idx=None):
+    def pack_cpu(self, linear, scales, zeros, g_idx=None):
         W = linear.weight.data.clone()
         if isinstance(linear, nn.Conv2d):
             W = W.flatten(1)
@@ -147,7 +147,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         for idx in range(self.infeatures):
             intweight.append(
                 torch.round((W[:, idx] + scale_zeros[self.g_idx[idx]]) / self.scales[self.g_idx[idx]]).to(torch.int)[
-                    :, None
+                :, None
                 ]
             )
         intweight = torch.cat(intweight, dim=1)
@@ -158,34 +158,33 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         row = 0
         qweight = np.zeros((intweight.shape[0] // 32 * self.bits, intweight.shape[1]), dtype=np.uint32)
         while row < qweight.shape[0]:
-            if self.bits in [2, 4, 8]:
-                for j in range(i, i + (32 // self.bits)):
-                    qweight[row] |= intweight[j] << (self.bits * (j - i))
-                i += 32 // self.bits
-                row += 1
-            else:
-                raise NotImplementedError("Only 2,4,8 bits are supported.")
+            for j in range(i, i + (32 // self.bits)):
+                qweight[row] |= intweight[j] << (self.bits * (j - i))
+            i += 32 // self.bits
+            row += 1
 
         qweight = qweight.astype(np.int32)
         self.qweight = torch.from_numpy(qweight)
 
-        # zeros -= 1
+        zeros -= 1
         zeros = zeros.numpy().astype(np.uint32)
         qzeros = np.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32)
         i = 0
         col = 0
         while col < qzeros.shape[1]:
-            if self.bits in [2, 4, 8]:
-                for j in range(i, i + (32 // self.bits)):
-                    qzeros[:, col] |= zeros[:, j] << (self.bits * (j - i))
-                i += 32 // self.bits
-                col += 1
-            else:
-                raise NotImplementedError("Only 2,4,8 bits are supported.")
+            for j in range(i, i + (32 // self.bits)):
+                qzeros[:, col] |= zeros[:, j] << (self.bits * (j - i))
+            i += 32 // self.bits
+            col += 1
 
         qzeros = qzeros.astype(np.int32)
         self.qzeros = torch.from_numpy(qzeros)
 
+    def pack(self, linear, scales, zeros, g_idx):
+        if torch.cuda.is_available():
+            return self.pack_cuda(linear, scales, zeros, g_idx)
+        else:
+            return self.pack_cpu(linear, scales, zeros, g_idx)
     def forward(self, x):
         out_shape = x.shape[:-1] + (self.outfeatures,)
         quant_linear_fn = QuantLinearFunction if self.trainable else QuantLinearInferenceOnlyFunction
