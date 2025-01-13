@@ -26,31 +26,11 @@ details and quantized models in several Hugging Face Spaces, e.g. [OPEA](https:/
 
 ## What's New
 
-* [2024/12] Many quantized LLMs/VLMs using AutoRound are released in [OPEA Space](https://huggingface.co/OPEA)
+* [2024/01]  We provide experimental support for GGUF q4_0 and q4_1 formats.
 * [2024/11] We provide experimental support for VLM quantization, please check out
   the [README](./auto_round/mllm/README.md)
 * [2024/11] We provide some tips and tricks for LLM&VLM quantization, please check
   out [this blog](https://medium.com/@NeuralCompressor/10-tips-for-quantizing-llms-and-vlms-with-autoround-923e733879a7)
-
-[//]: # (* [2024/10] AutoRound has been integrated to [torch/ao]&#40;https://github.com/pytorch/ao&#41;, check out)
-
-[//]: # (  their [release note]&#40;https://github.com/pytorch/ao/releases/tag/v0.6.1&#41;)
-
-[//]: # (* [2024/10] Important update: We now support full-range symmetric quantization and have made it the default)
-
-[//]: # (  configuration. This configuration is typically better or comparable to asymmetric quantization and significantly)
-
-[//]: # (  outperforms other symmetric variants, especially at low bit-widths like 2-bit, check)
-
-[//]: # (  out [some accuracy data]&#40;./docs/full_range_sym.md&#41;.)
-
-[//]: # (* [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer)
-
-[//]: # (  to [Intel/Qwen2-7B-int4-inc]&#40;https://huggingface.co/Intel/Qwen2-7B-int4-inc&#41;.)
-
-[//]: # (* [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters &#40;for 2-bit)
-
-[//]: # (  and W4A4, check out [more details]&#40;./docs/tuning_norm_bias.md&#41;&#41;, activation quantization, and the mx_fp data type.)
 
 ## Installation
 
@@ -97,7 +77,7 @@ auto-round \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --format "auto_gptq,auto_round" \
+    --format "auto_gptq,auto_awq,auto_round" \
     --disable_eval \
     --output_dir ./tmp_autoround
 ```
@@ -231,10 +211,23 @@ autoround = AutoRoundMLLM(model, tokenizer, processor,
                           bits=bits, group_size=group_size, sym=sym)
 autoround.quantize()
 
-# save the quantized model, set format='auto_gptq' to use AutoGPTQ format
+# save the quantized model, set format='auto_gptq' or 'auto_awq' to use other formats
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
+#### Export Formats
+**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
+inference. **[2,4] bits are supported**. However, it has not yet gained widespread community adoption.
+
+**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
+community, **[2,3,4,8] bits are supported**. However, **the
+asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
+models.
+
+**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
+adopted within the community, **only 4-bits quantization is supported**. 
+
+**GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and q4_1 (W4G32) is supported in our repo**. 
 
 ### Quantization Costs
 

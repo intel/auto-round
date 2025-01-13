@@ -323,7 +323,7 @@ def tune(args):
         if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
             use_auto_mapping = True
     elif args.device == "auto":
-        use_auto_mapping == True
+        use_auto_mapping = True
 
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     torch.use_deterministic_algorithms(True, warn_only=True)
