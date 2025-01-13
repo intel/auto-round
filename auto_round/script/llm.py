@@ -275,21 +275,28 @@ def tune(args):
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
         if format in ["gguf:q4_0", "gguf:q4_1"]:
+            warning_str = ""
             if args.bits != 4:
                 args.bits = 4
-                logger.warning(f"reset bits to 4 as choose export format {format}")
+                warning_str += f"will reset bits to 4 as choose export format {format}. "
             if args.act_bits <= 8:
-                logger.warning(f"{args.format} not support for activation quantization.")
+                warning_str += f"{format} not support for activation quantization. "
             if args.group_size != 32:
-                logger.warning(f"{args.format} not support for group_size: {args.group_size}. "
-                    "Reset group_size to 32.")
+                warning_str += (f"{format} not support for group_size: {args.group_size}, "
+                    "will reset group_size to 32. ")
                 args.group_size = 32
-            if args.format.endswith("_0") and args.asym:
-                logger.warning(f"{args.format} not support for asymmetric quantization, will reset to sym.")
+            if format.endswith("_0") and args.asym:
+                warning_str += f"{format} not support for asymmetric quantization, will reset to sym. "
                 args.asym = False
-            if args.format.endswith("_1") and not args.asym:
-                logger.warning(f"{args.format} not support for symmetric quantization, will reset to asym.")
+            if format.endswith("_1") and not args.asym:
+                warning_str += f"{format} not support for symmetric quantization, will reset to asym. "
                 args.asym = True
+            if len(warning_str) > 0:
+                if len(formats) > 1:
+                    logger.error(warning_str.replace("will", "please"))
+                    exit()
+                else:
+                    logger.warning(warning_str)
             logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
 
     if "auto_gptq" in args.format and args.asym is True:
