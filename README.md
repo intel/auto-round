@@ -5,7 +5,7 @@ AutoRound
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.4.3-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.4.4-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-blue)](https://github.com/intel/auto-round/blob/main/LICENSE)
 ---
 <div align="left">
@@ -31,30 +31,54 @@ details and quantized models in several Hugging Face Spaces, e.g. [OPEA](https:/
   the [README](./auto_round/mllm/README.md)
 * [2024/11] We provide some tips and tricks for LLM&VLM quantization, please check
   out [this blog](https://medium.com/@NeuralCompressor/10-tips-for-quantizing-llms-and-vlms-with-autoround-923e733879a7)
-* [2024/10] AutoRound has been integrated to [torch/ao](https://github.com/pytorch/ao), check out
-  their [release note](https://github.com/pytorch/ao/releases/tag/v0.6.1)
-* [2024/10] Important update: We now support full-range symmetric quantization and have made it the default
-  configuration. This configuration is typically better or comparable to asymmetric quantization and significantly
-  outperforms other symmetric variants, especially at low bit-widths like 2-bit, check
-  out [some accuracy data](./docs/full_range_sym.md).
-* [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer
-  to [Intel/Qwen2-7B-int4-inc](https://huggingface.co/Intel/Qwen2-7B-int4-inc).
-* [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters (for 2-bit
-  and W4A4, check out [more details](./docs/tuning_norm_bias.md)), activation quantization, and the mx_fp data type.
+
+[//]: # (* [2024/10] AutoRound has been integrated to [torch/ao]&#40;https://github.com/pytorch/ao&#41;, check out)
+
+[//]: # (  their [release note]&#40;https://github.com/pytorch/ao/releases/tag/v0.6.1&#41;)
+
+[//]: # (* [2024/10] Important update: We now support full-range symmetric quantization and have made it the default)
+
+[//]: # (  configuration. This configuration is typically better or comparable to asymmetric quantization and significantly)
+
+[//]: # (  outperforms other symmetric variants, especially at low bit-widths like 2-bit, check)
+
+[//]: # (  out [some accuracy data]&#40;./docs/full_range_sym.md&#41;.)
+
+[//]: # (* [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer)
+
+[//]: # (  to [Intel/Qwen2-7B-int4-inc]&#40;https://huggingface.co/Intel/Qwen2-7B-int4-inc&#41;.)
+
+[//]: # (* [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters &#40;for 2-bit)
+
+[//]: # (  and W4A4, check out [more details]&#40;./docs/tuning_norm_bias.md&#41;&#41;, activation quantization, and the mx_fp data type.)
 
 ## Installation
 
 ### Install from pypi
 
 ```bash
-pip install auto-round
+# GPU
+pip install auto-round[gpu]
+
+# CPU
+pip install auto-round[cpu]
+
+# HPU
+pip install auto-round-lib
 ```
 
 <details>
   <summary>Build from Source</summary>
 
   ```bash
-  pip install -vvv --no-build-isolation .
+  # GPU
+  pip install .[gpu]
+
+  # CPU
+  pip install .[cpu]
+
+  # HPU
+  python setup.py install lib
   ```
 
 </details>
@@ -73,7 +97,7 @@ auto-round \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --format "auto_round,auto_gptq" \
+    --format "auto_gptq,auto_round" \
     --disable_eval \
     --output_dir ./tmp_autoround
 ```
@@ -84,50 +108,24 @@ We provide two recipes for best accuracy and fast running speed with low memory.
 
   ```bash
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
-auto-round \
+auto-round-best \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --nsamples 512 \
-    --iters 1000 \
     --low_gpu_mem_usage \
     --disable_eval 
   ```
 
   ```bash
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-auto-round \
+auto-round-fast \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --nsamples 128 \
-    --iters 200 \
-    --seqlen 512 \
-    --batch_size 4 \
     --disable_eval 
   ```
 
 </details>
-
-#### Formats
-
-**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
-inference. [2,4]
-bits are supported. It also benefits
-from the Marlin kernel, which can boost inference performance notably. However, it has not yet gained widespread
-community adoption.
-
-**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
-community, [2,3,4,8] bits are supported. It also benefits
-from the Marlin kernel, which can boost inference performance notably. However, **the
-asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
-models.
-Additionally, symmetric quantization tends to perform poorly at 2-bit precision.
-
-**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
-adopted
-within the community, only 4-bits quantization is supported. It features
-specialized layer fusion tailored for Llama models.
 
 ### API Usage (Gaudi2/CPU/GPU)
 

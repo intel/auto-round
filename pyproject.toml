@@ -1,0 +1,2 @@
+[tool.codespell]
+ignore-words = ".azure-pipelines/scripts/codeScan/codespell/autoround_dict.txt"

@@ -965,7 +965,7 @@ class AutoRound(object):
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
         mv_module_from_gpu(layer, self.low_cpu_mem_usage)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        logger.info(dump_info)
+        logger.debug(dump_info)
 
     def register_act_max_hook(self, model):
         def get_act_max_hook(module, input, output):
@@ -1045,7 +1045,7 @@ class AutoRound(object):
                 f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
                 f"layers in the block"
             )
-            logger.info(dump_info)
+            logger.debug(dump_info)
             return output, output
 
         if self.lr_scheduler is None:
@@ -1136,7 +1136,7 @@ class AutoRound(object):
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
-        logger.info(dump_info)
+        logger.debug(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
@@ -1267,6 +1267,14 @@ class AutoRound(object):
             if processor is not None:
                 processor.save_pretrained(output_dir)
             return
+        if format in ["gguf:q4_0", "gguf:q4_1"]:
+            if self.group_size != 32:
+                logger.error(f"{format} need group_size=32, but it is {self.group_size}, cannot export.")
+                return
+            if format == "gguf:q4_0" and not self.sym:
+                logger.warning(f"incorrect format choose, will reset to gguf:q4_1")
+            if format == "gguf:q4_1" and self.sym:
+                logger.warning(f"incorrect format choose, will reset to gguf:q4_0")
 
         from auto_round.export import EXPORT_FORMAT
         backend = format

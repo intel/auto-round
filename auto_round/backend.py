@@ -145,7 +145,7 @@ BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
 BackendInfos['awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##actrally is gemm
                                        packing_format="awq",
                                        bits=[4], group_size=None,
-                                       priority=4, feature_checks=[feature_num_greater_checker_1024],
+                                       priority=4,
                                        alias=["auto_awq:gemm", "auto_round:awq:gemm", "auto_round:auto_awq:gemm", "awq",
                                               "auto_awq", "auto_round:awq", "auto_round:auto_awq"],
                                        requirements=["autoawq"]
@@ -165,6 +165,14 @@ BackendInfos['auto_round:qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, Fal
                                                   priority=0 if "intel" in get_cpu_manufacturer() else 5,
                                                   feature_checks=[],
                                                   convertable_format=["triton_zp+-1"],
+                                                  requirements=["intel-extension-for-transformers"]
+                                                  )
+
+BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True],
+                                                  packing_format="awq",
+                                                  bits=[2, 4, 8], group_size=None,
+                                                  priority=0 if "intel" in get_cpu_manufacturer() else 5,
+                                                  feature_checks=[],
                                                   requirements=["intel-extension-for-transformers"]
                                                   )
 
@@ -317,6 +325,9 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         if "zp" in backend:
             import auto_round_extension.qbits.qlinear_qbits_gptq as qlinear_qbits_gptq
             return qlinear_qbits_gptq.QuantLinear
+        elif "awq" in backend:
+            import auto_round_extension.qbits.qbits_awq as qlinear_qbits_awq
+            return qlinear_qbits_awq.QuantLinear
         else:  # auto_round must be at the end
             import auto_round_extension.qbits.qlinear_qbits as qlinear_qbits_autoround
             return qlinear_qbits_autoround.QuantLinear

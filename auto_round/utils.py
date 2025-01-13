@@ -29,7 +29,7 @@ from torch.amp import autocast
 from functools import lru_cache
 from packaging import version
 import gc
-from .special_model_handler import shareable_keywords
+from .special_model_handler import shareable_keywords, SPECIAL_MULTIMODAL_BLOCK
 
 
 @lru_cache(None)
@@ -318,6 +318,7 @@ def validate_modules(module_names, quant_vision=False, vison_blocks_names=None):
                          "or raise an issue at https://github.com/intel/auto-round/issues.")
     return
 
+
 def get_common_prefix(paths):
     # Split each path into components and find the common prefix
     split_paths = [path.split('.') for path in paths]
@@ -326,8 +327,9 @@ def get_common_prefix(paths):
         common_prefix = [comp for comp, other in zip(common_prefix, path) if comp == other]
     return '.'.join(common_prefix)
 
+
 def extract_block_names_to_str(quant_block_list):
-    if not isinstance(quant_block_list, (list,tuple)):
+    if not isinstance(quant_block_list, (list, tuple)):
         return None
     # Extract common prefix for each list
     prefixes = [get_common_prefix(blocks) for blocks in quant_block_list]
@@ -365,7 +367,7 @@ def find_matching_blocks(model, all_blocks, to_quant_block_names):
             target_blocks.append(matched_sublist)
     if not target_blocks:
         raise ValueError("No block names matched. Please check the input for to_quant_block_name," \
-                            "or set to_quant_block_name to None to automatically match quantizable blocks.")
+                         "or set to_quant_block_name to None to automatically match quantizable blocks.")
     return target_blocks
 
 
@@ -400,6 +402,8 @@ def get_multimodal_block_names(model, quant_vision=False):
     Returns:
     block_names: A list whose elements are list of block's layer names
     """
+    if hasattr(model, "config") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
+        return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
     block_names = []
     target_modules = []
     vison_blocks_tuple = ("vision", "visual", "projector")
@@ -971,6 +975,7 @@ TORCH_VERSION_AT_LEAST_2_6 = torch_version_at_least("2.6.0")
 TORCH_VERSION_AT_LEAST_2_5 = torch_version_at_least("2.5.0")
 TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
+
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
 # 1. Compile Mode
@@ -982,11 +987,11 @@ TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
 def _check_hpu_compile_mode():
     assert (
-        os.getenv("PT_HPU_LAZY_MODE") == "0"
+            os.getenv("PT_HPU_LAZY_MODE") == "0"
     ), "Please set `PT_HPU_LAZY_MODE=0` to use HPU compile mode"
     # Note: this is a temporary solution, will be removed in the future
     assert (
-        os.getenv("PT_ENABLE_INT64_SUPPORT") == "1"
+            os.getenv("PT_ENABLE_INT64_SUPPORT") == "1"
     ), "Please set `PT_ENABLE_INT64_SUPPORT=1` to use HPU compile mode"
 
 
@@ -1112,9 +1117,46 @@ def get_fp_layer_names(model, fp_layers):
             not_to_quantized_layers.append(fp_layer)
             continue
         if fp_layer[-1].isdigit():
-            fp_layer = fp_layer + "."  ##ticky setting
+            fp_layer = fp_layer + "."  ##tricky setting
         for name in all_layer_names:
             if fp_layer in name:
                 not_to_quantized_layers.append(name)
 
     return not_to_quantized_layers
+
+
+def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=None):
+    """Checks if a model is compatible with the AutoAWQ GEMM kernel.
+
+    Args:
+        model: The model object to evaluate, typically a PyTorch model.
+        bits (int): The number of bits for quantization (must be 4 for compatibility).
+        group_size (int): The group size for quantization.
+        sym (bool): Whether symmetric quantization is used (not utilized in the current function logic).
+        layer_configs (dict, optional): A dictionary mapping layer names to configurations, where each
+            configuration can specify a custom number of bits for the layer.
+
+    Returns:
+        tuple: A tuple containing:
+            - bool: `True` if the model is compatible, `False` otherwise.
+            - str: An error message describing why the model is incompatible, or an empty string if compatible.
+    """
+    if bits != 4:
+        return False, f"AutoAWQ GEMM kernel only supports 4 bits"
+    for n, m in model.named_modules():
+        if isinstance(m, transformers.modeling_utils.Conv1D):
+            return False, "AutoAWQ GEMM kernel does not support conv1d"
+
+    layer_names = get_layer_names_in_block(model)
+    for layer_name in layer_names:
+        if layer_configs is not None and layer_name in layer_configs.keys() and layer_configs[layer_name].get("bits",
+                                                                                                              bits) > 8:
+            continue
+
+        layer = get_module(model, layer_name)
+        if layer.in_features % group_size != 0:
+            return False, f"Layer {layer_name} in_features is not multiple of group_size {group_size}"
+        if layer.out_features % (32 // bits) != 0:
+            return False, f"Layer {layer_name} out_features is not multiple of 32 // bits"
+
+    return True, ""

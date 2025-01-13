@@ -168,6 +168,7 @@ def get_template(template_or_path: str, model=None, tokenizer=None, processor=No
         else:
             logger.warning(f"Unable to recognize {template_or_path}, using default template instead.")
             template = TEMPLATES["default"]
+            template.model_type = template_or_path
 
     template.processor.post_init(model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
 
