@@ -138,19 +138,32 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         qweight = qweight.astype(np.int32)
         self.qweight = torch.from_numpy(qweight)
 
-        zeros -= 1
-        zeros = zeros.numpy().astype(np.uint32)
-        qzeros = np.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32)
-        i = 0
-        col = 0
-        while col < qzeros.shape[1]:
-            for j in range(i, i + (32 // self.bits)):
-                qzeros[:, col] |= zeros[:, j] << (self.bits * (j - i))
-            i += 32 // self.bits
-            col += 1
+        if isinstance(zeros, torch.Tensor):
+            zeros = zeros.t().contiguous()
+            zeros -= 1
+            zeros = zeros.numpy().astype(np.uint32)
+            qzeros = np.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32)
+            i = 0
+            col = 0
+            while col < qzeros.shape[1]:
+                for j in range(i, i + (32 // self.bits)):
+                    qzeros[:, col] |= zeros[:, j] << (self.bits * (j - i))
+                i += 32 // self.bits
+                col += 1
 
-        qzeros = qzeros.astype(np.int32)
-        self.qzeros = torch.from_numpy(qzeros)
+            qzeros = qzeros.astype(np.int32)
+            self.qzeros = torch.from_numpy(qzeros)
+        else:
+            zeros -= 1
+            shape = scales.shape
+            value = 0
+            for j in range(0, (32 // self.bits)):
+                value |= zeros << (self.bits * j)
+            qzeros = np.ones((shape[0], shape[1] // 32 * self.bits), dtype=np.uint32) * value
+            qzeros = qzeros.astype(np.int32)
+            self.qzeros = torch.from_numpy(qzeros)
+
+
 
     def pack(self, linear, scales, zeros, g_idx):
         if torch.cuda.is_available():
