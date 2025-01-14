@@ -109,8 +109,11 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx
 
         scales = scales.t().contiguous()
-        zeros = zeros.t().contiguous()
-        scale_zeros = zeros * scales
+        if isinstance(zeros, torch.Tensor):
+            zeros = zeros.t().contiguous()
+            scale_zeros = zeros * scales
+        else:
+            scale_zeros = scales * zeros
         self.scales = scales.clone().half()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
@@ -139,7 +142,6 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         self.qweight = torch.from_numpy(qweight)
 
         if isinstance(zeros, torch.Tensor):
-            zeros = zeros.t().contiguous()
             zeros -= 1
             zeros = zeros.numpy().astype(np.uint32)
             qzeros = np.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32)
@@ -162,8 +164,6 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             qzeros = np.ones((shape[0], shape[1] // 32 * self.bits), dtype=np.uint32) * value
             qzeros = qzeros.astype(np.int32)
             self.qzeros = torch.from_numpy(qzeros)
-
-
 
     def pack(self, linear, scales, zeros, g_idx):
         if torch.cuda.is_available():
