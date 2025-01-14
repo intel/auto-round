@@ -268,11 +268,11 @@ class AutoRound(object):
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
-            if self.nsamples < self.batch_size:
+            if self.batch_size > self.nsamples:
                 logger.warning(f"reset batch_size to {self.nsamples} as n_sample({self.nsamples})"
                                f" is smaller than batch_size({self.batch_size})")
                 self.batch_size = self.nsamples
-            if self.gradient_accumulate_steps < self.nsamples // self.batch_size:
+            if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
                 self.gradient_accumulate_steps = self.nsamples // self.batch_size
                 logger.warning(
                     f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
