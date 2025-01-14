@@ -25,6 +25,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+import re
 import argparse
 
 from auto_round.utils import detect_device, get_fp_layer_names
@@ -252,9 +254,47 @@ def setup_eval_parser():
     args = parser.parse_args()
     return args
 
+def _gguf_args_check(args):
+    from auto_round.utils import logger
+
+    _GGUF_CONFIG = {
+        "gguf:q4_0": {
+            "bits": 4,
+            "act_bits": 16,
+            "group_size": 32,
+            "asym": False,
+        },
+        "gguf:q4_1": {
+            "bits": 4,
+            "act_bits": 16,
+            "group_size": 32,
+            "asym": True,
+        }
+    }
+
+    formats = args.format.lower().replace(' ', '').split(",")
+    for format in _GGUF_CONFIG:
+        if format in formats:
+            unsupport_list, reset_list = [],[]
+            gguf_config = _GGUF_CONFIG[format]
+            for k, v in gguf_config.items():
+                if getattr(args, k) != v:
+                    unsupport_list.append(f"{k}={getattr(args, k)}")
+                    reset_list.append(f"{k}={v}")
+                    setattr(args, k, v)
+            if len(unsupport_list) > 0:
+                if len(formats) > 1:
+                    logger.error(f"format {format} not support for {', '.join(unsupport_list)},"
+                                 f" please reset to {', '.join(reset_list)}, and retry")
+                    exit(-1)
+                else:
+                    logger.error(f"format {format} not support for {', '.join(unsupport_list)},"
+                                 f" reset to {', '.join(reset_list)}.")
+            logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
+    
+    return args
+
 def tune(args):
-    import re
-    import torch
     import transformers
 
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
@@ -274,21 +314,8 @@ def tune(args):
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
-        if format in ["gguf:q4_0", "gguf:q4_1"]:
-            args.bits = 4
-            if args.act_bits <= 8:
-                logger.warning(f"{args.format} not support for activation quantization.")
-            if args.group_size != 32:
-                logger.warning(f"{args.format} not support for group_size: {args.group_size}. "
-                    "Reset group_size to 32.")
-                args.group_size = 32
-            if args.format.endswith("_0") and args.asym:
-                logger.warning(f"{args.format} not support for asymmetric quantization, will reset to sym.")
-                args.asym = False
-            if args.format.endswith("_1") and not args.asym:
-                logger.warning(f"{args.format} not support for symmetric quantization, will reset to asym.")
-                args.asym = True
-            logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
+
+    args = _gguf_args_check(args)
 
     if "auto_gptq" in args.format and args.asym is True:
         print(
@@ -299,7 +326,6 @@ def tune(args):
         assert False, "marlin backend only supports sym quantization, please remove --asym"
 
     ##must set this before import torch
-    import os
     devices = args.device.replace(" ", "").split(',')
     use_auto_mapping = False
     if all(s.isdigit() for s in devices):
@@ -323,9 +349,11 @@ def tune(args):
         if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
             use_auto_mapping = True
     elif args.device == "auto":
-        use_auto_mapping == True
+        use_auto_mapping = True
 
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+    import torch
     torch.use_deterministic_algorithms(True, warn_only=True)
 
     model_name = args.model
@@ -529,7 +557,6 @@ def tune(args):
         print(make_table(res))
 
 def _eval_init(args):
-    import os
     devices = args.device.replace(" ", "").split(',')
     parallelism = False
 

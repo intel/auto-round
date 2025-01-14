@@ -145,7 +145,6 @@ class TestSupportVLMS(unittest.TestCase):
 
         ## test infer
         from transformers import AutoModelForCausalLM, AutoProcessor
-        from auto_round.export.export_to_awq import WQLinear_GEMM
         quantized_model_path = os.path.join(self.save_dir, "Phi-3.5-vision-instruct-w4g128-auto_awq")
         res = os.system(f"cp /models/Phi-3.5-vision-instruct/*.py {quantized_model_path}")
         model = AutoModelForCausalLM.from_pretrained(
