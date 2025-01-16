@@ -1110,7 +1110,7 @@ class Model(OriModel):
                     if "scale" in self.layer_config[layer_name]:
                         scale = self.layer_config[layer_name]['scale']
                         if isinstance(scale, torch.Tensor):
-                            scale = scale.numpy(0)
+                            scale = scale.numpy()
                         zp = self.layer_config[layer_name]['zp']
                         if isinstance(zp, torch.Tensor):
                             zp = zp.numpy()
