@@ -69,7 +69,8 @@ class WrapperLinear(torch.nn.Module):
         """
         super(WrapperLinear, self).__init__()
         self.orig_layer = orig_layer
-        self.device = device
+        self.output_device = device
+        self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer,"tuning_device") else device
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
@@ -293,6 +294,7 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
+        x = x.to(self.device)
         weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
         if self.enable_act_quant:
@@ -306,7 +308,9 @@ class WrapperLinear(torch.nn.Module):
         if self.enable_norm_bias_tuning:
             bias, _, _ = self._qdq_bias(bias, self.bias_v)
 
-        return self.orig_forward(x, weight_q, bias)
+        output = self.orig_forward(x, weight_q, bias).to(self.output_device)
+        return output
+
 
 
 class WrapperWALayer(torch.nn.Module):
@@ -339,7 +343,8 @@ class WrapperLayerNorm(torch.nn.Module):
         self.orig_layer = orig_layer
         self.bits = bit
         self.group_size = group_size
-        self.device = device
+        self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer,"tuning_device") else device
+        self.output_device = device
         weight_dtype = torch.float32
         self.q_scale_thresh = 1e-5
         self.v = torch.nn.Parameter(
@@ -362,11 +367,12 @@ class WrapperLayerNorm(torch.nn.Module):
         return self.orig_layer
 
     def forward(self, input):
+        input = input.to(self.device)
         weight_q, _, _ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
                                          self.v, q_scale_thresh=self.q_scale_thresh)
         import torch.nn.functional as F
         return F.layer_norm(
-            input, self.orig_layer.normalized_shape, weight_q, self.orig_layer.bias, self.orig_layer.eps)
+            input, self.orig_layer.normalized_shape, weight_q, self.orig_layer.bias, self.orig_layer.eps).to(self.output_device)
 
 
 class WrapperLlamaNorm(torch.nn.Module):
@@ -382,7 +388,8 @@ class WrapperLlamaNorm(torch.nn.Module):
         self.orig_layer = orig_layer
         self.bits = bit
         self.group_size = group_size
-        self.device = device
+        self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
+        self.output_device = device
         weight_dtype = torch.float32
         self.q_scale_thresh = 1e-5
         self.v = torch.nn.Parameter(
@@ -405,13 +412,14 @@ class WrapperLlamaNorm(torch.nn.Module):
         return self.orig_layer
 
     def forward(self, hidden_states):
+        hidden_states = hidden_states.to(self.device)
         weight_q, _, _ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
                                          self.v, q_scale_thresh=self.q_scale_thresh)
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.orig_layer.variance_epsilon)
-        return weight_q * hidden_states.to(input_dtype)
+        return (weight_q * hidden_states.to(input_dtype)).to(self.output_device)
 
 
 norm_mapping = {}

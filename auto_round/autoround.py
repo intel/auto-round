@@ -244,6 +244,14 @@ class AutoRound(object):
         self.set_layerwise_config(self.layer_config)  ##better place in the end
 
     def set_device_map_in_blocks(self, device_map):
+        """Sets the device map for specific blocks in the model.
+
+        Args:
+            device_map (Union[str, dict]): A mapping of module names to devices.
+                If provided as a string, it should be in the format
+                "module_name:device,module_name:device". Devices can be integers
+                (GPU IDs) or strings (e.g., 'cpu', 'cuda:0').
+        """
         if not device_map:
             return
         if isinstance(device_map, str):
@@ -252,24 +260,28 @@ class AutoRound(object):
             device_map_dict = {}
             for info in infos:
                 index = info.find(':')
-                key=info[:index]
-                value=info[index+1:]
+                key = info[:index]
+                value = info[index + 1:]
                 device_map_dict[key] = value
                 device_map = device_map_dict
 
         names = [n for n, m in self.model.named_modules() if len(list(m.children())) == 0]
 
         for key, device in device_map.items():
+            if isinstance(device, str) and device.isdigit():
+                device = int(device)
+            device = detect_device(device)
             try:
                 module = get_module(self.model, key)
                 module.tuning_device = device
             except:
-                try:
-                    new_key = repr(key)[1:-1]
-                    matching_names = [name for name in names if re.match(new_key, name)]
+
+                new_key = repr(key).strip("'").strip('"')
+                matching_names = [name for name in names if re.match(new_key, name)]
+                if len(matching_names) > 0:
                     for name in matching_names:
                         self._set_device_for_matching_module(name, device)
-                except:
+                else:
                     for name in names:
                         if key in name:
                             self._set_device_for_matching_module(name, device)
@@ -908,6 +920,7 @@ class AutoRound(object):
         layer = get_module(self.model, layer_name)
         if hasattr(layer, "tuning_device"):
             device = layer.tuning_device
+
         layer = layer.to(device)
         for i in range(len(inputs)):
             inputs[i] = inputs[i].to(layer.weight.dtype)
@@ -1051,14 +1064,13 @@ class AutoRound(object):
         """
         if self.device_map_for_block is not None:
             from accelerate import dispatch_model
-            tmp_device_map = {}
-            for n, m in block.named_children():
-                if hasattr(m, "tuning_device"):
-                    tmp_device_map[n] = m.tuning_device
-                else:
-                    tmp_device_map[n] = device
+            for n, m in block.named_modules():
+                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
+                    continue
+                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+                hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
+                add_hook_to_module(m, hook, True)
 
-            dispatch_model(block, tmp_device_map)
         if q_input is None:
             hook_handles = self.register_act_max_hook(block)
 
@@ -1080,6 +1092,7 @@ class AutoRound(object):
                 handle.remove()
 
         if q_input is not None:
+            clear_memory(input_ids)
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(

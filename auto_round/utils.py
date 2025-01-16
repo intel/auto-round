@@ -574,14 +574,14 @@ def detect_device(device=None):
     if device is None or device == "auto":
         if torch.cuda.is_available():
             device = torch.device("cuda")
-            logger.info("Using GPU device")
+            # logger.info("Using GPU device")
         elif is_optimum_habana_available():  # pragma: no cover
             device = torch.device("hpu")
-            logger.info("Using HPU device")
+            # logger.info("Using HPU device")
         # Use CPU as a fallback
         else:
             device = torch.device("cpu")
-            logger.info("Using CPU device")
+            # logger.info("Using CPU device")
         if dev_idx is not None and str(device) != "cpu":
             device = str(device) + f":{dev_idx}"
         return str(device)
@@ -943,6 +943,9 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
 
 
 def _clear_memory_for_cpu_and_cuda(tensor=None):
+    if isinstance(tensor, list):
+        for i in range(len(tensor)):
+            tensor[i] = None
     if tensor is not None:
         del tensor
     gc.collect()
