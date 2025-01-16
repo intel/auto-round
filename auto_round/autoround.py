@@ -289,7 +289,7 @@ class AutoRound(object):
     def _set_device_for_matching_module(self, name, device):
         module = get_module(self.model, name)
         if hasattr(module, "tuning_device") and module.tuning_device != device:
-            logger.warning(f"Multiple devices set for layer {name}, keeping original device {module.tuning_device}")
+            logger.warning(f"Multiple devices have been set for layer {name}, keeping original device {module.tuning_device}")
         else:
             module.tuning_device = device
 
@@ -1092,7 +1092,10 @@ class AutoRound(object):
                 handle.remove()
 
         if q_input is not None:
-            clear_memory(input_ids)
+            if input_ids is not q_input:
+                clear_memory(input_ids)
+            else:
+                clear_memory()
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
