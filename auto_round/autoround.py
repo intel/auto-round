@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import os
+import re
+
 import torch
 import transformers
 import copy
@@ -157,6 +159,7 @@ class AutoRound(object):
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
+            device_map_for_block: Union[str, dict] = None,
             **kwargs,
     ):
         self.quantized = False
@@ -203,7 +206,6 @@ class AutoRound(object):
             all_blocks = get_block_names(model)
             self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-        
 
         ##activation
         self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
@@ -233,8 +235,51 @@ class AutoRound(object):
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
+        self.device_map_for_block = device_map_for_block
+        if self.device_map_for_block is None or len(self.device_map_for_block) == 0:
+            self.device_map_for_block = None
+        if self.device_map_for_block is not None:
+            self.set_device_map_in_blocks(self.device_map_for_block)
 
         self.set_layerwise_config(self.layer_config)  ##better place in the end
+
+    def set_device_map_in_blocks(self, device_map):
+        if not device_map:
+            return
+        if isinstance(device_map, str):
+            device_map = device_map.replace(" ", "")
+            infos = device_map.split(",")
+            device_map_dict = {}
+            for info in infos:
+                index = info.find(':')
+                key=info[:index]
+                value=info[index+1:]
+                device_map_dict[key] = value
+                device_map = device_map_dict
+
+        names = [n for n, m in self.model.named_modules() if len(list(m.children())) == 0]
+
+        for key, device in device_map.items():
+            try:
+                module = get_module(self.model, key)
+                module.tuning_device = device
+            except:
+                try:
+                    new_key = repr(key)[1:-1]
+                    matching_names = [name for name in names if re.match(new_key, name)]
+                    for name in matching_names:
+                        self._set_device_for_matching_module(name, device)
+                except:
+                    for name in names:
+                        if key in name:
+                            self._set_device_for_matching_module(name, device)
+
+    def _set_device_for_matching_module(self, name, device):
+        module = get_module(self.model, name)
+        if hasattr(module, "tuning_device") and module.tuning_device != device:
+            logger.warning(f"Multiple devices set for layer {name}, keeping original device {module.tuning_device}")
+        else:
+            module.tuning_device = device
 
     def check_configs(self):
         """Checks if the configurations are valid.
@@ -861,6 +906,8 @@ class AutoRound(object):
         """
         logger.info(f"quantizing layer {layer_name}")
         layer = get_module(self.model, layer_name)
+        if hasattr(layer, "tuning_device"):
+            device = layer.tuning_device
         layer = layer.to(device)
         for i in range(len(inputs)):
             inputs[i] = inputs[i].to(layer.weight.dtype)
@@ -1002,6 +1049,16 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+        if self.device_map_for_block is not None:
+            from accelerate import dispatch_model
+            tmp_device_map = {}
+            for n, m in block.named_children():
+                if hasattr(m, "tuning_device"):
+                    tmp_device_map[n] = m.tuning_device
+                else:
+                    tmp_device_map[n] = device
+
+            dispatch_model(block, tmp_device_map)
         if q_input is None:
             hook_handles = self.register_act_max_hook(block)
 
@@ -1154,12 +1211,18 @@ class AutoRound(object):
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device,
                 cache_device=self.cache_device
             )
+            if self.device_map_for_block is not None:
+                accelerate.hooks.remove_hook_from_submodules(
+                    block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             clear_memory(input_ids)
 
             return q_outputs, output
 
         else:
+            if self.device_map_for_block is not None:
+                accelerate.hooks.remove_hook_from_submodules(
+                    block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             clear_memory(input_ids)
             return None, output
@@ -1538,6 +1601,7 @@ class AutoRoundOPT(AutoRound):
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
+            device_map_for_block: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1578,6 +1642,7 @@ class AutoRoundOPT(AutoRound):
             to_quant_block_names=to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
+            device_map_for_block=device_map_for_block,
             **kwargs,
         )
 
@@ -1710,6 +1775,7 @@ class AutoRoundAdam(AutoRoundOPT):
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
+            device_map_for_block: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1750,7 +1816,7 @@ class AutoRoundAdam(AutoRoundOPT):
             to_quant_block_names=to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
+            device_map_for_block=device_map_for_block,
             optimizer=optimizer,
             **kwargs,
         )
-
