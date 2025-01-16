@@ -102,9 +102,16 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     from datasets import load_dataset
 
     split = "train"
+    
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
-
-    calib_dataset = load_dataset(dataset_name, split=split)
+    try:
+        calib_dataset = load_dataset(dataset_name, split=split)
+    except:
+        from modelscope import MsDataset
+        calib_dataset = MsDataset.load('swift/pile-val-backup', 'default', split='validation').to_iterable_dataset() #, use_streaming=True
+        calib_dataset = calib_dataset.take(10000)
+        logger.warning("The huggingface source dataset failed to load due to network issue, " \
+                        "using the modelscope source 'pile-val-backup' dataset as an alternative.")
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
@@ -601,3 +608,4 @@ def get_dataloader(
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
+
