@@ -117,6 +117,7 @@ class AutoRound(object):
                             block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True.
+        device_map_for_block (str|dict): device map for each block
     Returns:
         The quantized model.
     """

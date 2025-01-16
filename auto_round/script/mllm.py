@@ -163,6 +163,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--to_quant_block_names", default=None, type=str,
                           help="Names of quantitative blocks, please use commas to separate them.")
 
+        self.add_argument("--device_map_for_block", default=None, type=str,
+                          help="device_map for block in tuning phase")
+
 
 def setup_parser():
     parser = BasicArgumentParser()
@@ -282,8 +285,8 @@ def tune(args):
     # load_model
     processor, image_processor = None, None
     if "deepseek-vl2" in model_name.lower():
-        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM # pylint: disable=E0401
-        processor = DeepseekVLV2Processor.from_pretrained(model_name) 
+        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM  # pylint: disable=E0401
+        processor = DeepseekVLV2Processor.from_pretrained(model_name)
         tokenizer = processor.tokenizer
         model: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
             model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
@@ -401,10 +404,11 @@ def tune(args):
 
     if "--truncation" not in sys.argv:
         args.truncation = None
-    
+
     if "auto_awq" in args.format:
         from auto_round.utils import check_awq_gemm_compatibility
-        awq_supported, info = check_awq_gemm_compatibility(model,args.bits,args.group_size, not args.asym, layer_config)
+        awq_supported, info = check_awq_gemm_compatibility(model, args.bits, args.group_size, not args.asym,
+                                                           layer_config)
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
@@ -418,7 +422,8 @@ def tune(args):
                       scale_dtype=args.scale_dtype, layer_config=layer_config, template=args.template,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       quant_nontext_module=args.quant_nontext_module, not_use_best_mse=args.not_use_best_mse,
-                      to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile)
+                      to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile,
+                      device_map_for_block=args.device_map_for_block)
     model, _ = autoround.quantize()
 
     model.eval()
@@ -527,4 +532,3 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-
