@@ -36,6 +36,7 @@
 # SOFTWARE.
 import torch
 
+import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.utils import check_to_quantized, get_block_names, \
     get_module, logger, set_module
 import copy
@@ -102,7 +103,11 @@ def pack_layer(name, model, layer_config, backend, pbar):
         # so far can only pack layer on CPU
         qlayer.to("cpu")
         ##force to float32 to be compatible with torch 2.0
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
+        if sym and isinstance(new_layer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
+            layer, scale = layer.to("cpu"), scale.to("cpu")
+            zero = 2 ** (bits - 1)
+        else:
+            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
         sig = inspect.signature(qlayer.pack)
         param_count = len(sig.parameters)
         if param_count == 2:
@@ -138,7 +143,6 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         logger.error(f"auto-gptq format may not support loading this quantized model")
         quantization_config['block_name_to_quantize'] = common_prefix
         quantization_config.pop("to_quant_block_names", None)
-        
 
     all_to_quantized = True
     modules_in_block_to_quantize = []
@@ -215,6 +219,3 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-
-

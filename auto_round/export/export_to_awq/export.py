@@ -54,6 +54,8 @@ def pack_layer(name, model, layer_config, backend, pbar):
         bits = config["bits"]
         group_size = config["group_size"]
         linear_layer = get_module(model, name)
+        if config["sym"] :
+            zp = 2** (config["bits"]-1)
         q_linear = WQLinear_GEMM.from_linear(
             linear=linear_layer,
             w_bit=bits,
@@ -62,10 +64,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
             scales=scale,
             zeros=zp,
         )
-        linear_layer.cpu()
-        q_linear.to("cpu")
         set_module(model, name, q_linear)
-        clear_memory()
         pbar.update(1)
 
 
