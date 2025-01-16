@@ -276,7 +276,6 @@ class AutoRound(object):
                 module = get_module(self.model, key)
                 module.tuning_device = device
             except:
-
                 new_key = repr(key).strip("'").strip('"')
                 matching_names = [name for name in names if re.match(new_key, name)]
                 if len(matching_names) > 0:
