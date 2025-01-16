@@ -70,7 +70,7 @@ class WrapperLinear(torch.nn.Module):
         super(WrapperLinear, self).__init__()
         self.orig_layer = orig_layer
         self.output_device = device
-        self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer,"tuning_device") else device
+        self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
@@ -312,7 +312,6 @@ class WrapperLinear(torch.nn.Module):
         return output
 
 
-
 class WrapperWALayer(torch.nn.Module):
     def __init__(self, orig_layer):
         super(WrapperWALayer, self).__init__()
@@ -343,7 +342,7 @@ class WrapperLayerNorm(torch.nn.Module):
         self.orig_layer = orig_layer
         self.bits = bit
         self.group_size = group_size
-        self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer,"tuning_device") else device
+        self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.output_device = device
         weight_dtype = torch.float32
         self.q_scale_thresh = 1e-5
@@ -372,7 +371,8 @@ class WrapperLayerNorm(torch.nn.Module):
                                          self.v, q_scale_thresh=self.q_scale_thresh)
         import torch.nn.functional as F
         return F.layer_norm(
-            input, self.orig_layer.normalized_shape, weight_q, self.orig_layer.bias, self.orig_layer.eps).to(self.output_device)
+            input, self.orig_layer.normalized_shape, weight_q, self.orig_layer.bias, self.orig_layer.eps).to(
+            self.output_device)
 
 
 class WrapperLlamaNorm(torch.nn.Module):
@@ -526,4 +526,3 @@ def unwrapper_block(block, best_params):
                 best_param = None
             orig_layer = m.unwrapper(best_param)
             set_module(block, n, orig_layer)
-
