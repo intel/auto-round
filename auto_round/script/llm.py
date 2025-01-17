@@ -28,6 +28,7 @@
 import os
 import re
 import argparse
+from typing import Union, Optional
 
 from auto_round.utils import detect_device, get_fp_layer_names
 
@@ -307,7 +308,6 @@ def tune(args):
     from lm_eval.utils import make_table  # pylint: disable=E0401
 
     from auto_round import AutoRoundConfig
-    from auto_round.eval.evaluation import simple_evaluate
     from auto_round.utils import detect_device, get_library_version, detect_device_count
     from auto_round.utils import logger
 
@@ -540,8 +540,10 @@ def tune(args):
     if not args.disable_eval and eval_folder is not None:
         logger.info(f"Using lm-eval version {lm_eval_version}")
 
-        model_args = f"pretrained={eval_folder}"
-        model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
+        tasks, model_args, device_str = _eval_init(
+            args.tasks, eval_folder, args.device,
+            args.disable_trust_remote_code)
+
         if args.act_bits <= 8:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
@@ -549,23 +551,31 @@ def tune(args):
                 dispatch_model(model, model.hf_device_map)
                 user_model = model
             else:
-                user_model = model.to(device_str)
+                user_model = model#.to(device_str)
 
             if args.eval_bs is None or args.eval_bs == "auto":
                 args.eval_bs = 16
             from auto_round.eval.evaluation import simple_evaluate_user_model
-            res = simple_evaluate_user_model(user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs)
+            res = simple_evaluate_user_model(user_model,
+                                             tokenizer,
+                                             tasks=tasks,
+                                             batch_size=args.eval_bs,
+                                             device=device_str)
         else:
-            if use_auto_mapping:
-                model_args += ",parallelize=True"
-            res = simple_evaluate(model="hf", model_args=model_args,
+            from auto_round.eval.evaluation import simple_evaluate
+            res = simple_evaluate(model="hf",
+                                  model_args=model_args,
                                   tasks=tasks,
+                                  device=device_str,
                                   batch_size=args.eval_bs)
         print(make_table(res))
 
 
-def _eval_init(args):
-    devices = args.device.replace(" ", "").split(',')
+def _eval_init(tasks: Union[str, list],
+               model_path: str,
+               device: str,
+               disable_trust_remote_code: Optional[bool] = False):
+    devices = device.replace(" ", "").split(',')
     parallelism = False
 
     if all(s.isdigit() for s in devices):
@@ -577,38 +587,42 @@ def _eval_init(args):
                 pick_device = [current_visible_devices[i] for i in indices]
             except:
                 raise ValueError(
-                    "Invalid '--device' value: It must be smaller than the number of available devices. "
-                    "For example, with CUDA_VISIBLE_DEVICES=4,5, "
-                    "--device 0,1 is valid, but --device 4,5 is not supported.")
+                    "Invalid '--device' value: It must be smaller than the number of available devices."
+                    " For example, with CUDA_VISIBLE_DEVICES=4,5, "
+                    "--device 0,1 is valid, but --device 4,5 is not supported."
+                    )
             visible_devices = ','.join(pick_device)
             os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
         else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = args.device
-            args.device = ",".join(map(str, range(len(devices))))
-            devices = args.device.replace(" ", "").split(',')
+            os.environ["CUDA_VISIBLE_DEVICES"] = device
+            device = ",".join(map(str, range(len(devices))))
+            devices = device.replace(" ", "").split(',')
         if len(devices) > 1:
             parallelism = True
         device_str = None
-    elif args.device == "auto":
+    elif device == "auto":
         device_str = None
         parallelism = True
     else:
-        device_str = detect_device(args.device.replace(" ", ""))
+        device_str = detect_device(device.replace(" ", ""))
 
-    model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
+    model_args = f"pretrained={model_path},trust_remote_code={not disable_trust_remote_code}"
     if parallelism:
         model_args += ",parallelize=True"
-    tasks = args.tasks
-    if isinstance(args.tasks, str):
-        tasks = args.tasks.split(',')
+    tasks = tasks
+    if isinstance(tasks, str):
+        tasks = tasks.split(',')
 
     return tasks, model_args, device_str
 
 
 def eval(args):
-    from auto_round.eval.evaluation import simple_evaluate
+    tasks, model_args, device_str = _eval_init(args.tasks, args.model,
+                                               args.device,
+                                               args.disable_trust_remote_code)
 
-    tasks, model_args, device_str = _eval_init(args)
+    # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
+    from auto_round.eval.evaluation import simple_evaluate
 
     res = simple_evaluate(
         model="hf",
@@ -622,8 +636,12 @@ def eval(args):
 
 
 def eval_sequence(args):
+    tasks, model_args, device_str = _eval_init(args.tasks, args.model,
+                                               args.device,
+                                               args.disable_trust_remote_code)
+
+    # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
     from auto_round.eval.evaluation import simple_evaluate
-    tasks, model_args, device_str = _eval_init(args)
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
     res_all = {}
