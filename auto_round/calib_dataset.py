@@ -106,12 +106,46 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
     try:
         calib_dataset = load_dataset(dataset_name, split=split)
-    except:
-        from modelscope import MsDataset
-        calib_dataset = MsDataset.load('swift/pile-val-backup', 'default', split='validation').to_iterable_dataset() #, use_streaming=True
-        calib_dataset = calib_dataset.take(10000)
-        logger.warning("The huggingface source dataset failed to load due to network issue, " \
-                        "using the modelscope source 'pile-val-backup' dataset as an alternative.")
+    except Exception as e:
+        logger.error(f"Failed to load the dataset: {e}." \
+                       "Another source dataset can be used as an alternative by installing the 'modelscope' library and " \
+                       "setting '--dataset swift/pile-val-backup' then re-running the script.")
+        sys.exit(1)
+    calib_dataset = calib_dataset.shuffle(seed=seed)
+    calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+
+    return calib_dataset
+
+
+
+@register_dataset("swift/pile-val-backup")
+def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup", split=None, seed=42,
+                     apply_chat_template=False):
+    """Returns a dataloader for the specified dataset and split.
+
+    Args:
+    tokenizer: The tokenizer to be used for tokenization.
+    seqlen: The maximum sequence length.
+    data_name: The name of the dataset.
+    split: The data split to be used (e.g., "train", "test", "validation").
+    seed: The random seed for shuffling the dataset.
+    apply_chat_template: Whether to apply chat template in tokenization.
+
+    Returns:
+    A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
+    """
+    from datasets import load_dataset
+
+    split = "validation"
+    
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
+    from transformers.utils.versions import require_version
+    require_version("modelscope",
+                    "Loading swift/pile-val-backup dataset requires modelscope to be installed, `pip install modelscope`")
+    from modelscope import MsDataset
+    calib_dataset = MsDataset.load('swift/pile-val-backup',
+                                    'default', split=split).to_iterable_dataset() #, use_streaming=True
+    calib_dataset = calib_dataset.take(10000)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
