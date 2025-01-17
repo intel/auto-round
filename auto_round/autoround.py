@@ -117,7 +117,7 @@ class AutoRound(object):
                             block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True.
-        device_map_for_block (str|dict): device map for each block
+        device_map (str|dict): device map for each block
     Returns:
         The quantized model.
     """
@@ -160,7 +160,7 @@ class AutoRound(object):
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
-            device_map_for_block: Union[str, dict] = None,
+            device_map: Union[str, dict] = None,
             **kwargs,
     ):
         self.quantized = False
@@ -236,11 +236,11 @@ class AutoRound(object):
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
-        self.device_map_for_block = device_map_for_block
-        if self.device_map_for_block is None or len(self.device_map_for_block) == 0:
-            self.device_map_for_block = None
-        if self.device_map_for_block is not None:
-            self.set_device_map_in_blocks(self.device_map_for_block)
+        self.device_map = device_map
+        if self.device_map is None or len(self.device_map) == 0:
+            self.device_map = None
+        if self.device_map is not None:
+            self.set_device_map_in_blocks(self.device_map)
 
         self.set_layerwise_config(self.layer_config)  ##better place in the end
 
@@ -1030,7 +1030,7 @@ class AutoRound(object):
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
         mv_module_from_gpu(layer, self.low_cpu_mem_usage)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        logger.debug(dump_info)
+        logger.info(dump_info)
 
     def register_act_max_hook(self, model):
         def get_act_max_hook(module, input, output):
@@ -1062,7 +1062,7 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
-        if self.device_map_for_block is not None:
+        if self.device_map is not None:
             from accelerate import dispatch_model
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
@@ -1123,7 +1123,7 @@ class AutoRound(object):
                 f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
                 f"layers in the block"
             )
-            logger.debug(dump_info)
+            logger.info(dump_info)
             return output, output
 
         if self.lr_scheduler is None:
@@ -1214,7 +1214,7 @@ class AutoRound(object):
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
-        logger.debug(dump_info)
+        logger.info(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
@@ -1227,7 +1227,7 @@ class AutoRound(object):
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device,
                 cache_device=self.cache_device
             )
-            if self.device_map_for_block is not None:
+            if self.device_map is not None:
                 accelerate.hooks.remove_hook_from_submodules(
                     block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
@@ -1236,7 +1236,7 @@ class AutoRound(object):
             return q_outputs, output
 
         else:
-            if self.device_map_for_block is not None:
+            if self.device_map is not None:
                 accelerate.hooks.remove_hook_from_submodules(
                     block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
@@ -1617,7 +1617,7 @@ class AutoRoundOPT(AutoRound):
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
-            device_map_for_block: Union[str, dict] = None,
+            device_map: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1658,7 +1658,7 @@ class AutoRoundOPT(AutoRound):
             to_quant_block_names=to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
-            device_map_for_block=device_map_for_block,
+            device_map=device_map,
             **kwargs,
         )
 
@@ -1791,7 +1791,7 @@ class AutoRoundAdam(AutoRoundOPT):
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
-            device_map_for_block: Union[str, dict] = None,
+            device_map: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1832,7 +1832,7 @@ class AutoRoundAdam(AutoRoundOPT):
             to_quant_block_names=to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
-            device_map_for_block=device_map_for_block,
+            device_map=device_map,
             optimizer=optimizer,
             **kwargs,
         )

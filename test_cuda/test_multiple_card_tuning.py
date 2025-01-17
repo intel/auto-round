@@ -40,7 +40,7 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {".*q_proj": '0', ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "cpu"}
-        autoround = AutoRound(model, tokenizer, iters=2, device_map_for_block=device_map, nsamples=7,seqlen=32)
+        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7,seqlen=32)
         autoround.quantize()
 
     def test_device_map_str(self):
@@ -48,7 +48,7 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = '.*q_proj:0,.*k_proj:cuda:0,v_proj:1,.*up_proj:1'
-        autoround = AutoRound(model, tokenizer,device_map_for_block=device_map)
+        autoround = AutoRound(model, tokenizer,device_map=device_map)
         autoround.quantize()
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
@@ -66,7 +66,7 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {"norm": "cuda:1"}
-        autoround = AutoRound(model, tokenizer, iters=2, device_map_for_block=device_map, nsamples=7, seqlen=32,
+        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32,
                               enable_norm_bias_tuning=True)
         autoround.quantize()
 
@@ -76,7 +76,7 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {"norm": "cuda:1"}
-        autoround = AutoRound(model, tokenizer, iters=2, device_map_for_block=device_map, nsamples=7, seqlen=32,
+        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32,
                               enable_norm_bias_tuning=True)
         autoround.quantize()
 
@@ -85,7 +85,7 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {".*q_proj": '0', ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1"}
-        autoround = AutoRound(model, tokenizer, iters=2, device_map_for_block=device_map, nsamples=7,seqlen=32,act_bits=4,act_dynamic=False)
+        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7,seqlen=32,act_bits=4,act_dynamic=False)
         autoround.quantize()
 
     def test_lm_head(self):
@@ -94,7 +94,7 @@ class TestAutoRound(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {".*q_proj": '0', ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1","lm_head":1}
         layer_config={"lm_head": {"bits": 4}}
-        autoround = AutoRound(model, tokenizer, iters=2, device_map_for_block=device_map, nsamples=7, seqlen=32,
+        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32,
                               enable_norm_bias_tuning=True,layer_config=layer_config)
         autoround.quantize()
 

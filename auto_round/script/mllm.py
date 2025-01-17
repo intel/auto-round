@@ -163,7 +163,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--to_quant_block_names", default=None, type=str,
                           help="Names of quantitative blocks, please use commas to separate them.")
 
-        self.add_argument("--device_map_for_block", default=None, type=str,
+        self.add_argument("--device_map", default=None, type=str,
                           help="device_map for block in tuning phase")
 
 
@@ -423,7 +423,7 @@ def tune(args):
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       quant_nontext_module=args.quant_nontext_module, not_use_best_mse=args.not_use_best_mse,
                       to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile,
-                      device_map_for_block=args.device_map_for_block)
+                      device_map=args.device_map)
     model, _ = autoround.quantize()
 
     model.eval()

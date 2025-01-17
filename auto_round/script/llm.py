@@ -159,7 +159,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--disable_act_dynamic", action='store_true',
                           help="activation static quantization")
 
-        self.add_argument("--device_map_for_block", default=None, type=str,
+        self.add_argument("--device_map", default=None, type=str,
                           help="device_map for block in tuning phase")
 
 
@@ -501,7 +501,7 @@ def tune(args):
         enable_norm_bias_tuning=args.enable_norm_bias_tuning, not_use_best_mse=args.not_use_best_mse,
         to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile,
         act_data_type=args.act_data_type, act_dynamic=not args.disable_act_dynamic,
-        device_map_for_block=args.device_map_for_block)
+        device_map=args.device_map)
     model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
