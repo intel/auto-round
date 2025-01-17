@@ -281,8 +281,8 @@ class OriModel:
         return name == (key_name + suffix)
 
     def map_tensor_name(
-        self, name: str,
-        try_suffixes: Sequence[str] = (".weight", ".bias")) -> str:
+            self, name: str,
+            try_suffixes: Sequence[str] = (".weight", ".bias")) -> str:
         new_name = self.tensor_map.get_name(key=name,
                                             try_suffixes=try_suffixes)
         if new_name is None:
@@ -669,7 +669,8 @@ class OriModel:
                             tokenizer.encode(token, add_special_tokens=False))
                         if previous_token != token:
                             logger.info(
-                                f"{repr(previous_token)} is encoded and decoded back to {repr(token)} using AutoTokenizer"
+                                f"{repr(previous_token)} is encoded and decoded"
+                                f" back to {repr(token)} using AutoTokenizer"
                             )
 
                     if tokenizer.added_tokens_decoder[
@@ -698,7 +699,7 @@ class OriModel:
         # we will use this unique identifier to write a "tokenizer.ggml.pre" entry in the GGUF file which we can
         # use in llama.cpp to implement the same pre-tokenizer
 
-        chktxt = '\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български \'\'\'\'\'\'```````""""......!!!!!!?????? I\'ve been \'told he\'s there, \'RE you sure? \'M not sure I\'ll make it, \'D you like some tea? We\'Ve a\'lL'
+        chktxt = ('\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български \'\'\'\'\'\'```````""""......!!!!!!?????? I\'ve been \'told he\'s there, \'RE you sure? \'M not sure I\'ll make it, \'D you like some tea? We\'Ve a\'lL') # pylint: disable=C0301
 
         chktok = tokenizer.encode(chktxt)
         chkhsh = sha256(str(chktok).encode()).hexdigest()
@@ -1349,9 +1350,6 @@ class GPTNeoXModel(Model):
         if re.match(
                 r"gpt_neox\.layers\.\d+\.attention\.query_key_value\.weight",
                 name):
-            # Map bloom-style qkv_linear to gpt-style qkv_linear
-            # bloom: https://github.com/huggingface/transformers/blob/main/src/transformers/models/bloom/modeling_bloom.py#L238-L252  # noqa
-            # gpt-2: https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py#L312  # noqa
             qkv_weights = data_torch.reshape(
                 (n_head, 3, n_embed // n_head, n_embed))
             data_torch = torch.cat(
@@ -1413,9 +1411,6 @@ class BloomModel(Model):
         tensors: list[tuple[str, Tensor]] = []
 
         if re.match(r"h\.\d+\.self_attention\.query_key_value\.weight", name):
-            # Map bloom-style qkv_linear to gpt-style qkv_linear
-            # bloom: https://github.com/huggingface/transformers/blob/main/src/transformers/models/bloom/modeling_bloom.py#L238-L252  # noqa
-            # gpt-2: https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py#L312  # noqa
             qkv_weights = data_torch.reshape(
                 (n_head, 3, n_embed // n_head, n_embed))
             data_torch = torch.cat(
@@ -1536,7 +1531,6 @@ class OrionModel(Model):
         self.gguf_writer.add_head_count(head_count)
         self.gguf_writer.add_head_count_kv(head_count_kv)
         # note: config provides rms norm but it is actually layer norm
-        # ref:  https://huggingface.co/OrionStarAI/Orion-14B-Chat/blob/276a17221ce42beb45f66fac657a41540e71f4f5/modeling_orion.py#L570-L571
         self.gguf_writer.add_layer_norm_eps(self.hparams["rms_norm_eps"])
 
 
@@ -2391,7 +2385,6 @@ class BitnetModel(Model):
         iscale = 1 / scale
         # TODO: multiply by the scale directly instead of inverting it twice
         # (this is also unnecessarily doubly inverted upstream)
-        # ref: https://huggingface.co/1bitLLM/bitnet_b1_58-3B/blob/af89e318d78a70802061246bf037199d2fb97020/utils_quant.py#L10
         result = (weight * iscale).round().clamp(-1, 1) / iscale
         return result.type(dtype)
 
@@ -2595,10 +2588,10 @@ class MiniCPMModel(Model):
 
             yield (self.format_tensor_name(
                 gguf.MODEL_TENSOR.ROPE_FACTORS_LONG),
-                   torch.tensor(long_factors, dtype=torch.float32))
+                torch.tensor(long_factors, dtype=torch.float32))
             yield (self.format_tensor_name(
                 gguf.MODEL_TENSOR.ROPE_FACTORS_SHORT),
-                   torch.tensor(short_factors, dtype=torch.float32))
+                torch.tensor(short_factors, dtype=torch.float32))
 
     def set_vocab(self):
         self._set_vocab_sentencepiece()
@@ -2663,10 +2656,10 @@ class MiniCPM3Model(Model):
 
             yield (self.format_tensor_name(
                 gguf.MODEL_TENSOR.ROPE_FACTORS_LONG),
-                   torch.tensor(long_factors, dtype=torch.float32))
+                torch.tensor(long_factors, dtype=torch.float32))
             yield (self.format_tensor_name(
                 gguf.MODEL_TENSOR.ROPE_FACTORS_SHORT),
-                   torch.tensor(short_factors, dtype=torch.float32))
+                torch.tensor(short_factors, dtype=torch.float32))
 
     def set_vocab(self):
         self._set_vocab_sentencepiece()
@@ -2841,7 +2834,7 @@ class Qwen2MoeModel(Model):
             logger.info(
                 f"gguf: expert feed forward length = {moe_intermediate_size}")
         if (shared_expert_intermediate_size :=
-                self.hparams.get('shared_expert_intermediate_size')
+            self.hparams.get('shared_expert_intermediate_size')
             ) is not None:
             self.gguf_writer.add_expert_shared_feed_forward_length(
                 shared_expert_intermediate_size)
@@ -3045,7 +3038,8 @@ class Phi3MiniModel(Model):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r}"
+                                f" -> {token.decode("utf-8")!r}'
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -3064,7 +3058,8 @@ class Phi3MiniModel(Model):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} "
+                                f"-> {token.decode("utf-8")!r}'
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -3400,7 +3395,8 @@ class InternLM2Model(Model):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} "
+                                f"-> {token.decode("utf-8")!r}'
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -3422,7 +3418,8 @@ class InternLM2Model(Model):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r}"
+                                f" -> {token.decode("utf-8")!r}'
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -3843,7 +3840,6 @@ class GemmaModel(Model):
             )
             return []
 
-        # ref: https://github.com/huggingface/transformers/blob/fc37f38915372c15992b540dfcbbe00a916d4fc6/src/transformers/models/gemma/modeling_gemma.py#L89
         if name.endswith("norm.weight"):
             data_torch = data_torch + 1
 
@@ -3893,7 +3889,6 @@ class Gemma2Model(Model):
             )
             return []
 
-        # ref: https://github.com/huggingface/transformers/blob/fc37f38915372c15992b540dfcbbe00a916d4fc6/src/transformers/models/gemma/modeling_gemma.py#L89
         if name.endswith("norm.weight"):
             data_torch = data_torch + 1
 
@@ -4021,7 +4016,7 @@ class Rwkv6Model(Model):
                     [f"blk.{bid}.time_mix_lerp_{i}.weight"].unsqueeze(0)
                     for i in ["w", "k", "v", "r", "g"]
                 ],
-                                   dim=0).unsqueeze(1)
+                    dim=0).unsqueeze(1)
                 yield (new_name, data)
             return
 
@@ -4116,8 +4111,6 @@ class MambaModel(Model):
         d_state = self.find_hparam(["state_size", "d_state"],
                                    optional=True) or 16
         # ceiling division
-        # ref: https://stackoverflow.com/a/17511341/22827863
-        # ref: https://github.com/state-spaces/mamba/blob/ce59daea3a090d011d6476c6e5b97f6d58ddad8b/mamba_ssm/modules/mamba_simple.py#L58
         dt_rank = self.find_hparam(["time_step_rank", "dt_rank"],
                                    optional=True) or -(d_model // -16)
         rms_norm_eps = self.find_hparam(["layer_norm_epsilon", "rms_norm_eps"],
@@ -4367,7 +4360,6 @@ class OpenELMModel(Model):
 
     @staticmethod
     def _make_divisible(v: float | int, divisor: int) -> int:
-        # ref: https://huggingface.co/apple/OpenELM-270M-Instruct/blob/eb111ff2e6724348e5b905984063d4064d4bc579/configuration_openelm.py#L34-L38
         new_v = max(divisor, int(v + divisor / 2) // divisor * divisor)
         # Make sure that round down does not go down by more than 10%.
         if new_v < 0.9 * v:
@@ -4523,7 +4515,8 @@ class ArcticModel(Model):
                             token_score = 0.0
 
                         logger.info(
-                            f"Setting added token {token_id} to '{token_content}' (type: {token_type}, score: {token_score:.2f})"
+                            f"Setting added token {token_id} to '{token_content}' (type: {token_type}, "
+                            f"score: {token_score:.2f})"
                         )
                         tokens[token_id] = token_content.encode("utf-8")
                         toktypes[token_id] = token_type
@@ -4952,10 +4945,6 @@ class T5Model(Model):
                        bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
 
-        # T5 based models contain shared token embeddings tensors saved randomly as either "encoder.embed_tokens.weight",
-        # "decoder.embed_tokens.weight" or "shared.weight" tensor. In some models there are even multiple of them stored
-        # in the safetensors files. We use the first tensor from these three as the token embeddings for both encoder
-        # and decoder and ignore the remaining ones.
         if name in [
                 "decoder.embed_tokens.weight", "encoder.embed_tokens.weight",
                 "shared.weight"
@@ -5107,10 +5096,6 @@ class T5EncoderModel(Model):
                        bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
 
-        # T5 based models contain shared token embeddings tensors saved randomly as either "encoder.embed_tokens.weight",
-        # "decoder.embed_tokens.weight" or "shared.weight" tensor. In some models there are even multiple of them stored
-        # in the safetensors files. We use the first tensor from these three as the token embeddings for both encoder
-        # and decoder and ignore the remaining ones.
         if name in [
                 "decoder.embed_tokens.weight", "encoder.embed_tokens.weight",
                 "shared.weight"
@@ -5248,8 +5233,6 @@ class ChatGLMModel(Model):
 
             text = piece.encode("utf-8")
             score = 0.0
-            # Referencing the tokenizer Python implementation(https://huggingface.co/THUDM/chatglm3-6b/blob/main/tokenization_chatglm.py),
-            # it is only valid if it is less than tokenizer.tokenizer.sp_model.vocab_size()
             if len(
                     piece
             ) != 0 and token_id < tokenizer.tokenizer.sp_model.vocab_size():
@@ -5466,7 +5449,8 @@ class NemotronModel(Model):
 
     def modify_tensors(self, data_torch: Tensor, name: str,
                        bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        # * Adding +1 to LayerNorm's weights here to implement layernorm1p w/o changing anything on the GGML engine side
+        # * Adding +1 to LayerNorm's weights here to implement layernorm1p w/o 
+        # changing anything on the GGML engine side
         #   model.layers.{l}.input_layernorm.weight
         #   model.layers.{l}.post_attention_layernorm.weight
         #   model.norm.weight
@@ -5661,7 +5645,6 @@ class ChameleonModel(Model):
 
         return [(self.map_tensor_name(name), data_torch)]
 
-    # see: https://github.com/huggingface/transformers/blob/72fb02c47dbbe1999ae105319f24631cad6e2e00/src/transformers/models/chameleon/convert_chameleon_weights_to_hf.py#L176-L203
     @staticmethod
     def _reverse_hf_permute(data_torch, n_heads, hidden_dim):
         head_dim = hidden_dim // n_heads
@@ -5686,9 +5669,6 @@ class LazyTorchTensor(gguf.LazyBase):
         torch.float32: np.float32,
     }
 
-    # used for safetensors slices
-    # ref: https://github.com/huggingface/safetensors/blob/079781fd0dc455ba0fe851e2b4507c33d0c0d407/bindings/python/src/lib.rs#L1046
-    # TODO: uncomment U64, U32, and U16, ref: https://github.com/pytorch/pytorch/issues/58734
     _dtype_str_map: dict[str, torch.dtype] = {
         "F64": torch.float64,
         "F32": torch.float32,
@@ -5753,16 +5733,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--outfile",
         type=Path,
-        help=
-        "path to write to; default: based on input. {ftype} will be replaced by the outtype.",
+        help="path to write to; default: based on input. {ftype} will be replaced by the outtype.",
     )
     parser.add_argument(
         "--outtype",
         type=str,
         choices=["f32", "f16", "bf16", "q8_0", "tq1_0", "tq2_0", "auto"],
         default="f16",
-        help=
-        "output format - use f32 for float32, f16 for float16, bf16 for bfloat16, q8_0 for Q8_0, tq1_0 or tq2_0 for ternary, and auto for the highest-fidelity 16-bit float type depending on the first loaded tensor type",
+        help="output format - use f32 for float32, f16 for float16, bf16 for bfloat16, q8_0 for Q8_0,"
+             "tq1_0 or tq2_0 for ternary, and auto for the highest-fidelity 16-bit float type depending "
+             "on the first loaded tensor type"),
     )
     parser.add_argument(
         "--bigendian",
@@ -5778,14 +5758,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--use-temp-file",
         action="store_true",
-        help=
-        "use the tempfile library while processing (helpful when running out of memory, process killed)",
+        help="use the tempfile library while processing (helpful when running out of memory, process killed)",
     )
     parser.add_argument(
         "--no-lazy",
         action="store_true",
-        help=
-        "use more RAM by computing all outputs before writing (use in case lazy evaluation is broken)",
+        help="use more RAM by computing all outputs before writing (use in case lazy evaluation is broken)",
     )
     parser.add_argument(
         "--model-name",
@@ -5813,8 +5791,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help=
-        "only print out a split plan and exit, without writing any new files",
+        help="only print out a split plan and exit, without writing any new files",
     )
     parser.add_argument(
         "--no-tensor-first-split",
