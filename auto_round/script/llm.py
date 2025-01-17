@@ -49,10 +49,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--device", "--devices", default="0", type=str,
                           help="the device to be used for tuning. "
-                          "Currently, device settings support CPU, GPU, and HPU."
-                          "The default is set to cuda:0,"
-                          "allowing for automatic detection and switch to HPU or CPU."
-                          "set --device 0,1,2 to use multiple cards.")
+                               "Currently, device settings support CPU, GPU, and HPU."
+                               "The default is set to cuda:0,"
+                               "allowing for automatic detection and switch to HPU or CPU."
+                               "set --device 0,1,2 to use multiple cards.")
 
         self.add_argument("--asym", action='store_true',
                           help="whether to use asym quantization")
@@ -159,6 +159,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--disable_act_dynamic", action='store_true',
                           help="activation static quantization")
 
+        self.add_argument("--device_map", default=None, type=str,
+                          help="device_map for block in tuning phase")
+
+
 class EvalArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -166,10 +170,10 @@ class EvalArgumentParser(argparse.ArgumentParser):
                           help="model name or path")
         self.add_argument("--device", "--devices", default="0", type=str,
                           help="the device to be used for tuning. "
-                          "Currently, device settings support CPU, GPU, and HPU."
-                          "The default is set to cuda:0,"
-                          "allowing for automatic detection and switch to HPU or CPU."
-                          "set --device 0,1,2 to use multiple cards.")
+                               "Currently, device settings support CPU, GPU, and HPU."
+                               "The default is set to cuda:0,"
+                               "allowing for automatic detection and switch to HPU or CPU."
+                               "set --device 0,1,2 to use multiple cards.")
         self.add_argument("--tasks",
                           default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
                                   "openbookqa,boolq,arc_easy,arc_challenge",
@@ -178,7 +182,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
                           help="whether to disable trust_remote_code")
         self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int,
                           help="batch size in evaluation")
-        
+
 
 def setup_parser():
     parser = BasicArgumentParser()
@@ -254,6 +258,7 @@ def setup_eval_parser():
     args = parser.parse_args()
     return args
 
+
 def _gguf_args_check(args):
     from auto_round.utils import logger
 
@@ -275,7 +280,7 @@ def _gguf_args_check(args):
     formats = args.format.lower().replace(' ', '').split(",")
     for format in _GGUF_CONFIG:
         if format in formats:
-            unsupport_list, reset_list = [],[]
+            unsupport_list, reset_list = [], []
             gguf_config = _GGUF_CONFIG[format]
             for k, v in gguf_config.items():
                 if getattr(args, k) != v:
@@ -291,8 +296,9 @@ def _gguf_args_check(args):
                     logger.error(f"format {format} not support for {', '.join(unsupport_list)},"
                                  f" reset to {', '.join(reset_list)}.")
             logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
-    
+
     return args
+
 
 def tune(args):
     import transformers
@@ -453,7 +459,6 @@ def tune(args):
                 ##TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
 
-
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():
         lm_head_layer_name = n
@@ -479,7 +484,8 @@ def tune(args):
 
     if "auto_awq" in args.format:
         from auto_round.utils import check_awq_gemm_compatibility
-        awq_supported, info = check_awq_gemm_compatibility(model,args.bits,args.group_size, not args.asym, layer_config)
+        awq_supported, info = check_awq_gemm_compatibility(model, args.bits, args.group_size, not args.asym,
+                                                           layer_config)
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
@@ -494,7 +500,8 @@ def tune(args):
         low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning, not_use_best_mse=args.not_use_best_mse,
         to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile,
-        act_data_type=args.act_data_type, act_dynamic=not args.disable_act_dynamic)
+        act_data_type=args.act_data_type, act_dynamic=not args.disable_act_dynamic,
+        device_map=args.device_map)
     model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
@@ -556,6 +563,7 @@ def tune(args):
                                   batch_size=args.eval_bs)
         print(make_table(res))
 
+
 def _eval_init(args):
     devices = args.device.replace(" ", "").split(',')
     parallelism = False
@@ -596,6 +604,7 @@ def _eval_init(args):
 
     return tasks, model_args, device_str
 
+
 def eval(args):
     from auto_round.eval.evaluation import simple_evaluate
 
@@ -613,7 +622,7 @@ def eval(args):
 
 
 def eval_sequence(args):
-    from auto_round.eval.evaluation import simple_evaluate 
+    from auto_round.eval.evaluation import simple_evaluate
     tasks, model_args, device_str = _eval_init(args)
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
@@ -627,7 +636,7 @@ def eval_sequence(args):
             device=device_str,
             batch_size=args.eval_bs)
         if not res_all:
-            res_all = res 
+            res_all = res
         else:
             for key in res_keys:
                 res_all[key].update(res[key])
