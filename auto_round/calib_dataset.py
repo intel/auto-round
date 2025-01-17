@@ -108,14 +108,13 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
         calib_dataset = load_dataset(dataset_name, split=split)
     except Exception as e:
         logger.error(f"Failed to load the dataset: {e}." \
-                       "Another source dataset can be used as an alternative by installing the 'modelscope' library and " \
-                       "setting '--dataset swift/pile-val-backup' then re-running the script.")
+                       "Consider using a backup dataset by `pip install modelscope`" \
+                       " and set '--dataset swift/pile-val-backup' in AutoRound API.")
         sys.exit(1)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
-
 
 
 @register_dataset("swift/pile-val-backup")
@@ -141,7 +140,7 @@ def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup"
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
     from transformers.utils.versions import require_version
     require_version("modelscope",
-                    "Loading swift/pile-val-backup dataset requires modelscope to be installed, `pip install modelscope`")
+                    "Loading 'swift/pile-val-backup' dataset requires modelscope to be installed, `pip install modelscope`")
     from modelscope import MsDataset # pylint: disable=E0401
     calib_dataset = MsDataset.load('swift/pile-val-backup',
                                     'default', split=split).to_iterable_dataset() #, use_streaming=True
