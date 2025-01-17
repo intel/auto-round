@@ -142,7 +142,7 @@ def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup"
     from transformers.utils.versions import require_version
     require_version("modelscope",
                     "Loading swift/pile-val-backup dataset requires modelscope to be installed, `pip install modelscope`")
-    from modelscope import MsDataset
+    from modelscope import MsDataset # pylint: disable=E0401
     calib_dataset = MsDataset.load('swift/pile-val-backup',
                                     'default', split=split).to_iterable_dataset() #, use_streaming=True
     calib_dataset = calib_dataset.take(10000)
