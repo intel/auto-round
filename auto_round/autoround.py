@@ -237,10 +237,8 @@ class AutoRound(object):
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
         self.device_map = device_map
-        if self.device_map is None or len(self.device_map) == 0:
-            self.device_map = None
-        if self.device_map is not None:
-            self.set_device_map_in_blocks(self.device_map)
+
+        self.set_device_map_in_blocks(self.device_map)
 
         self.set_layerwise_config(self.layer_config)  ##better place in the end
 
@@ -253,6 +251,8 @@ class AutoRound(object):
                 "module_name:device,module_name:device". Devices can be integers
                 (GPU IDs) or strings (e.g., 'cpu', 'cuda:0').
         """
+        if self.device_map is None or len(self.device_map) == 0:
+            self.device_map = None
         if not device_map:
             return
         if isinstance(device_map, str):
@@ -264,7 +264,7 @@ class AutoRound(object):
                 key = info[:index]
                 value = info[index + 1:]
                 device_map_dict[key] = value
-                device_map = device_map_dict
+            device_map = device_map_dict
 
         names = [n for n, m in self.model.named_modules() if len(list(m.children())) == 0]
 
