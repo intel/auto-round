@@ -15,17 +15,8 @@
 import os
 import sys
 import argparse
-import json
 
-import torch
-import transformers
-
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-torch.use_deterministic_algorithms(True, warn_only=True)
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoProcessor
-
-from auto_round.utils import detect_device, get_fp_layer_names
-from auto_round.utils import logger
+from auto_round.utils import detect_device, get_fp_layer_names, set_cuda_visible_devices, logger
 
 
 class BasicArgumentParser(argparse.ArgumentParser):
@@ -219,10 +210,13 @@ def setup_lmeval_parser():
     parser.add_argument(
         "--device",
         "--devices",
+        default="0",
         type=str,
-        default=None,
-        help="Device to use (e.g. cuda, cuda:0, cpu)",
-    )
+        help="the device to be used for tuning. "
+        "Currently, device settings support CPU, GPU, and HPU."
+        "The default is set to cuda:0,"
+        "allowing for automatic detection and switch to HPU or CPU."
+        "set --device 0,1,2 to use multiple cards.")
     parser.add_argument(
         "--tasks",
         type=str,
@@ -273,6 +267,11 @@ def setup_lmeval_parser():
 
 
 def tune(args):
+    import transformers
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoProcessor
+    from lm_eval.utils import make_table  # pylint: disable=E0401
+
     if args.format is None:
         args.format = "auto_round"
     supported_formats = ["auto_round", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_awq"]
@@ -284,41 +283,20 @@ def tune(args):
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
 
+    ##must set this before import torch
+    device_str, use_auto_mapping = set_cuda_visible_devices(args.device)
+
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+    import torch
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
-
-    devices = args.device.replace(" ", "").split(',')
-    use_auto_mapping = False
-
-    if all(s.isdigit() for s in devices):
-        if "CUDA_VISIBLE_DEVICES" in os.environ:
-            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
-            current_visible_devices = current_visible_devices.split(',')
-            indices = [int(device) for device in devices]
-            try:
-                pick_device = [current_visible_devices[i] for i in indices]
-            except:
-                raise ValueError(
-                    "Invalid '--device' value: It must be smaller than the number of available devices. "
-                    "For example, with CUDA_VISIBLE_DEVICES=4,5, "
-                    "--device 0,1 is valid, but --device 4,5 is not supported.")
-            visible_devices = ','.join(pick_device)
-            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
-        else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = args.device
-            args.device = ",".join(map(str, range(len(devices))))
-            devices = args.device.replace(" ", "").split(',')
-        if len(devices) > 1:
-            use_auto_mapping = True  ##for 70B model on single card, use auto will cause some layer offload to cpu
-    elif args.device == "auto":
-        use_auto_mapping = True
-
-    device_str = detect_device(devices[0])
-
     torch_dtype = "auto"
-    if "hpu" in device_str:
+    if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
     # load_model
@@ -509,6 +487,9 @@ def tune(args):
 
 
 def eval(args):
+    device_str, parallelism = set_cuda_visible_devices(args.device)
+    if parallelism:
+        os.environ['AUTO_SPLIT'] =  '1'
     if isinstance(args.tasks, str):
         args.tasks = args.tasks.replace(' ', '').split(',')
     from auto_round.mllm import mllm_eval
@@ -561,10 +542,13 @@ def setup_lmms_parser():
     parser.add_argument(
         "--device",
         "--devices",
+        default="0",
         type=str,
-        default=None,
-        help="Device to use (e.g. cuda, cuda:0, cpu)",
-    )
+        help="the device to be used for tuning. "
+        "Currently, device settings support CPU, GPU, and HPU."
+        "The default is set to cuda:0,"
+        "allowing for automatic detection and switch to HPU or CPU."
+        "set --device 0,1,2 to use multiple cards.")
     parser.add_argument(
         "--limit",
         type=float,
@@ -578,6 +562,8 @@ def setup_lmms_parser():
 
 
 def lmms_eval(args):
+    device_str, parallelism = set_cuda_visible_devices(args.device)
+
     from auto_round.mllm import lmms_eval
 
     results = lmms_eval(
@@ -588,7 +574,7 @@ def lmms_eval(args):
         limit=args.limit,
         batch_size=args.batch_size,
         max_batch_size=args.max_batch_size,
-        device=args.device,
+        device=device_str,
         use_cache=None,
         apply_chat_template=False,
     )

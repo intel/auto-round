@@ -28,9 +28,8 @@
 import os
 import re
 import argparse
-from typing import Union, Optional
 
-from auto_round.utils import detect_device, get_fp_layer_names
+from auto_round.utils import  get_fp_layer_names, set_cuda_visible_devices
 
 
 class BasicArgumentParser(argparse.ArgumentParser):
@@ -305,7 +304,6 @@ def tune(args):
     import transformers
 
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
-    from lm_eval.utils import make_table  # pylint: disable=E0401
 
     from auto_round import AutoRoundConfig
     from auto_round.utils import detect_device, get_library_version, detect_device_count
@@ -334,30 +332,7 @@ def tune(args):
         assert False, "marlin backend only supports sym quantization, please remove --asym"
 
     ##must set this before import torch
-    devices = args.device.replace(" ", "").split(',')
-    use_auto_mapping = False
-    if all(s.isdigit() for s in devices):
-        if "CUDA_VISIBLE_DEVICES" in os.environ:
-            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
-            current_visible_devices = current_visible_devices.split(',')
-            indices = [int(device) for device in devices]
-            try:
-                pick_device = [current_visible_devices[i] for i in indices]
-            except:
-                raise ValueError(
-                    "Invalid '--device' value: It must be smaller than the number of available devices. "
-                    "For example, with CUDA_VISIBLE_DEVICES=4,5, "
-                    "--device 0,1 is valid, but --device 4,5 is not supported.")
-            visible_devices = ','.join(pick_device)
-            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
-        else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = args.device
-            args.device = ",".join(map(str, range(len(devices))))
-            devices = args.device.replace(" ", "").split(',')
-        if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
-            use_auto_mapping = True
-    elif args.device == "auto":
-        use_auto_mapping = True
+    device_str, use_auto_mapping = set_cuda_visible_devices(args.device)
 
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -368,9 +343,8 @@ def tune(args):
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
-    device_str = detect_device(devices[0])
     torch_dtype = "auto"
-    if "hpu" in device_str:
+    if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
     is_glm = bool(re.search("chatglm", model_name.lower()))
@@ -559,6 +533,8 @@ def tune(args):
         tasks = tasks.split(',')
 
     if not args.disable_eval and eval_folder is not None:
+        from lm_eval.utils import make_table  # pylint: disable=E0401
+
         logger.info(f"Using lm-eval version {lm_eval_version}")
 
         tasks, model_args, device_str = _eval_init(args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
@@ -584,45 +560,13 @@ def tune(args):
         print(make_table(res))
 
 
-def _eval_init(
-        tasks: Union[str, list], model_path: str, device: str, disable_trust_remote_code: Optional[bool] = False):
-    devices = device.replace(" ", "").split(',')
-    parallelism = False
-
-    if all(s.isdigit() for s in devices):
-        if "CUDA_VISIBLE_DEVICES" in os.environ:
-            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
-            current_visible_devices = current_visible_devices.split(',')
-            indices = [int(device) for device in devices]
-            try:
-                pick_device = [current_visible_devices[i] for i in indices]
-            except:
-                raise ValueError(
-                    "Invalid '--device' value: It must be smaller than the number of available devices."
-                    " For example, with CUDA_VISIBLE_DEVICES=4,5, "
-                    "--device 0,1 is valid, but --device 4,5 is not supported.")
-            visible_devices = ','.join(pick_device)
-            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
-        else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = device
-            device = ",".join(map(str, range(len(devices))))
-            devices = device.replace(" ", "").split(',')
-        if len(devices) > 1:
-            parallelism = True
-        device_str = None
-    elif device == "auto":
-        device_str = None
-        parallelism = True
-    else:
-        device_str = detect_device(device.replace(" ", ""))
-
-    model_args = f"pretrained={model_path},trust_remote_code={not disable_trust_remote_code}"
+def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
+    device_str, parallelism = set_cuda_visible_devices(device)
+    model_args = f"pretrained={model_path},trust_remote_code={disable_trust_remote_code}"
     if parallelism:
         model_args += ",parallelize=True"
-    tasks = tasks
     if isinstance(tasks, str):
         tasks = tasks.split(',')
-
     return tasks, model_args, device_str
 
 

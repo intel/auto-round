@@ -51,6 +51,7 @@ import time
 import json
 from functools import partial
 
+import lmms_eval.evaluator
 import pandas as pd
 from ..utils import logger, LazyImport
 import numpy as np
