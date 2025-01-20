@@ -3038,8 +3038,8 @@ class Phi3MiniModel(Model):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r}"
-                                f" -> {token.decode("utf-8")!r}'
+                                f"replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} "
+                                f"-> {token.decode("utf-8")!r}"
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
