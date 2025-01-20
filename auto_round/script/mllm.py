@@ -16,17 +16,12 @@ import os
 import sys
 import argparse
 import json
-
-import torch
 import transformers
-
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoProcessor
 
 from auto_round.utils import detect_device, get_fp_layer_names
 from auto_round.utils import logger
-
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
@@ -141,6 +136,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--enable_torch_compile", default=None, type=bool,
                           help="whether to enable torch compile")
+        
+        self.add_argument("--disable_deterministic_algorithms",  action='store_true',
+                          help="disable torch deterministic algorithms.")
 
         ## ======================= VLM =======================
         self.add_argument("--quant_nontext_module", action='store_true',
@@ -233,7 +231,7 @@ def setup_lmeval_parser():
 def tune(args):
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = ["auto_round", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_awq"]
+    supported_formats = ["auto_round", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_awq", "fake"]
     if not args.quant_nontext_module:
         supported_formats.extend(["auto_gptq", "auto_gptq:marlin"])
 
@@ -246,7 +244,8 @@ def tune(args):
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
-
+    
+    ## must set this before import torch
     devices = args.device.replace(" ", "").split(',')
     use_auto_mapping = False
 
@@ -273,6 +272,11 @@ def tune(args):
     elif args.device == "auto":
         use_auto_mapping = True
 
+    import torch
+    if not args.disable_deterministic_algorithms:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        print("'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "\
+                "and can be turned off by setting the '--disable_deterministic_algorithms' parameter.")
     device_str = detect_device(devices[0])
 
     torch_dtype = "auto"
@@ -283,7 +287,7 @@ def tune(args):
     processor, image_processor = None, None
     if "deepseek-vl2" in model_name.lower():
         from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM # pylint: disable=E0401
-        processor = DeepseekVLV2Processor.from_pretrained(model_name) 
+        processor = DeepseekVLV2Processor.from_pretrained(model_name)
         tokenizer = processor.tokenizer
         model: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
             model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
@@ -527,4 +531,5 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+
 
