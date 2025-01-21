@@ -28,9 +28,8 @@
 import os
 import re
 import argparse
-
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 from auto_round.utils import detect_device, get_fp_layer_names
-
 
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
@@ -158,6 +157,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--disable_act_dynamic", action='store_true',
                           help="activation static quantization")
+        
+        self.add_argument("--disable_deterministic_algorithms",  action='store_true',
+                          help="disable torch deterministic algorithms.")
 
         self.add_argument("--device_map", default=None, type=str,
                           help="device_map for block in tuning phase")
@@ -331,7 +333,7 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         assert False, "marlin backend only supports sym quantization, please remove --asym"
 
-    ##must set this before import torch
+    ## must set this before import torch
     devices = args.device.replace(" ", "").split(',')
     use_auto_mapping = False
     if all(s.isdigit() for s in devices):
@@ -357,10 +359,12 @@ def tune(args):
     elif args.device == "auto":
         use_auto_mapping = True
 
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
     import torch
-    torch.use_deterministic_algorithms(True, warn_only=True)
+    if not args.disable_deterministic_algorithms:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        print("'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "\
+            "and can be turned off by setting the '--disable_deterministic_algorithms' parameter.")
+        
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -488,6 +492,7 @@ def tune(args):
                                                            layer_config)
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
+
 
     autoround = round(
         model, tokenizer, args.bits, args.group_size, sym=not args.asym, batch_size=args.batch_size,
