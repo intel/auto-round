@@ -16,7 +16,7 @@ import os
 import sys
 import argparse
 
-from auto_round.utils import detect_device, get_fp_layer_names, set_cuda_visible_devices, logger
+from auto_round.utils import clear_memory, get_fp_layer_names, set_cuda_visible_devices, logger
 
 
 class BasicArgumentParser(argparse.ArgumentParser):
@@ -468,8 +468,7 @@ def tune(args):
     model, _ = autoround.quantize()
 
     model.eval()
-    if args.device != "cpu":
-        torch.cuda.empty_cache()
+    clear_memory()
 
     if model_name.split('/')[-1].strip('.') == "":
         export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")

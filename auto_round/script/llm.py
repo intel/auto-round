@@ -29,7 +29,7 @@ import os
 import re
 import argparse
 
-from auto_round.utils import  get_fp_layer_names, set_cuda_visible_devices
+from auto_round.utils import  get_fp_layer_names, set_cuda_visible_devices, clear_memory
 
 
 class BasicArgumentParser(argparse.ArgumentParser):
@@ -504,8 +504,7 @@ def tune(args):
         shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
 
     model.eval()
-    if "cpu" not in device_str:
-        torch.cuda.empty_cache()
+    clear_memory()
 
     if model_name.split('/')[-1].strip('.') == "":
         export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
