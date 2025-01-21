@@ -18,6 +18,7 @@ import os
 import sys
 import subprocess
 from collections import UserDict
+from typing import Union, Optional
 import re
 # for cpu usage
 import cpuinfo
@@ -1158,3 +1159,36 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
             return False, f"Layer {layer_name} out_features is not multiple of 32 // bits"
 
     return True, ""
+
+
+def set_cuda_visible_devices(device):
+    devices = device.replace(" ", "").split(',')
+    parallelism = False
+    if all(s.isdigit() for s in devices):
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
+            current_visible_devices = current_visible_devices.split(',')
+            indices = [int(device) for device in devices]
+            try:
+                pick_device = [current_visible_devices[i] for i in indices]
+            except:
+                raise ValueError(
+                    "Invalid '--device' value: It must be smaller than the number of available devices."
+                    " For example, with CUDA_VISIBLE_DEVICES=4,5, "
+                    "--device 0,1 is valid, but --device 4,5 is not supported.")
+            visible_devices = ','.join(pick_device)
+            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = device
+            device = ",".join(map(str, range(len(devices))))
+            devices = device.replace(" ", "").split(',')
+        if len(devices) > 1: ##for 70B model on single card, use auto will cause some layer offload to cpu
+            parallelism = True
+        device_str = None
+    elif device == "auto":
+        device_str = None
+        parallelism = True
+    else:
+        device_str = detect_device(device.replace(" ", ""))
+    return device_str, parallelism
+    
