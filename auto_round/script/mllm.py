@@ -198,7 +198,7 @@ def setup_parser():
         type=int,
         help="sequence length, default 2048 for text-only, 512 for liuhaotian/llava")
 
-    parser.add_argument("--nsamples", default=128, type=int, help="number of samples")
+    parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
 
     args = parser.parse_args()
     return args

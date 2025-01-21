@@ -206,7 +206,7 @@ def setup_parser():
     parser.add_argument(
         "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples")
 
-    parser.add_argument("--nsamples", default=128, type=int, help="number of samples")
+    parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
 
     args = parser.parse_args()
     return args
@@ -224,7 +224,7 @@ def setup_best_parser():
     parser.add_argument(
         "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples")
 
-    parser.add_argument("--nsamples", default=512, type=int, help="number of samples")
+    parser.add_argument("--nsamples", "--nsample", default=512, type=int, help="number of samples")
 
     args = parser.parse_args()
     args.low_gpu_mem_usage = True
@@ -244,7 +244,7 @@ def setup_fast_parser():
     parser.add_argument(
         "--seqlen", "--seq_len", default=512, type=int, help="sequence length of the calibration samples")
 
-    parser.add_argument("--nsamples", default=128, type=int, help="number of samples")
+    parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
 
     args = parser.parse_args()
 
