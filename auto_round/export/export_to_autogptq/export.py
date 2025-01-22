@@ -36,6 +36,7 @@
 # SOFTWARE.
 import torch
 
+import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.utils import check_to_quantized, get_block_names, \
     get_module, logger, set_module
 import copy
@@ -105,7 +106,11 @@ def pack_layer(name, model, layer_config, backend, pbar):
         # so far can only pack layer on CPU
         qlayer.to("cpu")
         ##force to float32 to be compatible with torch 2.0
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
+        if sym and isinstance(new_layer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
+            layer, scale = layer.to("cpu"), scale.to("cpu")
+            zero = 2 ** (bits - 1)
+        else:
+            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
         sig = inspect.signature(qlayer.pack)
         param_count = len(sig.parameters)
         act_scale = layer.act_scale
@@ -126,7 +131,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     to_quant_block_names = kwargs["to_quant_block_names"]
-    quant_block_list = kwargs.get("quant_block_list", None)
+    quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
@@ -136,19 +141,13 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         processor.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
     quantization_config = kwargs["serialization_dict"]
-    if bool(quant_block_list):
-        all_blocks = quant_block_list
-        flattened_list = [item for sublist in all_blocks for item in sublist]
-        common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
-        if common_prefix not in BLOCK_PATTERNS:
-            logger.error(f"auto-gptq format may not support loading this quantized model")
-            quantization_config['block_name_to_quantize'] = common_prefix
-    else:
-        all_blocks = get_block_names(model)
-        flattened_list = [item for sublist in all_blocks for item in sublist]
-        common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
-        if common_prefix not in BLOCK_PATTERNS:
-            quantization_config['block_name_to_quantize'] = common_prefix
+    all_blocks = quant_block_list
+    flattened_list = [item for sublist in all_blocks for item in sublist]
+    common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
+    if common_prefix not in BLOCK_PATTERNS:
+        logger.error(f"auto-gptq format may not support loading this quantized model")
+        quantization_config['block_name_to_quantize'] = common_prefix
+        quantization_config.pop("to_quant_block_names", None)
 
     all_to_quantized = True
     modules_in_block_to_quantize = []

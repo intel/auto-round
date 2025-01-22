@@ -25,10 +25,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+import re
 import argparse
-
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 from auto_round.utils import detect_device, get_fp_layer_names
-
 
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
@@ -47,10 +48,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--device", "--devices", default="0", type=str,
                           help="the device to be used for tuning. "
-                          "Currently, device settings support CPU, GPU, and HPU."
-                          "The default is set to cuda:0,"
-                          "allowing for automatic detection and switch to HPU or CPU."
-                          "set --device 0,1,2 to use multiple cards.")
+                               "Currently, device settings support CPU, GPU, and HPU."
+                               "The default is set to cuda:0,"
+                               "allowing for automatic detection and switch to HPU or CPU."
+                               "set --device 0,1,2 to use multiple cards.")
 
         self.add_argument("--asym", action='store_true',
                           help="whether to use asym quantization")
@@ -156,6 +157,33 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--disable_act_dynamic", action='store_true',
                           help="activation static quantization")
+        
+        self.add_argument("--disable_deterministic_algorithms",  action='store_true',
+                          help="disable torch deterministic algorithms.")
+
+        self.add_argument("--device_map", default=None, type=str,
+                          help="device_map for block in tuning phase")
+
+
+class EvalArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.add_argument("--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m",
+                          help="model name or path")
+        self.add_argument("--device", "--devices", default="0", type=str,
+                          help="the device to be used for tuning. "
+                               "Currently, device settings support CPU, GPU, and HPU."
+                               "The default is set to cuda:0,"
+                               "allowing for automatic detection and switch to HPU or CPU."
+                               "set --device 0,1,2 to use multiple cards.")
+        self.add_argument("--tasks",
+                          default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
+                                  "openbookqa,boolq,arc_easy,arc_challenge",
+                          help="lm-eval tasks")
+        self.add_argument("--disable_trust_remote_code", action='store_true',
+                          help="whether to disable trust_remote_code")
+        self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int,
+                          help="batch size in evaluation")
 
 
 def setup_parser():
@@ -227,16 +255,75 @@ def setup_fast_parser():
     return args
 
 
+def setup_eval_parser():
+    parser = EvalArgumentParser()
+    args = parser.parse_args()
+    return args
+
+
+def _gguf_args_check(args):
+    from auto_round.utils import logger
+
+    _GGUF_CONFIG = {
+        "gguf:q4_0": {
+            "bits": 4,
+            "act_bits": 16,
+            "group_size": 32,
+            "asym": False,
+        },
+        "gguf:q4_1": {
+            "bits": 4,
+            "act_bits": 16,
+            "group_size": 32,
+            "asym": True,
+        }
+    }
+
+    formats = args.format.lower().replace(' ', '').split(",")
+    for format in _GGUF_CONFIG:
+        if format in formats:
+            unsupport_list, reset_list = [], []
+            gguf_config = _GGUF_CONFIG[format]
+            for k, v in gguf_config.items():
+                if getattr(args, k) != v:
+                    unsupport_list.append(f"{k}={getattr(args, k)}")
+                    reset_list.append(f"{k}={v}")
+                    setattr(args, k, v)
+            if len(unsupport_list) > 0:
+                if len(formats) > 1:
+                    logger.error(f"format {format} not support for {', '.join(unsupport_list)},"
+                                 f" please reset to {', '.join(reset_list)}, and retry")
+                    exit(-1)
+                else:
+                    logger.error(f"format {format} not support for {', '.join(unsupport_list)},"
+                                 f" reset to {', '.join(reset_list)}.")
+            logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
+
+    return args
+
+
 def tune(args):
+    import transformers
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
+    from lm_eval.utils import make_table  # pylint: disable=E0401
+
+    from auto_round import AutoRoundConfig
+    from auto_round.eval.evaluation import simple_evaluate
+    from auto_round.utils import detect_device, get_library_version, detect_device_count
+    from auto_round.utils import logger
+
     tasks = args.tasks
     if args.format is None:
         args.format = "auto_round"
     supported_formats = ["auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq",
-                         "auto_gptq:marlin", "itrex", "iterx_xpu", "fake"]
-    formats = args.format.replace(' ', '').split(",")
+                         "auto_gptq:marlin", "gguf:q4_0", "gguf:q4_1", "itrex", "itrex_xpu", "fake"]
+    formats = args.format.lower().replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+
+    args = _gguf_args_check(args)
 
     if "auto_gptq" in args.format and args.asym is True:
         print(
@@ -246,8 +333,7 @@ def tune(args):
     if "marlin" in args.format and args.asym is True:
         assert False, "marlin backend only supports sym quantization, please remove --asym"
 
-    ##must set this before import torch
-    import os
+    ## must set this before import torch
     devices = args.device.replace(" ", "").split(',')
     use_auto_mapping = False
     if all(s.isdigit() for s in devices):
@@ -271,9 +357,8 @@ def tune(args):
         if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
             use_auto_mapping = True
     elif args.device == "auto":
-        use_auto_mapping == True
+        use_auto_mapping = True
 
-    import re
     import torch
     import transformers
  
@@ -286,6 +371,11 @@ def tune(args):
     from auto_round.eval.evaluation import simple_evaluate
     from auto_round.utils import detect_device, get_library_version, detect_device_count
     from auto_round.utils import logger
+    if not args.disable_deterministic_algorithms:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        print("'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "\
+            "and can be turned off by setting the '--disable_deterministic_algorithms' parameter.")
+
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -344,13 +434,7 @@ def tune(args):
     from auto_round import AutoRound, AutoRoundAdam
 
     model = model.eval()
-    # align with GPTQ to eval ppl
     seqlen = args.seqlen
-    if "opt" in model_name:
-        seqlen = model.config.max_position_embeddings
-        model.seqlen = model.config.max_position_embeddings
-    else:
-        seqlen = 2048
 
     if args.model_dtype != None:
         try:
@@ -387,7 +471,6 @@ def tune(args):
                     f"{n} will not be quantized due to its shape not being divisible by 32,"
                     " resulting in an exporting issue to autogptq")
 
-    layer_config = {}
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
         layer_config[name] = {"bits": 16}
@@ -413,6 +496,7 @@ def tune(args):
                         f"reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
                         f"supported currently")
                     break
+
     if args.quant_lm_head:
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
@@ -420,6 +504,14 @@ def tune(args):
                 auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
+
+    if "auto_awq" in args.format:
+        from auto_round.utils import check_awq_gemm_compatibility
+        awq_supported, info = check_awq_gemm_compatibility(model, args.bits, args.group_size, not args.asym,
+                                                           layer_config)
+        if not awq_supported:
+            logger.warning(f"The AutoAWQ format may not be supported due to {info}")
+
 
     autoround = round(
         model, tokenizer, args.bits, args.group_size, sym=not args.asym, batch_size=args.batch_size,
@@ -432,7 +524,8 @@ def tune(args):
         low_cpu_mem_usage=low_cpu_mem_usage, data_type=args.data_type,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning, not_use_best_mse=args.not_use_best_mse,
         to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile,
-        act_data_type=args.act_data_type, act_dynamic=not args.disable_act_dynamic)
+        act_data_type=args.act_data_type, act_dynamic=not args.disable_act_dynamic,
+        device_map=args.device_map)
     model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
@@ -450,18 +543,25 @@ def tune(args):
 
     format_list = args.format.replace(' ', '').split(',')
     inplace = False if len(format_list) > 1 else True
+    eval_folder = None
     for format_ in format_list:
         save_format_ = format_.replace(":", "-")
         save_format_ = save_format_.replace("_", "-")
-        eval_folder = f'{export_dir}-{save_format_}'
-        autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
+        save_folder = f'{export_dir}-{save_format_}'
+        autoround.save_quantized(save_folder, format=format_, inplace=inplace)
+        if 'gguf' in format_:
+            gguf_format = format_.upper().split(":")[-1]
+            if not any([file.endswith(f"{gguf_format}.gguf") for file in os.listdir(save_folder)]):
+                logger.error(f"fail to export {format_}")
+        else:
+            eval_folder = save_folder
 
     lm_eval_version = get_library_version("lm-eval")
 
     if isinstance(tasks, str):
         tasks = tasks.split(',')
 
-    if not args.disable_eval:
+    if not args.disable_eval and eval_folder is not None:
         logger.info(f"Using lm-eval version {lm_eval_version}")
 
         model_args = f"pretrained={eval_folder}"
@@ -488,8 +588,7 @@ def tune(args):
         print(make_table(res))
 
 
-def eval(args):
-    import os
+def _eval_init(args):
     devices = args.device.replace(" ", "").split(',')
     parallelism = False
 
@@ -520,13 +619,21 @@ def eval(args):
     else:
         device_str = detect_device(args.device.replace(" ", ""))
 
-    from auto_round.eval.evaluation import simple_evaluate
-
     model_args = f"pretrained={args.model},trust_remote_code={not args.disable_trust_remote_code}"
     if parallelism:
         model_args += ",parallelize=True"
+    tasks = args.tasks
     if isinstance(args.tasks, str):
         tasks = args.tasks.split(',')
+
+    return tasks, model_args, device_str
+
+
+def eval(args):
+    from auto_round.eval.evaluation import simple_evaluate
+
+    tasks, model_args, device_str = _eval_init(args)
+
     res = simple_evaluate(
         model="hf",
         model_args=model_args,
@@ -536,3 +643,25 @@ def eval(args):
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
     print(make_table(res))
+
+
+def eval_sequence(args):
+    from auto_round.eval.evaluation import simple_evaluate
+    tasks, model_args, device_str = _eval_init(args)
+
+    from lm_eval.utils import make_table  # pylint: disable=E0401
+    res_all = {}
+    res_keys = ["results", "versions", "n-shot", "higher_is_better"]
+    for task in tasks:
+        res = simple_evaluate(
+            model="hf",
+            model_args=model_args,
+            tasks=task,
+            device=device_str,
+            batch_size=args.eval_bs)
+        if not res_all:
+            res_all = res
+        else:
+            for key in res_keys:
+                res_all[key].update(res[key])
+        print(make_table(res_all))

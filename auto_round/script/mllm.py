@@ -16,17 +16,12 @@ import os
 import sys
 import argparse
 import json
-
-import torch
 import transformers
-
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-torch.use_deterministic_algorithms(True, warn_only=True)
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoProcessor
 
 from auto_round.utils import detect_device, get_fp_layer_names
 from auto_round.utils import logger
-
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
@@ -46,10 +41,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--device", "--devices", default="0", type=str,
                           help="the device to be used for tuning. "
-                          "Currently, device settings support CPU, GPU, and HPU."
-                          "The default is set to cuda:0,"
-                          "allowing for automatic detection and switch to HPU or CPU."
-                          "set --device 0,1,2 to use multiple cards.")
+                               "Currently, device settings support CPU, GPU, and HPU."
+                               "The default is set to cuda:0,"
+                               "allowing for automatic detection and switch to HPU or CPU."
+                               "set --device 0,1,2 to use multiple cards.")
 
         self.add_argument("--asym", action='store_true',
                           help="whether to use asym quantization")
@@ -141,6 +136,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--enable_torch_compile", default=None, type=bool,
                           help="whether to enable torch compile")
+        
+        self.add_argument("--disable_deterministic_algorithms",  action='store_true',
+                          help="disable torch deterministic algorithms.")
 
         ## ======================= VLM =======================
         self.add_argument("--quant_nontext_module", action='store_true',
@@ -163,7 +161,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--to_quant_block_names", default=None, type=str,
                           help="Names of quantitative blocks, please use commas to separate them.")
 
-        
+        self.add_argument("--device_map", default=None, type=str,
+                          help="device_map for block in tuning phase")
 
 
 def setup_parser():
@@ -191,24 +190,24 @@ def setup_parser():
 def setup_lmeval_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", "--model_name", "--model_name_or_path",
-                          help="model name or path")
+                        help="model name or path")
     parser.add_argument("--tasks", type=str,
                         default="MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE",
                         help="eval tasks for VLMEvalKit.")
     # Args that only apply to Video Dataset
     parser.add_argument("--nframe", type=int, default=8,
                         help="the number of frames to sample from a video,"
-                            " only applicable to the evaluation of video benchmarks.")
+                             " only applicable to the evaluation of video benchmarks.")
     parser.add_argument("--pack", action='store_true',
                         help="a video may associate with multiple questions, if pack==True,"
-                            " will ask all questions for a video in a single")
+                             " will ask all questions for a video in a single")
     parser.add_argument("--fps", type=float, default=-1,
                         help="set the fps for a video.")
     # Work Dir
     # Infer + Eval or Infer Only
     parser.add_argument("--mode", type=str, default='all', choices=['all', 'infer'],
                         help="when mode set to 'all', will perform both inference and evaluation;"
-                            " when set to 'infer' will only perform the inference.")
+                             " when set to 'infer' will only perform the inference.")
     parser.add_argument('--eval_data_dir', type=str, default=None,
                         help='path for VLMEvalKit to store the eval data. Default will store in ~/LMUData')
     # API Kwargs, Apply to API VLMs and Judge API LLMs
@@ -227,7 +226,7 @@ def setup_lmeval_parser():
     parser.add_argument('--rerun', action='store_true',
                         help="if true, will remove all evaluation temp files and rerun.")
     parser.add_argument("--output_dir", default="./eval_result", type=str,
-                          help="the directory to save quantized model")
+                        help="the directory to save quantized model")
     args = parser.parse_args()
     return args
 
@@ -235,7 +234,7 @@ def setup_lmeval_parser():
 def tune(args):
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = ["auto_round", "auto_round:auto_gptq", "auto_round:auto_awq"]
+    supported_formats = ["auto_round", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_awq", "fake"]
     if not args.quant_nontext_module:
         supported_formats.extend(["auto_gptq", "auto_gptq:marlin"])
 
@@ -248,7 +247,8 @@ def tune(args):
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
-
+    
+    ## must set this before import torch
     devices = args.device.replace(" ", "").split(',')
     use_auto_mapping = False
 
@@ -270,10 +270,16 @@ def tune(args):
             os.environ["CUDA_VISIBLE_DEVICES"] = args.device
             args.device = ",".join(map(str, range(len(devices))))
             devices = args.device.replace(" ", "").split(',')
-        use_auto_mapping = True
+        if len(devices) > 1:
+            use_auto_mapping = True  ##for 70B model on single card, use auto will cause some layer offload to cpu
     elif args.device == "auto":
-        use_auto_mapping == True
+        use_auto_mapping = True
 
+    import torch
+    if not args.disable_deterministic_algorithms:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        print("'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "\
+                "and can be turned off by setting the '--disable_deterministic_algorithms' parameter.")
     device_str = detect_device(devices[0])
 
     torch_dtype = "auto"
@@ -282,29 +288,41 @@ def tune(args):
 
     # load_model
     processor, image_processor = None, None
-    if "llava" in model_name:
-        from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
-        tokenizer, model, image_processor, _ = load_pretrained_model(
-            model_name, model_base=None, model_name=model_name,
-            torch_dtype=torch_dtype)
-        model_type = "llava"
-    else:
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-        model_type = config.model_type
-        if "qwen2_vl" in model_type:
-            from transformers import Qwen2VLForConditionalGeneration
-            cls = Qwen2VLForConditionalGeneration
-        elif "mllama" in model_type:
-            from transformers import MllamaForConditionalGeneration
-            cls = MllamaForConditionalGeneration
-        else:
-            cls = AutoModelForCausalLM
-
-        model = cls.from_pretrained(
+    if "deepseek-vl2" in model_name.lower():
+        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM  # pylint: disable=E0401
+        processor = DeepseekVLV2Processor.from_pretrained(model_name)
+        tokenizer = processor.tokenizer
+        model: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
             model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
             device_map="auto" if use_auto_mapping else None)
+        model_type = "deepseek_vl_v2"
+    else:
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+        if "llava" in model_name and config.architectures[0] != "LlavaForConditionalGeneration":
+            from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
+            tokenizer, model, image_processor, _ = load_pretrained_model(
+                model_name, model_base=None, model_name=model_name,
+                torch_dtype=torch_dtype)
+            model_type = "llava"
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+            processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
+            model_type = config.model_type
+            if "llava" in model_type:
+                from transformers import LlavaForConditionalGeneration
+                cls = LlavaForConditionalGeneration
+            elif "qwen2_vl" in model_type:
+                from transformers import Qwen2VLForConditionalGeneration
+                cls = Qwen2VLForConditionalGeneration
+            elif "mllama" in model_type:
+                from transformers import MllamaForConditionalGeneration
+                cls = MllamaForConditionalGeneration
+            else:
+                cls = AutoModelForCausalLM
+
+            model = cls.from_pretrained(
+                model_name, trust_remote_code=not args.disable_trust_remote_code, torch_dtype=torch_dtype,
+                device_map="auto" if use_auto_mapping else None)
     if "cogvlm2" in model_name:
         model.config.model_type = "cogvlm2"
 
@@ -390,7 +408,13 @@ def tune(args):
 
     if "--truncation" not in sys.argv:
         args.truncation = None
-    
+
+    if "auto_awq" in args.format:
+        from auto_round.utils import check_awq_gemm_compatibility
+        awq_supported, info = check_awq_gemm_compatibility(model, args.bits, args.group_size, not args.asym,
+                                                           layer_config)
+        if not awq_supported:
+            logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
     autoround = round(model, tokenizer, processor=processor, image_processor=image_processor, dataset=args.dataset,
                       extra_data_dir=args.extra_data_dir, bits=args.bits, group_size=args.group_size,
@@ -402,7 +426,8 @@ def tune(args):
                       scale_dtype=args.scale_dtype, layer_config=layer_config, template=args.template,
                       enable_minmax_tuning=not args.disable_minmax_tuning, act_bits=args.act_bits,
                       quant_nontext_module=args.quant_nontext_module, not_use_best_mse=args.not_use_best_mse,
-                      to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile)
+                      to_quant_block_names=args.to_quant_block_names, enable_torch_compile=args.enable_torch_compile,
+                      device_map=args.device_map)
     model, _ = autoround.quantize()
 
     model.eval()
@@ -455,7 +480,7 @@ def setup_lmms_parser():
         help="To get full list of tasks, use the command lmms-eval --tasks list",
     )
     parser.add_argument("--output_dir", default="./eval_result", type=str,
-                          help="the directory to save quantized model")
+                        help="the directory to save quantized model")
     parser.add_argument(
         "--num_fewshot",
         type=int,
@@ -511,3 +536,4 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+

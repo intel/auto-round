@@ -45,16 +45,19 @@ See more about loading [huggingface dataset](https://huggingface.co/docs/dataset
             tokens.append(token)
         return tokens
     ~~~
-
-We support combination of different datasets and parametrization of calibration datasets by using "--dataset ./tmp.json:
-concat,NeelNanda/pile-10k:split=train+val:num=256,mbpp:concat=True:num=128:apply_template". Both local calibration file
-and huggingface dataset are supported. Through parametrization, users could specify splits of a dataset by setting "
-split=split1+split2". A concatenation option could enable users to merge calibration samples, a process commonly used to
-enhance calibration reliability. An 'apply_template' option would enable users to apply chat_template to calibration
-data before tokenization and is widely used by instruct-models in generation. Please note that samples shorter than
-args.seqlen will be dropped when concatenation option is not enabled.
-Please use ',' to split datasets, ':' to split parameters of a dataset and '+' to add values for one targeted parameter.
-
+  **Dataset combination**:We support combination of different datasets and parametrization of calibration datasets by using "--dataset ./tmp.json:
+  concat,NeelNanda/pile-10k:split=train+val:num=256,mbpp:concat=True:num=128:apply_chat_template". Both local calibration file
+  and huggingface dataset are supported. Through parametrization, users could specify splits of a dataset by setting "
+  split=split1+split2".
+  
+  **Samples concatenation**: A concatenation option could enable users to merge calibration samples. '--dataset NeelNanda/pile-10k:concat=True'
+  
+  **Apply chat template**: '--dataset NeelNanda/pile-10k:apply_chat_template' would enable users to apply chat_template to calibration
+  data before tokenization and is widely used by instruct-models in generation. Please note that samples shorter than
+  args.seqlen will be dropped when concatenation option is not enabled.
+  
+  Please use ',' to split datasets, ':' to split parameters of a dataset and '+' to add values for one targeted parameter.
+  
 
 <br />
 
@@ -105,20 +108,30 @@ Please use ',' to split datasets, ':' to split parameters of a dataset and '+' t
     ```
 
 - **Enable marlin kernel:**
-  - We support inference repacking for auto_round sym quantized models
-  ```python
-  from transformers import AutoModelForCausalLM, AutoTokenizer
-  from auto_round import AutoRoundConfig
-  backend = "cuda_marlin" #supported in auto_round>0.3.1 and 'pip install -v gptqmodel --no-build-isolation')
-  quantization_config = AutoRoundConfig(backend=backend)
-  quantized_model_path = "./tmp_autoround"
-  model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                               device_map=backend.split(':')[0], quantization_config=quantization_config)
-  ```
-  - To leverage auto-gptq marlin kernel, you need to install auto-gptq from source
+
+[//]: # (  - We support inference repacking for auto_round sym quantized models)
+
+[//]: # (  ```python)
+
+[//]: # (  from transformers import AutoModelForCausalLM, AutoTokenizer)
+
+[//]: # (  from auto_round import AutoRoundConfig)
+
+[//]: # (  backend = "cuda_marlin" #supported in auto_round>0.3.1 and 'pip install -v gptqmodel --no-build-isolation'&#41;)
+
+[//]: # (  quantization_config = AutoRoundConfig&#40;backend=backend&#41;)
+
+[//]: # (  quantized_model_path = "./tmp_autoround")
+
+[//]: # (  model = AutoModelForCausalLM.from_pretrained&#40;quantized_model_path,)
+
+[//]: # (                               device_map=backend.split&#40;':'&#41;[0], quantization_config=quantization_config&#41;)
+
+[//]: # (  ```)
+  - To leverage auto-gptq marlin kernel, you need to install auto-gptq from source and export the model without sharding.
 
     ```bash
-    auto-round --model facebook/opt-125m  --sym --bits 4 --group_size 128  --format "gptq:marlin"
+    auto-round --model facebook/opt-125m  --sym --bits 4 --group_size 128  --format "auto_gptq:marlin"
     ```
 
 - **Utilize the AdamW Optimizer:**

@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import os
+import re
+
 import torch
 import transformers
 import copy
@@ -115,6 +117,7 @@ class AutoRound(object):
                             block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True.
+        device_map (str|dict): device map for each block
     Returns:
         The quantized model.
     """
@@ -158,6 +161,7 @@ class AutoRound(object):
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
             w4a8_tune_weight_fp8_scale: bool = None,
+            device_map: Union[str, dict] = None,
             **kwargs,
     ):
         self.quantized = False
@@ -204,7 +208,6 @@ class AutoRound(object):
             all_blocks = get_block_names(model)
             self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-        
 
         ##activation
         self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
@@ -234,6 +237,9 @@ class AutoRound(object):
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
+        self.device_map = device_map
+
+        self.set_device_map_in_blocks(self.device_map)
 
         self.set_layerwise_config(self.layer_config)  ##better place in the end
         
@@ -241,6 +247,57 @@ class AutoRound(object):
         self.w4a8_per_channel = self.data_type == "fp8_gaudi3_to_int_sym_pc"
         # For W4AFP8, tune the scale for bf16 to fp8
         self.w4a8_tune_weight_fp8_scale = w4a8_tune_weight_fp8_scale
+
+    def set_device_map_in_blocks(self, device_map):
+        """Sets the device map for specific blocks in the model.
+
+        Args:
+            device_map (Union[str, dict]): A mapping of module names to devices.
+                If provided as a string, it should be in the format
+                "module_name:device,module_name:device". Devices can be integers
+                (GPU IDs) or strings (e.g., 'cpu', 'cuda:0').
+        """
+        if self.device_map is None or len(self.device_map) == 0:
+            self.device_map = None
+        if not device_map:
+            return
+        if isinstance(device_map, str):
+            device_map = device_map.replace(" ", "")
+            infos = device_map.split(",")
+            device_map_dict = {}
+            for info in infos:
+                index = info.find(':')
+                key = info[:index]
+                value = info[index + 1:]
+                device_map_dict[key] = value
+            device_map = device_map_dict
+
+        names = [n for n, m in self.model.named_modules() if len(list(m.children())) == 0]
+
+        for key, device in device_map.items():
+            if isinstance(device, str) and device.isdigit():
+                device = int(device)
+            device = detect_device(device)
+            try:
+                module = get_module(self.model, key)
+                module.tuning_device = device
+            except:
+                matching_names = [name for name in names if re.match(key, name)]
+                if len(matching_names) > 0:
+                    for name in matching_names:
+                        self._set_device_for_matching_module(name, device)
+                else:
+                    for name in names:
+                        if key in name:
+                            self._set_device_for_matching_module(name, device)
+
+    def _set_device_for_matching_module(self, name, device):
+        module = get_module(self.model, name)
+        if hasattr(module, "tuning_device") and module.tuning_device != device:
+            logger.warning(
+                f"Multiple devices have been set for layer {name}, keeping original device {module.tuning_device}")
+        else:
+            module.tuning_device = device
 
     def check_configs(self):
         """Checks if the configurations are valid.
@@ -274,11 +331,16 @@ class AutoRound(object):
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
-            self.batch_size = min(self.batch_size, self.nsamples)
-            self.gradient_accumulate_steps = min(self.nsamples // self.batch_size, self.gradient_accumulate_steps)
-            logger.warning(
-                f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps} as nsamples must equal or greater"
-                " than gradient_accumulate_steps * batch_szie")
+            if self.batch_size > self.nsamples:
+                logger.warning(f"reset batch_size to {self.nsamples} as n_sample({self.nsamples})"
+                               f" is smaller than batch_size({self.batch_size})")
+                self.batch_size = self.nsamples
+            if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
+                self.gradient_accumulate_steps = self.nsamples // self.batch_size
+                logger.warning(
+                    f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
+                    f" as nsamples must equal or greater"
+                    f" than gradient_accumulate_steps * batch_szie")
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
@@ -864,6 +926,9 @@ class AutoRound(object):
         """
         logger.info(f"quantizing layer {layer_name}")
         layer = get_module(self.model, layer_name)
+        if hasattr(layer, "tuning_device"):
+            device = layer.tuning_device
+
         layer = layer.to(device)
         for i in range(len(inputs)):
             inputs[i] = inputs[i].to(layer.weight.dtype)
@@ -973,7 +1038,7 @@ class AutoRound(object):
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
         mv_module_from_gpu(layer, self.low_cpu_mem_usage)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        logger.debug(dump_info)
+        logger.info(dump_info)
 
     def register_act_max_hook(self, model):
         def get_act_max_hook(module, input, output):
@@ -1005,6 +1070,15 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
+        if self.device_map is not None:
+            from accelerate import dispatch_model
+            for n, m in block.named_modules():
+                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
+                    continue
+                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+                hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
+                add_hook_to_module(m, hook, True)
+
         if q_input is None:
             hook_handles = self.register_act_max_hook(block)
 
@@ -1026,6 +1100,10 @@ class AutoRound(object):
                 handle.remove()
 
         if q_input is not None:
+            if input_ids is not q_input:
+                clear_memory(input_ids)
+            else:
+                clear_memory()
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
@@ -1144,7 +1222,7 @@ class AutoRound(object):
             f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
             f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         )
-        logger.debug(dump_info)
+        logger.info(dump_info)
         if len(unquantized_layer_names) != 0:
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
@@ -1157,12 +1235,18 @@ class AutoRound(object):
                 block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device,
                 cache_device=self.cache_device
             )
+            if self.device_map is not None:
+                accelerate.hooks.remove_hook_from_submodules(
+                    block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             clear_memory(input_ids)
 
             return q_outputs, output
 
         else:
+            if self.device_map is not None:
+                accelerate.hooks.remove_hook_from_submodules(
+                    block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             clear_memory(input_ids)
             return None, output
@@ -1277,6 +1361,14 @@ class AutoRound(object):
             if processor is not None:
                 processor.save_pretrained(output_dir)
             return
+        if format in ["gguf:q4_0", "gguf:q4_1"]:
+            if self.group_size != 32:
+                logger.error(f"{format} need group_size=32, but it is {self.group_size}, cannot export.")
+                return
+            if format == "gguf:q4_0" and not self.sym:
+                logger.warning(f"incorrect format choose, will reset to gguf:q4_1")
+            if format == "gguf:q4_1" and self.sym:
+                logger.warning(f"incorrect format choose, will reset to gguf:q4_0")
 
         from auto_round.export import EXPORT_FORMAT
         backend = format
@@ -1535,6 +1627,7 @@ class AutoRoundOPT(AutoRound):
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
+            device_map: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1575,6 +1668,7 @@ class AutoRoundOPT(AutoRound):
             to_quant_block_names=to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
+            device_map=device_map,
             **kwargs,
         )
 
@@ -1707,6 +1801,7 @@ class AutoRoundAdam(AutoRoundOPT):
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
+            device_map: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,
     ):
@@ -1747,6 +1842,7 @@ class AutoRoundAdam(AutoRoundOPT):
             to_quant_block_names=to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
+            device_map=device_map,
             optimizer=optimizer,
             **kwargs,
         )

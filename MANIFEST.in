@@ -1,1 +1,4 @@
 include requirements.txt
+include requirements-cpu.txt
+include requirements-hpu.txt
+include requirements-lib.txt

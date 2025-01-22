@@ -221,25 +221,58 @@ PKG_INSTALL_CFG = {
     ),
     "install_requires": fetch_requirements("requirements.txt"),
     "extras_require": {
-        "hpu": fetch_requirements("requirements-hpu.txt"),
+        "gpu": fetch_requirements("requirements-gpu.txt"),
         "cpu": fetch_requirements("requirements-cpu.txt"),
     },
 }
 
+###############################################################################
+# Configuration for auto_round_lib
+# From pip:
+# pip install auto-round-lib
+# From source:
+# python setup.py lib install
+###############################################################################
+
+
+LIB_REQUIREMENTS_FILE = "requirements-lib.txt"
+LIB_INSTALL_CFG = {
+    "include_packages": find_packages(
+        include=[
+            "auto_round",
+            "auto_round.*",
+            "auto_round_extension",
+            "auto_round_extension.*",
+        ],
+    ),
+    "install_requires": fetch_requirements(LIB_REQUIREMENTS_FILE),
+}
+
 if __name__ == "__main__":
     # There are two ways to install hpu-only package:
-    # 1. pip install -vvv --no-build-isolation -e .[hpu]
-    # 2. Within the gaudi docker where the HPU is available, we install the hpu package by default.
+    # 1. python setup.py lib install
+    # 2. Within the gaudi docker where the HPU is available, we install the auto_round_lib by default.
+    is_user_requesting_library_build = "lib" in sys.argv
+    if is_user_requesting_library_build:
+        sys.argv.remove("lib")
+    should_build_library = is_user_requesting_library_build or BUILD_HPU_ONLY
 
-    include_packages = PKG_INSTALL_CFG.get("include_packages", {})
-    install_requires = PKG_INSTALL_CFG.get("install_requires", [])
-    extras_require = PKG_INSTALL_CFG.get("extras_require", {})
+    if should_build_library:
+        package_name = "auto_round_lib"
+        INSTALL_CFG = LIB_INSTALL_CFG
+    else:
+        package_name = "auto_round"
+        INSTALL_CFG = PKG_INSTALL_CFG
+
+    include_packages = INSTALL_CFG.get("include_packages", {})
+    install_requires = INSTALL_CFG.get("install_requires", [])
+    extras_require = INSTALL_CFG.get("extras_require", {})
 
     setup(
-        name="auto_round",
+        name=package_name,
         author="Intel AIPT Team",
         version=version,
-        author_email="wenhua.cheng@intel.com, weiwei1.zhang@intel.com",
+        author_email="wenhua.cheng@intel.com, weiwei1.zhang@intel.com, heng.guo@intel.com",
         description="Repository of AutoRound: Advanced Weight-Only Quantization Algorithm for LLMs",
         long_description=open("README.md", "r", encoding="utf-8").read(),
         long_description_content_type="text/markdown",
@@ -248,7 +281,6 @@ if __name__ == "__main__":
         url="https://github.com/intel/auto-round",
         packages=include_packages,
         include_dirs=include_dirs,
-        ##include_package_data=False,
         install_requires=install_requires,
         extras_require=extras_require,
         python_requires=">=3.7.0",

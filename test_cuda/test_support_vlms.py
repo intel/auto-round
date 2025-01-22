@@ -13,7 +13,7 @@ from PIL import Image
 class TestSupportVLMS(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.save_dir = os.path.join(os.path.dirname(__file__), "./ut_saved")
+        self.save_dir = os.path.join(os.path.dirname(__file__), "ut_saved")
         self.python_path = sys.executable
         self.device = 0
 
@@ -81,7 +81,7 @@ class TestSupportVLMS(unittest.TestCase):
         ## test tune
         res = os.system(
             f"cd .. && {self.python_path} -m auto_round --mllm "
-            f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
+            f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}")
         self.assertFalse(res > 0 or res == -1, msg="Phi-3.5 tuning fail")
 
         ## test infer
@@ -114,11 +114,73 @@ class TestSupportVLMS(unittest.TestCase):
         image_inputs = Image.open(requests.get(image_url, stream=True).raw)
         inputs = processor(prompt, image_inputs, return_tensors="pt").to(model.device) 
 
-        generation_args = { 
+        generation_args = {
             "max_new_tokens": 1000, 
             "temperature": 0.0, 
             "do_sample": False, 
-        } 
+        }
+
+        generate_ids = model.generate(**inputs, 
+        eos_token_id=processor.tokenizer.eos_token_id, 
+        **generation_args
+        )
+
+        # remove input tokens 
+        generate_ids = generate_ids[:, inputs['input_ids'].shape[1]:]
+        response = processor.batch_decode(generate_ids, 
+        skip_special_tokens=True, 
+        clean_up_tokenization_spaces=False)[0] 
+        print(response)
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+        
+    def test_phi3_vision_awq(self):
+        model_path = "/models/Phi-3.5-vision-instruct/"
+        ## test tune
+        res = os.system(
+            f"cd .. && {self.python_path} -m auto_round --mllm "
+            f"--model {model_path} --iter 2 --quant_nontext_module "
+            f"--nsample 64 --seqlen 32 "
+            f"--format auto_awq --output_dir {self.save_dir} --device {self.device}")
+        self.assertFalse(res > 0 or res == -1, msg="Phi-3.5 tuning fail")
+
+        ## test infer
+        from transformers import AutoModelForCausalLM, AutoProcessor
+        quantized_model_path = os.path.join(self.save_dir, "Phi-3.5-vision-instruct-w4g128-auto_awq")
+        res = os.system(f"cp /models/Phi-3.5-vision-instruct/*.py {quantized_model_path}")
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, 
+            device_map=f"cuda:{self.device}", 
+            trust_remote_code=True, 
+            torch_dtype="auto"
+        )
+        assert "WQLinear_GEMM" in str(
+                type(model.model.vision_embed_tokens.img_processor.vision_model.encoder.layers[0].mlp.fc1)), \
+                "model quantization failed."
+        processor = AutoProcessor.from_pretrained(quantized_model_path, 
+        trust_remote_code=True, 
+        num_crops=4
+        )
+
+        image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
+        content = "Describe this image."
+        messages = [
+            {"role": "user", 
+            "content": "<|image_1|>\n"+content},
+        ]
+
+        prompt = processor.tokenizer.apply_chat_template(
+        messages, 
+        tokenize=False, 
+        add_generation_prompt=True
+        )
+        image_inputs = Image.open(requests.get(image_url, stream=True).raw)
+        inputs = processor(prompt, image_inputs, return_tensors="pt").to(model.device) 
+
+        generation_args = {
+            "max_new_tokens": 1000, 
+            "temperature": 0.0, 
+            "do_sample": False, 
+        }
 
         generate_ids = model.generate(**inputs, 
         eos_token_id=processor.tokenizer.eos_token_id, 
@@ -261,6 +323,79 @@ class TestSupportVLMS(unittest.TestCase):
         response = response.split("<|end_of_text|>")[0]
         print(response)     
         shutil.rmtree(quantized_model_path, ignore_errors=True)
+    
+    def test_72b(self):
+        model_path = "/data5/models/Qwen2-VL-72B-Instruct/"
+        res = os.system(
+            f"cd .. && {self.python_path} -m auto_round --mllm "
+            f"--model {model_path} --iter 1 --nsamples 1 --bs 1 --output_dir {self.save_dir} --device {self.device}"
+            )
+        self.assertFalse(res > 0 or res == -1, msg="qwen2-72b tuning fail")
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+    
+    def test_deepseek_vl2(self):
+        model_path = "/models/deepseek-vl2-tiny"
+        res = os.system(
+            f"cd .. && {self.python_path} -m auto_round --mllm "
+            f"--model {model_path} --iter 3 --nsamples 10 --bs 4 --output_dir {self.save_dir} --device auto --group_size 32 "
+            f"--fp_layers language.model.layers.4,language.model.layers.6"
+            )
+        self.assertFalse(res > 0 or res == -1, msg="deepseek vl2 tuning fail")
+
+        quantized_model_path = os.path.join(self.save_dir, "deepseek-vl2-tiny-w4g32-auto_round")
+        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM
+        from transformers import AutoModelForCausalLM
+        vl_chat_processor: DeepseekVLV2Processor = DeepseekVLV2Processor.from_pretrained(quantized_model_path)
+        tokenizer = vl_chat_processor.tokenizer
+
+        vl_gpt: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path,
+            trust_remote_code=True,
+            device_map=f"cuda:{self.device}",
+            torch_dtype="auto",
+        )
+        vl_gpt = vl_gpt.eval()
+
+        image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
+        content = "Describe this image."
+
+        ## single image conversation example
+        conversation = [
+            {
+                "role": "<|User|>",
+                "content": content,
+            },
+            {"role": "<|Assistant|>", "content": ""},
+        ]
+
+        # load images and prepare for inputs
+        pil_images = Image.open(requests.get(image_url, stream=True).raw)
+        prepare_inputs = vl_chat_processor(
+            conversations=conversation,
+            images=[pil_images],
+            force_batchify=True,
+            system_prompt=""
+        )
+        prepare_inputs = prepare_inputs.to(vl_gpt.device)
+
+        # run image encoder to get the image embeddings
+        inputs_embeds = vl_gpt.prepare_inputs_embeds(**prepare_inputs)
+
+        # run the model to get the response
+        outputs = vl_gpt.language.generate(
+            input_ids = prepare_inputs["input_ids"],
+            inputs_embeds=inputs_embeds,
+            attention_mask=prepare_inputs.attention_mask,
+            pad_token_id=tokenizer.eos_token_id,
+            bos_token_id=tokenizer.bos_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+            max_new_tokens=512,  
+            do_sample=False,  
+            use_cache=True 
+        )
+
+        answer = tokenizer.decode(outputs[0].cpu().tolist(), skip_special_tokens=True)
+        print(f"{prepare_inputs['sft_format'][0]}", answer)
 
 if __name__ == "__main__":
     unittest.main()
