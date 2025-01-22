@@ -197,8 +197,6 @@ def progressive_quant_fp8_int4_bas(tensor, bits=4, group_size=-1, v=0, min_scale
     return qdq_tensor, scale_fp8_to_int4 * scale_bf16_to_fp8, None
 
 
-##ugly code, need to refine later
-
 @register_dtype("fp8_gaudi3_sym")
 def quant_fp8_sym_gaudi3(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     """Symmetric quantization using float8 format.
