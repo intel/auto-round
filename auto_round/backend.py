@@ -137,7 +137,7 @@ BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
                                         packing_format="triton_zp+-1",
                                         bits=[2, 3, 4, 8], group_size=None,
                                         priority=1, feature_checks=[feature_multiply_checker_32],
-                                        alias=["auto_round:auto_gptq:cuda,auto_gptq:cuda, auto_round:gptq:cuda"],
+                                        alias=["auto_round:auto_gptq:cuda","auto_gptq:cuda","auto_round:gptq:cuda"],
                                         convertable_format=["triton_zp+-1"],
                                         requirements=["auto-gptq>=0.7.1"]
                                         )
@@ -554,3 +554,4 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
                                 reverse=True)
 
     return supported_backends[0]
+

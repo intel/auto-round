@@ -28,9 +28,9 @@
 import os
 import re
 import argparse
-
 from auto_round.utils import  get_fp_layer_names, set_cuda_visible_devices, clear_memory
 
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 class BasicArgumentParser(argparse.ArgumentParser):
 
@@ -165,6 +165,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--act_data_type", default=None, type=str, help="activation data type")
 
         self.add_argument("--disable_act_dynamic", action='store_true', help="activation static quantization")
+        
+        self.add_argument("--disable_deterministic_algorithms",  action='store_true',
+                          help="disable torch deterministic algorithms.")
 
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
 
@@ -334,10 +337,12 @@ def tune(args):
     ##must set this before import torch
     device_str, use_auto_mapping = set_cuda_visible_devices(args.device)
 
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
     import torch
-    torch.use_deterministic_algorithms(True, warn_only=True)
+    if not args.disable_deterministic_algorithms:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        print("'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "\
+            "and can be turned off by setting the '--disable_deterministic_algorithms' parameter.")
+        
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -463,6 +468,7 @@ def tune(args):
             model, args.bits, args.group_size, not args.asym, layer_config)
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
+
 
     autoround = round(
         model,
