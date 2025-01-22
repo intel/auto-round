@@ -58,7 +58,6 @@ BLOCK_PATTERNS = [  ## copy from transformers optimum
     "model.layers",
 ]
 
-from auto_round.config import global_config
 
 def pack_layer(name, model, layer_config, backend, pbar):
     with tctl.threadpool_limits(limits=1):
@@ -109,10 +108,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
         layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
         sig = inspect.signature(qlayer.pack)
         param_count = len(sig.parameters)
-        if global_config.W4A8_DYNAMIC:
-            act_scale = layer.act_max_scale
-        else:
-            act_scale = layer.act_scale
+        act_scale = layer.act_scale
         if param_count == 2:
             qlayer.pack(layer, scale, act_scale, layer.w_bf16_to_fp8_scale)
         else:
