@@ -24,10 +24,10 @@ def get_gaudi_fp8_ste_func():
 
     if is_hpu_supported():
         fn = float8_e4m3fn_hpu_ste
-        warning_once("Using HPU STE for FP8")
+        logger.warning_once("Using HPU STE for FP8")
     else:
         fn = float8_e4m3fn_ste
-        warning_once("Using CUDA/CPU STE for FP8")
+        logger.warning_once("Using CUDA/CPU STE for FP8")
     return fn
 
 
