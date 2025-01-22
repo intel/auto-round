@@ -276,7 +276,7 @@ def tune(args):
     import re
     import torch
     import transformers
-    from auto_round.utils import logger
+ 
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     torch.use_deterministic_algorithms(True, warn_only=True)
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
@@ -284,7 +284,6 @@ def tune(args):
 
     from auto_round import AutoRoundConfig
     from auto_round.eval.evaluation import simple_evaluate
-
     from auto_round.utils import detect_device, get_library_version, detect_device_count
     from auto_round.utils import logger
 
@@ -456,7 +455,7 @@ def tune(args):
         save_format_ = save_format_.replace("_", "-")
         eval_folder = f'{export_dir}-{save_format_}'
         autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
- 
+
     lm_eval_version = get_library_version("lm-eval")
 
     if isinstance(tasks, str):
