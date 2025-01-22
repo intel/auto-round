@@ -59,14 +59,7 @@ class WrapperLinear(torch.nn.Module):
         device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
     """
 
-    def __init__(
-        self,
-        orig_layer,
-        enable_minmax_tuning=True,
-        enable_norm_bias_tuning=False,
-        device="cpu",
-        _inner_layer_name=None,
-    ):
+    def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu'):
         """Initializes the WrapperLinear module.
 
         Args:
@@ -76,7 +69,6 @@ class WrapperLinear(torch.nn.Module):
             device (str): The computation device, such as 'cpu' or 'cuda'.
         """
         super(WrapperLinear, self).__init__()
-        self._inner_layer_name = _inner_layer_name
         self.orig_layer = orig_layer
         self.device = device
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -506,13 +498,8 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperLinear(
-                m,
-                enable_minmax_tuning=enable_minmax_tuning,
-                enable_norm_bias_tuning=enable_norm_bias_tuning,
-                device=device,
-                _inner_layer_name=n,
-            )
+            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning,
+                                  enable_norm_bias_tuning=enable_norm_bias_tuning, device=device)
             set_module(block, n, new_m)
             quantized_layers.append(n)
 

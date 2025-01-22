@@ -545,8 +545,6 @@ class AutoRoundQuantizer(HfQuantizer):
                         "via `pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`")
 
             QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym)
-            # from auto_round_extension.cuda.qlinear_exllamav2_gptq import QuantLinear
-
 
             layer_device = get_device(layer)
 
