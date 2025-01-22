@@ -280,11 +280,13 @@ def tune(args):
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     torch.use_deterministic_algorithms(True, warn_only=True)
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
-     # pylint: disable=E0401
+    from lm_eval.utils import make_table  # pylint: disable=E0401
 
     from auto_round import AutoRoundConfig
+    from auto_round.eval.evaluation import simple_evaluate
 
     from auto_round.utils import detect_device, get_library_version, detect_device_count
+    from auto_round.utils import logger
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -454,8 +456,7 @@ def tune(args):
         save_format_ = save_format_.replace("_", "-")
         eval_folder = f'{export_dir}-{save_format_}'
         autoround.save_quantized(eval_folder, format=format_, inplace=inplace)
-    from lm_eval.utils import make_table 
-    from auto_round.eval.evaluation import simple_evaluate
+ 
     lm_eval_version = get_library_version("lm-eval")
 
     if isinstance(tasks, str):
@@ -469,12 +470,12 @@ def tune(args):
         if args.act_bits <= 8:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
-        
+
                 dispatch_model(model, model.hf_device_map)
                 user_model = model
             else:
                 user_model = model.to(device_str)
-        
+
             if args.eval_bs is None or args.eval_bs == "auto":
                 args.eval_bs = 16
             from auto_round.eval.evaluation import simple_evaluate_user_model
@@ -483,8 +484,8 @@ def tune(args):
             if use_auto_mapping:
                 model_args += ",parallelize=True"
             res = simple_evaluate(model="hf", model_args=model_args,
-                                tasks=tasks,
-                                batch_size=args.eval_bs)
+                                  tasks=tasks,
+                                  batch_size=args.eval_bs)
         print(make_table(res))
 
 
