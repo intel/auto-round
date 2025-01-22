@@ -204,6 +204,7 @@ class AutoRound(object):
             self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
 
+
         ##activation
         self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
         self.act_bits = act_bits if not (act_bits is None) else self.bits
@@ -1030,10 +1031,8 @@ class AutoRound(object):
             if hasattr(m, "orig_layer"):
                 for key in m.params.keys():
                     if "min" in key or "max" in key:
-                        logger.info(f"add minmax param {key} in module{n} to optimizer, shape: {m.params[key].shape}")
                         minmax_params.append(m.params[key])
                     else:
-                        logger.info(f"add minmax param {key} in module{n} to optimizer, shape {m.params[key].shape}")
                         round_params.append(m.params[key])
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
@@ -1075,7 +1074,7 @@ class AutoRound(object):
         total_loss = 0
 
         for i in range(self.iters):
-            logger.info(f"iter {i} / {self.iters}")
+            logger.debug(f"iter {i} / {self.iters}")
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
@@ -1212,8 +1211,6 @@ class AutoRound(object):
             pbar = tqdm(range(0, len(block_names), nblocks))
         # for i in pbar:
         for i in range(len(block_names)):
-            if os.getenv("DEBUG_QUANT_BLOCK", "0") == "1" and i > 2: 
-                break
             if nblocks == 1:
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
