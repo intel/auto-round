@@ -157,6 +157,7 @@ class AutoRound(object):
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = None,
+            w4a8_tune_weight_fp8_scale: bool = None,
             **kwargs,
     ):
         self.quantized = False
@@ -203,7 +204,7 @@ class AutoRound(object):
             all_blocks = get_block_names(model)
             self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-
+        
 
         ##activation
         self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
@@ -235,6 +236,11 @@ class AutoRound(object):
             import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401]
 
         self.set_layerwise_config(self.layer_config)  ##better place in the end
+        
+        # For W4AFP8, quanitze weight from bf16 to fp8 with per-channel granularity
+        self.w4a8_per_channel = self.data_type == "fp8_gaudi3_to_int_sym_pc"
+        # For W4AFP8, tune the scale for bf16 to fp8
+        self.w4a8_tune_weight_fp8_scale = w4a8_tune_weight_fp8_scale
 
     def check_configs(self):
         """Checks if the configurations are valid.
@@ -986,7 +992,7 @@ class AutoRound(object):
                 hook_handles.append(hook)
         return hook_handles
 
-    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
+    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu"), **kwargs):
         """Quantize the weights of a given block of the model.
 
         Args:
@@ -1023,7 +1029,7 @@ class AutoRound(object):
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
-            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device)
+            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device, **kwargs)
 
         round_params = []
         minmax_params = []
@@ -1230,6 +1236,8 @@ class AutoRound(object):
                 input_others,
                 q_input=q_input,
                 device=device,
+                w4a8_per_channel=self.w4a8_per_channel,
+                w4a8_tune_weight_fp8_scale=self.w4a8_tune_weight_fp8_scale
             )
             pbar.update(1)
 

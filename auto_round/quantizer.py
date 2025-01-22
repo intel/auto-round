@@ -22,8 +22,6 @@ from .utils import (
     set_module,
     logger
 )
-from loguru import logger as rich_logger
-from auto_round.config import global_config
 
 def reshape_and_pad_tensor(v, group_size=-1):
     """Reshapes the tensor based on the group size.
@@ -59,7 +57,7 @@ class WrapperLinear(torch.nn.Module):
         device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
     """
 
-    def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu'):
+    def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu', **kwargs):
         """Initializes the WrapperLinear module.
 
         Args:
@@ -75,6 +73,8 @@ class WrapperLinear(torch.nn.Module):
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8 or "fp8" in self.orig_layer.act_data_type or "int8" in self.orig_layer.act_data_type
         self.q_scale_thresh = 1e-5
+        self.w4a8_per_channel = kwargs.get("w4a8_per_channel", False)
+        self.w4a8_tune_weight_fp8_scale = kwargs.get("w4a8_tune_weight_fp8_scale", False)
         self._init_tuning_params_and_quant_func()
         self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
 
@@ -101,9 +101,9 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("min_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
         self._init_params("max_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
 
-        if global_config.ENABLE_WEIGHT_FP8_MAX_SCALE:
+        if self.w4a8_tune_weight_fp8_scale:
             weight_scale_shape = (1)
-            if global_config.W4A8_PC:
+            if self.w4a8_per_channel:
                 weight_scale_shape = (orig_weight.shape[0], 1)
             self._init_params("weight_fp8_max_scale", p_dtype, weight_scale_shape, 1.0, True)
 
@@ -234,7 +234,7 @@ class WrapperLinear(torch.nn.Module):
         max_scale = best_params.get('max_scale', torch.tensor(1.0)).to(self.device)
         max_scale = best_params.get('max_scale', torch.tensor(1.0)).to(self.device)
 
-        if global_config.ENABLE_WEIGHT_FP8_MAX_SCALE:
+        if self.w4a8_tune_weight_fp8_scale:
             weight_fp8_max_scale = best_params.get('weight_fp8_max_scale', torch.tensor(1.0)).to(self.device)
         else:
             weight_fp8_max_scale = None
@@ -341,8 +341,6 @@ class WrapperLinear(torch.nn.Module):
             bias, _, _ = self._qdq_bias(bias, self.bias_v)
 
         return self.orig_forward(x, weight_q, bias)
-from auto_round.config import global_config
-
 
 class WrapperWALayer(torch.nn.Module):
     def __init__(self, orig_layer):
@@ -351,9 +349,6 @@ class WrapperWALayer(torch.nn.Module):
         self.act_quant_func = self.orig_layer.act_quant_func
 
     def forward(self, x):
-        # FIXME: (Yi) for static quant, remove it later
-        if not global_config.W4A8_DYNAMIC:
-            assert hasattr(self.orig_layer, "act_max"), f"For static quant, expecting act_max in {self.orig_layer}"
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
         x, _, _ = self.orig_layer.act_quant_func(x, bits=self.orig_layer.act_bits,
                                                  group_size=self.orig_layer.group_size,
@@ -481,7 +476,7 @@ class WrapperMultiblock(torch.nn.Module):
         return hidden_states
 
 
-def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='cpu'):
+def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='cpu', **kwargs):
     """Wraps the layers in the given block with a custom Wrapper module.
 
     Args:
@@ -499,7 +494,9 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
                 unquantized_layers.append(n)
                 continue
             new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning,
-                                  enable_norm_bias_tuning=enable_norm_bias_tuning, device=device)
+                                  enable_norm_bias_tuning=enable_norm_bias_tuning, device=device,
+                                  **kwargs,
+                                  )
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
