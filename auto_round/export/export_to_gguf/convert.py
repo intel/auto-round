@@ -1180,15 +1180,11 @@ class Model(OriModel):
             yield name, tensor
 
     def prepare_tensors(self):
-        max_name_len = max(
-            len(s)
-            for _, s in self.tensor_map.mapping.values()) + len(".weight,")
+        max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
 
-        for name, data_torch in chain(self.generate_extra_tensors(),
-                                      self.get_tensors()):
+        for name, data_torch in chain(self.generate_extra_tensors(), self.get_tensors()):
             # we don't need these
-            if name.endswith((".attention.masked_bias", ".attention.bias",
-                              ".rotary_emb.inv_freq")):
+            if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
                 continue
 
             old_dtype = data_torch.dtype
@@ -1204,8 +1200,7 @@ class Model(OriModel):
                     bid = int(part)
                     break
 
-            for new_name, data_torch in (self.modify_tensors(
-                    data_torch, name, bid)):
+            for new_name, data_torch in (self.modify_tensors(data_torch, name, bid)):
                 data = data_torch.squeeze().cpu().numpy()
 
                 # if data ends up empty, it means data_torch was a scalar tensor -> restore
@@ -1213,8 +1208,7 @@ class Model(OriModel):
                     data = data_torch.numpy()
 
                 n_dims = len(data.shape)
-                data_qtype: gguf.GGMLQuantizationType | bool = self.tensor_force_quant(
-                    name, new_name, bid, n_dims)
+                data_qtype: gguf.GGMLQuantizationType | bool = self.tensor_force_quant(name, new_name, bid, n_dims)
 
                 # Most of the codebase that takes in 1D tensors or norms only handles F32 tensors
                 if n_dims <= 1 or new_name.endswith("_norm.weight"):
@@ -1280,23 +1274,41 @@ class Model(OriModel):
                 #     data_qtype = gguf.GGMLQuantizationType.F16
                 #     data = gguf.quants.quantize(data, data_qtype)
 
-                # TODO:  Quant here
-                suffix = '.weight'
-                if suffix in name and name[:-len(suffix)] in self.layer_config:
-                    layer_name = name[:-len(suffix)]
-                    if "scale" in self.layer_config[layer_name]:
-                        scale = self.layer_config[layer_name]['scale']
-                        if isinstance(scale, torch.Tensor):
-                            scale = scale.numpy()
-                        zp = self.layer_config[layer_name]['zp']
-                        if isinstance(zp, torch.Tensor):
-                            zp = zp.numpy()
-                        data = ggml_quant(data, data_qtype.name.lower(), scale,
-                                          zp)
+                # Quant here
+                def _quant_data(data, data_qtype):
+                    suffix = '.weight'
+                    if suffix in name and name[:-len(suffix)] in self.layer_config:
+                        layer_name = name[:-len(suffix)]
+                        if "scale" in self.layer_config[layer_name]:
+                            scale = self.layer_config[layer_name]['scale']
+                            if isinstance(scale, torch.Tensor):
+                                scale = scale.numpy()
+                            zp = self.layer_config[layer_name]['zp']
+                            if isinstance(zp, torch.Tensor):
+                                zp = zp.numpy()
+                            data = ggml_quant(data, data_qtype.name.lower(), scale,
+                                            zp)
+                        else:
+                            data_qtype = gguf.GGMLQuantizationType.F32
                     else:
                         data_qtype = gguf.GGMLQuantizationType.F32
+                    return data, data_qtype
+
+                # for MOE model
+                if len(data.shape) == 3:
+                    new_data = []
+                    for idx, arr in enumerate(data):
+                        arr_name = name.split('.')
+                        for i in range(len(arr_name)-1, -1, -1):
+                            if arr_name[i].isdecimal() and int(arr_name[i]) == (data.shape[0] - 1):
+                                arr_name[i] = str(idx)
+                        arr_name = ".".join(arr_name)
+                        arr, data_qtype = _quant_data(arr, data_qtype)
+                        new_data.append(arr)
+                    data = np.array(new_data)
+                    del new_data
                 else:
-                    data_qtype = gguf.GGMLQuantizationType.F32
+                    data, data_qtype = _quant_data(data, data_qtype)
 
                 shape = gguf.quant_shape_from_byte_shape(
                     data.shape,
@@ -5449,7 +5461,7 @@ class NemotronModel(Model):
 
     def modify_tensors(self, data_torch: Tensor, name: str,
                        bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        # * Adding +1 to LayerNorm's weights here to implement layernorm1p w/o 
+        # * Adding +1 to LayerNorm's weights here to implement layernorm1p w/o
         # changing anything on the GGML engine side
         #   model.layers.{l}.input_layernorm.weight
         #   model.layers.{l}.post_attention_layernorm.weight
