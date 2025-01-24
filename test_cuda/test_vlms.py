@@ -1,4 +1,4 @@
-iimport copy
+import copy
 import shutil
 import sys
 import unittest
@@ -94,7 +94,7 @@ class TestAutoRound(unittest.TestCase):
         ## load the model
         model_name = "/models/Qwen2-VL-2B-Instruct"
         model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_name, trust_remote_code=True)
+            model_name, trust_remote_code=True, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 
