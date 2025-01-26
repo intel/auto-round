@@ -567,7 +567,7 @@ def tune(args):
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
     device_str, parallelism = set_cuda_visible_devices(device)
-    model_args = f"pretrained={model_path},trust_remote_code={disable_trust_remote_code}"
+    model_args = f"pretrained={model_path},trust_remote_code={not disable_trust_remote_code}"
     if parallelism:
         model_args += ",parallelize=True"
     if isinstance(tasks, str):
