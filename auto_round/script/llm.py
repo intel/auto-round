@@ -28,7 +28,9 @@
 import os
 import re
 import argparse
-from auto_round.utils import  get_fp_layer_names, set_cuda_visible_devices, clear_memory
+import sys
+
+from auto_round.utils import  get_fp_layer_names, set_cuda_visible_devices, clear_memory, is_debug_mode
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -160,7 +162,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             help="Names of quantitative blocks, please use commas to separate them.")
 
-        self.add_argument("--enable_torch_compile", default=None, type=bool, help="whether to enable torch compile")
+        self.add_argument("--disable_torch_compile",  action='store_true',
+                          help="whether to disable torch compile")
 
         self.add_argument("--act_data_type", default=None, type=str, help="activation data type")
 
@@ -469,6 +472,9 @@ def tune(args):
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
+    enable_torch_compile =  False if "--disable_torch_compile" in sys.argv else None
+    if is_debug_mode():
+        enable_torch_compile = False
 
     autoround = round(
         model,
@@ -499,7 +505,7 @@ def tune(args):
         enable_norm_bias_tuning=args.enable_norm_bias_tuning,
         not_use_best_mse=args.not_use_best_mse,
         to_quant_block_names=args.to_quant_block_names,
-        enable_torch_compile=args.enable_torch_compile,
+        enable_torch_compile=enable_torch_compile,
         act_data_type=args.act_data_type,
         act_dynamic=not args.disable_act_dynamic,
         device_map=args.device_map)
@@ -567,7 +573,8 @@ def tune(args):
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
     device_str, parallelism = set_cuda_visible_devices(device)
-    model_args = f"pretrained={model_path},trust_remote_code={not disable_trust_remote_code}"
+    ##model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code},add_bos_token=True'
+    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}'
     if parallelism:
         model_args += ",parallelize=True"
     if isinstance(tasks, str):

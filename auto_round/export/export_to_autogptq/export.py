@@ -123,7 +123,6 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
     model = kwargs["model"]
-    model.half_()  ## force to fp16
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     to_quant_block_names = kwargs["to_quant_block_names"]
@@ -193,11 +192,13 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
-    save(model, output_dir, safe_serialization=safe_serialization)
+
+    dtype=torch.float16 ##force dtype to fp16
+    save(model, output_dir, safe_serialization=safe_serialization,dtype=dtype)
     return model
 
 
-def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
+def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None):
     """Save model state dict and configs.
 
     Args:
@@ -220,6 +221,14 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     ##max_shard_size = "10000GB"  ## API of auto-gptq with marlin does not support shard size
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    config_path = os.path.join(save_dir,"config.json")
+    if dtype is not None and dtype!=model.dtype and  os.path.exists(os.path.join(save_dir,"config.json")):
+        with open(config_path, 'r') as file:
+            data = json.load(file)
+        data["torch_dtype"]= str(dtype).split(".")[-1]
+        with open(config_path, 'w') as file:
+            json.dump(data, file, indent=2)
+
     config_file = "quantize_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:

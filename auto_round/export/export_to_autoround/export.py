@@ -188,7 +188,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         backend = backend.replace("auto_round", "auto_gptq")
 
     model = kwargs["model"]
-    model.half_()## force to fp16
     to_quant_block_names = kwargs["to_quant_block_names"]
     quant_block_list = kwargs.get("quant_block_list", None)
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
@@ -251,12 +250,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     if processor is not None:
         processor.save_pretrained(output_dir)
-    save(model, output_dir, safe_serialization=safe_serialization)
+    dtype = torch.float16  ##force dtype to fp16
+    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
 
 
-def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
+def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None):
     """Save model state dict and configs.
 
     Args:
@@ -278,6 +278,13 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     """
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    config_path = os.path.join(save_dir, "config.json")
+    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
+        with open(config_path, 'r') as file:
+            data = json.load(file)
+        data["torch_dtype"] = str(dtype).split(".")[-1]
+        with open(config_path, 'w') as file:
+            json.dump(data, file, indent=2)
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
