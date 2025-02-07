@@ -71,6 +71,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
 def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
     model = kwargs["model"]
+    model.half_()  ## force to fp16
     layer_config = kwargs["layer_config"]
     to_quant_block_names = kwargs.get("to_quant_block_names", None)
     tokenizer = kwargs.get("tokenizer", None)
@@ -97,7 +98,10 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     names = list(layer_config.keys())
 
     backend = None
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    max_workers=1
+    if not  torch.cuda.is_available():
+        max_workers=2 ## 2 with cuda packing will cause hang occasionally
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
                 pack_layer(name, compressed_model, layer_config, backend, pbar)

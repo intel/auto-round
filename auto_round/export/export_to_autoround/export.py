@@ -188,6 +188,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         backend = backend.replace("auto_round", "auto_gptq")
 
     model = kwargs["model"]
+    model.half_()## force to fp16
     to_quant_block_names = kwargs["to_quant_block_names"]
     quant_block_list = kwargs.get("quant_block_list", None)
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
@@ -226,7 +227,10 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    max_workers=1
+    if not  torch.cuda.is_available():
+        max_workers=2 ## 2 with cuda packing will cause hang occasionally
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
                 pack_layer(name, model, layer_config, backend, pbar)

@@ -123,6 +123,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
     model = kwargs["model"]
+    model.half_()  ## force to fp16
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     to_quant_block_names = kwargs["to_quant_block_names"]
@@ -169,7 +170,11 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
 
     layer_config = kwargs["layer_config"]
     names = list(layer_config.keys())
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    max_workers=1
+    if not  torch.cuda.is_available():
+        max_workers=2 ## 2 with cuda packing will cause hang occasionally
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
                 pack_layer(name, model, layer_config, backend, pbar)
