@@ -169,9 +169,9 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
 
     layer_config = kwargs["layer_config"]
     names = list(layer_config.keys())
-    max_workers=1
-    if not  torch.cuda.is_available():
-        max_workers=2 ## 2 with cuda packing will cause hang occasionally
+    max_workers = 1
+    if not torch.cuda.is_available():
+        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
@@ -193,12 +193,13 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
 
-    dtype=torch.float16 ##force dtype to fp16
-    save(model, output_dir, safe_serialization=safe_serialization,dtype=dtype)
+    dtype = torch.float16  ##force dtype to fp16
+    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
     return model
 
 
-def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None):
+def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True,
+         dtype=None):
     """Save model state dict and configs.
 
     Args:
@@ -221,11 +222,11 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     ##max_shard_size = "10000GB"  ## API of auto-gptq with marlin does not support shard size
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    config_path = os.path.join(save_dir,"config.json")
-    if dtype is not None and dtype!=model.dtype and  os.path.exists(os.path.join(save_dir,"config.json")):
+    config_path = os.path.join(save_dir, "config.json")
+    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
         with open(config_path, 'r') as file:
             data = json.load(file)
-        data["torch_dtype"]= str(dtype).split(".")[-1]
+        data["torch_dtype"] = str(dtype).split(".")[-1]
         with open(config_path, 'w') as file:
             json.dump(data, file, indent=2)
 

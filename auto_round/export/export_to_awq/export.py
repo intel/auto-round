@@ -54,8 +54,8 @@ def pack_layer(name, model, layer_config, backend, pbar):
         bits = config["bits"]
         group_size = config["group_size"]
         linear_layer = get_module(model, name)
-        if config["sym"] :
-            zp = 2** (config["bits"]-1)
+        if config["sym"]:
+            zp = 2 ** (config["bits"] - 1)
         q_linear = WQLinear_GEMM.from_linear(
             linear=linear_layer,
             w_bit=bits,
@@ -76,7 +76,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     modules_to_not_convert = []
-    
+
     logger.info("Saving quantized model to auto_awq format")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
@@ -97,9 +97,9 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     names = list(layer_config.keys())
 
     backend = None
-    max_workers=1
-    if not  torch.cuda.is_available():
-        max_workers=2 ## 2 with cuda packing will cause hang occasionally
+    max_workers = 1
+    if not torch.cuda.is_available():
+        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
@@ -114,13 +114,13 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
 
     if output_dir is None:
         return compressed_model
-    
+
     layer_config = kwargs["layer_config"]
     for key in layer_config.keys():
         if not check_to_quantized(layer_config[key]) and \
                 not any(name in key for name in modules_to_not_convert):
             modules_to_not_convert.append(key)
-    
+
     quantization_config["quant_method"] = "awq"
     quantization_config["zero_point"] = not quantization_config["sym"]
     quantization_config["version"] = "gemm"
@@ -132,7 +132,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
         compressed_model.config.quantization_config = quantization_config
     safe_serialization = kwargs.get('safe_serialization', True)
     dtype = torch.float16  ##force dtype to fp16
-    save(compressed_model, output_dir, safe_serialization=safe_serialization,dtype=dtype)
+    save(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return compressed_model
 
@@ -170,4 +170,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-

@@ -1182,7 +1182,7 @@ def set_cuda_visible_devices(device):
             os.environ["CUDA_VISIBLE_DEVICES"] = device
             device = ",".join(map(str, range(len(devices))))
             devices = device.replace(" ", "").split(',')
-        if len(devices) > 1: ##for 70B model on single card, use auto will cause some layer offload to cpu
+        if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
             parallelism = True
         device_str = None
     elif device == "auto":
@@ -1192,6 +1192,9 @@ def set_cuda_visible_devices(device):
         device_str = detect_device(device.replace(" ", ""))
     return device_str, parallelism
 
+
 def is_debug_mode():
     import pdb
-    return sys.gettrace() is not None or __debug__==True or (hasattr(pdb, "set_trace") and callable(pdb.set_trace)) or ( os.getenv("PYCHARM_HOSTED")) or "PYTHONBREAKPOINT" in os.environ
+    return sys.gettrace() is not None or __debug__ == True or (
+                hasattr(pdb, "set_trace") and callable(pdb.set_trace)) or (
+        os.getenv("PYCHARM_HOSTED")) or "PYTHONBREAKPOINT" in os.environ
