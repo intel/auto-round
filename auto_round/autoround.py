@@ -232,6 +232,9 @@ class AutoRound(object):
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
         self.enable_torch_compile = enable_torch_compile
+        if self.low_cpu_mem_usage and self.enable_torch_compile!=False:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401

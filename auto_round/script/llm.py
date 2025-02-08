@@ -330,8 +330,7 @@ def tune(args):
     args = _gguf_args_check(args)
 
     if "auto_gptq" in args.format and args.asym is True:
-        print(
-            "warning: The auto_gptq kernel has issues with asymmetric quantization. "
+      logger.warning("The auto_gptq kernel has issues with asymmetric quantization. "
             "It is recommended to use sym quantization or --format='auto_round'")
 
     if "marlin" in args.format and args.asym is True:
@@ -343,8 +342,8 @@ def tune(args):
     import torch
     if not args.disable_deterministic_algorithms:
         torch.use_deterministic_algorithms(True, warn_only=True)
-        print("'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "\
-            "and can be turned off by setting the '--disable_deterministic_algorithms' parameter.")
+        logger.info("`torch.use_deterministic_algorithms` is enabled by default for reproducibility "
+                    "and can be disabled using the `--disable_deterministic_algorithms` argument.")
         
 
     model_name = args.model

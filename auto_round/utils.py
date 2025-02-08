@@ -1194,7 +1194,5 @@ def set_cuda_visible_devices(device):
 
 
 def is_debug_mode():
-    import pdb
-    return sys.gettrace() is not None or __debug__ == True or (
-                hasattr(pdb, "set_trace") and callable(pdb.set_trace)) or (
-        os.getenv("PYCHARM_HOSTED")) or "PYTHONBREAKPOINT" in os.environ
+    return  sys.gettrace() is not None  or sys.flags.debug==1
+
