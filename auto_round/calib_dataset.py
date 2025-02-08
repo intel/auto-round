@@ -480,7 +480,7 @@ def get_dataloader(
             return False
         input_ids = example["input_ids"][:seqlen]
         input_ids_list = input_ids.tolist()
-        if len(input_ids_list) > 1 and input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
+        if len(input_ids_list) > 1 and seqlen>2 and input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
             return False
         return True
 

@@ -439,8 +439,6 @@ def tune(args):
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
     enable_torch_compile = False if "--disable_torch_compile" in sys.argv else None
-    if is_debug_mode():
-        enable_torch_compile = False
 
     autoround = round(
         model,

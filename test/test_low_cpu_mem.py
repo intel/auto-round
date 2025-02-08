@@ -84,6 +84,7 @@ class TestLowCPUMem(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
+            enable_torch_compile=False
         )
         autoround.quantize()
 

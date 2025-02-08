@@ -52,7 +52,7 @@ from .utils import (
     mv_module_from_gpu,
     unsupport_meta_device, clear_memory,
     compile_func,
-    find_matching_blocks
+    find_matching_blocks, is_debug_mode
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -232,9 +232,17 @@ class AutoRound(object):
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
         self.enable_torch_compile = enable_torch_compile
-        if self.low_cpu_mem_usage and self.enable_torch_compile!=False:
+        if self.low_cpu_mem_usage and self.enable_torch_compile!=False  :
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
+        if is_debug_mode() and self.enable_torch_compile!=False :
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
+
+        if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile!=False :
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
@@ -657,8 +665,8 @@ class AutoRound(object):
             exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
-                f"Insufficient number of samples collected may affect the quantification. "
-                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
+                f"An insufficient number of samples likely reduces the accuracy of the quantized model."
+                f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
 
         # clean embed weight to save memory
