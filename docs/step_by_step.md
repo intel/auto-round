@@ -184,6 +184,8 @@ See more about loading [huggingface dataset](https://huggingface.co/docs/dataset
   ~~~
 
 ## Inference
+
+### AutoRound format
 **CPU**: **auto_round version >0.3.1**, pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip
 install intel-extension-for-transformers,
 
@@ -191,7 +193,8 @@ install intel-extension-for-transformers,
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
 **CUDA**: no extra operations for sym quantization, for asym quantization, need to install auto-round from source
-### AutoRound format
+
+
 - The following code will automatically detect device, and typically some error message will remind you to install some extra libraries
   ```python
   from transformers import AutoModelForCausalLM, AutoTokenizer
