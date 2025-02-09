@@ -232,16 +232,16 @@ class AutoRound(object):
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
         self.enable_torch_compile = enable_torch_compile
-        if self.low_cpu_mem_usage and self.enable_torch_compile!=False  :
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
-        if is_debug_mode() and self.enable_torch_compile!=False :
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
-
-        if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile!=False :
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+        # if self.low_cpu_mem_usage and self.enable_torch_compile != False:
+        #     self.enable_torch_compile = False
+        #     logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
+        # if is_debug_mode() and self.enable_torch_compile != False:
+        #     self.enable_torch_compile = False
+        #     logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
+        #
+        # if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile != False:
+        #     self.enable_torch_compile = False
+        #     logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
@@ -1298,7 +1298,13 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
-        quant_block = compile_func(self.quant_block, device, self.enable_torch_compile)
+        if self.enable_torch_compile != False:
+            try:
+                quant_block = compile_func(self.quant_block, device, self.enable_torch_compile)
+            except:
+                logger.warning("torch compile failed, reset it to `False`")
+                self.enable_torch_compile = False
+                quant_block = self.quant_block
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
