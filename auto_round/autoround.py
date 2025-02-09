@@ -232,16 +232,9 @@ class AutoRound(object):
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
         self.enable_torch_compile = enable_torch_compile
-        # if self.low_cpu_mem_usage and self.enable_torch_compile != False:
-        #     self.enable_torch_compile = False
-        #     logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
-        # if is_debug_mode() and self.enable_torch_compile != False:
-        #     self.enable_torch_compile = False
-        #     logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
-        #
-        # if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile != False:
-        #     self.enable_torch_compile = False
-        #     logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+        if self.act_bits <= 8 and self.enable_torch_compile != False:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as act quantization is enabled")
 
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
@@ -488,7 +481,15 @@ class AutoRound(object):
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
         device = next(self.model.parameters()).device
-        quant_layer = compile_func(self.quant_layer, device, self.enable_torch_compile)
+        if self.enable_torch_compile != False:
+            try:
+                quant_layer = compile_func(self.quant_layer, device, self.enable_torch_compile)
+            except:
+                logger.warning("torch compile failed, reset it to `False`")
+                self.enable_torch_compile = False
+                quant_layer = self.quant_layer
+        else:
+            quant_layer = self.quant_layer
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
@@ -1305,6 +1306,8 @@ class AutoRound(object):
                 logger.warning("torch compile failed, reset it to `False`")
                 self.enable_torch_compile = False
                 quant_block = self.quant_block
+        else:
+            quant_block = self.quant_block
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
