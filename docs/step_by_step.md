@@ -23,7 +23,7 @@ See more about loading [huggingface dataset](https://huggingface.co/docs/dataset
 ### Customized Dataset
 
 - Option 1: Pass a local json file path to dataset argument
-- Option 2: Register your dataset following the [code](../../auto_round/calib_dataset.py) and pass the new dataset and
+- Option 2: Register your dataset following the [code](../auto_round/calib_dataset.py) and pass the new dataset and
   split args to initialize AutoRound object, e.g. autoround=Autoround(dataset="NeelNanda/pile-10k:train", ...)
 - Option 3: pass list of string or list of input_ids to dataset.
 
@@ -82,7 +82,7 @@ See more about loading [huggingface dataset](https://huggingface.co/docs/dataset
     - or combine them
 
 
-- **Reduced CPU Memory Usage:**
+- **Reduced CPU Memory Usage (only available for .bin file currently):**
 
     - set "--low_cpu_mem_mode 1" to use block-wise mode, load the weights from disk of each block when tuning and
       release the memory of the block after tuning. (more tuning cost)
@@ -211,7 +211,7 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
   from transformers import AutoModelForCausalLM, AutoTokenizer
   from auto_round import AutoRoundConfig
   
-  backend = "auto"  ##cpu, hpu, cuda, cuda:marlin(supported in auto_round>0.3.1 and 'pip install -v gptqmodel --no-build-isolation')
+  backend = "auto"  ##cpu, hpu, cuda
   quantization_config = AutoRoundConfig(
       backend=backend
   )
