@@ -231,14 +231,23 @@ class AutoRound(object):
             self.model = self.model.to(torch.bfloat16)
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
+
         self.enable_torch_compile = enable_torch_compile
         if self.act_bits <= 8 and self.enable_torch_compile != False:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
 
-        if self.low_cpu_mem_usage==True and self.enable_torch_compile != False:
+        if self.low_cpu_mem_usage == True and self.enable_torch_compile != False:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
+
+        if is_debug_mode() and self.enable_torch_compile != False:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
+
+        if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile != False:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
