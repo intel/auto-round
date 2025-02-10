@@ -30,9 +30,10 @@ import re
 import argparse
 import sys
 
-from auto_round.utils import  get_fp_layer_names, set_cuda_visible_devices, clear_memory, is_debug_mode
+from auto_round.utils import get_fp_layer_names, set_cuda_visible_devices, clear_memory, is_debug_mode
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
 
 class BasicArgumentParser(argparse.ArgumentParser):
 
@@ -53,10 +54,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default="0",
             type=str,
             help="the device to be used for tuning. "
-            "Currently, device settings support CPU, GPU, and HPU."
-            "The default is set to cuda:0,"
-            "allowing for automatic detection and switch to HPU or CPU."
-            "set --device 0,1,2 to use multiple cards.")
+                 "Currently, device settings support CPU, GPU, and HPU."
+                 "The default is set to cuda:0,"
+                 "allowing for automatic detection and switch to HPU or CPU."
+                 "set --device 0,1,2 to use multiple cards.")
 
         self.add_argument("--asym", action='store_true', help="whether to use asym quantization")
 
@@ -125,19 +126,19 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=int,
             choices=[0, 1, 2],
             help="choose which low cpu memory mode to use. "
-            "Can significantly reduce cpu memory footprint but cost more time."
-            "1 means choose block-wise mode, load the weights of each block"
-            " from disk when tuning and release the memory of the block after tuning."
-            "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
-            " minimum memory consumption and also slowest running speed."
-            "others means not use low cpu memory. Default to 0, not use low cpu memory.")
+                 "Can significantly reduce cpu memory footprint but cost more time."
+                 "1 means choose block-wise mode, load the weights of each block"
+                 " from disk when tuning and release the memory of the block after tuning."
+                 "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
+                 " minimum memory consumption and also slowest running speed."
+                 "others means not use low cpu memory. Default to 0, not use low cpu memory.")
 
         self.add_argument(
             "--low_cpu_mem_tmp_dir",
             default=None,
             type=str,
             help="temporary work space to store the temporary files "
-            "when using low cpu memory mode. Will remove after tuning.")
+                 "when using low cpu memory mode. Will remove after tuning.")
 
         self.add_argument(
             "--model_dtype",
@@ -162,14 +163,14 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             help="Names of quantitative blocks, please use commas to separate them.")
 
-        self.add_argument("--disable_torch_compile",  action='store_true',
+        self.add_argument("--disable_torch_compile", action='store_true',
                           help="whether to disable torch compile")
 
         self.add_argument("--act_data_type", default=None, type=str, help="activation data type")
 
         self.add_argument("--disable_act_dynamic", action='store_true', help="activation static quantization")
-        
-        self.add_argument("--disable_deterministic_algorithms",  action='store_true',
+
+        self.add_argument("--disable_deterministic_algorithms", action='store_true',
                           help="disable torch deterministic algorithms.")
 
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
@@ -187,10 +188,10 @@ class EvalArgumentParser(argparse.ArgumentParser):
             default="0",
             type=str,
             help="the device to be used for tuning. "
-            "Currently, device settings support CPU, GPU, and HPU."
-            "The default is set to cuda:0,"
-            "allowing for automatic detection and switch to HPU or CPU."
-            "set --device 0,1,2 to use multiple cards.")
+                 "Currently, device settings support CPU, GPU, and HPU."
+                 "The default is set to cuda:0,"
+                 "allowing for automatic detection and switch to HPU or CPU."
+                 "set --device 0,1,2 to use multiple cards.")
         self.add_argument("--tasks",
                           default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
                                   "openbookqa,boolq,arc_easy,arc_challenge",
@@ -330,8 +331,8 @@ def tune(args):
     args = _gguf_args_check(args)
 
     if "auto_gptq" in args.format and args.asym is True:
-      logger.warning("The auto_gptq kernel has issues with asymmetric quantization. "
-            "It is recommended to use sym quantization or --format='auto_round'")
+        logger.warning("The auto_gptq kernel has issues with asymmetric quantization. "
+                       "It is recommended to use sym quantization or --format='auto_round'")
 
     if "marlin" in args.format and args.asym is True:
         assert False, "marlin backend only supports sym quantization, please remove --asym"
@@ -347,9 +348,8 @@ def tune(args):
 
     if not args.disable_:
         torch.use_deterministic_algorithms(True, warn_only=True)
-        logger.info("`torch.compile` is enabled by default for lower tuning cost "
-                    "and can be disabled using the `--disable_torch_compile` argument if some related exception occurs.")
-        
+        logger.info("`torch.compile` is enabled by default for lower tuning cost and can be disabled"
+                    " using the `--disable_torch_compile` argument if some related exception occurs.")
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -476,8 +476,7 @@ def tune(args):
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
-    enable_torch_compile =  False if "--disable_torch_compile" in sys.argv else None
-
+    enable_torch_compile = False if "--disable_torch_compile" in sys.argv else None
 
     autoround = round(
         model,
@@ -560,7 +559,7 @@ def tune(args):
                 dispatch_model(model, model.hf_device_map)
                 user_model = model
             else:
-                user_model = model  #.to(device_str)
+                user_model = model  # .to(device_str)
 
             if args.eval_bs is None or args.eval_bs == "auto":
                 args.eval_bs = 16
