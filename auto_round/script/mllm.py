@@ -16,7 +16,7 @@ import os
 import sys
 import argparse
 
-from auto_round.utils import clear_memory, get_fp_layer_names, set_cuda_visible_devices, logger
+from auto_round.utils import clear_memory, get_fp_layer_names, set_cuda_visible_devices, logger, is_debug_mode
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -44,10 +44,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default="0",
             type=str,
             help="the device to be used for tuning. "
-            "Currently, device settings support CPU, GPU, and HPU."
-            "The default is set to cuda:0,"
-            "allowing for automatic detection and switch to HPU or CPU."
-            "set --device 0,1,2 to use multiple cards.")
+                 "Currently, device settings support CPU, GPU, and HPU."
+                 "The default is set to cuda:0,"
+                 "allowing for automatic detection and switch to HPU or CPU."
+                 "set --device 0,1,2 to use multiple cards.")
 
         self.add_argument("--asym", action='store_true', help="whether to use asym quantization")
 
@@ -56,9 +56,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             default=None,
             help="the dataset for quantization training."
-            " current support NeelNanda/pile-10k,liuhaotian/llava_conv_58k,"
-            "liuhaotian/llava_instruct_80k,liuhaotian/llava_instruct_150k"
-            "It can be a custom one. Default is NeelNanda/pile-10k")
+                 " current support NeelNanda/pile-10k,liuhaotian/llava_conv_58k,"
+                 "liuhaotian/llava_instruct_80k,liuhaotian/llava_instruct_150k"
+                 "It can be a custom one. Default is NeelNanda/pile-10k")
 
         self.add_argument(
             "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
@@ -115,19 +115,19 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=int,
             choices=[0, 1, 2],
             help="choose which low cpu memory mode to use. "
-            "Can significantly reduce cpu memory footprint but cost more time."
-            "1 means choose block-wise mode, load the weights of each block"
-            " from disk when tuning and release the memory of the block after tuning."
-            "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
-            " minimum memory consumption and also slowest running speed."
-            "others means not use low cpu memory. Default to 0, not use low cpu memory.")
+                 "Can significantly reduce cpu memory footprint but cost more time."
+                 "1 means choose block-wise mode, load the weights of each block"
+                 " from disk when tuning and release the memory of the block after tuning."
+                 "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
+                 " minimum memory consumption and also slowest running speed."
+                 "others means not use low cpu memory. Default to 0, not use low cpu memory.")
 
         self.add_argument(
             "--low_cpu_mem_tmp_dir",
             default=None,
             type=str,
             help="temporary work space to store the temporary files "
-            "when using low cpu memory mode. Will remove after tuning.")
+                 "when using low cpu memory mode. Will remove after tuning.")
 
         self.add_argument(
             "--model_dtype",
@@ -145,9 +145,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
             action='store_true',
             help="whether to use the iter of best mes loss in the tuning phase")
 
-        self.add_argument("--enable_torch_compile", default=None, type=bool, help="whether to enable torch compile")
-        
-        self.add_argument("--disable_deterministic_algorithms",  action='store_true',
+        self.add_argument("--disable_torch_compile", action='store_true',
+                          help="whether to disable torch compile")
+
+        self.add_argument("--disable_deterministic_algorithms", action='store_true',
                           help="disable torch deterministic algorithms.")
 
         ## ======================= VLM =======================
@@ -161,10 +162,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=None,
             type=str,
             help="dataset dir for storing images/audio/videos. "
-            "Can be a dir path or multiple dir path with format as "
-            "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
-            "By default, it will search in the relative path, "
-            "and if not find, will automatic download.")
+                 "Can be a dir path or multiple dir path with format as "
+                 "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
+                 "By default, it will search in the relative path, "
+                 "and if not find, will automatic download.")
 
         self.add_argument(
             "--template",
@@ -176,7 +177,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--truncation",
             action="store_true",
             help="whether to truncate sequences at the maximum length."
-            " Default True for pile and False for llava dataset.")
+                 " Default True for pile and False for llava dataset.")
 
         self.add_argument(
             "--to_quant_block_names",
@@ -218,10 +219,10 @@ def setup_lmeval_parser():
         default="0",
         type=str,
         help="the device to be used for tuning. "
-        "Currently, device settings support CPU, GPU, and HPU."
-        "The default is set to cuda:0,"
-        "allowing for automatic detection and switch to HPU or CPU."
-        "set --device 0,1,2 to use multiple cards.")
+             "Currently, device settings support CPU, GPU, and HPU."
+             "The default is set to cuda:0,"
+             "allowing for automatic detection and switch to HPU or CPU."
+             "set --device 0,1,2 to use multiple cards.")
     parser.add_argument(
         "--tasks",
         type=str,
@@ -233,12 +234,12 @@ def setup_lmeval_parser():
         type=int,
         default=8,
         help="the number of frames to sample from a video,"
-        " only applicable to the evaluation of video benchmarks.")
+             " only applicable to the evaluation of video benchmarks.")
     parser.add_argument(
         "--pack",
         action='store_true',
         help="a video may associate with multiple questions, if pack==True,"
-        " will ask all questions for a video in a single")
+             " will ask all questions for a video in a single")
     parser.add_argument("--fps", type=float, default=-1, help="set the fps for a video.")
     # Work Dir
     # Infer + Eval or Infer Only
@@ -248,7 +249,7 @@ def setup_lmeval_parser():
         default='all',
         choices=['all', 'infer'],
         help="when mode set to 'all', will perform both inference and evaluation;"
-        " when set to 'infer' will only perform the inference.")
+             " when set to 'infer' will only perform the inference.")
     parser.add_argument(
         '--eval_data_dir',
         type=str,
@@ -294,8 +295,8 @@ def tune(args):
     import torch
     if not args.disable_deterministic_algorithms:
         torch.use_deterministic_algorithms(True, warn_only=True)
-        print("'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "\
-                "and can be turned off by setting the '--disable_deterministic_algorithms' parameter.")
+        print("'torch.use_deterministic_algorithms' is turned on by default for reproducibility, " \
+              "and can be turned off by setting the '--disable_deterministic_algorithms' parameter.")
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -437,6 +438,8 @@ def tune(args):
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
+    enable_torch_compile = False if "--disable_torch_compile" in sys.argv else None
+
     autoround = round(
         model,
         tokenizer,
@@ -469,7 +472,7 @@ def tune(args):
         quant_nontext_module=args.quant_nontext_module,
         not_use_best_mse=args.not_use_best_mse,
         to_quant_block_names=args.to_quant_block_names,
-        enable_torch_compile=args.enable_torch_compile,
+        enable_torch_compile=enable_torch_compile,
         device_map=args.device_map)
     model, _ = autoround.quantize()
 
@@ -494,7 +497,7 @@ def tune(args):
 def eval(args):
     device_str, parallelism = set_cuda_visible_devices(args.device)
     if parallelism:
-        os.environ['AUTO_SPLIT'] =  '1'
+        os.environ['AUTO_SPLIT'] = '1'
     if isinstance(args.tasks, str):
         args.tasks = args.tasks.replace(' ', '').split(',')
     from auto_round.mllm import mllm_eval
@@ -550,17 +553,17 @@ def setup_lmms_parser():
         default="0",
         type=str,
         help="the device to be used for tuning. "
-        "Currently, device settings support CPU, GPU, and HPU."
-        "The default is set to cuda:0,"
-        "allowing for automatic detection and switch to HPU or CPU."
-        "set --device 0,1,2 to use multiple cards.")
+             "Currently, device settings support CPU, GPU, and HPU."
+             "The default is set to cuda:0,"
+             "allowing for automatic detection and switch to HPU or CPU."
+             "set --device 0,1,2 to use multiple cards.")
     parser.add_argument(
         "--limit",
         type=float,
         default=None,
         help="Limit the number of examples per task. "
-        "If <1, limit is a percentage of the total"
-        " number of examples.",
+             "If <1, limit is a percentage of the total"
+             " number of examples.",
     )
     args = parser.parse_args()
     return args
@@ -584,4 +587,3 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-

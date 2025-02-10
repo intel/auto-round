@@ -52,7 +52,7 @@ from .utils import (
     mv_module_from_gpu,
     unsupport_meta_device, clear_memory,
     compile_func,
-    find_matching_blocks
+    find_matching_blocks, is_debug_mode
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -231,7 +231,24 @@ class AutoRound(object):
             self.model = self.model.to(torch.bfloat16)
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
+
         self.enable_torch_compile = enable_torch_compile
+        if self.act_bits <= 8 and self.enable_torch_compile != False:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
+
+        if self.low_cpu_mem_usage == True and self.enable_torch_compile != False:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
+
+        if is_debug_mode() and self.enable_torch_compile != False:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
+
+        if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile != False:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
@@ -477,7 +494,15 @@ class AutoRound(object):
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
         device = next(self.model.parameters()).device
-        quant_layer = compile_func(self.quant_layer, device, self.enable_torch_compile)
+        if self.enable_torch_compile != False:
+            try:
+                quant_layer = compile_func(self.quant_layer, device, self.enable_torch_compile)
+            except:
+                logger.warning("torch compile failed, reset it to `False`")
+                self.enable_torch_compile = False
+                quant_layer = self.quant_layer
+        else:
+            quant_layer = self.quant_layer
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
@@ -654,8 +679,8 @@ class AutoRound(object):
             exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
-                f"Insufficient number of samples collected may affect the quantification. "
-                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
+                f"An insufficient number of samples likely reduces the accuracy of the quantized model."
+                f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
 
         # clean embed weight to save memory
@@ -1287,7 +1312,15 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
-        quant_block = compile_func(self.quant_block, device, self.enable_torch_compile)
+        if self.enable_torch_compile != False:
+            try:
+                quant_block = compile_func(self.quant_block, device, self.enable_torch_compile)
+            except:
+                logger.warning("torch compile failed, reset it to `False`")
+                self.enable_torch_compile = False
+                quant_block = self.quant_block
+        else:
+            quant_block = self.quant_block
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
