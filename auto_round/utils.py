@@ -1194,5 +1194,9 @@ def set_cuda_visible_devices(device):
 
 
 def is_debug_mode():
-    return  sys.gettrace() is not None  or sys.flags.debug==1
+    """Checks if the Python interpreter is running in debug mode.
 
+    Returns:
+        bool: True if debugging is enabled, False otherwise.
+    """
+    return sys.gettrace() is not None or sys.flags.debug == 1
