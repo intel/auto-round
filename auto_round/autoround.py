@@ -234,7 +234,11 @@ class AutoRound(object):
         self.enable_torch_compile = enable_torch_compile
         if self.act_bits <= 8 and self.enable_torch_compile != False:
             self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as act quantization is enabled")
+            logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
+
+        if self.low_cpu_mem_usage==True and self.enable_torch_compile != False:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
 
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
