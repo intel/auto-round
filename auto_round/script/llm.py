@@ -346,10 +346,9 @@ def tune(args):
         # logger.info("`torch.use_deterministic_algorithms` is enabled by default for reproducibility "
         #             "and can be disabled using the `--disable_deterministic_algorithms` argument.")
 
-    if not args.disable_:
-        torch.use_deterministic_algorithms(True, warn_only=True)
-        logger.info("`torch.compile` is enabled by default for lower tuning cost and can be disabled"
-                    " using the `--disable_torch_compile` argument if some related exception occurs.")
+    if not args.disable_torch_compile:
+        logger.info("torch.compile is enabled by default to reduce tuning costs. "
+                    "If it causes issues, you can disable it using the --disable_torch_compile argument.")
 
     model_name = args.model
     if model_name[-1] == "/":
