@@ -176,7 +176,6 @@ class AutoRound(object):
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
         self.nsamples = nsamples
-        self.nblocks = nblocks
         self.bits = bits
         self.enable_norm_bias_tuning = enable_norm_bias_tuning
         self.group_size = group_size
@@ -1324,8 +1323,8 @@ class AutoRound(object):
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
-        # for i in pbar:
-        for i in range(len(block_names)):
+
+        for i in range(0, len(block_names), nblocks):
             if nblocks == 1:
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
