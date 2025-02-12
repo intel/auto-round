@@ -46,7 +46,7 @@ class TestAutoRound(unittest.TestCase):
         processor = AutoProcessor.from_pretrained(quantized_model_dir, trust_remote_code=True)
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             quantized_model_dir,
-            torch_dtype="auto",
+            torch_dtype="float16",
             device_map="auto",
             ##revision="df7f44c" ##AutoGPTQ format
         )
@@ -94,7 +94,7 @@ class TestAutoRound(unittest.TestCase):
         ## load the model
         model_name = "/models/Qwen2-VL-2B-Instruct"
         model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_name, trust_remote_code=True)
+            model_name, trust_remote_code=True, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 
@@ -120,7 +120,7 @@ class TestAutoRound(unittest.TestCase):
             quantized_model_path, 
             device_map="auto", 
             trust_remote_code=True, 
-            torch_dtype="auto"
+            torch_dtype="float16",
             )
         processor = AutoProcessor.from_pretrained(quantized_model_path, 
         trust_remote_code=True, 
@@ -198,3 +198,4 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

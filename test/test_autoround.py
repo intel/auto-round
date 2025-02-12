@@ -342,9 +342,13 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
+        from auto_round import AutoRoundConfig
+        quantization_config = AutoRoundConfig(
+            backend="cpu:auto_round:qbits_zp"
+        )
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map='auto')
+                                                     device_map='cpu',quantization_config=quantization_config)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
