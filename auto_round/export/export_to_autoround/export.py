@@ -149,8 +149,6 @@ def pack_layer(name, model, layer_config, backend, pbar):
             set_module(model, name, qlayer)
 
         pbar.update(1)
-        if pbar.n % 50 == 0:
-            clear_memory()
 
 
 def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):

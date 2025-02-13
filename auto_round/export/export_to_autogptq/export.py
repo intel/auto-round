@@ -116,9 +116,6 @@ def pack_layer(name, model, layer_config, backend, pbar):
             qlayer.pack(layer, scale, zero, None)
         qlayer.to(device)
         pbar.update(1)
-        if pbar.n % 50 == 0:
-            clear_memory()
-
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
                                **kwargs):
