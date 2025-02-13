@@ -21,8 +21,7 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round.export.register import register_format
-from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module, clear_memory
+from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm

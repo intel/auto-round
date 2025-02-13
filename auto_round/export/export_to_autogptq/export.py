@@ -38,7 +38,7 @@ import torch
 
 import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module, clear_memory
+    get_module, logger, set_module
 import copy
 import json
 import os
