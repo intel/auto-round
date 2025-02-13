@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 # MIT License
 #
 # Copyright (c) 2023 潘其威(William)
@@ -116,7 +115,6 @@ def pack_layer(name, model, layer_config, backend, pbar):
             qlayer.pack(layer, scale, zero, None)
         qlayer.to(device)
         pbar.update(1)
-
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
                                **kwargs):
