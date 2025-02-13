@@ -31,11 +31,10 @@ from auto_round.utils import (logger, get_module,
                               extract_block_names_to_str)
 import copy
 import json
-from .utils import WQLinear_GEMM, clear_memory
+from .utils import WQLinear_GEMM
 from concurrent.futures import ThreadPoolExecutor
 import threadpoolctl as tctl
 from tqdm import tqdm
-
 
 def pack_layer(name, model, layer_config, backend, pbar):
     with tctl.threadpool_limits(limits=1):
