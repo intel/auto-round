@@ -207,7 +207,8 @@ class AutoHfQuantizer:
             quant_method = QuantizationMethod.BITS_AND_BYTES + suffix
         elif quant_method is None:
             raise ValueError(
-                "The model's quantization config from the arguments has no `quant_method` attribute. Make sure that the model has been correctly quantized"
+                "The model's quantization config from the arguments has no `quant_method` attribute."\
+                "Make sure that the model has been correctly quantized"
             )
 
         if quant_method not in AUTO_QUANTIZATION_CONFIG_MAPPING.keys():
