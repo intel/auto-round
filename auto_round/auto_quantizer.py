@@ -41,7 +41,6 @@ from transformers.pytorch_utils import Conv1D
 from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
-from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
 from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
                               get_multimodal_block_names, find_matching_blocks)
 
@@ -194,6 +193,7 @@ class AutoHfQuantizer:
     
     @staticmethod
     def supports_quant_method(quantization_config_dict):
+        from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
         AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto-round'] = AutoRoundConfig
         AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto_round'] = AutoRoundConfig
         quant_method = quantization_config_dict.get("quant_method", None)
