@@ -38,7 +38,7 @@ import torch
 
 import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module
+    get_module, logger, set_module, clear_memory
 import copy
 import json
 import os
@@ -117,7 +117,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
         qlayer.to(device)
         pbar.update(1)
         if pbar.n % 50 == 0:
-            gc.collect()
+            clear_memory()
 
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",

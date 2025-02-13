@@ -22,13 +22,12 @@ import torch.nn as nn
 import transformers
 
 from auto_round.export.register import register_format
-from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
+from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module, clear_memory
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
 from auto_round.utils import get_autogptq_packing_qlinear
-
 
 def check_neq_config(config, data_type, bits, group_size, sym):
     """
@@ -133,7 +132,6 @@ def pack_layer(name, model, layer_config, backend, pbar):
                 qlayer.pack(layer, scale, zero, None)
             qlayer.to(device)
         else:
-            from ..export_to_awq.utils import clear_memory
             scale, zp = layer_config[name]["scale"].to(torch.float32), layer_config[name]["zp"].to(torch.float32)
             scale = scale.t().contiguous()
             zp = zp.t().contiguous()
@@ -149,11 +147,10 @@ def pack_layer(name, model, layer_config, backend, pbar):
             )
             qlayer.to(device)
             set_module(model, name, qlayer)
-            clear_memory()
+
         pbar.update(1)
         if pbar.n % 50 == 0:
-            import gc
-            gc.collect()
+            clear_memory()
 
 
 def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):

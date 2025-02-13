@@ -36,7 +36,6 @@ from concurrent.futures import ThreadPoolExecutor
 import threadpoolctl as tctl
 from tqdm import tqdm
 
-
 def pack_layer(name, model, layer_config, backend, pbar):
     with tctl.threadpool_limits(limits=1):
         pbar.set_description(f"packing {name}")
@@ -67,8 +66,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
         set_module(model, name, q_linear)
         pbar.update(1)
         if pbar.n % 50 == 0:
-            import gc
-            gc.collect()
+            clear_memory()
 
 
 def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
