@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import gc
 
 # MIT License
 #
@@ -116,6 +116,8 @@ def pack_layer(name, model, layer_config, backend, pbar):
             qlayer.pack(layer, scale, zero, None)
         qlayer.to(device)
         pbar.update(1)
+        if pbar.n%50==0:
+            gc.collect()
 
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
