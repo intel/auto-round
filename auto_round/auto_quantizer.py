@@ -64,6 +64,7 @@ else:
 
 AUTOROUND_MINIMUM_VERSION = version.parse("0.2")
 
+from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
 
 def _is_package_available(pkg_name: str, return_version: bool = False) -> Union[Tuple[bool, str], bool]:
     # Check we're not importing a "pkg_name" directory somewhere but the actual library by trying to grab the version
@@ -194,13 +195,8 @@ class AutoHfQuantizer:
     
     @staticmethod
     def supports_quant_method(quantization_config_dict):
-        AUTO_QUANTIZATION_CONFIG_MAPPING = {
-            "awq": AwqConfig,
-            "gptq": GPTQConfig,
-            "auto_round": AutoRoundConfig,
-            "intel/auto-round": AutoRoundConfig,
-            "autoround": AutoRoundConfig,
-        }
+        AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto-round'] = AutoRoundConfig
+        AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto_round'] = AutoRoundConfig
         quant_method = quantization_config_dict.get("quant_method", None)
         if quantization_config_dict.get("load_in_8bit", False) or quantization_config_dict.get("load_in_4bit", False):
             suffix = "_4bit" if quantization_config_dict.get("load_in_4bit", False) else "_8bit"
