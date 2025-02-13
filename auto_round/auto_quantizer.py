@@ -41,7 +41,7 @@ from transformers.pytorch_utils import Conv1D
 from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
-
+from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
 from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
                               get_multimodal_block_names, find_matching_blocks)
 
@@ -64,7 +64,6 @@ else:
 
 AUTOROUND_MINIMUM_VERSION = version.parse("0.2")
 
-from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
 
 def _is_package_available(pkg_name: str, return_version: bool = False) -> Union[Tuple[bool, str], bool]:
     # Check we're not importing a "pkg_name" directory somewhere but the actual library by trying to grab the version
