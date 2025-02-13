@@ -116,7 +116,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
             qlayer.pack(layer, scale, zero, None)
         qlayer.to(device)
         pbar.update(1)
-        if pbar.n%50==0:
+        if pbar.n % 50 == 0:
             gc.collect()
 
 
