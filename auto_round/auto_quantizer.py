@@ -41,7 +41,6 @@ from transformers.pytorch_utils import Conv1D
 from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
-
 from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
                               get_multimodal_block_names, find_matching_blocks)
 
@@ -191,6 +190,30 @@ class AutoHfQuantizer:
             warnings.warn(warning_msg)
 
         return quantization_config
+    
+    @staticmethod
+    def supports_quant_method(quantization_config_dict):
+        from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
+        AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto-round'] = AutoRoundConfig
+        AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto_round'] = AutoRoundConfig
+        quant_method = quantization_config_dict.get("quant_method", None)
+        if quantization_config_dict.get("load_in_8bit", False) or quantization_config_dict.get("load_in_4bit", False):
+            suffix = "_4bit" if quantization_config_dict.get("load_in_4bit", False) else "_8bit"
+            quant_method = QuantizationMethod.BITS_AND_BYTES + suffix
+        elif quant_method is None:
+            raise ValueError(
+                "The model's quantization config from the arguments has no `quant_method` attribute."\
+                "Make sure that the model has been correctly quantized"
+            )
+
+        if quant_method not in AUTO_QUANTIZATION_CONFIG_MAPPING.keys():
+            logger.warning(
+                f"Unknown quantization type, got {quant_method} - supported types are:"
+                f" {list(AUTO_QUANTIZER_MAPPING.keys())}. Hence, we will skip the quantization. "
+                "To remove the warning, you can delete the quantization_config attribute in config.json"
+            )
+            return False
+        return True
 
 
 class AutoRoundQuantizationMethod(str, Enum):
@@ -758,3 +781,4 @@ if version.parse(transformers.__version__) < version.parse("4.38.0"):
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
+
