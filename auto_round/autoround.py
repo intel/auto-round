@@ -495,7 +495,7 @@ class AutoRound(object):
         device = next(self.model.parameters()).device
         if self.enable_torch_compile != False:
             try:
-                quant_layer = compile_func(self.quant_layer, device, self.enable_torch_compile)
+                quant_layer = compile_func(self.quant_layer, self.device, self.enable_torch_compile)
             except:
                 logger.warning("torch compile failed, reset it to `False`")
                 self.enable_torch_compile = False
