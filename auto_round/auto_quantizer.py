@@ -193,31 +193,17 @@ class AutoHfQuantizer:
     
     @staticmethod
     def supports_quant_method(quantization_config_dict):
-<<<<<<< HEAD
-        AUTO_QUANTIZATION_CONFIG_MAPPING = {
-            "awq": AwqConfig,
-            "gptq": GPTQConfig,
-            "auto_round": AutoRoundConfig,
-            "intel/auto-round": AutoRoundConfig,
-            "autoround": AutoRoundConfig,
-        }
-=======
         from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
         AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto-round'] = AutoRoundConfig
         AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto_round'] = AutoRoundConfig
->>>>>>> 19601d4ed9772e35df8527a8c3391990fa6b887f
         quant_method = quantization_config_dict.get("quant_method", None)
         if quantization_config_dict.get("load_in_8bit", False) or quantization_config_dict.get("load_in_4bit", False):
             suffix = "_4bit" if quantization_config_dict.get("load_in_4bit", False) else "_8bit"
             quant_method = QuantizationMethod.BITS_AND_BYTES + suffix
         elif quant_method is None:
             raise ValueError(
-<<<<<<< HEAD
-                "The model's quantization config from the arguments has no `quant_method` attribute. Make sure that the model has been correctly quantized"
-=======
                 "The model's quantization config from the arguments has no `quant_method` attribute."\
                 "Make sure that the model has been correctly quantized"
->>>>>>> 19601d4ed9772e35df8527a8c3391990fa6b887f
             )
 
         if quant_method not in AUTO_QUANTIZATION_CONFIG_MAPPING.keys():
