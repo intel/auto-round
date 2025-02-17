@@ -1184,7 +1184,9 @@ def set_cuda_visible_devices(device):
             devices = device.replace(" ", "").split(',')
         if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
             parallelism = True
-        device_str = None
+            device_str = None
+        else:
+            device_str = detect_device(devices[0])
     elif device == "auto":
         device_str = None
         parallelism = True

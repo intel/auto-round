@@ -558,7 +558,8 @@ def tune(args):
                 dispatch_model(model, model.hf_device_map)
                 user_model = model
             else:
-                user_model = model  # .to(device_str)
+                device_str = detect_device(device_str)
+                user_model = model.to(device_str)
 
             if args.eval_bs is None or args.eval_bs == "auto":
                 args.eval_bs = 16
