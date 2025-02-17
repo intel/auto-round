@@ -451,12 +451,7 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if n not in self.layer_config.keys():
                 continue
-            if hasattr(m, "scale"):
-                self.layer_config[n]["scale"] = m.scale
-                self.layer_config[n]["zp"] = m.zp
-                delattr(m, "scale")
-                delattr(m, "zp")
-            else:
+            if not hasattr(m, "scale"):
                 self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
                     self.layer_config[n]["data_type"] = "bfloat"
@@ -525,6 +520,10 @@ class AutoRound(object):
         keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
                 "act_dynamic", "act_data_type"]
         for n, m in self.model.named_modules():
+            ##delete keys to avoid conflict with the previous tuning
+            for key in keys:
+                if hasattr(m, key):
+                    delattr(m, key)
             if not isinstance(m, tuple(self.supported_types)):
                 continue
             ##not set in layer config, so use the default values

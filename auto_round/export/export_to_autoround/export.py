@@ -96,7 +96,8 @@ def pack_layer(name, model, layer_config, backend, pbar):
 
         layer = get_module(model, name)
         device = layer.weight.device
-
+        scale = layer.scale
+        zp = layer.zp
         QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
 
         if isinstance(layer, nn.Linear):
@@ -117,21 +118,19 @@ def pack_layer(name, model, layer_config, backend, pbar):
             new_layer.device = device
             set_module(model, name, new_layer)
             qlayer = new_layer
-            scale = layer_config[name]["scale"]
-            zero = layer_config[name]["zp"]
+
             # so far can only pack layer on CPU
             qlayer.to("cpu")
             ##force to float32 to be compatible with torch 2.0
-            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
             sig = inspect.signature(qlayer.pack)
             param_count = len(sig.parameters)
             if param_count == 2:
                 qlayer.pack(layer, scale)
             else:
-                qlayer.pack(layer, scale, zero, None)
+                qlayer.pack(layer, scale, zp, None)
             qlayer.to(device)
         else:
-            scale, zp = layer_config[name]["scale"].to(torch.float32), layer_config[name]["zp"].to(torch.float32)
+            scale, zp = scale.to(torch.float32),zp.to(torch.float32)
             scale = scale.t().contiguous()
             zp = zp.t().contiguous()
             if bits != 4:
