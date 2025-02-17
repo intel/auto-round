@@ -21,14 +21,12 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round.export.register import register_format
 from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
 from auto_round.utils import get_autogptq_packing_qlinear
-
 
 def check_neq_config(config, data_type, bits, group_size, sym):
     """
@@ -133,7 +131,6 @@ def pack_layer(name, model, layer_config, backend, pbar):
                 qlayer.pack(layer, scale, zero, None)
             qlayer.to(device)
         else:
-            from ..export_to_awq.utils import clear_memory
             scale, zp = layer_config[name]["scale"].to(torch.float32), layer_config[name]["zp"].to(torch.float32)
             scale = scale.t().contiguous()
             zp = zp.t().contiguous()
@@ -149,7 +146,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
             )
             qlayer.to(device)
             set_module(model, name, qlayer)
-            clear_memory()
+
         pbar.update(1)
 
 
@@ -226,7 +223,10 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    max_workers = 1
+    if not torch.cuda.is_available():
+        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
                 pack_layer(name, model, layer_config, backend, pbar)
@@ -238,7 +238,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         model.config.quantization_config = quantization_config
     if output_dir is None:
         return model
-    
+
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
@@ -247,12 +247,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     if processor is not None:
         processor.save_pretrained(output_dir)
-    save(model, output_dir, safe_serialization=safe_serialization)
+    dtype = torch.float16  ##force dtype to fp16
+    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
 
 
-def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
+def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None):
     """Save model state dict and configs.
 
     Args:
@@ -274,10 +275,14 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     """
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    config_path = os.path.join(save_dir, "config.json")
+    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
+        with open(config_path, 'r') as file:
+            data = json.load(file)
+        data["torch_dtype"] = str(dtype).split(".")[-1]
+        with open(config_path, 'w') as file:
+            json.dump(data, file, indent=2)
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-
-
