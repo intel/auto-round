@@ -20,7 +20,7 @@ from .utils import fetch_image
 PROCESSORS = {}
 
 
-def regist_processor(name):
+def register_processor(name):
     def register(processor):
         PROCESSORS[name] = processor
         return processor
@@ -28,7 +28,7 @@ def regist_processor(name):
     return register
 
 
-@regist_processor("basic")
+@register_processor("basic")
 class BasicProcessor:
     def __init__(self):
         pass
@@ -111,7 +111,7 @@ class BasicProcessor:
         return ret
 
 
-@regist_processor("qwen2_vl")
+@register_processor("qwen2_vl")
 class Qwen2VLProcessor(BasicProcessor):
     @staticmethod
     def squeeze_result(ret):
@@ -122,7 +122,7 @@ class Qwen2VLProcessor(BasicProcessor):
         return ret
 
 
-@regist_processor("cogvlm2")
+@register_processor("cogvlm2")
 class CogVLM2Processor(BasicProcessor):
     def get_input(
             self, text, images, truncation=False,
@@ -205,7 +205,7 @@ from ..utils import LazyImport
 llava_train = LazyImport("llava.train.train")
 
 
-@regist_processor("llava")
+@register_processor("llava")
 class LlavaProcessor(BasicProcessor):
     def post_init(self, model, tokenizer, image_processor=None, **kwargs):
         self.model = model
@@ -245,3 +245,4 @@ class LlavaProcessor(BasicProcessor):
 
     def data_collator(self, batch):
         return self.collator_func(batch)
+
