@@ -1097,32 +1097,17 @@ class AutoRound(object):
                 hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                 add_hook_to_module(m, hook, True)
 
-        if q_input is None:
-            hook_handles = self.register_act_max_hook(block)
-
-            output = self.get_block_outputs(block, input_ids, input_others, self.batch_size * self.infer_bs_coeff,
-                                            device,
-                                            self.cache_device)
-
-            for handle in hook_handles:
-                handle.remove()
-        else:
-            output = self.get_block_outputs(block, input_ids, input_others, self.batch_size * self.infer_bs_coeff,
-                                            device,
-                                            self.cache_device)
-            hook_handles = self.register_act_max_hook(block)
-            self.get_block_outputs(block, q_input, input_others, self.batch_size * self.infer_bs_coeff,
-                                   device, self.cache_device, save_output=False)
-
-            for handle in hook_handles:
-                handle.remove()
-
         if q_input is not None:
-            if input_ids is not q_input:
-                clear_memory(input_ids)
-            else:
-                clear_memory()
             input_ids = q_input
+
+        hook_handles = self.register_act_max_hook(block)
+        self.get_block_outputs(block, input_ids, input_others, self.batch_size * self.infer_bs_coeff,
+                               device, self.cache_device, save_output=False)
+        for handle in hook_handles:
+            handle.remove()
+        clear_memory()
+
+
         names = []
 
         for n, m in block.named_modules():
@@ -1159,7 +1144,7 @@ class AutoRound(object):
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             clear_memory(input_ids)
 
-            return q_outputs, output
+            return q_outputs, None
 
         else:
             if self.device_map is not None:
@@ -1167,7 +1152,7 @@ class AutoRound(object):
                     block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             clear_memory(input_ids)
-            return None, output
+            return None, None
 
     def quant_blocks(
             self,

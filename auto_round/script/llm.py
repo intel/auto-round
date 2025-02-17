@@ -550,7 +550,7 @@ def tune(args):
         logger.info(f"Using lm-eval version {lm_eval_version}")
 
         tasks, model_args, device_str = _eval_init(args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
-
+        device_str="cuda"
         if args.act_bits <= 8:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
@@ -558,7 +558,7 @@ def tune(args):
                 dispatch_model(model, model.hf_device_map)
                 user_model = model
             else:
-                user_model = model  # .to(device_str)
+                user_model = model.to(device_str)
 
             if args.eval_bs is None or args.eval_bs == "auto":
                 args.eval_bs = 16
