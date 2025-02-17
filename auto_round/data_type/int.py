@@ -40,7 +40,7 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
     """
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = torch.tensor(2 ** (bits - 1))
+    maxq = 2 ** (bits - 1)
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
@@ -67,9 +67,9 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
 def double_quant_tensor(tensor, bits, q_scale_thresh):
     maxq = 2 ** bits
     wmax = torch.clamp(tensor.max(-1)[0], min=0)
-    scale = torch.clip(wmax / maxq, q_scale_thresh)
+    scale = torch.clamp(wmax / maxq, q_scale_thresh)
     scale = scale.view(-1, 1)
-    qdq_tensor = torch.clip(round_ste(tensor / scale), max=maxq) * scale
+    qdq_tensor = torch.clamp(round_ste(tensor / scale), max=maxq) * scale
     return qdq_tensor, scale
 
 
@@ -96,7 +96,7 @@ def quant_tensor_asym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_sca
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
-    maxq = torch.tensor(2 ** bits - 1)
+    maxq = 2 ** bits - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
@@ -120,7 +120,7 @@ def quant_tensor_asym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_sca
     wmin_m, d_wmin_m = double_quant_tensor(wmin_m, super_bits, q_scale_thresh)
 
     scale = scale.view(-1, 1)
-    scale = torch.clip(scale, q_scale_thresh)
+    scale = torch.clamp(scale, q_scale_thresh)
     wmin_m = wmin_m.view(-1, 1)
 
     int_w = round_ste(tensor / scale + v)
@@ -152,7 +152,7 @@ def quant_tensor_asym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_sca
         Quantized and de-quantized tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = torch.tensor(2 ** bits - 1)
+    maxq = 2 ** bits - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
@@ -199,7 +199,7 @@ def quant_tensor_sym_gptq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max
         Quantized and de-quantized tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = torch.tensor(2 ** bits - 1)
+    maxq = 2 ** bits - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
@@ -252,7 +252,7 @@ def quant_tensor_asym_wo_round(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
         Quantized and de-quantize tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = torch.tensor(2 ** bits - 1)
+    maxq = 2 ** bits - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
