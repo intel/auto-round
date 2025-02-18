@@ -509,7 +509,8 @@ def tune(args):
         enable_torch_compile=enable_torch_compile,
         act_data_type=args.act_data_type,
         act_dynamic=not args.disable_act_dynamic,
-        device_map=args.device_map)
+        device_map=args.device_map,
+        act_group_size=-1)
     model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:

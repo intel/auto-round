@@ -124,6 +124,14 @@ BackendInfos['gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              requirements=["auto-gptq>=0.7.1"]
                                              )
 
+BackendInfos['gptq:a8'] = BackendInfo(device=["cuda"], sym=[True, False],
+                                             packing_format="triton_zp+-1",
+                                             bits=[4], group_size=None,
+                                             priority=5,
+                                             feature_checks=[feature_multiply_checker_32],
+                                             requirements=["auto-gptq>=0.7.1"]
+                                      )
+
 BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                             packing_format="triton_zp+-1",
                                             bits=[2, 4, 8], group_size=None,
@@ -440,6 +448,9 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     from auto_gptq.utils.import_utils import dynamically_import_QuantLinear  # pylint: disable=E0401
     version = get_library_version("auto_gptq")
     from packaging.version import Version
+    if "a8" in backend:
+        from auto_round_extension.cuda.qlinear_exllamav2_gptq import QuantLinear
+        return  QuantLinear
 
     # Import the appropriate QuantLinear based on the version of auto_gptq
     if Version(version) < Version("0.7.2"):

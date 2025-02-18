@@ -1065,6 +1065,7 @@ class AutoRound(object):
             else:
                 module.act_max = max(torch.abs(input).max().item(), module.act_max)
 
+
         hook_handles = []
 
         for n, m in model.named_modules():

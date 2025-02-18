@@ -63,6 +63,82 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
     return qdq_result, scale, zp
 
 
+@register_dtype("int_sym_no_zp_dynamic")
+def quant_tensor_sym_dynamic(tensor, bits=4, group_size=-1, scale_dtype=torch.float16, q_scale_thresh=1e-5):
+    """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
+
+    Args:
+        tensor: Tensor containing the tensor to be quantized
+        bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        group_size: Number of elements to share scale for quantization
+        v: Rounding value perturbation
+        min_scale: Minimum scale coefficient for tensor
+        max_scale: Maximum scale coefficient for tensor
+        tensor_min (Tensor, optional): Minimum tensor value for quantization. Defaults to None.
+        tensor_max (Tensor, optional): Maximum tensor value for quantization. Defaults to None.
+        scale_dtype: dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
+        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
+
+    Returns:
+        Quantized and de-quantized tensor, scale, zero-point
+    """
+
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    maxq = torch.tensor(2 ** (bits - 1))
+
+    wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
+    wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
+    max_abs = torch.max(torch.abs(wmin_tmp), torch.abs(wmax_tmp))
+    scale = max_abs / maxq.to(scale_dtype)
+    scale = torch.clip(scale, 1e-5)
+    int_w = torch.round(tensor / scale)
+    q = torch.clamp(int_w, -maxq - 1, maxq)
+    qdq_result = (scale * q).to(tensor.dtype)
+    qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+    return qdq_result, scale, None
+
+
+@register_dtype("int_sym_dynamic")
+def quant_tensor_sym_dynamic(tensor, bits=4, group_size=-1, scale_dtype=torch.float16, q_scale_thresh=1e-5):
+    """Quantize and de-quantize tensor asymmetrically. full range, credict goes to llamacpp community
+
+    Args:
+        tensor: Tensor containing the tensor to be quantized
+        bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        group_size: Number of elements to share scale for quantization
+        v: Rounding value perturbation
+        min_scale: Minimum scale coefficient for tensor
+        max_scale: Maximum scale coefficient for tensor
+        tensor_min (Tensor, optional): Minimum tensor value for quantization. Defaults to None.
+        tensor_max (Tensor, optional): Maximum tensor value for quantization. Defaults to None.
+        scale_dtype: dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
+        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
+
+    Returns:
+        Quantized and de-quantized tensor, scale, zero-point
+    """
+
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    maxq = torch.tensor(2 ** (bits - 1))
+
+    wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
+    wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
+
+    wmin_abs = -(wmin_tmp)  # pylint: disable=E1130
+    wmax_abs = wmax_tmp
+    max_v = (2 * (wmax_abs < wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
+    scale = (max_v / maxq).to(scale_dtype)
+    scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
+    zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
+    scale = scale.unsqueeze(dim=-1)
+    zp = zp.unsqueeze(dim=-1)
+    int_w = round_ste(tensor / scale)
+    q = torch.clamp(int_w + zp, 0, 2 ** bits - 1)
+    qdq_result = (scale * (q - zp)).to(tensor.dtype)
+    qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+    return qdq_result, scale, zp
+
+
 @register_dtype("int_asym")
 def quant_tensor_asym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
                       tensor_min=None, tensor_max=None, q_scale_thresh=1e-5, **kwargs):
