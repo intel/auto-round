@@ -16,7 +16,13 @@ import os
 import sys
 import argparse
 
-from auto_round.utils import get_fp_layer_names,  clear_memory, is_debug_mode, get_device_and_parallelism, set_cuda_visible_devices, logger
+from auto_round.utils import (
+    get_fp_layer_names,
+    clear_memory,
+    is_debug_mode,
+    get_device_and_parallelism,
+    set_cuda_visible_devices,
+    logger)
 
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
