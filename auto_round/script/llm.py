@@ -30,7 +30,8 @@ import re
 import argparse
 import sys
 
-from auto_round.utils import get_fp_layer_names, set_cuda_visible_devices, clear_memory, is_debug_mode
+
+from auto_round.utils import get_fp_layer_names,  clear_memory, is_debug_mode, get_device_and_parallelism, set_cuda_visible_devices
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -338,7 +339,8 @@ def tune(args):
         assert False, "marlin backend only supports sym quantization, please remove --asym"
 
     ##must set this before import torch
-    device_str, use_auto_mapping = set_cuda_visible_devices(args.device)
+    set_cuda_visible_devices(args.device)
+    device_str, use_auto_mapping = get_device_and_parallelism(args.device)
 
     import torch
     if not args.disable_deterministic_algorithms:
@@ -574,7 +576,8 @@ def tune(args):
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
-    device_str, parallelism = set_cuda_visible_devices(device)
+    set_cuda_visible_devices(device)
+    device_str, parallelism = get_device_and_parallelism(device)
     ##model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code},add_bos_token=True'
     model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}'
     if parallelism:
