@@ -84,9 +84,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
         tensor = tensor.to(torch.float32)
         shared_exp = shared_exp.to(torch.float32)
     tensor = tensor / (2 ** shared_exp)
-    is_mx_fp4 = data_type == "mx_fp4" or ("mx_fp" in data_type and bits == 4)
-    multiply = 2 if is_mx_fp4 else 1  ## 2 is a tricky setting
-    tensor = tensor + v * multiply
+    tensor = tensor + v
     if ebits != 0:
         private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
 

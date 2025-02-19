@@ -1160,10 +1160,22 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 
     return True, ""
 
+def get_device_and_parallelism(device):
+    from auto_round.utils import detect_device
+    devices = device.replace(" ", "").split(',')
+    if all(s.isdigit() for s in devices) and len(devices) > 1:
+        device = "cuda"
+        parallelism = True
+    elif device == "auto":
+       device = detect_device(device) 
+       parallelism = True
+    else:
+        device = detect_device(device) 
+        parallelism = False
+    return device, parallelism
 
 def set_cuda_visible_devices(device):
     devices = device.replace(" ", "").split(',')
-    parallelism = False
     if all(s.isdigit() for s in devices):
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
@@ -1180,17 +1192,6 @@ def set_cuda_visible_devices(device):
             os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = device
-            device = ",".join(map(str, range(len(devices))))
-            devices = device.replace(" ", "").split(',')
-        if len(devices) > 1:  ##for 70B model on single card, use auto will cause some layer offload to cpu
-            parallelism = True
-        device_str = None
-    elif device == "auto":
-        device_str = None
-        parallelism = True
-    else:
-        device_str = detect_device(device.replace(" ", ""))
-    return device_str, parallelism
 
 
 def is_debug_mode():
