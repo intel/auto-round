@@ -94,7 +94,10 @@ def pack_layer(name, model, layer_config, backend, pbar):
         group_size = config["group_size"]
         sym = config["sym"]
 
-        layer = get_module(model, name).orig_layer
+
+        layer = get_module(model, name)
+        if hasattr(layer,"orig_layer"):
+            layer = layer.orig_layer
         device = layer.weight.device
 
         QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)

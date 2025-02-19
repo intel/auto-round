@@ -103,57 +103,57 @@ class QuantLinear(nn.Module):
             from packaging import version
             from auto_round.utils import get_library_version
             ipex_version = get_library_version("intel_extension_for_pytorch")
-            if version.parse(ipex_version) >= version.parse("2.5"):
-                self.ipex_linear = WeightOnlyQuantizedLinear.from_weight(self.qweight, self.scales, self.qzeros, \
-                                                                         self.infeatures, self.outfeatures, None,
-                                                                         self.bias, \
-                                                                         self.group_size, self.g_idx, 0, 0)
-            else:
-                import intel_extension_for_pytorch as ipex
-                from intel_extension_for_pytorch.nn.modules import WeightOnlyQuantizedLinear as ipex_linear
-                from intel_extension_for_pytorch.utils.weight_only_quantization import (
-                    _convert_optimum_format_to_desired,
-                )
+            # if version.parse(ipex_version) >= version.parse("2.5"):
+            #     self.ipex_linear = WeightOnlyQuantizedLinear.from_weight(self.qweight, self.scales, self.qzeros, \
+            #                                                              self.infeatures, self.outfeatures, None,
+            #                                                              self.bias, \
+            #                                                              self.group_size, self.g_idx, 0, 0)
+            # else:
+            import intel_extension_for_pytorch as ipex
+            from intel_extension_for_pytorch.nn.modules import WeightOnlyQuantizedLinear as ipex_linear
+            from intel_extension_for_pytorch.utils.weight_only_quantization import (
+                _convert_optimum_format_to_desired,
+            )
 
-                qweight = self.qweight
-                scales = self.scales
-                qzeros = self.qzeros
+            qweight = self.qweight
+            scales = self.scales
+            qzeros = self.qzeros
 
-                qweight, scales, qzeros = _convert_optimum_format_to_desired(qweight, scales, qzeros)
-                weight_dtype = {
-                    4: ipex.quantization.WoqWeightDtype.INT4,
-                    8: ipex.quantization.WoqWeightDtype.INT8,
-                }
-                compute_dtype = {
-                    "fp32": ipex.quantization.WoqLowpMode.NONE,  # follow the activation datatype.
-                    "bf16": ipex.quantization.WoqLowpMode.BF16,
-                    "fp16": ipex.quantization.WoqLowpMode.FP16,
-                    "int8": ipex.quantization.WoqLowpMode.INT8,
-                }
-                ipex_qconfig_mapping = ipex.quantization.get_weight_only_quant_qconfig_mapping(
-                    weight_dtype=weight_dtype[4],
-                    lowp_mode=compute_dtype["bf16"],
-                    act_quant_mode=ipex.quantization.WoqActQuantMode.PER_IC_BLOCK,
-                    group_size=self.group_size,
-                )
-                tmp_linear = torch.nn.Linear(
-                    self.infeatures,
-                    self.outfeatures,
-                    True if hasattr(self, "bias") and self.bias is not None else False,
-                )
-                if tmp_linear.bias is not None and self.bias is not None:
-                    tmp_linear.bias = torch.nn.Parameter(self.bias.float())
+            qweight, scales, qzeros = _convert_optimum_format_to_desired(qweight, scales, qzeros)
+            weight_dtype = {
+                4: ipex.quantization.WoqWeightDtype.INT4,
+                8: ipex.quantization.WoqWeightDtype.INT8,
+            }
+            compute_dtype = {
+                "fp32": ipex.quantization.WoqLowpMode.NONE,  # follow the activation datatype.
+                "bf16": ipex.quantization.WoqLowpMode.BF16,
+                "fp16": ipex.quantization.WoqLowpMode.FP16,
+                "int8": ipex.quantization.WoqLowpMode.INT8,
+            }
+            ipex_qconfig_mapping = ipex.quantization.get_weight_only_quant_qconfig_mapping(
+                weight_dtype=weight_dtype[4],
+                lowp_mode=compute_dtype["int8"],
+                act_quant_mode=ipex.quantization.WoqActQuantMode.PER_IC_BLOCK,
+                group_size=self.group_size,
+            )
+            tmp_linear = torch.nn.Linear(
+                self.infeatures,
+                self.outfeatures,
+                True if hasattr(self, "bias") and self.bias is not None else False,
+            )
+            if tmp_linear.bias is not None and self.bias is not None:
+                tmp_linear.bias = torch.nn.Parameter(self.bias.float())
 
-                tmp_linear.qconfig = ipex_qconfig_mapping.global_qconfig
-                self.ipex_linear = ipex_linear.from_float_and_int4_weight(
-                    mod=tmp_linear,
-                    qweight=qweight,
-                    scales=scales,
-                    zero_points=qzeros,
-                    bias=(self.bias.float() if hasattr(self, "bias") and self.bias is not None else None),
-                    group_size=self.group_size,
-                    g_idx=(self.g_idx if hasattr(self, "g_idx") else None)
-                )
+            tmp_linear.qconfig = ipex_qconfig_mapping.global_qconfig
+            self.ipex_linear = ipex_linear.from_float_and_int4_weight(
+                mod=tmp_linear,
+                qweight=qweight,
+                scales=scales,
+                zero_points=qzeros,
+                bias=(self.bias.float() if hasattr(self, "bias") and self.bias is not None else None),
+                group_size=self.group_size,
+                g_idx=(self.g_idx if hasattr(self, "g_idx") else None)
+            )
 
     def pack(self, linear, scales, zeros, g_idx=None):
         W = linear.weight.data.clone()

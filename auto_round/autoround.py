@@ -456,6 +456,11 @@ class AutoRound(object):
                 self.layer_config[n]["zp"] = m.zp
                 delattr(m, "scale")
                 delattr(m, "zp")
+            elif (hasattr(m,"orig_layer") and hasattr(m.orig_layer,"scale")):
+                self.layer_config[n]["scale"] = m.orig_layer.scale
+                self.layer_config[n]["zp"] = m.orig_layer.zp
+                delattr( m.orig_layer, "scale")
+                delattr( m.orig_layer, "zp")
             else:
                 self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
@@ -1375,7 +1380,7 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
-        if format == "fake" or format == "qdq" or self.act_bits <= 8:  ##TODO fix act quantizaiton later
+        if format == "fake" or format == "qdq":  ##TODO fix act quantizaiton later
             self.model = self.model.to("cpu")
             self.model.save_pretrained(output_dir)
             if self.tokenizer is not None:

@@ -552,24 +552,24 @@ def tune(args):
 
         tasks, model_args, device_str = _eval_init(args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
 
-        if args.act_bits <= 8:
-            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                from accelerate.big_modeling import dispatch_model
-
-                dispatch_model(model, model.hf_device_map)
-                user_model = model
-            else:
-                user_model = model  # .to(device_str)
-
-            if args.eval_bs is None or args.eval_bs == "auto":
-                args.eval_bs = 16
-            from auto_round.eval.evaluation import simple_evaluate_user_model
-            res = simple_evaluate_user_model(
-                user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
-        else:
-            from auto_round.eval.evaluation import simple_evaluate
-            res = simple_evaluate(
-                model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+        # if args.act_bits <= 8:
+        #     if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+        #         from accelerate.big_modeling import dispatch_model
+        #
+        #         dispatch_model(model, model.hf_device_map)
+        #         user_model = model
+        #     else:
+        #         user_model = model  # .to(device_str)
+        #
+        #     if args.eval_bs is None or args.eval_bs == "auto":
+        #         args.eval_bs = 16
+        #     from auto_round.eval.evaluation import simple_evaluate_user_model
+        #     res = simple_evaluate_user_model(
+        #         user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
+        # else:
+        from auto_round.eval.evaluation import simple_evaluate
+        res = simple_evaluate(
+            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
         print(make_table(res))
 
 
