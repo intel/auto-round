@@ -50,7 +50,7 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
 
 
-def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
+def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym):
     """
     Dynamically imports and returns the appropriate QuantLinear class based on the specified backend and parameters.
 
@@ -97,7 +97,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
         layer = get_module(model, name)
         device = layer.weight.device
 
-        QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
+        QuantLinear = dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym)
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features
@@ -286,3 +286,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
