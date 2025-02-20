@@ -249,7 +249,7 @@ class WrapperLinear(torch.nn.Module):
         shape = qdq_weight.shape
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             shape = qdq_weight.t().shape
-        bf16_to_int4_scale = scale[0].reshape(shape[0], -1)
+        bf16_to_int4_scale = scale[0].reshape(shape[0], -1) if isinstance(scale, tuple) else scale
         if zp is not None:
             zp = zp.reshape(shape[0], -1)
 
@@ -279,7 +279,10 @@ class WrapperLinear(torch.nn.Module):
             self.orig_layer.q_scale_thresh = self.q_scale_thresh
             self.orig_layer.data_type = self.data_type
             if not self.orig_layer.act_dynamic:
-                self.orig_layer.act_max = torch.tensor(self.orig_layer.act_max * act_max_scale.item()).to("cpu")
+                if hasattr(self.orig_layer, "act_max"):
+                    self.orig_layer.act_max = torch.tensor(self.orig_layer.act_max * act_max_scale.item()).to("cpu")
+                else:
+                    pass
             self.orig_layer.act_scale = act_scale.to("cpu")
             self.orig_layer.act_data_type = self.act_data_type
             self.orig_layer.act_quant_func = self.act_quant_func

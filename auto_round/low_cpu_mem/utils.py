@@ -31,6 +31,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.auto_factory import _BaseAutoModelClass
 
 from .load import load
+from auto_round.utils import detect_device
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
 logger = logging.getLogger("low_cpu_mem_tools")
@@ -433,13 +434,14 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
 def load_model_with_hooks(
         pretrained_model_name_or_path,
         cls=AutoModelForCausalLM,
-        device="cpu",
+        device=None,
         clean_weight=True,
         saved_path=None, 
         **kwargs):
     if saved_path is None:
         logger.warning(f"saved_path is not set, use default working space: {LWQ_WORKSPACE}")
         saved_path = LWQ_WORKSPACE
+    device = detect_device(device)
     empty_model = load_empty_model(pretrained_model_name_or_path, cls=cls, saved_path=saved_path, **kwargs)
     register_weight_hooks(empty_model, empty_model.path, device, clean_weight, saved_path)
     return empty_model
