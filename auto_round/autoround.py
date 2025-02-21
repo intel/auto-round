@@ -52,7 +52,8 @@ from .utils import (
     mv_module_from_gpu,
     unsupport_meta_device, clear_memory,
     compile_func,
-    find_matching_blocks, is_debug_mode
+    find_matching_blocks, is_debug_mode,
+    TORCH_VERSION_AT_LEAST_2_6
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -232,11 +233,11 @@ class AutoRound(object):
             logger.info(f"using {self.model.dtype} for quantization tuning")
 
         self.enable_torch_compile = enable_torch_compile
-        if not self.enable_torch_compile and self.act_bits > 8 and self.low_cpu_mem_usage != True and \
+        if not self.enable_torch_compile and TORCH_VERSION_AT_LEAST_2_6 and self.act_bits > 8 and self.low_cpu_mem_usage != True and \
                 not is_debug_mode() and ("fp8" not in self.data_type and "fp8" not in self.act_data_type):
             logger.info("'enable_torch_compile' is set to False by default," \
-                           " you can try to enable torch compile to reduce tuning costs when torch version >= 2.6")
-            
+                        " you can try to enable torch compile to reduce tuning costs when torch version >= 2.6")
+
         if self.act_bits <= 8 and self.enable_torch_compile != False:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
