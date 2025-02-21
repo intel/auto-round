@@ -233,8 +233,8 @@ class AutoRound(object):
             logger.info(f"using {self.model.dtype} for quantization tuning")
 
         self.enable_torch_compile = enable_torch_compile
-        if not self.enable_torch_compile and TORCH_VERSION_AT_LEAST_2_6 and self.act_bits > 8 and self.low_cpu_mem_usage != True \
-                and ("fp8" not in self.data_type and "fp8" not in self.act_data_type) and not is_debug_mode():
+        if not self.enable_torch_compile and TORCH_VERSION_AT_LEAST_2_6 and self.act_bits > 8 and not is_debug_mode() \
+                and self.low_cpu_mem_usage != True and ("fp8" not in self.data_type and "fp8" not in self.act_data_type):
             logger.info("'enable_torch_compile' is set to `False` by default. " \
                         "Enabling it can reduce tuning time by 20%, but it might throw an exception.")
 
@@ -1312,13 +1312,8 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
-        if self.enable_torch_compile != False:
-            try:
-                quant_block = compile_func(self.quant_block, device, self.enable_torch_compile)
-            except:
-                logger.warning("torch compile failed, reset it to `False`")
-                self.enable_torch_compile = False
-                quant_block = self.quant_block
+        if self.enable_torch_compile:
+            quant_block = compile_func(self.quant_block, device)
         else:
             quant_block = self.quant_block
 
