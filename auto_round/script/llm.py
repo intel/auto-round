@@ -169,8 +169,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             help="Names of quantitative blocks, please use commas to separate them.")
 
-        self.add_argument("--disable_torch_compile", action='store_true',
-                          help="whether to disable torch compile")
+        self.add_argument("--enable_torch_compile", action='store_true',
+                          help="whether to enable torch compile")
 
         self.add_argument("--act_data_type", default=None, type=str, help="activation data type")
 
@@ -353,9 +353,9 @@ def tune(args):
         # logger.info("`torch.use_deterministic_algorithms` is enabled by default for reproducibility "
         #             "and can be disabled using the `--disable_deterministic_algorithms` argument.")
 
-    if not args.disable_torch_compile:
-        logger.info("`torch.compile` is enabled by default to reduce tuning costs. "
-                    "If it causes issues, you can disable it using the `--disable_torch_compile` argument.")
+    if args.enable_torch_compile:
+        logger.info("`torch.compile` is enabled to reduce tuning costs. "
+                    "If it causes issues, you can disable it by remove `--enable_torch_compile` argument.")
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -482,7 +482,7 @@ def tune(args):
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
-    enable_torch_compile = False if "--disable_torch_compile" in sys.argv else None
+    enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
 
     autoround = round(
         model,
@@ -621,3 +621,4 @@ def eval_sequence(args):
             for key in res_keys:
                 res_all[key].update(res[key])
         print(make_table(res_all))
+

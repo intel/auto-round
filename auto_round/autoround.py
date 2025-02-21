@@ -159,7 +159,7 @@ class AutoRound(object):
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = None,
+            enable_torch_compile: bool = False,
             device_map: Union[str, dict] = None,
             **kwargs,
     ):
@@ -232,6 +232,10 @@ class AutoRound(object):
             logger.info(f"using {self.model.dtype} for quantization tuning")
 
         self.enable_torch_compile = enable_torch_compile
+        if not self.enable_torch_compile:
+            logger.warning("'enable_torch_compile' is set to False by default," \
+                           " you can try to enable torch compile to reduce tuning costs when torch version >= 2.6")
+            
         if self.act_bits <= 8 and self.enable_torch_compile != False:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
@@ -1648,7 +1652,7 @@ class AutoRoundOPT(AutoRound):
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = None,
+            enable_torch_compile: bool = False,
             device_map: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,
@@ -1822,7 +1826,7 @@ class AutoRoundAdam(AutoRoundOPT):
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = None,
+            enable_torch_compile: bool = False,
             device_map: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,
@@ -1868,3 +1872,4 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer=optimizer,
             **kwargs,
         )
+
