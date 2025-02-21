@@ -152,8 +152,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             action='store_true',
             help="whether to use the iter of best mes loss in the tuning phase")
 
-        self.add_argument("--disable_torch_compile", action='store_true',
-                          help="whether to disable torch compile")
+        self.add_argument("--enable_torch_compile", action='store_true',
+                          help="whether to enable torch compile")
 
         self.add_argument("--disable_deterministic_algorithms", action='store_true',
                           help="disable torch deterministic algorithms.")
@@ -446,7 +446,7 @@ def tune(args):
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
-    enable_torch_compile = False if "--disable_torch_compile" in sys.argv else None
+    enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
 
     autoround = round(
         model,
@@ -597,4 +597,5 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+
 
