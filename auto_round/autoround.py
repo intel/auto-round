@@ -234,9 +234,9 @@ class AutoRound(object):
 
         self.enable_torch_compile = enable_torch_compile
         if not self.enable_torch_compile and TORCH_VERSION_AT_LEAST_2_6 and self.act_bits > 8 and not is_debug_mode() \
-                and self.low_cpu_mem_usage != True and ("fp8" not in self.data_type and "fp8" not in self.act_data_type):
+                and self.low_cpu_mem_usage != True and "fp8" not in self.data_type and "fp8" not in self.act_data_type:
             logger.info("'enable_torch_compile' is set to `False` by default. " \
-                        "Enabling it can reduce tuning time by 20%, but it might throw an exception.")
+                        "Enabling it can reduce tuning cost by 20%, but it might throw an exception.")
 
         if self.act_bits <= 8 and self.enable_torch_compile:
             self.enable_torch_compile = False
