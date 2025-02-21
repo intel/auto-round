@@ -232,8 +232,9 @@ class AutoRound(object):
             logger.info(f"using {self.model.dtype} for quantization tuning")
 
         self.enable_torch_compile = enable_torch_compile
-        if not self.enable_torch_compile:
-            logger.warning("'enable_torch_compile' is set to False by default," \
+        if not self.enable_torch_compile and self.act_bits > 8 and self.low_cpu_mem_usage != True and \
+                not is_debug_mode() and ("fp8" not in self.data_type and "fp8" not in self.act_data_type):
+            logger.info("'enable_torch_compile' is set to False by default," \
                            " you can try to enable torch compile to reduce tuning costs when torch version >= 2.6")
             
         if self.act_bits <= 8 and self.enable_torch_compile != False:
