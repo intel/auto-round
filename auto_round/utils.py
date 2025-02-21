@@ -1009,18 +1009,15 @@ def compile_func_on_hpu(func):
     return func
 
 
-def compile_func_on_cuda_or_cpu(func, enable_torch_compile):
-    if enable_torch_compile or (TORCH_VERSION_AT_LEAST_2_6_PRE_RELEASE and enable_torch_compile != False):
-        return torch.compile(func)
-    else:
-        return func
+def compile_func_on_cuda_or_cpu(func):
+    return torch.compile(func)
 
 
-def compile_func(fun, device, enable_torch_compile):
+def compile_func(fun, device):
     if "hpu" in str(device):
         return compile_func_on_hpu(fun)  ## use auto by default
     else:
-        return compile_func_on_cuda_or_cpu(fun, enable_torch_compile)
+        return compile_func_on_cuda_or_cpu(fun)
 
 
 def is_numba_available():  # pragma: no cover
@@ -1201,3 +1198,4 @@ def is_debug_mode():
         bool: True if debugging is enabled, False otherwise.
     """
     return sys.gettrace() is not None or sys.flags.debug == 1
+
