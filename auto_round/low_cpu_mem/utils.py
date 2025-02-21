@@ -78,7 +78,7 @@ def get_named_children(model, pre=[]):
     return module_list
 
 
-def dowload_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
+def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
     """Download hugging face model from hf hub."""
     from huggingface_hub.constants import DEFAULT_REVISION, HUGGINGFACE_HUB_CACHE
     from huggingface_hub.file_download import REGEX_COMMIT_HASH, repo_folder_name
@@ -116,7 +116,7 @@ def load_empty_model(pretrained_model_name_or_path, cls=AutoModelForCausalLM, sa
     if is_local:  # pragma: no cover
         path = pretrained_model_name_or_path
     else:
-        path = dowload_hf_model(pretrained_model_name_or_path)
+        path = download_hf_model(pretrained_model_name_or_path)
     torch_dtype = kwargs.pop("torch_dtype", None)
     if cls.__base__ == _BaseAutoModelClass:
         config = AutoConfig.from_pretrained(path, **kwargs)
@@ -258,7 +258,7 @@ def _get_path(pretrained_model_name_or_path):
     if is_local:  # pragma: no cover
         path = pretrained_model_name_or_path
     else:
-        path = dowload_hf_model(pretrained_model_name_or_path)
+        path = download_hf_model(pretrained_model_name_or_path)
     return path
 
 
@@ -471,3 +471,4 @@ def layer_wise_load(path):
                 d = pickle.loads(d)
                 state_dict.update(d)
     return state_dict
+
