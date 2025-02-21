@@ -1059,15 +1059,20 @@ class AutoRound(object):
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
+            input = input.reshape(-1, input.shape[-1])
+            input = input.to(torch.float32)
+            input = torch.abs(input)
+            input = torch.max(input, dim=0)[0]
             if not hasattr(module, "act_max"):
-                module.act_max = torch.abs(input).max().item()
+                module.act_max = input
             else:
-                module.act_max = max(torch.abs(input).max().item(), module.act_max)
+                module.act_max = torch.max(input, module.act_max)
+                tmp = 1
 
         hook_handles = []
 
         for n, m in model.named_modules():
-            if hasattr(m, "act_dynamic") and m.act_dynamic == False and check_to_quantized(m):
+            if isinstance(m, torch.nn.Linear) and check_to_quantized(m):
                 hook = m.register_forward_hook(get_act_max_hook)
                 hook_handles.append(hook)
         return hook_handles
@@ -1124,6 +1129,10 @@ class AutoRound(object):
         quantized_layer_names, unquantized_layer_names = wrapper_block(
             block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device)
 
+        # for n, m in block.named_modules():
+        #     if hasattr(m, "orig_layer"):
+        #         m.tune_init_weight()
+
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():
@@ -1167,7 +1176,8 @@ class AutoRound(object):
         mse_reduction = "mean"
         if self.gradient_accumulate_steps != 1:
             mse_reduction = "sum"
-        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        ##mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        mse_loss = torch.nn.SmoothL1Loss()
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
@@ -1206,6 +1216,13 @@ class AutoRound(object):
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
+
+                weight_loss = 0
+
+                # for n, m in block.named_modules():
+                #     if hasattr(m, "weight_q"):
+                #         weight_loss += mse_loss(m.weight_q * m.orig_layer.act_max.unsqueeze(dim=0),
+                #                                 m.orig_layer.weight.unsqueeze(dim=0))
 
                 total_loss += loss.item() / num_elm
                 self.scale_loss_and_backward(scaler, loss)
