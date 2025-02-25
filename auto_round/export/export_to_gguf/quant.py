@@ -102,6 +102,7 @@ def q4_1_quant_block(blocks: np.array, scale=None, zp=None):
 
     d = d.astype(np.float16).view(np.uint8)
     m = min.astype(np.float16).view(np.uint8)
+    breakpoint()
     return np.concatenate([d, m, qs], axis=-1)
 
 
@@ -170,55 +171,55 @@ def make_qkx2_quants(data, weight, nmax, group_size, rmin=-1, rdelta=0.1, nstep=
 
 @register_block("q4_k")
 def q4_k_quant_block(blocks: np.array, scale=None, zp=None):
-
     nb = blocks.shape[0]
     output_scale = np.empty((nb, QK_K//32 + 4), dtype=np.uint8)
     output_d = np.empty(nb, dtype=np.float32)
     output_dmin = np.empty(nb, dtype=np.float32)
-    output_qs = np.empty((nb, QK_K //64, 32), dtype=np.uint8)
+    output_qs = np.empty((nb, QK_K // 64, 32), dtype=np.uint8)
 
-    if scale is not None:
-        #TODO:
-        pass
-    else:
-        ori_shape = blocks.shape
-        blocks = blocks.reshape((nb, QK_K // 32, 32))
-        sum_x2 = np.sum(np.power(blocks, 2), axis=-1)
-        av_x = np.sqrt(sum_x2 / 32)
-        weight = blocks + av_x.reshape((*av_x.shape, 1))
-        scales = np.empty(QK_K//32, dtype=np.float32)
-        mins = np.empty(QK_K//32, dtype=np.float32)
-        for i in range(nb):
+    blocks = blocks.reshape((nb, QK_K // 32, 32))
+    sum_x2 = np.sum(np.power(blocks, 2), axis=-1)
+    av_x = np.sqrt(sum_x2 / 32)
+    weight = blocks + av_x.reshape((*av_x.shape, 1))
+    scales = np.empty(QK_K // 32, dtype=np.float32)
+    mins = np.empty(QK_K // 32, dtype=np.float32)
+    for i in range(nb):
+        if scale is not None:
+            pass
+        else:
             for j in range(QK_K // 32):
-                scale, the_min = make_qkx2_quants(
+                d_scale, the_min = make_qkx2_quants(
                     blocks[i][j], weight[i][j], nmax=15, group_size=32, rmin=-1, rdelta=0.1, nstep=20)
-                scales[j] = scale
+                scales[j] = d_scale
                 mins[j] = the_min
 
-            max_scale = max(scales)
-            max_min = max(mins)
-            inv_scale = 63. / max_scale if max_scale > 0 else 0.
-            inv_min = 63. / max_min if max_min > 0 else 0.
+        max_scale = max(scales)
+        max_min = max(mins)
+        inv_scale = 63. / max_scale if max_scale > 0 else 0.
+        inv_min = 63. / max_min if max_min > 0 else 0.
 
-            
-            ls = np.round(inv_scale * scales).astype(np.uint8)
-            lm = np.round(inv_min * mins).astype(np.uint8)
-            output_scale[i][:4] = ls[:4]
-            output_scale[i][4:8] = lm[:4]
+        ls = np.round(inv_scale * scales).astype(np.uint8)
+        lm = np.round(inv_min * mins).astype(np.uint8)
+        output_scale[i][:4] = ls[:4]
+        output_scale[i][4:8] = lm[:4]
 
-            output_scale[i][8:] = (ls[4:] & 0xF) | ((lm[4:] & 0xF) << 4)
-            output_scale[i][:4] |= ((ls[4:] >> 4) << 6)
-            output_scale[i][4:8] |= ((lm[4:] >> 4) << 6)
-            
-            output_d[i] = max_scale / 63
-            output_dmin[i] = max_min / 63
+        output_scale[i][8:] = (ls[4:] & 0xF) | ((lm[4:] & 0xF) << 4)
+        output_scale[i][:4] |= ((ls[4:] >> 4) << 6)
+        output_scale[i][4:8] |= ((lm[4:] >> 4) << 6)
 
-            d_tmp = output_d[i] * ls
-            dm_tmp = output_dmin[i] * lm
+        output_d[i] = max_scale / 63
+        output_dmin[i] = max_min / 63
 
-            all_L = np.round((blocks[i] + dm_tmp.reshape(dm_tmp.shape[0], 1)) / d_tmp.reshape(d_tmp.shape[0], 1)).astype(np.uint8)
-            all_L = np.clip(all_L, 0, 15)
+        d_tmp = output_d[i] * ls
+        dm_tmp = output_dmin[i] * lm
 
-            for j in range(QK_K // 64):
-                output_qs[i][j] = all_L[j] | (all_L[j + 1] << 4)
-        return output_d, output_dmin, output_scale, output_qs
+        all_L = np.round((blocks[i] + dm_tmp.reshape(-1, 1)) / d_tmp.reshape(-1, 1)).astype(np.uint8)
+        all_L = np.clip(all_L, 0, 15)
+
+        for j in range(QK_K // 64):
+            output_qs[i][j] = all_L[j] | (all_L[j + 1] << 4)
+
+    output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
+    output_dmin = output_dmin.reshape(-1, 1).astype(np.float16).view(np.uint8)
+    output_qs = output_qs.reshape(nb, QK_K // 2)
+    return np.concatenate([output_d, output_dmin, output_scale, output_qs], axis=-1)
