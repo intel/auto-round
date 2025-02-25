@@ -1121,7 +1121,7 @@ class AutoRound(object):
 
         if q_input is not None:
             if input_ids is not q_input:
-                clear_memory(input_ids)
+                clear_memory()
             else:
                 clear_memory()
             input_ids = q_input
@@ -1176,8 +1176,8 @@ class AutoRound(object):
         mse_reduction = "mean"
         if self.gradient_accumulate_steps != 1:
             mse_reduction = "sum"
-        ##mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
-        mse_loss = torch.nn.SmoothL1Loss()
+        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        ##mse_loss = torch.nn.SmoothL1Loss()
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
@@ -1271,7 +1271,8 @@ class AutoRound(object):
                 accelerate.hooks.remove_hook_from_submodules(
                     block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
-            clear_memory(input_ids)
+            clear_memory()
+            ##clear_memory(input_ids)
 
             return q_outputs, output
 
@@ -1280,7 +1281,8 @@ class AutoRound(object):
                 accelerate.hooks.remove_hook_from_submodules(
                     block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
-            clear_memory(input_ids)
+            clear_memory()
+            ##clear_memory(input_ids)
             return None, output
 
     def quant_blocks(
@@ -1354,6 +1356,26 @@ class AutoRound(object):
             if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
                 m = m.to(device)
 
+            # for tmp_n, tmp_m in m.named_modules():
+            #     if hasattr(tmp_m, "bits"):
+            #         tmp_m.bits = 2
+            #         tmp_m.group_size = 16
+
+            quant_block(
+                m,
+                input_ids,
+                input_others,
+                q_input=q_input,
+                device=device,
+            )
+
+            # for tmp_n, tmp_m in m.named_modules():
+            #     if hasattr(tmp_m, "bits"):
+            #         tmp_m.bits = 2
+            #         tmp_m.group_size = 64
+
+
+            m = m.to(device)
             q_input, input_ids = quant_block(
                 m,
                 input_ids,
