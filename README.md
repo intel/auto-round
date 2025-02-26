@@ -236,9 +236,7 @@ adopted within the community, **only 4-bits quantization is supported**.
 
 Testing was conducted on the Nvidia A100 80G using the nightly version of PyTorch 2.6.0.dev20241029+cu124. Please note
 that data
-loading and packing costs have been excluded from the evaluation. **We enable torch.compile for Torch 2.6, but not for
-2.5
-due to encountered issues.**
+loading and packing costs have been excluded from the evaluation. **We recommend enabling torch.compile for PyTorch versions 2.6 and above.**
 
 To optimize GPU memory usage, in addition to activating `low_gpu_mem_usage`, you can set `gradient_accumulate_steps=8`
 and a
