@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import copy
 
 import torch
 from torch.functional import F
@@ -198,53 +197,6 @@ class WrapperLinear(torch.nn.Module):
                                                q_scale_thresh=self.q_scale_thresh)
         return bias, scale, zp
 
-    def tune_init_weight(self):
-        round_params = [self.value]
-        minmax_params = [self.min_scale, self.max_scale]
-        iters = 200
-        lr = 1.0 / iters
-
-        from auto_round.sign_sgd import SignSGD
-
-        optimizer = SignSGD(
-            [{"params": round_params}, {"params": minmax_params, "lr": lr}], lr=lr, weight_decay=0
-        )
-        lr_schedule = torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=1.0, end_factor=0.0, total_iters=iters, verbose=False
-        )
-        l1_loss = torch.nn.MSELoss()
-        best_loss = torch.finfo(torch.float).max
-        best_params = []
-        init_loss = 0
-        best_step = 0
-        act_max = self.orig_layer.act_max.unsqueeze(dim=0)
-
-        for i in range(200):
-            weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
-            loss = l1_loss(weight_q.to(torch.float32), self.orig_layer.weight.to(torch.float32))
-            loss = torch.mean((weight_q.to(torch.float32)-self.orig_layer.weight.to(torch.float32))**2*act_max)
-            ##loss = l1_loss(weight_q.to(torch.float32) * act_max, self.orig_layer.weight.to(torch.float32) * act_max)
-            if i == 0:
-                init_loss = loss
-            with torch.no_grad():
-                if loss < best_loss:
-                    best_params = [copy.deepcopy(self.value.data), copy.deepcopy(self.min_scale.data),
-                                   copy.deepcopy(self.max_scale.data)]
-                    best_loss = loss
-                    best_step = i
-            best_loss = loss
-            loss = loss * 1000
-            loss.backward()
-            lr_schedule.step()
-            optimizer.step()
-            optimizer.zero_grad()
-
-        logger.info(f"init loss: {init_loss}, best loss: {best_loss} at step {best_step}")
-        # self.value.data.copy_(best_params[0])
-        # self.min_scale.data.copy_(best_params[1])
-        # self.max_scale.data.copy_(best_params[2])
-        tmp = 1
-
     def unwrapper(self, best_params):
         """Restores the original layer by applying the best tuning parameters.
 
@@ -344,7 +296,6 @@ class WrapperLinear(torch.nn.Module):
         """
         x = x.to(self.device)
         weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
-        self.weight_q = weight_q
 
         if self.enable_act_quant:
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None

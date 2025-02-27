@@ -52,8 +52,7 @@ from .utils import (
     mv_module_from_gpu,
     unsupport_meta_device, clear_memory,
     compile_func,
-    find_matching_blocks, is_debug_mode,
-    TORCH_VERSION_AT_LEAST_2_6
+    find_matching_blocks, is_debug_mode
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -114,7 +113,7 @@ class AutoRound(object):
         act_data_type (str): Specifies the data type for activations.
                              Defaults to None, in which case it inherits the weight data type.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of 
+        to_quant_block_names (str|list): A string or list whose elements are list of
                             block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True.
@@ -160,7 +159,7 @@ class AutoRound(object):
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = False,
+            enable_torch_compile: bool = None,
             device_map: Union[str, dict] = None,
             **kwargs,
     ):
@@ -233,24 +232,19 @@ class AutoRound(object):
             logger.info(f"using {self.model.dtype} for quantization tuning")
 
         self.enable_torch_compile = enable_torch_compile
-        if not self.enable_torch_compile and TORCH_VERSION_AT_LEAST_2_6 and self.act_bits > 8 and not is_debug_mode() \
-                and self.low_cpu_mem_usage != True and "fp8" not in self.data_type and "fp8" not in self.act_data_type:
-            logger.info("'enable_torch_compile' is set to `False` by default. " \
-                        "Enabling it can reduce tuning cost by 20%, but it might throw an exception.")
-
-        if self.act_bits <= 8 and self.enable_torch_compile:
+        if self.act_bits <= 8 and self.enable_torch_compile != False:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
 
-        if self.low_cpu_mem_usage == True and self.enable_torch_compile:
+        if self.low_cpu_mem_usage == True and self.enable_torch_compile != False:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
 
-        if is_debug_mode() and self.enable_torch_compile:
+        if is_debug_mode() and self.enable_torch_compile != False:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
 
-        if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile:
+        if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile != False:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
 
@@ -494,8 +488,13 @@ class AutoRound(object):
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
         device = next(self.model.parameters()).device
-        if self.enable_torch_compile:
-            quant_layer = compile_func(self.quant_layer, self.device)
+        if self.enable_torch_compile != False:
+            try:
+                quant_layer = compile_func(self.quant_layer, device, self.enable_torch_compile)
+            except:
+                logger.warning("torch compile failed, reset it to `False`")
+                self.enable_torch_compile = False
+                quant_layer = self.quant_layer
         else:
             quant_layer = self.quant_layer
         for layer_name in layer_names:
@@ -1060,20 +1059,15 @@ class AutoRound(object):
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
-            input = input.reshape(-1, input.shape[-1])
-            input = input.to(torch.float32)
-            input = torch.abs(input)
-            input = torch.max(input, dim=0)[0]
             if not hasattr(module, "act_max"):
-                module.act_max = input
+                module.act_max = torch.abs(input).max().item()
             else:
-                module.act_max = torch.max(input, module.act_max)
-                tmp = 1
+                module.act_max = max(torch.abs(input).max().item(), module.act_max)
 
         hook_handles = []
 
         for n, m in model.named_modules():
-            if isinstance(m, torch.nn.Linear) and check_to_quantized(m):
+            if hasattr(m, "act_dynamic") and m.act_dynamic == False and check_to_quantized(m):
                 hook = m.register_forward_hook(get_act_max_hook)
                 hook_handles.append(hook)
         return hook_handles
@@ -1122,17 +1116,13 @@ class AutoRound(object):
 
         if q_input is not None:
             if input_ids is not q_input:
-                clear_memory()
+                clear_memory(input_ids)
             else:
                 clear_memory()
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
             block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device)
-
-        # for n, m in block.named_modules():
-        #     if hasattr(m, "orig_layer"):
-        #         m.tune_init_weight()
 
         round_params = []
         minmax_params = []
@@ -1178,7 +1168,6 @@ class AutoRound(object):
         if self.gradient_accumulate_steps != 1:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
-        ##mse_loss = torch.nn.SmoothL1Loss()
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
@@ -1217,13 +1206,6 @@ class AutoRound(object):
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
-
-                weight_loss = 0
-
-                # for n, m in block.named_modules():
-                #     if hasattr(m, "weight_q"):
-                #         weight_loss += mse_loss(m.weight_q * m.orig_layer.act_max.unsqueeze(dim=0),
-                #                                 m.orig_layer.weight.unsqueeze(dim=0))
 
                 total_loss += loss.item() / num_elm
                 self.scale_loss_and_backward(scaler, loss)
@@ -1272,8 +1254,7 @@ class AutoRound(object):
                 accelerate.hooks.remove_hook_from_submodules(
                     block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
-            clear_memory()
-            ##clear_memory(input_ids)
+            clear_memory(input_ids)
 
             return q_outputs, output
 
@@ -1282,8 +1263,7 @@ class AutoRound(object):
                 accelerate.hooks.remove_hook_from_submodules(
                     block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
-            clear_memory()
-            ##clear_memory(input_ids)
+            clear_memory(input_ids)
             return None, output
 
     def quant_blocks(
@@ -1330,8 +1310,13 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
-        if self.enable_torch_compile:
-            quant_block = compile_func(self.quant_block, device)
+        if self.enable_torch_compile != False:
+            try:
+                quant_block = compile_func(self.quant_block, device, self.enable_torch_compile)
+            except:
+                logger.warning("torch compile failed, reset it to `False`")
+                self.enable_torch_compile = False
+                quant_block = self.quant_block
         else:
             quant_block = self.quant_block
 
@@ -1352,26 +1337,6 @@ class AutoRound(object):
             if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
                 m = m.to(device)
 
-            # for tmp_n, tmp_m in m.named_modules():
-            #     if hasattr(tmp_m, "bits"):
-            #         tmp_m.bits = 2
-            #         tmp_m.group_size = 16
-
-            quant_block(
-                m,
-                input_ids,
-                input_others,
-                q_input=q_input,
-                device=device,
-            )
-
-            # for tmp_n, tmp_m in m.named_modules():
-            #     if hasattr(tmp_m, "bits"):
-            #         tmp_m.bits = 2
-            #         tmp_m.group_size = 64
-
-
-            m = m.to(device)
             q_input, input_ids = quant_block(
                 m,
                 input_ids,
@@ -1635,7 +1600,7 @@ class AutoRoundOPT(AutoRound):
         act_data_type (str): Specifies the data type for activations.
                              Defaults to None, in which case it inherits the weight data type.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of 
+        to_quant_block_names (str|list): A string or list whose elements are list of
                             block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer function
@@ -1682,7 +1647,7 @@ class AutoRoundOPT(AutoRound):
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = False,
+            enable_torch_compile: bool = None,
             device_map: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,
@@ -1856,7 +1821,7 @@ class AutoRoundAdam(AutoRoundOPT):
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = False,
+            enable_torch_compile: bool = None,
             device_map: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,
@@ -1902,4 +1867,3 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer=optimizer,
             **kwargs,
         )
-
