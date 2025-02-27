@@ -1135,37 +1135,37 @@ class OriModel:
 
 class Model(OriModel):
 
-    def __init__(self,
-                 model,
-                 dir_model: Path,
-                 ftype: gguf.LlamaFileType,
-                 fname_out: Path,
-                 is_big_endian: bool = False,
-                 layer_config: dict = {},
-                 use_temp_file: bool = False,
-                 eager: bool = False,
-                 metadata_override: Path | None = None,
-                 model_name: str | None = None,
-                 split_max_tensors: int = 0,
-                 split_max_size: int = 0,
-                 dry_run: bool = False,
-                 small_first_shard: bool = False,
-                 hparams: dict[str, Any] | None = None):
+    def __init__(
+            self,
+            model,
+            dir_model: Path,
+            ftype: gguf.LlamaFileType,
+            fname_out: Path,
+            is_big_endian: bool = False,
+            use_temp_file: bool = False,
+            eager: bool = False,
+            metadata_override: Path | None = None,
+            model_name: str | None = None,
+            split_max_tensors: int = 0,
+            split_max_size: int = 0,
+            dry_run: bool = False,
+            small_first_shard: bool = False,
+            hparams: dict[str, Any] | None = None):
         self.model = model
-        self.layer_config = layer_config
-        super().__init__(dir_model=dir_model,
-                         ftype=ftype,
-                         fname_out=fname_out,
-                         is_big_endian=is_big_endian,
-                         use_temp_file=use_temp_file,
-                         eager=eager,
-                         metadata_override=metadata_override,
-                         model_name=model_name,
-                         split_max_tensors=split_max_tensors,
-                         split_max_size=split_max_size,
-                         dry_run=dry_run,
-                         small_first_shard=small_first_shard,
-                         hparams=hparams)
+        super().__init__(
+            dir_model=dir_model,
+            ftype=ftype,
+            fname_out=fname_out,
+            is_big_endian=is_big_endian,
+            use_temp_file=use_temp_file,
+            eager=eager,
+            metadata_override=metadata_override,
+            model_name=model_name,
+            split_max_tensors=split_max_tensors,
+            split_max_size=split_max_size,
+            dry_run=dry_run,
+            small_first_shard=small_first_shard,
+            hparams=hparams)
 
     @classmethod
     def __init_subclass__(cls):
@@ -1276,14 +1276,16 @@ class Model(OriModel):
 
                 # Quant here
                 def _quant_data(data, data_qtype):
+                    from auto_round.utils import get_module
                     suffix = '.weight'
-                    if suffix in name and name[:-len(suffix)] in self.layer_config:
+                    if suffix in name:
                         layer_name = name[:-len(suffix)]
-                        if "scale" in self.layer_config[layer_name]:
-                            scale = self.layer_config[layer_name]['scale']
+                        module = get_module(self.model, layer_name)
+                        if hasattr(module, "scale"):
+                            scale = module.scale
                             if isinstance(scale, torch.Tensor):
                                 scale = scale.numpy()
-                            zp = self.layer_config[layer_name]['zp']
+                            zp = module.zp
                             if isinstance(zp, torch.Tensor):
                                 zp = zp.numpy()
                             data = ggml_quant(data, data_qtype.name.lower(), scale,

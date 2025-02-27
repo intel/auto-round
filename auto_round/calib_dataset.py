@@ -150,7 +150,7 @@ def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup"
 
 
 @register_dataset("BAAI/CCI3-HQ")
-def get_CCI3_HQ_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_chat_template=False):
+def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_chat_template=False):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -235,18 +235,19 @@ def get_new_chinese_title_dataset(
         seed=42,
         apply_chat_template=False
 ):
-    """Returns a dataloader for the specified dataset and split.
+    """
+    Returns a tokenized dataset for the specified parameters.
 
     Args:
-    tokenizer: The tokenizer to be used for tokenization.
-    seqlen: The maximum sequence length.
-    data_name: The name of the dataset.
-    split: The data split to be used (e.g., "train", "test").
-    seed: The random seed for shuffling the dataset.
-    apply_chat_template: Whether to apply chat template in tokenization.
+        tokenizer: The tokenizer to use.
+        seqlen: Maximum sequence length.
+        dataset_name: Name of the dataset to load.
+        split: Which split of the dataset to use.
+        seed: Random seed for shuffling.
+        apply_template: Whether to apply a template to the data.
 
     Returns:
-    A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
+        A tokenized and shuffled dataset.
     """
 
     def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template):
@@ -639,3 +640,4 @@ def get_dataloader(
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
+

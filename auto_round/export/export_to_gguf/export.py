@@ -60,19 +60,25 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
             model_name = model_name[-2]
         else:
             model_name = model_name[-1]
-        
+
         output_type = backend.split(":")[-1]
         output_type = FTYPE_MAP.get(output_type.lower())
 
-        layer_config = kwargs.get("layer_config")
 
-        model_instance = model_class(model, dir_model=tmp_work_dir, ftype=output_type, fname_out=Path(output_dir),
-                                     layer_config=layer_config, is_big_endian=False, model_name=model_name,
-                                     split_max_tensors=False, split_max_size=0, dry_run=False,
-                                     small_first_shard=False)
+        model_instance = model_class(
+            model,
+            dir_model=tmp_work_dir,
+            ftype=output_type,
+            fname_out=Path(output_dir),
+            is_big_endian=False,
+            model_name=model_name,
+            split_max_tensors=False,
+            split_max_size=0,
+            dry_run=False,
+            small_first_shard=False)
         model_instance.write()
         logger.info(f"Model successfully exported to {model_instance.fname_out}")
-    
+
     shutil.rmtree(tmp_work_dir, ignore_errors=True)
 
     return model
