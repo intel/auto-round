@@ -99,7 +99,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
 
         scale = layer.scale
         zp = layer.zp
-        QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
+        QuantLinear = dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym)
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features

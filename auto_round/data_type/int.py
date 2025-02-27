@@ -74,9 +74,9 @@ def double_quant_tensor(tensor, bits, q_scale_thresh):
 
 
 @register_dtype("int_asym_dq")
-def quant_tensor_asym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-                      tensor_min=None, tensor_max=None, q_scale_thresh=1e-5, super_group_size=16, super_bits=4,
-                      **kwargs):
+def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
+                         tensor_min=None, tensor_max=None, q_scale_thresh=1e-5, super_group_size=32, super_bits=6,
+                         **kwargs):
     """Quantize and de-quantize tensor asymmetrically.
 
     Args:
