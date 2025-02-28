@@ -99,3 +99,12 @@ def q4_1_quant_block(blocks: np.array, scale = None, zp = None):
     d = d.astype(np.float16).view(np.uint8)
     m = min.astype(np.float16).view(np.uint8)
     return np.concatenate([d, m, qs], axis=-1)
+
+
+@register_block("q4_k")
+def q4_k_quant_block(blocks: np.array, scale = None, zp = None):
+    if scale is not None:
+        pass
+    else:
+        
+        

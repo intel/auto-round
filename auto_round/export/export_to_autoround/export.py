@@ -21,14 +21,12 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round.export.register import register_format
 from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
 from auto_round.utils import get_autogptq_packing_qlinear
-
 
 def check_neq_config(config, data_type, bits, group_size, sym):
     """
@@ -52,7 +50,7 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
 
 
-def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
+def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym):
     """
     Dynamically imports and returns the appropriate QuantLinear class based on the specified backend and parameters.
 
@@ -95,13 +93,13 @@ def pack_layer(name, model, layer_config, backend, pbar):
         bits = config["bits"]
         group_size = config["group_size"]
         sym = config["sym"]
+
         layer = get_module(model, name)
         if hasattr(layer, "orig_layer"):
             layer = layer.orig_layer
-
         device = layer.weight.device
 
-        ##QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
+        # QuantLinear = dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym)
         from auto_round.export.export_to_autoround.qlinear_triton_gptq import QuantLinear
 
         if isinstance(layer, nn.Linear):
@@ -124,20 +122,19 @@ def pack_layer(name, model, layer_config, backend, pbar):
             qlayer = new_layer
             scale = layer_config[name]["scale"]
             zero = layer_config[name]["zp"]
-            act_scale = layer.act_scale
             # so far can only pack layer on CPU
             qlayer.to("cpu")
             ##force to float32 to be compatible with torch 2.0
             layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
             sig = inspect.signature(qlayer.pack)
             param_count = len(sig.parameters)
+            act_scale = layer.act_scale
             if param_count == 2:
-                qlayer.pack(layer, scale, act_scale)
+                qlayer.pack(layer, scale, act_scale, layer.w_bf16_to_fp8_scale)
             else:
-                qlayer.pack(layer, scale, zero, act_scale, None)
+                qlayer.pack(layer, scale, zero, act_scale, layer.w_bf16_to_fp8_scale, None)
             qlayer.to(device)
         else:
-            from ..export_to_awq.utils import clear_memory
             scale, zp = layer_config[name]["scale"].to(torch.float32), layer_config[name]["zp"].to(torch.float32)
             scale = scale.t().contiguous()
             zp = zp.t().contiguous()
@@ -153,7 +150,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
             )
             qlayer.to(device)
             set_module(model, name, qlayer)
-            clear_memory()
+
         pbar.update(1)
 
 
@@ -191,7 +188,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         logger.info(f"AutoRound format does not support {backend}, try to pack each layer with AutoGPTQ")
         backend = backend.replace("auto_round", "auto_gptq")
 
-    model = kwargs["model"].to(torch.bfloat16)
+    model = kwargs["model"]
+    model = model.to(torch.bfloat16)
     to_quant_block_names = kwargs["to_quant_block_names"]
     quant_block_list = kwargs.get("quant_block_list", None)
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
@@ -230,8 +228,10 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    max_workers = 1
+    if not torch.cuda.is_available():
+        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
                 pack_layer(name, model, layer_config, backend, pbar)
@@ -252,12 +252,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     if processor is not None:
         processor.save_pretrained(output_dir)
-    save(model, output_dir, safe_serialization=safe_serialization)
+    dtype = torch.float16  ##force dtype to fp16
+    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
 
 
-def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
+def save(model: nn.Module, save_dir: str, max_shard_size: str = "50GB", safe_serialization: bool = True, dtype=None):
     """Save model state dict and configs.
 
     Args:
@@ -279,7 +280,15 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     """
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    config_path = os.path.join(save_dir, "config.json")
+    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
+        with open(config_path, 'r') as file:
+            data = json.load(file)
+        data["torch_dtype"] = str(dtype).split(".")[-1]
+        with open(config_path, 'w') as file:
+            json.dump(data, file, indent=2)
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

@@ -341,7 +341,7 @@ def tune(args):
     import transformers
  
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-    torch.use_deterministic_algorithms(True, warn_only=True)
+    # torch.use_deterministic_algorithms(True, warn_only=True)
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
     from lm_eval.utils import make_table  # pylint: disable=E0401
 
@@ -349,10 +349,10 @@ def tune(args):
     from auto_round.eval.evaluation import simple_evaluate
     from auto_round.utils import detect_device, get_library_version, detect_device_count
     from auto_round.utils import logger
-    if not args.disable_deterministic_algorithms:
-        torch.use_deterministic_algorithms(True, warn_only=True)
-        print("'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "\
-            "and can be turned off by setting the '--disable_deterministic_algorithms' parameter.")
+    # if not args.disable_deterministic_algorithms:
+    #     torch.use_deterministic_algorithms(True, warn_only=True)
+    #     print("'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "\
+    #         "and can be turned off by setting the '--disable_deterministic_algorithms' parameter.")
 
 
     model_name = args.model
@@ -393,6 +393,7 @@ def tune(args):
             torch_dtype=torch_dtype,
             trust_remote_code=not args.disable_trust_remote_code)
     else:
+        use_auto_mapping = False
         model = model_cls.from_pretrained(
             model_name,
             low_cpu_mem_usage=True,
@@ -480,6 +481,9 @@ def tune(args):
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
+    # import json
+    # args.device_map = json.load(open('device_map.json', 'r'))
+    # print(args.device_map)
 
     autoround = round(
         model,
@@ -510,11 +514,15 @@ def tune(args):
         enable_norm_bias_tuning=args.enable_norm_bias_tuning,
         not_use_best_mse=args.not_use_best_mse,
         to_quant_block_names=args.to_quant_block_names,
-        enable_torch_compile=args.enable_torch_compile,
+        enable_torch_compile=False,
         act_data_type=args.act_data_type,
         act_dynamic=not args.disable_act_dynamic,
         device_map=args.device_map)
     model, _ = autoround.quantize()
+
+    # import pickle
+    # pickle.dump(autoround.layer_config, open("/data5/hengguo/layer_config_r1_w4afp8.pickle", 'wb'))
+
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
@@ -567,6 +575,7 @@ def tune(args):
             if args.eval_bs is None or args.eval_bs == "auto":
                 args.eval_bs = 16
             from auto_round.eval.evaluation import simple_evaluate_user_model
+            user_model = user_model.to("cuda")
             res = simple_evaluate_user_model(
                 user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
         else:
