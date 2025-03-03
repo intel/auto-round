@@ -263,9 +263,6 @@ class AutoRound(object):
         self.set_device_map_in_blocks(self.device_map)
 
         self.set_layerwise_config(self.layer_config)  ##better place in the end
-        
-        # For W4AFP8, quanitze weight from bf16 to fp8 with per-channel granularity
-        self.w4a8_per_channel = self.data_type == "fp8_gaudi3_to_int_sym_pc"
 
     def set_device_map_in_blocks(self, device_map):
         """Sets the device map for specific blocks in the model.
@@ -1077,7 +1074,7 @@ class AutoRound(object):
                 hook_handles.append(hook)
         return hook_handles
 
-    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu"), **kwargs):
+    def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
 
         Args:
@@ -1127,7 +1124,7 @@ class AutoRound(object):
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
-            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device, **kwargs)
+            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device)
 
         round_params = []
         minmax_params = []
@@ -1138,6 +1135,7 @@ class AutoRound(object):
                         minmax_params.append(m.params[key])
                     else:
                         round_params.append(m.params[key])
+
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
@@ -1342,7 +1340,6 @@ class AutoRound(object):
                 input_others,
                 q_input=q_input,
                 device=device,
-                w4a8_per_channel=self.w4a8_per_channel,
             )
             pbar.update(1)
 

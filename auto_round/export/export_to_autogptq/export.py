@@ -49,7 +49,6 @@ import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
-from auto_round.utils import get_autogptq_packing_qlinear
 
 BLOCK_PATTERNS = [  ## copy from transformers optimum
     "transformer.h",
@@ -79,7 +78,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
         device = layer.weight.device
 
         ##QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
-        from auto_round.export.export_to_autoround.qlinear_triton_gptq import QuantLinear
+        from auto_round.export.export_to_autogptq.qlinear_triton_act import QuantLinear
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features

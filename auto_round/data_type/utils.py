@@ -14,7 +14,8 @@
 
 import torch
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
-
+from functools import lru_cache
+from auto_round.utils import logger
 
 def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
     """Reshapes and pads the tensor to ensure that it can be quantized in groups of `group_size`.
@@ -154,4 +155,52 @@ def floor_ste(x: torch.Tensor):
         torch.Tensor
     """
     return (x.floor() - x).detach() + x
+
+
+def float8_e4m3fn_ste(x: torch.Tensor):
+    """Straight-Through Estimator (STE) for float8.
+
+    Applies a quantization and dequantization step with float8 precision while maintaining
+    gradient flow using a straight-through estimator.
+
+    Args:
+        x (torch.Tensor): Input tensor.
+
+    Returns:
+        torch.Tensor: Quantized and dequantized tensor using float8 format.
+    """
+    fp8 = (x.to(torch.float8_e4m3fn).to(x.dtype) - x).detach() + x
+
+    return fp8
+
+
+def float8_e4m3fn_hpu_ste(x: torch.Tensor):
+    """Straight-Through Estimator (STE) for float8.
+
+    Applies a quantization and dequantization step with float8 precision while maintaining
+    gradient flow using a straight-through estimator.
+
+    Args:
+        x (torch.Tensor): Input tensor.
+
+    Returns:
+        torch.Tensor: Quantized and dequantized tensor using float8 format.
+    """
+    fp8 = ((torch.ops.hpu.cast_to_fp8_v2(x, 1.0, False, False, torch.float8_e4m3fn)[0]).to(x.dtype) - x).detach() + x
+
+    return fp8
+
+
+@lru_cache(None)
+def get_gaudi_fp8_ste_func():
+    from auto_round.utils import is_hpu_supported
+
+    if is_hpu_supported():
+        fn = float8_e4m3fn_hpu_ste
+        logger.warning_once("Using HPU STE for FP8")
+    else:
+        fn = float8_e4m3fn_ste
+        logger.warning_once("Using CUDA/CPU STE for FP8")
+    return fn
+
 
