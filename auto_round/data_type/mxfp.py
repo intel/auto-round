@@ -125,7 +125,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
         shared_exp = shared_exp.to(torch.float32)
     tensor = tensor / (2 ** shared_exp)
     tensor = tensor + v
-    tensor = quant_element(tensor, ebits, mbits, max_norm, v, mantissa_rounding)
+    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
     tensor = tensor * (2 ** shared_exp)
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
