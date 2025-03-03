@@ -18,6 +18,30 @@ shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama") # Limitations on batch_size
 skippable_cache_keys = ("past_key_value",)
 
+SUPPORT_ONLY_TEXT_MODELS = [
+    "phi3_v",
+    "cogvlm2",
+    "llava",
+    "qwen2_vl",
+    "deepseek_vl_v2",
+    "chatglm",
+    "idefics3"
+]
+
+def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
+    model.forward = model.language.forward
+    block_names = []
+    if quant_vision:
+        block_names.append([f"vision.blocks.{i}" for i in range(len(model.vision.blocks))])
+        block_names.append([f"projector.layers.{i}" for i in range(len(model.projector.layers))])
+    block_names.append([f"language.model.layers.{i}" for i in range(len(model.language.model.layers))])
+    return block_names
+
+SPECIAL_MULTIMODAL_BLOCK = {
+    "deepseek_vl_v2": _get_deepseek_vl2_multimodal_block
+}
+
+
 def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
 

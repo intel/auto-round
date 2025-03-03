@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 # MIT License
 #
 # Copyright (c) 2023 潘其威(William)
@@ -36,6 +35,7 @@
 # SOFTWARE.
 import torch
 
+import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.utils import check_to_quantized, get_block_names, \
     get_module, logger, set_module
 import copy
@@ -100,21 +100,25 @@ def pack_layer(name, model, layer_config, backend, pbar):
         new_layer.device = device
         set_module(model, name, new_layer)
         qlayer = new_layer
-        scale = layer_config[name]["scale"]
-        zero = layer_config[name]["zp"]
+        scale = layer.scale
+        zero = layer.zp
         # so far can only pack layer on CPU
         qlayer.to("cpu")
         ##force to float32 to be compatible with torch 2.0
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
+        if sym and isinstance(new_layer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
+            layer, scale = layer.to("cpu"), scale.to("cpu")
+            zero = 2 ** (bits - 1)
+        else:
+            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
         sig = inspect.signature(qlayer.pack)
         param_count = len(sig.parameters)
+        act_scale = layer.act_scale
         if param_count == 2:
-            qlayer.pack(layer, scale, layer.act_scale, layer.w_bf16_to_fp8_scale)
+            qlayer.pack(layer, scale, act_scale, layer.w_bf16_to_fp8_scale)
         else:
-            qlayer.pack(layer, scale, zero, layer.act_scale, layer.w_bf16_to_fp8_scale, None)
+            qlayer.pack(layer, scale, zero, act_scale, layer.w_bf16_to_fp8_scale, None)
         qlayer.to(device)
         pbar.update(1)
-
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
                                **kwargs):
@@ -125,7 +129,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     to_quant_block_names = kwargs["to_quant_block_names"]
-    quant_block_list = kwargs.get("quant_block_list", None)
+    quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
     logger.info("Saving quantized model to autogptq format, this may take a while...")
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
@@ -135,19 +139,13 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         processor.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
     quantization_config = kwargs["serialization_dict"]
-    if bool(quant_block_list):
-        all_blocks = quant_block_list
-        flattened_list = [item for sublist in all_blocks for item in sublist]
-        common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
-        if common_prefix not in BLOCK_PATTERNS:
-            logger.error(f"auto-gptq format may not support loading this quantized model")
-            quantization_config['block_name_to_quantize'] = common_prefix
-    else:
-        all_blocks = get_block_names(model)
-        flattened_list = [item for sublist in all_blocks for item in sublist]
-        common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
-        if common_prefix not in BLOCK_PATTERNS:
-            quantization_config['block_name_to_quantize'] = common_prefix
+    all_blocks = quant_block_list
+    flattened_list = [item for sublist in all_blocks for item in sublist]
+    common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
+    if common_prefix not in BLOCK_PATTERNS:
+        logger.error(f"auto-gptq format may not support loading this quantized model")
+        quantization_config['block_name_to_quantize'] = common_prefix
+        quantization_config.pop("to_quant_block_names", None)
 
     all_to_quantized = True
     modules_in_block_to_quantize = []
@@ -174,7 +172,11 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
 
     layer_config = kwargs["layer_config"]
     names = list(layer_config.keys())
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    max_workers = 1
+    if not torch.cuda.is_available():
+        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
                 pack_layer(name, model, layer_config, backend, pbar)
@@ -193,11 +195,15 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
-    save(model, output_dir, safe_serialization=safe_serialization)
+
+    dtype = torch.float16  ##force dtype to fp16
+    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
     return model
 
 
-def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "50GB", safe_serialization: bool = True):
+
+def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True,
+         dtype=None):
     """Save model state dict and configs.
 
     Args:
@@ -220,6 +226,14 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "50GB", sa
     ##max_shard_size = "10000GB"  ## API of auto-gptq with marlin does not support shard size
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    config_path = os.path.join(save_dir, "config.json")
+    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
+        with open(config_path, 'r') as file:
+            data = json.load(file)
+        data["torch_dtype"] = str(dtype).split(".")[-1]
+        with open(config_path, 'w') as file:
+            json.dump(data, file, indent=2)
+
     config_file = "quantize_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:

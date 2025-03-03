@@ -31,6 +31,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.auto_factory import _BaseAutoModelClass
 
 from .load import load
+from auto_round.utils import detect_device
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
 logger = logging.getLogger("low_cpu_mem_tools")
@@ -77,7 +78,7 @@ def get_named_children(model, pre=[]):
     return module_list
 
 
-def dowload_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
+def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
     """Download hugging face model from hf hub."""
     from huggingface_hub.constants import DEFAULT_REVISION, HUGGINGFACE_HUB_CACHE
     from huggingface_hub.file_download import REGEX_COMMIT_HASH, repo_folder_name
@@ -115,7 +116,7 @@ def load_empty_model(pretrained_model_name_or_path, cls=AutoModelForCausalLM, sa
     if is_local:  # pragma: no cover
         path = pretrained_model_name_or_path
     else:
-        path = dowload_hf_model(pretrained_model_name_or_path)
+        path = download_hf_model(pretrained_model_name_or_path)
     torch_dtype = kwargs.pop("torch_dtype", None)
     if cls.__base__ == _BaseAutoModelClass:
         config = AutoConfig.from_pretrained(path, **kwargs)
@@ -257,7 +258,7 @@ def _get_path(pretrained_model_name_or_path):
     if is_local:  # pragma: no cover
         path = pretrained_model_name_or_path
     else:
-        path = dowload_hf_model(pretrained_model_name_or_path)
+        path = download_hf_model(pretrained_model_name_or_path)
     return path
 
 
@@ -433,13 +434,14 @@ def convert_model(empty_model, saved_path=LWQ_WORKSPACE):
 def load_model_with_hooks(
         pretrained_model_name_or_path,
         cls=AutoModelForCausalLM,
-        device="cpu",
+        device=None,
         clean_weight=True,
         saved_path=None, 
         **kwargs):
     if saved_path is None:
         logger.warning(f"saved_path is not set, use default working space: {LWQ_WORKSPACE}")
         saved_path = LWQ_WORKSPACE
+    device = detect_device(device)
     empty_model = load_empty_model(pretrained_model_name_or_path, cls=cls, saved_path=saved_path, **kwargs)
     register_weight_hooks(empty_model, empty_model.path, device, clean_weight, saved_path)
     return empty_model
@@ -469,3 +471,4 @@ def layer_wise_load(path):
                 d = pickle.loads(d)
                 state_dict.update(d)
     return state_dict
+

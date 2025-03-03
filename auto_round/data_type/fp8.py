@@ -14,24 +14,20 @@
 from functools import lru_cache
 import torch
 from auto_round.utils import logger
-from auto_round.config import global_config
-
-STANDARD_FP8E4M3FN_MAX = torch.finfo(torch.float8_e4m3fn).max
-
+from auto_round.utils import warning_once
 from auto_round.data_type.register import register_dtype
-
-import torch
 
 
 @lru_cache(None)
-def get_gaudi2_fp8_ste_func():
+def get_gaudi_fp8_ste_func():
     from auto_round.utils import is_hpu_supported
+
     if is_hpu_supported():
         fn = float8_e4m3fn_hpu_ste
-        logger.warning("Using HPU STE for FP8")
+        logger.warning_once("Using HPU STE for FP8")
     else:
         fn = float8_e4m3fn_ste
-        logger.warning("Using CUDA/CPU STE for FP8")
+        logger.warning_once("Using CUDA/CPU STE for FP8")
     return fn
 
 
@@ -140,7 +136,7 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)
-    if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
+    if tensor.dtype == torch.float16: ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
     scale = scale.unsqueeze(dim=-1)
     fp8_res = (tensor / scale)
@@ -152,9 +148,8 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
 
 
 @register_dtype("fp8_to_int_sym")
-def progressive_quant_fp8_int4_bas(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0,
-                                   q_scale_thresh=1e-5,
-                                   weight_fp8_max_scale=1.0, fp8_func=float8_e4m3fn_ste, **kwargs):
+def progressive_quant_fp8_int4_bas(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5,
+                               weight_fp8_max_scale=1.0, fp8_func=float8_e4m3fn_ste,**kwargs):
     """Two-stage quantization: quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
 
     This method first quantizes the input tensor into float8 format and then performs
@@ -202,10 +197,8 @@ def progressive_quant_fp8_int4_bas(tensor, bits=4, group_size=-1, v=0, min_scale
     return qdq_tensor, scale_fp8_to_int4 * scale_bf16_to_fp8, None
 
 
-##ugly code, need to refine later
-
-@register_dtype("fp8_gaudi2_sym")
-def quant_fp8_sym_gaudi(tensor, max_scale=1.0, tensor_max=None, **kwargs):
+@register_dtype("fp8_gaudi3_sym")
+def quant_fp8_sym_gaudi3(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     """Symmetric quantization using float8 format.
 
     Allows both dynamic per-token scaling and tensor-wide quantization depending on input.
@@ -223,7 +216,7 @@ def quant_fp8_sym_gaudi(tensor, max_scale=1.0, tensor_max=None, **kwargs):
             - Placeholder for zp (None).
     """
     orig_shape = tensor.shape
-    fp8_max = STANDARD_FP8E4M3FN_MAX * global_config.FP8_INPUT_BACKOFF
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
     orig_dtype = tensor.dtype
 
     if tensor_max is None:  ##dynamic per-te
@@ -235,21 +228,30 @@ def quant_fp8_sym_gaudi(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     scale = max_tensor.to(torch.float32) / fp8_max
     min_scaling_factor = float(1.0 / (fp8_max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)
-    if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
+    if tensor.dtype == torch.float16: ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
     scale = scale.unsqueeze(dim=-1)
     fp8_res = (tensor / scale)
     fp8_res = torch.clip(fp8_res, -fp8_max, fp8_max)
-    float8_e4m3fn_ste_gaudi2 = get_gaudi2_fp8_ste_func()
-    fp8_res = float8_e4m3fn_ste_gaudi2(fp8_res)
+    float8_e4m3fn_ste_gaudi = get_gaudi_fp8_ste_func()
+    fp8_res = float8_e4m3fn_ste_gaudi(fp8_res)
     qdq_res = fp8_res * scale
     qdq_res = qdq_res.to(orig_dtype).reshape(orig_shape)
     return qdq_res, scale, None
 
 
-@register_dtype("fp8_gaudi2_to_int_sym")
-def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5,
-                               weight_fp8_max_scale=1.0, **kwargs):
+@register_dtype("fp8_gaudi3_to_int_sym")
+def progressive_quant_fp8_int4_gaudi3(
+    tensor,
+    bits=4,
+    group_size=-1,
+    v=0,
+    min_scale=1.0,
+    max_scale=1.0,
+    q_scale_thresh=1e-5,
+    weight_fp8_max_scale=1.0,
+    **kwargs
+):
     """Two-stage quantization: quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
 
     This method first quantizes the input tensor into float8 format and then performs
@@ -272,121 +274,116 @@ def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
             - Combined scaling factor (torch.Tensor).
             - Placeholder for zp (None).
     """
-    fp8_max = STANDARD_FP8E4M3FN_MAX * global_config.FP8_WEIGHT_BACKOFF
-    tensor_max = torch.max(torch.abs(tensor)).to(torch.float32) * weight_fp8_max_scale  ## better train a ratio
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
+    tensor_max = (
+        torch.max(torch.abs(tensor)).to(torch.float32) * weight_fp8_max_scale
+    )  ## better train a ratio
     scale = tensor_max.to(torch.float32) / fp8_max
     min_scaling_factor = 1.0 / (fp8_max * 512.0)  ##copy from vllm
     scale_bf16_to_fp8 = torch.clip(scale, min=min_scaling_factor)
     fp8_res = tensor / scale_bf16_to_fp8
     fp8_res = torch.clip(fp8_res, -fp8_max, fp8_max)
-    float8_e4m3fn_ste_gaudi2 = get_gaudi2_fp8_ste_func()
-    fp8_res = float8_e4m3fn_ste_gaudi2(fp8_res)
+    float8_e4m3fn_ste_gaudi = get_gaudi_fp8_ste_func()
+    fp8_res = float8_e4m3fn_ste_gaudi(fp8_res)
 
-    ##convert to bf16
+    # convert to bf16
     fp8_res_using_16bit = fp8_res.to(tensor.dtype)
-    ##convert to int4
+    # convert to int4
     from auto_round.data_type.int import quant_tensor_sym
-    qdq_int4_tensor, scale_fp8_to_int4, zp_fp8_to_int4 = quant_tensor_sym(fp8_res_using_16bit, bits=bits,
-                                                                          group_size=group_size, v=v,
-                                                                          min_scale=min_scale,
-                                                                          max_scale=max_scale,
-                                                                          scale_dtype=torch.bfloat16,
-                                                                          q_scale_thresh=q_scale_thresh)
+
+    qdq_int4_tensor, scale_fp8_to_int4, zp_fp8_to_int4 = quant_tensor_sym(
+        fp8_res_using_16bit,
+        bits=bits,
+        group_size=group_size,
+        v=v,
+        min_scale=min_scale,
+        max_scale=max_scale,
+        scale_dtype=torch.bfloat16,
+        q_scale_thresh=q_scale_thresh,
+    )
     qdq_tensor = qdq_int4_tensor * scale_bf16_to_fp8
+    scale_bf16_to_int4 = scale_fp8_to_int4 * scale_bf16_to_fp8
+    return qdq_tensor, (scale_bf16_to_int4, scale_bf16_to_fp8), zp_fp8_to_int4
 
-    return qdq_tensor, (scale_fp8_to_int4 * scale_bf16_to_fp8, scale_bf16_to_fp8), zp_fp8_to_int4
 
-
-@register_dtype("fp8_gaudi2_to_int_sym_pc")
-def progressive_quant_fp8_int4_per_channel(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0,
-                                           q_scale_thresh=1e-5,
-                                           weight_fp8_max_scale=1.0, **kwargs):
-    """
-    Per-Channle quantization
-
-    Two-stage quantization: quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
-
-    This method first quantizes the input tensor into float8 format and then performs
-    a secondary quantization to int4 with grouping.
-
-    Args:
-        tensor (torch.Tensor): Input tensor to quantize.
-        bits (int, optional): Bit precision for secondary quantization. Defaults to 4.
-        group_size (int, optional): Group size for int4 quantization. Defaults to -1 (no grouping).
-        v (float, optional): Optional parameter for variance tuning. Defaults to 0.
-        min_scale (float, optional): Minimum scaling factor for int4 quantization. Defaults to 1.0.
-        max_scale (float, optional): Maximum scaling factor for int4 quantization. Defaults to 1.0.
-        q_scale_thresh (float, optional): Threshold for scaling. Defaults to 1e-5.
-        weight_fp8_max_scale (float, optional): Maximum scaling factor for float8 quantization. Defaults to 1.0.
-        **kwargs: Additional arguments for compatibility.
-
-    Returns:
-        tuple:
-            - Quantized and dequantized tensor (torch.Tensor).
-            - Combined scaling factor (torch.Tensor).
-            - Placeholder for zp (None).
-    """
+@register_dtype("fp8_gaudi3_to_int_sym_pc")
+def progressive_quant_fp8_int4_per_channel(
+    tensor,
+    bits=4,
+    group_size=-1,
+    v=0,
+    min_scale=1.0,
+    max_scale=1.0,
+    q_scale_thresh=1e-5,
+    weight_fp8_max_scale=1.0,
+    **kwargs
+):
+    """The per-channel version of progressive quantization from float8 to int4."""
     # tensor: [out_feats, in_feats]
     # scale_bf16_to_fp8: [out_feats, 1]
     out_feats, in_feats = tensor.shape
-    fp8_max = STANDARD_FP8E4M3FN_MAX * global_config.FP8_WEIGHT_BACKOFF
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
     dim = 1
-    tensor_max = torch.max(torch.abs(tensor), dim=dim, keepdim=True)[0].to(
-        torch.float32) * weight_fp8_max_scale  ## better train a ratio
+    tensor_max = (
+        torch.max(torch.abs(tensor), dim=dim, keepdim=True)[0].to(torch.float32)
+        * weight_fp8_max_scale
+    )  ## better train a ratio
     scale = tensor_max.to(torch.float32) / fp8_max
     min_scaling_factor = 1.0 / (fp8_max * 512.0)  ##copy from vllm
     scale_bf16_to_fp8 = torch.clip(scale, min=min_scaling_factor)
     fp8_res = tensor / scale_bf16_to_fp8
     fp8_res = torch.clip(fp8_res, -fp8_max, fp8_max)
-    float8_e4m3fn_ste_gaudi2 = get_gaudi2_fp8_ste_func()
-    fp8_res = float8_e4m3fn_ste_gaudi2(fp8_res)
+    float8_e4m3fn_ste_gaudi = get_gaudi_fp8_ste_func()
+    fp8_res = float8_e4m3fn_ste_gaudi(fp8_res)
 
     ##convert to bf16
     fp8_res_using_16bit = fp8_res.to(tensor.dtype)
     ##convert to int4
     from auto_round.data_type.int import quant_tensor_sym
-    qdq_int4_tensor, scale_fp8_to_int4, zp_fp8_to_int4 = quant_tensor_sym(fp8_res_using_16bit, bits=bits,
-                                                                          group_size=group_size, v=v,
-                                                                          min_scale=min_scale,
-                                                                          max_scale=max_scale,
-                                                                          scale_dtype=torch.bfloat16,
-                                                                          q_scale_thresh=q_scale_thresh)
+
+    qdq_int4_tensor, scale_fp8_to_int4, zp_fp8_to_int4 = quant_tensor_sym(
+        fp8_res_using_16bit,
+        bits=bits,
+        group_size=group_size,
+        v=v,
+        min_scale=min_scale,
+        max_scale=max_scale,
+        scale_dtype=torch.bfloat16,
+        q_scale_thresh=q_scale_thresh,
+    )
     qdq_tensor = qdq_int4_tensor * scale_bf16_to_fp8
     scale_fp8_to_int4_with_group = scale_fp8_to_int4
-    scale_fp8_to_int4_with_group_reshape_back = scale_fp8_to_int4_with_group.reshape(out_feats, -1)
+    scale_fp8_to_int4_with_group_reshape_back = scale_fp8_to_int4_with_group.reshape(
+        out_feats, -1
+    )
     scale_bf16_to_int4 = scale_fp8_to_int4_with_group_reshape_back * scale_bf16_to_fp8
     scale_bf16_to_int4_with_group = scale_bf16_to_int4.reshape(-1, 1)
-    return qdq_tensor, (scale_bf16_to_int4_with_group, scale_bf16_to_fp8), zp_fp8_to_int4
-    # return qdq_tensor, (scale_fp8_to_int4 * scale_bf16_to_fp8, scale_bf16_to_fp8), zp_fp8_to_int4
+    return (
+        qdq_tensor,
+        (scale_bf16_to_int4_with_group, scale_bf16_to_fp8),
+        zp_fp8_to_int4,
+    )
 
 
-@register_dtype("fp8_gaudi2_to_int_sym_v2")
-def progressive_quant_fp8_int4_v2(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5,
-                                  weight_fp8_max_scale=1.0, **kwargs):
-    """Two-stage quantization: quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
+@register_dtype("fp8_gaudi3_to_int_sym_v2")
+def progressive_quant_fp8_int4_v2(
+    tensor,
+    bits=4,
+    group_size=-1,
+    v=0,
+    min_scale=1.0,
+    max_scale=1.0,
+    q_scale_thresh=1e-5,
+    weight_fp8_max_scale=1.0,
+    **kwargs
+):
+    """The variant of progressive quantization from float8 to int4.
 
-    This method first quantizes the input tensor into float8 format and then performs
-    a secondary quantization to int4 with grouping.
-
-    Args:
-        tensor (torch.Tensor): Input tensor to quantize.
-        bits (int, optional): Bit precision for secondary quantization. Defaults to 4.
-        group_size (int, optional): Group size for int4 quantization. Defaults to -1 (no grouping).
-        v (float, optional): Optional parameter for variance tuning. Defaults to 0.
-        min_scale (float, optional): Minimum scaling factor for int4 quantization. Defaults to 1.0.
-        max_scale (float, optional): Maximum scaling factor for int4 quantization. Defaults to 1.0.
-        q_scale_thresh (float, optional): Threshold for scaling. Defaults to 1e-5.
-        weight_fp8_max_scale (float, optional): Maximum scaling factor for float8 quantization. Defaults to 1.0.
-        **kwargs: Additional arguments for compatibility.
-
-    Returns:
-        tuple:
-            - Quantized and dequantized tensor (torch.Tensor).
-            - Combined scaling factor (torch.Tensor).
-            - Placeholder for zp (None).
+    The variant quantizes the tensor to int4 first and then quantizes the qdq tensor to fp8.
     """
-    # convert to int4
+    # convert to int4 first
     from auto_round.data_type.int import quant_tensor_sym
+
     qdq_int4_tensor, scale_bf16_to_int4, zp_fp8_to_int4 = quant_tensor_sym(
         tensor,
         bits=bits,
@@ -399,20 +396,21 @@ def progressive_quant_fp8_int4_v2(tensor, bits=4, group_size=-1, v=0, min_scale=
     )
     # FIXME(Yi): some fuse error here
     torch._dynamo.graph_break()
-    fp8_max = STANDARD_FP8E4M3FN_MAX * global_config.FP8_WEIGHT_BACKOFF
-    tensor_max = torch.max(torch.abs(qdq_int4_tensor)).to(torch.float32) * weight_fp8_max_scale  ## better train a ratio
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
+    tensor_max = (
+        torch.max(torch.abs(qdq_int4_tensor)).to(torch.float32) * weight_fp8_max_scale
+    )  ## better train a ratio
     scale = tensor_max.to(torch.float32) / fp8_max
     min_scaling_factor = 1.0 / (fp8_max * 512.0)  ##copy from vllm
     scale_bf16_to_fp8 = torch.clip(scale, min=min_scaling_factor)
     fp8_res = qdq_int4_tensor / scale_bf16_to_fp8
     fp8_res = torch.clip(fp8_res, -fp8_max, fp8_max)
-    float8_e4m3fn_ste_gaudi2 = get_gaudi2_fp8_ste_func()
-    fp8_res = float8_e4m3fn_ste_gaudi2(fp8_res)
+    float8_e4m3fn_ste_gaudi = get_gaudi_fp8_ste_func()
+    fp8_res = float8_e4m3fn_ste_gaudi(fp8_res)
 
-    ##convert to bf16
+    # convert to bf16
     fp8_res_using_16bit = fp8_res.to(tensor.dtype)
 
     qdq_tensor = fp8_res_using_16bit * scale_bf16_to_fp8
 
-    # return qdq_tensor, (scale_fp8_to_int4 * scale_bf16_to_fp8, scale_bf16_to_fp8), zp_fp8_to_int4
     return qdq_tensor, (scale_bf16_to_int4, scale_bf16_to_fp8), zp_fp8_to_int4

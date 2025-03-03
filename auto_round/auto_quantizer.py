@@ -41,7 +41,6 @@ from transformers.pytorch_utils import Conv1D
 from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
-
 from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
                               get_multimodal_block_names, find_matching_blocks)
 
@@ -191,6 +190,30 @@ class AutoHfQuantizer:
             warnings.warn(warning_msg)
 
         return quantization_config
+    
+    @staticmethod
+    def supports_quant_method(quantization_config_dict):
+        from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
+        AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto-round'] = AutoRoundConfig
+        AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto_round'] = AutoRoundConfig
+        quant_method = quantization_config_dict.get("quant_method", None)
+        if quantization_config_dict.get("load_in_8bit", False) or quantization_config_dict.get("load_in_4bit", False):
+            suffix = "_4bit" if quantization_config_dict.get("load_in_4bit", False) else "_8bit"
+            quant_method = QuantizationMethod.BITS_AND_BYTES + suffix
+        elif quant_method is None:
+            raise ValueError(
+                "The model's quantization config from the arguments has no `quant_method` attribute."\
+                "Make sure that the model has been correctly quantized"
+            )
+
+        if quant_method not in AUTO_QUANTIZATION_CONFIG_MAPPING.keys():
+            logger.warning(
+                f"Unknown quantization type, got {quant_method} - supported types are:"
+                f" {list(AUTO_QUANTIZER_MAPPING.keys())}. Hence, we will skip the quantization. "
+                "To remove the warning, you can delete the quantization_config attribute in config.json"
+            )
+            return False
+        return True
 
 
 class AutoRoundQuantizationMethod(str, Enum):
@@ -285,8 +308,6 @@ class AutoRoundQuantizer(HfQuantizer):
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:
             torch_dtype = torch.float16
-        elif torch_dtype != torch.float16 and not is_hpu_supported():
-            logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
         return torch_dtype
 
     def find_backend(self, target_backend: str):
@@ -363,7 +384,13 @@ class AutoRoundQuantizer(HfQuantizer):
         if backend is None:
             raise ValueError("Backend not found, please set it to 'auto' to have a try ")
 
-        return BackendInfos[backend].device[0]
+        device = BackendInfos[backend].device[0]
+        if "cuda" in device and torch.cuda.is_available():
+            return device
+        elif "hpu" in device and is_hpu_supported():
+            return device
+        else:
+            return "cpu"
 
     def convert_model(self, model: nn.Module):
         """Converts the given model to an AutoRound model by replacing its layers with quantized layers.
@@ -392,32 +419,37 @@ class AutoRoundQuantizer(HfQuantizer):
             quantization_config.target_backend = quantization_config.backend
 
         target_device = self.detect_device(quantization_config.target_backend, quantization_config.backend)
+
         self.target_device = target_device
 
         if hasattr(quantization_config, "backend"):  # pragma: no cover
             if ("hpu" == target_device or "cpu" == target_device) and model.dtype != torch.bfloat16:
                 logger.info(f"Change the dtype to `bfloat16` as {target_device.upper()} does not support float16")
                 model = model.to(torch.bfloat16)
-            else:
-                if model.dtype != torch.float16:
-                    logger.info(f"Change the dtype to `float16` for better performance")
-                    model = model.to(torch.float16)
 
         bits = quantization_config.bits
         group_size = quantization_config.group_size
         data_type = quantization_config.data_type if hasattr(quantization_config,
                                                              "data_type") else "int"  # pragma: no cover
         sym = quantization_config.sym
-        to_quant_block_names = quantization_config.to_quant_block_names if hasattr(quantization_config,
-                                                                                   "to_quant_block_names") else None
+        
         quant_block_list = quantization_config.quant_block_list if hasattr(quantization_config,
                                                                                    "quant_block_list") else None
-        if to_quant_block_names is None: # TODO check compatibility
-            all_blocks = get_block_names(model)
-        else:
-            all_blocks = get_multimodal_block_names(model, quant_vision=True)
+
         if quant_block_list is None:
-            quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
+            to_quant_block_names = quantization_config.to_quant_block_names if hasattr(quantization_config,
+                                                                                   "to_quant_block_names") else None
+            if to_quant_block_names is not None:
+                if isinstance(to_quant_block_names, (list, tuple)):
+                    quant_block_list = to_quant_block_names
+                else:
+                    quant_block_list = []
+                    for block in to_quant_block_names.split(','):
+                        quant_block_list.append([f'{block}.{i}' for i in range(len(get_module(model, block)))])
+            else:
+                all_blocks = get_block_names(model)
+                quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
+
         layer_names = get_layer_names_in_block(model, quant_block_list=quant_block_list)
 
         extra_config = {}
@@ -493,6 +525,8 @@ class AutoRoundQuantizer(HfQuantizer):
         target_backend = remove_device_str(target_backend, "hpu")
         target_backend = remove_device_str(target_backend, "cuda")
         orig_backend = self.find_backend(orig_backend)
+        if orig_backend is None:
+            orig_backend = "gptq:exllamav2"
 
         if target_backend == "":
             target_backend = orig_backend
@@ -538,20 +572,27 @@ class AutoRoundQuantizer(HfQuantizer):
                 )
             if "gptq" in layer_backend and "exllamav2" in layer_backend:
                 try:
-                    from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611
+                    from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
                 except:
                     logger.warning_once(
                         "For better inference performance, please install exllamav2 kernel "
                         "via `pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`")
 
             QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym)
-            # from auto_round_extension.cuda.qlinear_exllamav2_gptq import QuantLinear
-
 
             layer_device = get_device(layer)
 
             bias = layer.bias is not None
-            if "awq" in layer_backend:
+            from auto_round_extension.qbits.qbits_awq import QuantLinear as QBitsAWQQuantLinear
+            if "awq" in layer_backend and isinstance(QuantLinear, QBitsAWQQuantLinear):
+                new_layer = QuantLinear.from_linear(  # pylint: disable=E1123
+                    layer,
+                    bits,
+                    group_size,
+                    init_only=True,
+                    has_zero_points=not sym
+                )
+            elif "awq" in layer_backend:
                 new_layer = QuantLinear.from_linear(  # pylint: disable=E1123
                     layer,
                     bits,
@@ -583,23 +624,18 @@ class AutoRoundQuantizer(HfQuantizer):
             set_module(module, layer_name, new_layer)
 
     def cpu_post_init(self, model):
-        dep_check = True
         message = "Repacking to CPU format"
+        from auto_round_extension.qbits import qbits_qlinear_classes, qbits_awq_classes
+        from auto_round_extension.ipex import ipex_qlinear_classes
+        cpu_layers = tuple(list(qbits_qlinear_classes) + list(ipex_qlinear_classes) + list(qbits_awq_classes))
         layers = []  ## ipex post_init  will add one more layer
         for n, m in model.named_modules():
-            layers.append((n, m))
-
+            if isinstance(m, cpu_layers):
+                layers.append((n, m))
         for n, layer in tqdm(layers, desc=message, total=len(layers),
                              leave=True):
-            from auto_round_extension.qbits import qbits_qlinear_classes
-            from auto_round_extension.ipex import ipex_qlinear_classes
-            if isinstance(layer, qbits_qlinear_classes):
-                if dep_check:
-                    layer.req_check()
-                layer.post_init()
-                dep_check = False
-            if isinstance(layer, ipex_qlinear_classes):
-                layer.post_init()
+            layer.post_init()
+
 
         return model
 

@@ -25,6 +25,7 @@ MXFP_FORMAT_CACHE = {
     "mx_fp8": (4, 5, 8, 448.0, 0.015625),
     "mx_fp8e4m3": (4, 5, 8, 448.0, 0.015625),
     "mx_fp6e3m2": (3, 4, 4, 28.0, 0.25),
+    "mx_fp6": (2, 5, 2, 7.5, 1.0),
     "mx_fp6e2m3": (2, 5, 2, 7.5, 1.0),
     "mx_fp4": (2, 3, 2, 6.0, 1.0),
     "mx_fp4e2m1": (2, 3, 2, 6.0, 1.0),
@@ -83,9 +84,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
         tensor = tensor.to(torch.float32)
         shared_exp = shared_exp.to(torch.float32)
     tensor = tensor / (2 ** shared_exp)
-    is_mx_fp4 = data_type == "mx_fp4" or ("mx_fp" in data_type and bits == 4)
-    multiply = 2 if is_mx_fp4 else 1  ## 2 is a tricky setting
-    tensor = tensor + v * multiply
+    tensor = tensor + v
     if ebits != 0:
         private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
 

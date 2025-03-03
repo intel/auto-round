@@ -57,14 +57,7 @@ class WrapperLinear(torch.nn.Module):
         device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
     """
 
-    def __init__(
-        self,
-        orig_layer,
-        enable_minmax_tuning=True,
-        enable_norm_bias_tuning=False,
-        device="cpu",
-        _inner_layer_name=None,
-    ):
+    def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu', **kwargs):
         """Initializes the WrapperLinear module.
 
         Args:
@@ -74,13 +67,15 @@ class WrapperLinear(torch.nn.Module):
             device (str): The computation device, such as 'cpu' or 'cuda'.
         """
         super(WrapperLinear, self).__init__()
-        self._inner_layer_name = _inner_layer_name
         self.orig_layer = orig_layer
-        self.device = device
+        self.output_device = device
+        self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8 or "fp8" in self.orig_layer.act_data_type or "int8" in self.orig_layer.act_data_type
         self.q_scale_thresh = 1e-5
+        self.w4a8_per_channel = kwargs.get("w4a8_per_channel", False)
+        self.w4a8_tune_weight_fp8_scale = kwargs.get("w4a8_tune_weight_fp8_scale", False)
         self._init_tuning_params_and_quant_func()
         self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
 
@@ -101,11 +96,16 @@ class WrapperLinear(torch.nn.Module):
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
         self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
         self._init_params("value", p_dtype, weight_reshape.shape, 0, True)
-
         # Min-max scale initialization
         shape = get_scale_shape(orig_weight, orig_layer.group_size)
         self._init_params("min_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
         self._init_params("max_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
+
+        if self.w4a8_tune_weight_fp8_scale:
+            weight_scale_shape = (1)
+            if self.w4a8_per_channel:
+                weight_scale_shape = (orig_weight.shape[0], 1)
+            self._init_params("weight_fp8_max_scale", p_dtype, weight_scale_shape, 1.0, True)
 
         self.weight_quant_func, self.data_type = get_quant_func(orig_layer.data_type, orig_layer.bits,
                                                                 orig_layer.sym)
@@ -141,7 +141,7 @@ class WrapperLinear(torch.nn.Module):
 
         setattr(self, name, p)
 
-    def _qdq_weight(self, value, min_scale, max_scale):
+    def _qdq_weight(self, value, min_scale, max_scale, weight_fp8_max_scale=None):
         """Quantizes and dequantizes weights with tuning parameters.
 
         Args:
@@ -159,12 +159,28 @@ class WrapperLinear(torch.nn.Module):
             weight = self.orig_layer.get_weight().to(self.device)
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             weight = weight.t()
-        weight_q, scale, zp = self.weight_quant_func(weight, bits=self.orig_layer.bits,
-                                                     group_size=self.orig_layer.group_size, v=value,
-                                                     min_scale=min_scale, max_scale=max_scale,
-                                                     scale_dtype=self.orig_layer.scale_dtype,
-                                                     tensor_min=self.weight_min, tensor_max=self.weight_max,
-                                                     data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
+        if weight_fp8_max_scale is None:
+            weight_q, scale, zp = self.weight_quant_func(weight, bits=self.orig_layer.bits,
+                                                        group_size=self.orig_layer.group_size, v=value,
+                                                        min_scale=min_scale, max_scale=max_scale,
+                                                        scale_dtype=self.orig_layer.scale_dtype,
+                                                        tensor_min=self.weight_min, tensor_max=self.weight_max,
+                                                        data_type=self.data_type, q_scale_thresh=self.q_scale_thresh)
+        else:
+            weight_q, scale, zp = self.weight_quant_func(
+                weight,
+                bits=self.orig_layer.bits,
+                group_size=self.orig_layer.group_size,
+                v=value,
+                min_scale=min_scale,
+                max_scale=max_scale,
+                scale_dtype=self.orig_layer.scale_dtype,
+                tensor_min=self.weight_min,
+                tensor_max=self.weight_max,
+                data_type=self.data_type,
+                q_scale_thresh=self.q_scale_thresh,
+                weight_fp8_max_scale=weight_fp8_max_scale,
+            )
         weight_q = weight_q.to(weight.dtype)
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             weight_q = weight_q.t()
@@ -216,11 +232,17 @@ class WrapperLinear(torch.nn.Module):
         v = best_params.get('value', torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get('min_scale', torch.tensor(1.0)).to(self.device)
         max_scale = best_params.get('max_scale', torch.tensor(1.0)).to(self.device)
+        max_scale = best_params.get('max_scale', torch.tensor(1.0)).to(self.device)
+
+        if self.w4a8_tune_weight_fp8_scale:
+            weight_fp8_max_scale = best_params.get('weight_fp8_max_scale', torch.tensor(1.0)).to(self.device)
+        else:
+            weight_fp8_max_scale = None
 
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
         ##unwrapper weight
-        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
+        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale, weight_fp8_max_scale=weight_fp8_max_scale)
         self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
 
@@ -304,6 +326,7 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
+        x = x.to(self.device)
         weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
         if self.enable_act_quant:
@@ -314,12 +337,11 @@ class WrapperLinear(torch.nn.Module):
         bias = self.orig_layer.bias
         if bias is not None and bias.device.type == 'meta':
             bias = self.orig_layer.get_bias().to(self.device)
-
         if self.enable_norm_bias_tuning:
             bias, _, _ = self._qdq_bias(bias, self.bias_v)
 
-        return self.orig_forward(x, weight_q, bias)
-
+        output = self.orig_forward(x, weight_q, bias).to(self.output_device)
+        return output
 
 class WrapperWALayer(torch.nn.Module):
     def __init__(self, orig_layer):
@@ -328,8 +350,6 @@ class WrapperWALayer(torch.nn.Module):
         self.act_quant_func = self.orig_layer.act_quant_func
 
     def forward(self, x):
-        # FIXME: (Yi) for static quant, remove it later
-        assert hasattr(self.orig_layer, "act_max"), f"For static quant, expecting act_max in {self.orig_layer}"
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
         x, _, _ = self.orig_layer.act_quant_func(x, bits=self.orig_layer.act_bits,
                                                  group_size=self.orig_layer.group_size,
@@ -353,7 +373,8 @@ class WrapperLayerNorm(torch.nn.Module):
         self.orig_layer = orig_layer
         self.bits = bit
         self.group_size = group_size
-        self.device = device
+        self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
+        self.output_device = device
         weight_dtype = torch.float32
         self.q_scale_thresh = 1e-5
         self.v = torch.nn.Parameter(
@@ -376,11 +397,13 @@ class WrapperLayerNorm(torch.nn.Module):
         return self.orig_layer
 
     def forward(self, input):
+        input = input.to(self.device)
         weight_q, _, _ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
                                          self.v, q_scale_thresh=self.q_scale_thresh)
         import torch.nn.functional as F
         return F.layer_norm(
-            input, self.orig_layer.normalized_shape, weight_q, self.orig_layer.bias, self.orig_layer.eps)
+            input, self.orig_layer.normalized_shape, weight_q, self.orig_layer.bias, self.orig_layer.eps).to(
+            self.output_device)
 
 
 class WrapperLlamaNorm(torch.nn.Module):
@@ -396,7 +419,8 @@ class WrapperLlamaNorm(torch.nn.Module):
         self.orig_layer = orig_layer
         self.bits = bit
         self.group_size = group_size
-        self.device = device
+        self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
+        self.output_device = device
         weight_dtype = torch.float32
         self.q_scale_thresh = 1e-5
         self.v = torch.nn.Parameter(
@@ -419,13 +443,14 @@ class WrapperLlamaNorm(torch.nn.Module):
         return self.orig_layer
 
     def forward(self, hidden_states):
+        hidden_states = hidden_states.to(self.device)
         weight_q, _, _ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
                                          self.v, q_scale_thresh=self.q_scale_thresh)
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.orig_layer.variance_epsilon)
-        return weight_q * hidden_states.to(input_dtype)
+        return (weight_q * hidden_states.to(input_dtype)).to(self.output_device)
 
 
 norm_mapping = {}
@@ -457,7 +482,7 @@ class WrapperMultiblock(torch.nn.Module):
         return hidden_states
 
 
-def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='cpu'):
+def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='cpu', **kwargs):
     """Wraps the layers in the given block with a custom Wrapper module.
 
     Args:
@@ -474,13 +499,10 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperLinear(
-                m,
-                enable_minmax_tuning=enable_minmax_tuning,
-                enable_norm_bias_tuning=enable_norm_bias_tuning,
-                device=device,
-                _inner_layer_name=n,
-            )
+            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning,
+                                  enable_norm_bias_tuning=enable_norm_bias_tuning, device=device,
+                                  **kwargs,
+                                  )
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
