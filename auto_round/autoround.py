@@ -52,7 +52,8 @@ from .utils import (
     mv_module_from_gpu,
     unsupport_meta_device, clear_memory,
     compile_func,
-    find_matching_blocks
+    find_matching_blocks, is_debug_mode,
+    TORCH_VERSION_AT_LEAST_2_6
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -113,7 +114,7 @@ class AutoRound(object):
         act_data_type (str): Specifies the data type for activations.
                              Defaults to None, in which case it inherits the weight data type.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of 
+        to_quant_block_names (str|list): A string or list whose elements are list of
                             block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True.
@@ -159,7 +160,7 @@ class AutoRound(object):
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = None,
+            enable_torch_compile: bool = False,
             w4a8_tune_weight_fp8_scale: bool = None,
             device_map: Union[str, dict] = None,
             **kwargs,
@@ -177,7 +178,6 @@ class AutoRound(object):
         self.enable_quanted_input = enable_quanted_input
         self.enable_minmax_tuning = enable_minmax_tuning
         self.nsamples = nsamples
-        self.nblocks = nblocks
         self.bits = bits
         self.enable_norm_bias_tuning = enable_norm_bias_tuning
         self.group_size = group_size
@@ -232,7 +232,29 @@ class AutoRound(object):
             self.model = self.model.to(torch.bfloat16)
         else:
             logger.info(f"using {self.model.dtype} for quantization tuning")
+
         self.enable_torch_compile = enable_torch_compile
+        if not self.enable_torch_compile and TORCH_VERSION_AT_LEAST_2_6 and self.act_bits > 8 and not is_debug_mode() \
+                and self.low_cpu_mem_usage != True and "fp8" not in self.data_type and "fp8" not in self.act_data_type:
+            logger.info("'enable_torch_compile' is set to `False` by default. " \
+                        "Enabling it can reduce tuning cost by 20%, but it might throw an exception.")
+
+        if self.act_bits <= 8 and self.enable_torch_compile:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
+
+        if self.low_cpu_mem_usage == True and self.enable_torch_compile:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
+
+        if is_debug_mode() and self.enable_torch_compile:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as debug mode is enabled")
+
+        if ("fp8" in self.data_type or "fp8" in self.act_data_type) and self.enable_torch_compile:
+            self.enable_torch_compile = False
+            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
+
         if is_optimum_habana_available():
             logger.info("Optimum Habana is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
@@ -441,14 +463,7 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if n not in self.layer_config.keys():
                 continue
-            if hasattr(m,"orig_layer"):
-                m = m.orig_layer
-            if hasattr(m, "scale"):
-                self.layer_config[n]["scale"] = m.scale
-                self.layer_config[n]["zp"] = m.zp
-                delattr(m, "scale")
-                delattr(m, "zp")
-            else:
+            if not hasattr(m, "scale"):
                 self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
                     self.layer_config[n]["data_type"] = "bfloat"
@@ -485,7 +500,10 @@ class AutoRound(object):
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
         device = next(self.model.parameters()).device
-        quant_layer = compile_func(self.quant_layer, device, self.enable_torch_compile)
+        if self.enable_torch_compile:
+            quant_layer = compile_func(self.quant_layer, self.device)
+        else:
+            quant_layer = self.quant_layer
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
@@ -509,6 +527,11 @@ class AutoRound(object):
         keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
                 "act_dynamic", "act_data_type"]
         for n, m in self.model.named_modules():
+            ##delete keys to avoid conflict with the previous tuning
+            for key in keys:
+                if hasattr(m, key):
+                    delattr(m, key)
+
             if not isinstance(m, tuple(self.supported_types)):
                 continue
             ##not set in layer config, so use the default values
@@ -662,8 +685,8 @@ class AutoRound(object):
             exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
-                f"Insufficient number of samples collected may affect the quantification. "
-                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
+                f"An insufficient number of samples likely reduces the accuracy of the quantized model."
+                f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
 
         # clean embed weight to save memory
@@ -1295,19 +1318,22 @@ class AutoRound(object):
             elif isinstance(input_others[key], list):
                 for i in range(len(input_others[key])):
                     to_dtype(input_others[key][i], tmp_dtype)
-        quant_block = compile_func(self.quant_block, device, self.enable_torch_compile)
+        if self.enable_torch_compile:
+            quant_block = compile_func(self.quant_block, device)
+        else:
+            quant_block = self.quant_block
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
-        # for i in pbar:
-        for i in range(len(block_names)):
+
+        for i in range(0, len(block_names), nblocks):
             if nblocks == 1:
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i: i + nblocks]
-                pbar.set_description(f"Quantizing [{i + 1}-{i + nblocks}]/{len(block_names)}")
+                names = block_names[i: min(i + nblocks, len(block_names))]
+                pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
@@ -1579,7 +1605,7 @@ class AutoRoundOPT(AutoRound):
         act_data_type (str): Specifies the data type for activations.
                              Defaults to None, in which case it inherits the weight data type.
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
-        to_quant_block_names (str|list): A string or list whose elements are list of 
+        to_quant_block_names (str|list): A string or list whose elements are list of
                             block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer function
@@ -1626,7 +1652,7 @@ class AutoRoundOPT(AutoRound):
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = None,
+            enable_torch_compile: bool = False,
             device_map: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,
@@ -1800,7 +1826,7 @@ class AutoRoundAdam(AutoRoundOPT):
             act_dynamic: bool = True,
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = None,
+            enable_torch_compile: bool = False,
             device_map: Union[str, dict] = None,
             optimizer="AdamW",
             **kwargs,

@@ -100,14 +100,14 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     from datasets import load_dataset
 
     split = "train"
-    
+
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
     try:
         calib_dataset = load_dataset(dataset_name, split=split)
     except Exception as e:
         logger.error(f"Failed to load the dataset: {e}." \
-                       "Consider using a backup dataset by `pip install modelscope`" \
-                       " and set '--dataset swift/pile-val-backup' in AutoRound API.")
+                     "Consider using a backup dataset by `pip install modelscope`" \
+                     " and set '--dataset swift/pile-val-backup' in AutoRound API.")
         sys.exit(1)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
@@ -117,7 +117,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
 
 @register_dataset("swift/pile-val-backup")
 def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup", split=None, seed=42,
-                     apply_chat_template=False):
+                         apply_chat_template=False):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -134,14 +134,14 @@ def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup"
     from datasets import load_dataset
 
     split = "validation"
-    
+
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
     from transformers.utils.versions import require_version
     require_version("modelscope", "Loading 'swift/pile-val-backup' dataset requires modelscope to be installed, " \
-                    "`pip install modelscope`")
-    from modelscope import MsDataset # pylint: disable=E0401
+                                  "`pip install modelscope`")
+    from modelscope import MsDataset  # pylint: disable=E0401
     calib_dataset = MsDataset.load('swift/pile-val-backup',
-                                    'default', split=split).to_iterable_dataset() #, use_streaming=True
+                                   'default', split=split).to_iterable_dataset()  # , use_streaming=True
     calib_dataset = calib_dataset.take(10000)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
@@ -150,7 +150,7 @@ def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup"
 
 
 @register_dataset("BAAI/CCI3-HQ")
-def get_CCI3_HQ_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_chat_template=False):
+def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_chat_template=False):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -235,18 +235,19 @@ def get_new_chinese_title_dataset(
         seed=42,
         apply_chat_template=False
 ):
-    """Returns a dataloader for the specified dataset and split.
+    """
+    Returns a tokenized dataset for the specified parameters.
 
     Args:
-    tokenizer: The tokenizer to be used for tokenization.
-    seqlen: The maximum sequence length.
-    data_name: The name of the dataset.
-    split: The data split to be used (e.g., "train", "test").
-    seed: The random seed for shuffling the dataset.
-    apply_chat_template: Whether to apply chat template in tokenization.
+        tokenizer: The tokenizer to use.
+        seqlen: Maximum sequence length.
+        dataset_name: Name of the dataset to load.
+        split: Which split of the dataset to use.
+        seed: Random seed for shuffling.
+        apply_template: Whether to apply a template to the data.
 
     Returns:
-    A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
+        A tokenized and shuffled dataset.
     """
 
     def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template):
@@ -480,7 +481,7 @@ def get_dataloader(
             return False
         input_ids = example["input_ids"][:seqlen]
         input_ids_list = input_ids.tolist()
-        if len(input_ids_list) > 1 and input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
+        if len(input_ids_list) > 1 and seqlen > 2 and input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
             return False
         return True
 

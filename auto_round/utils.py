@@ -18,6 +18,7 @@ import os
 import sys
 import subprocess
 from collections import UserDict
+from typing import Union, Optional
 import re
 # for cpu usage
 import cpuinfo
@@ -1008,18 +1009,15 @@ def compile_func_on_hpu(func):
     return func
 
 
-def compile_func_on_cuda_or_cpu(func, enable_torch_compile):
-    if enable_torch_compile or (TORCH_VERSION_AT_LEAST_2_6_PRE_RELEASE and enable_torch_compile != False):
-        return torch.compile(func)
-    else:
-        return func
+def compile_func_on_cuda_or_cpu(func):
+    return torch.compile(func)
 
 
-def compile_func(fun, device, enable_torch_compile):
+def compile_func(fun, device):
     if "hpu" in str(device):
         return compile_func_on_hpu(fun)  ## use auto by default
     else:
-        return compile_func_on_cuda_or_cpu(fun, enable_torch_compile)
+        return compile_func_on_cuda_or_cpu(fun)
 
 
 def is_numba_available():  # pragma: no cover
@@ -1158,3 +1156,46 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
             return False, f"Layer {layer_name} out_features is not multiple of 32 // bits"
 
     return True, ""
+
+def get_device_and_parallelism(device):
+    from auto_round.utils import detect_device
+    devices = device.replace(" ", "").split(',')
+    if all(s.isdigit() for s in devices) and len(devices) > 1:
+        device = "cuda"
+        parallelism = True
+    elif device == "auto":
+       device = detect_device(device) 
+       parallelism = True
+    else:
+        device = detect_device(device) 
+        parallelism = False
+    return device, parallelism
+
+def set_cuda_visible_devices(device):
+    devices = device.replace(" ", "").split(',')
+    if all(s.isdigit() for s in devices):
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
+            current_visible_devices = current_visible_devices.split(',')
+            indices = [int(device) for device in devices]
+            try:
+                pick_device = [current_visible_devices[i] for i in indices]
+            except:
+                raise ValueError(
+                    "Invalid '--device' value: It must be smaller than the number of available devices."
+                    " For example, with CUDA_VISIBLE_DEVICES=4,5, "
+                    "--device 0,1 is valid, but --device 4,5 is not supported.")
+            visible_devices = ','.join(pick_device)
+            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = device
+
+
+def is_debug_mode():
+    """Checks if the Python interpreter is running in debug mode.
+
+    Returns:
+        bool: True if debugging is enabled, False otherwise.
+    """
+    return sys.gettrace() is not None or sys.flags.debug == 1
+
