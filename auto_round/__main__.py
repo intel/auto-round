@@ -22,7 +22,12 @@ def run_eval():
     else:
         from auto_round.script.llm import setup_eval_parser, eval_sequence
         args = setup_eval_parser()
-        eval_sequence(args)
+        eval_sequence(
+            model=args.model,
+            device=args.device,
+            tasks=args.tasks,
+            batch_size=args.batch_size,
+            trust_remote_code=not args.disable_trust_remote_code)
 
 def run():
     if "--eval" in sys.argv:
