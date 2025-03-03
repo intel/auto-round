@@ -161,7 +161,6 @@ class AutoRound(object):
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = False,
-            w4a8_tune_weight_fp8_scale: bool = None,
             device_map: Union[str, dict] = None,
             **kwargs,
     ):
@@ -267,8 +266,6 @@ class AutoRound(object):
         
         # For W4AFP8, quanitze weight from bf16 to fp8 with per-channel granularity
         self.w4a8_per_channel = self.data_type == "fp8_gaudi3_to_int_sym_pc"
-        # For W4AFP8, tune the scale for bf16 to fp8
-        self.w4a8_tune_weight_fp8_scale = w4a8_tune_weight_fp8_scale
 
     def set_device_map_in_blocks(self, device_map):
         """Sets the device map for specific blocks in the model.
@@ -1346,7 +1343,6 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
                 w4a8_per_channel=self.w4a8_per_channel,
-                w4a8_tune_weight_fp8_scale=self.w4a8_tune_weight_fp8_scale
             )
             pbar.update(1)
 

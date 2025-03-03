@@ -232,7 +232,6 @@ class WrapperLinear(torch.nn.Module):
         v = best_params.get('value', torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get('min_scale', torch.tensor(1.0)).to(self.device)
         max_scale = best_params.get('max_scale', torch.tensor(1.0)).to(self.device)
-        max_scale = best_params.get('max_scale', torch.tensor(1.0)).to(self.device)
 
         if self.w4a8_tune_weight_fp8_scale:
             weight_fp8_max_scale = best_params.get('weight_fp8_max_scale', torch.tensor(1.0)).to(self.device)

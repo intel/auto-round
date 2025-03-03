@@ -358,24 +358,14 @@ def tune(args):
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
 
     import torch
-    import transformers
- 
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-    torch.use_deterministic_algorithms(True, warn_only=True)
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
-    from lm_eval.utils import make_table  # pylint: disable=E0401
-
-    from auto_round import AutoRoundConfig
-    from auto_round.eval.evaluation import simple_evaluate
-    from auto_round.utils import detect_device, get_library_version, detect_device_count
-    from auto_round.utils import logger
     if not args.disable_deterministic_algorithms:
         torch.use_deterministic_algorithms(True, warn_only=True)
+        # logger.info("`torch.use_deterministic_algorithms` is enabled by default for reproducibility "
+        #             "and can be disabled using the `--disable_deterministic_algorithms` argument.")
 
     if args.enable_torch_compile:
         logger.info("`torch.compile` is enabled to reduce tuning costs. "
                     "If it causes issues, you can disable it by remove `--enable_torch_compile` argument.")
-
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -582,9 +572,7 @@ def tune(args):
 
         logger.info(f"Using lm-eval version {lm_eval_version}")
 
-
-        model_args = f"pretrained={eval_folder}"
-        model_args = model_args + f",trust_remote_code={not args.disable_trust_remote_code}"
+        tasks, model_args, device_str = _eval_init(args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
 
         if args.act_bits <= 8:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -593,19 +581,18 @@ def tune(args):
                 dispatch_model(model, model.hf_device_map)
                 user_model = model
             else:
+                device_str = detect_device(device_str)
                 user_model = model.to(device_str)
 
             if args.eval_bs is None or args.eval_bs == "auto":
                 args.eval_bs = 16
             from auto_round.eval.evaluation import simple_evaluate_user_model
-            res = simple_evaluate_user_model(user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs)
+            res = simple_evaluate_user_model(
+                user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
         else:
-            if use_auto_mapping:
-                model_args += ",parallelize=True"
-            res = simple_evaluate(model="hf", model_args=model_args,
-                                  tasks=tasks,
-                                  batch_size=args.eval_bs)
-
+            from auto_round.eval.evaluation import simple_evaluate
+            res = simple_evaluate(
+                model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
         print(make_table(res))
 
 
@@ -650,4 +637,3 @@ def eval_sequence(args):
             for key in res_keys:
                 res_all[key].update(res[key])
         print(make_table(res_all))
-
