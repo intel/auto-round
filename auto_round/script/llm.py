@@ -206,7 +206,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             help="lm-eval tasks")
         self.add_argument(
             "--disable_trust_remote_code", action='store_true', help="whether to disable trust_remote_code")
-        self.add_argument("--batch_size", "--eval_bs", "--bs", default=8, type=int, help="batch size in evaluation")
+        self.add_argument("--eval_bs", "--bs", "--batch_size", default=8, type=int, help="batch size in evaluation")
 
 
 def setup_parser():
@@ -570,9 +570,9 @@ def tune(args):
 
             if args.eval_bs is None or args.eval_bs == "auto":
                 args.eval_bs = 16
-            eval_sequence(user_model, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+            eval_task_by_task(user_model, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
         else:
-            eval_sequence(eval_folder, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+            eval_task_by_task(eval_folder, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
@@ -599,7 +599,7 @@ def eval(args):
     print(make_table(res))
 
 
-def eval_sequence(model, device, tasks, batch_size=None, max_batch_size=None, trust_remote_code=True):
+def eval_task_by_task(model, device, tasks, batch_size=None, max_batch_size=64, trust_remote_code=True):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
@@ -610,8 +610,8 @@ def eval_sequence(model, device, tasks, batch_size=None, max_batch_size=None, tr
     from lm_eval.models.huggingface import HFLM
 
     # from auto_round import AutoRoundConfig
-    if batch_size is None or batch_size == "auto":
-        batch_size = 8
+    if batch_size is None:
+        batch_size = "auto"
     if not isinstance(model, str):
         parallelism = False
     hflm = HFLM(

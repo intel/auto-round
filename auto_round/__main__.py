@@ -20,13 +20,13 @@ def run_eval():
         args = setup_eval_parser()
         eval(args)
     else:
-        from auto_round.script.llm import setup_eval_parser, eval_sequence
+        from auto_round.script.llm import setup_eval_parser, eval_task_by_task
         args = setup_eval_parser()
-        eval_sequence(
+        eval_task_by_task(
             model=args.model,
             device=args.device,
             tasks=args.tasks,
-            batch_size=args.batch_size,
+            batch_size=args.eval_bs,
             trust_remote_code=not args.disable_trust_remote_code)
 
 def run():
