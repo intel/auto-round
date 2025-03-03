@@ -213,7 +213,7 @@ def pack_model(
         scale_dtype = v["scale_dtype"]
         m = get_module(compressed_model, k)
         fp_weight = m.weight.data
-        scale, zp = v["scale"], v["zp"]
+        scale, zp = m.scale, m.zp
         convert_dtype = scale_dtype
         if not isinstance(scale, torch.Tensor):
             scale = torch.tensor(scale, dtype=convert_dtype)

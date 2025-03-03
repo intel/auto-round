@@ -291,6 +291,16 @@ def _gguf_args_check(args):
     formats = args.format.lower().replace(' ', '').split(",")
     for format in _GGUF_CONFIG:
         if format in formats:
+            from pathlib import Path
+            from auto_round.export.export_to_gguf.convert import Model
+            hparams = Model.load_hparams(Path(args.model))
+            model_architecture = hparams["architectures"][0]
+            try:
+                model_class = Model.from_model_architecture(model_architecture)
+            except NotImplementedError:
+                logger.error(f"Model {model_architecture} is not supported to export GGUF format")
+                sys.exit(1)
+
             unsupport_list, reset_list = [], []
             gguf_config = _GGUF_CONFIG[format]
             for k, v in gguf_config.items():
