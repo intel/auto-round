@@ -25,7 +25,7 @@ from torch import autocast
 from tqdm import tqdm
 import accelerate
 from packaging import version
-from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
+from .wrapper import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from .special_model_handler import (
     shareable_keywords,
     init_cache_for_special_model,
@@ -335,7 +335,7 @@ class AutoRound(object):
         # assert self.tokenizer != None or self.dataloader != None
         if self.act_bits <= 8:
             logger.warning(
-                "Activation quantization is an experimental feature with limited support and a complex API."
+                "Activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently")
 
         if "mx_fp" in self.data_type:
@@ -348,7 +348,7 @@ class AutoRound(object):
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
-                logger.warning(f"reset batch_size to {self.nsamples} as n_sample({self.nsamples})"
+                logger.warning(f"reset batch_size to {self.nsamples} as nsamples({self.nsamples})"
                                f" is smaller than batch_size({self.batch_size})")
                 self.batch_size = self.nsamples
             if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
@@ -401,7 +401,6 @@ class AutoRound(object):
 
             if "input_ids" in inputs.keys():
                 total_samples = len(inputs["input_ids"])
-                self.n_samples = total_samples
                 if total_samples < self.batch_size:
                     self.batch_size = total_samples
                     logger.warning(f"force the train batch size to {total_samples}")

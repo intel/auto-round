@@ -37,7 +37,7 @@ import torch
 
 import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module
+    get_module, logger, set_module, get_autogptq_packing_qlinear
 import copy
 import json
 import os
@@ -77,8 +77,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
             layer = layer.orig_layer
         device = layer.weight.device
 
-        ##QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
-        from auto_round.export.export_to_autogptq.qlinear_triton_act import QuantLinear
+        QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features
@@ -118,6 +117,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
             qlayer.pack(layer, scale, zero, act_scale, layer.w_bf16_to_fp8_scale, None)
         qlayer.to(device)
         pbar.update(1)
+
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
                                **kwargs):
@@ -198,7 +198,6 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     dtype = torch.float16  ##force dtype to fp16
     save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
     return model
-
 
 
 def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True,

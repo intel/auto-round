@@ -172,7 +172,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--enable_torch_compile", action='store_true',
                           help="whether to enable torch compile")
 
-        self.add_argument("--act_data_type", default=None, type=str, help="activation data type")
+        self.add_argument("--act_data_type","--act_dtype", default=None, type=str, help="activation data type")
 
         self.add_argument("--disable_act_dynamic", action='store_true', help="activation static quantization")
 

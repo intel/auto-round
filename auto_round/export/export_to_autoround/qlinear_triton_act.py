@@ -40,47 +40,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-import os
-# from auto_round_extension.cuda.triton_utils.mixin import TritonModuleMixin
 
 logger = getLogger(__name__)
-
-
-# try:
-#     from auto_gptq.nn_modules.triton_utils.kernels import (
-#         QuantLinearFunction,
-#         QuantLinearInferenceOnlyFunction,
-#         quant_matmul_248,
-#         quant_matmul_inference_only_248,
-#         transpose_quant_matmul_248,
-#     )
-# except ImportError as e:
-#     triton_import_exception = e
-
-
-#     def error_raiser_triton(*args, **kwargs):
-#         raise ValueError(
-#             f'Trying to use the triton backend, but could not import triton '
-#             f'dependencies with the following error: {triton_import_exception}'
-#         )
-
-
-#     class FakeTriton:
-#         def __getattr__(self, name):
-#             raise ImportError(
-#                 f"Trying to use the triton backend, but could not import triton "
-#                 f"dependencies with the following error: {triton_import_exception}"
-#             )
-
-
-#     quant_matmul_248 = error_raiser_triton
-#     transpose_quant_matmul_248 = error_raiser_triton
-#     quant_matmul_inference_only_248 = error_raiser_triton
-#     QuantLinearFunction = FakeTriton
-#     QuantLinearInferenceOnlyFunction = FakeTriton
-
-
-# class QuantLinear(nn.Module, TritonModuleMixin):
 
 
 class QuantLinear(nn.Module):
@@ -120,7 +81,7 @@ class QuantLinear(nn.Module):
             ),
         )
         use_pc = kwargs.pop("use_pc", False)
-        w_bf16_to_fp8_scale_shape = (1, self.outfeatures) if use_pc else (1, )
+        w_bf16_to_fp8_scale_shape = (1, self.outfeatures) if use_pc else (1,)
         self.register_buffer(
             "w_bf16_to_fp8_scale",
             torch.zeros(
