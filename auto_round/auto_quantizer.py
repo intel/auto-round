@@ -123,18 +123,10 @@ class AutoHfQuantizer:
         if isinstance(quantization_config, dict):
             if "auto-round" in quantization_config["quant_method"]:
                 quantization_config = AutoRoundConfig.from_dict(quantization_config)
-            elif "use_auto_round_format" in quantization_config.keys() and quantization_config["use_auto_round_format"]:
-                logger.info(f"Loading quantized model in auto_round format.")
-                tmp_backend = quantization_config["quant_method"]
-                target_backend = quantization_config["backend"] if "backend" in quantization_config else None
-                quantization_config = AutoRoundConfig.from_dict(quantization_config)
-                if "auto_round" not in target_backend:
-                    target_backend = f"auto_round:{tmp_backend}"
-                    setattr(quantization_config, "backend", target_backend)
             else:
                 quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
         quant_method = quantization_config.quant_method
-            
+    
         # Again, we need a special care for bnb as we have a single quantization config
         # class for both 4-bit and 8-bit quantization
         if quant_method == QuantizationMethod.BITS_AND_BYTES:
@@ -183,8 +175,7 @@ class AutoHfQuantizer:
             if "auto-round" in quantization_config["quant_method"]:
                 quantization_config = AutoRoundConfig.from_dict(quantization_config)
             else:
-                if  ("use_auto_round_format" in quantization_config and quantization_config['use_auto_round_format']) \
-                        or ("use_auto_round_format" in loading_attr_dict and loading_attr_dict["use_auto_round_format"]):
+                if  isinstance(quantization_config_from_args, (AutoRoundConfig)):
                     logger.info(f"Loading quantized model in auto_round format.")
                     tmp_backend = quantization_config["quant_method"]
                     target_backend = quantization_config["backend"] if "backend" in quantization_config else "auto"
@@ -294,8 +285,6 @@ class AutoRoundConfig(QuantizationConfigMixin):
     def get_loading_attributes(self):
         # attributes_dict = copy.deepcopy(self.__dict__)
         loading_attibutes_dict = {"backend": self.backend}
-        if hasattr(self,"use_auto_round_format"):
-            loading_attibutes_dict["use_auto_round_format"] = self.use_auto_round_format
         # loading_attributes = ["backend"]
         # loading_attibutes_dict = {i: j for i, j in attributes_dict.items() if i in loading_attributes}
         return loading_attibutes_dict

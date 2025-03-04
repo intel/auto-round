@@ -98,6 +98,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
         assert ("!!!" not in res)
+        
     def test_llm_generation_asym_qbits(self):
         try:
             import intel_extension_for_transformers
@@ -154,17 +155,13 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig(
             # backend="auto_round:awq",
-            use_auto_round_format=True
+            backend="auto"
         )
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device \
-                                                      , quantization_config=quantization_config)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device,
+                                                     quantization_config=quantization_config)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
         assert ("!!!" not in res)
-
-
-
-
