@@ -134,6 +134,37 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         print(res)
         assert ("!!!" not in res)
 
+    def test_force_to_autoround_format(self):
+        bits = 4
+        group_size = 32
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=True,
+            iters=1,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+        quantized_model_path = "./saved"
+        autoround.save_quantized(output_dir=quantized_model_path, format="auto_awq", inplace=False)
+        device = "auto"  ##cpu, hpu, cuda
+        from auto_round import AutoRoundConfig
+        quantization_config = AutoRoundConfig(
+            # backend="auto_round:awq",
+            use_auto_round_format=True
+        )
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device \
+                                                      , quantization_config=quantization_config)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
+        print(res)
+        assert ("!!!" not in res)
+
 
 
 
