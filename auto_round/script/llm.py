@@ -110,10 +110,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--disable_eval", action='store_true', help="whether to do lm-eval evaluation after tuning")
 
         self.add_argument(
-            "--native_eval",
-            "--native",
+            "--eval_task_by_task",
             action="store_true",
-            help="use the native lm_eval instead of eval task by task.")
+            help="whether to eval task by task.")
 
         self.add_argument("--disable_amp", action='store_true', help="disable amp")
 
@@ -213,6 +212,8 @@ class EvalArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--disable_trust_remote_code", action='store_true', help="whether to disable trust_remote_code")
         self.add_argument("--eval_bs", "--bs", "--batch_size", default=8, type=int, help="batch size in evaluation")
+        self.add_argument("--eval_task_by_task", action='store_true', help="whether to eval task by task.")
+
 
 
 def setup_parser():
@@ -586,22 +587,23 @@ def tune(args):
 
             if args.eval_bs is None or args.eval_bs == "auto":
                 args.eval_bs = 16
-            if args.native_eval:
+            if args.eval_task_by_task:
+                eval_task_by_task(user_model, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+            else:
                 from auto_round.eval.evaluation import simple_evaluate_user_model
                 res = simple_evaluate_user_model(
                     user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
                 print(make_table(res))
-            else:
-                eval_task_by_task(user_model, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
         else:
-            if args.native_eval:
+            if args.eval_task_by_task:
+                eval_task_by_task(eval_folder, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+            else:
                 from auto_round.eval.evaluation import simple_evaluate
                 tasks, model_args, device_str = _eval_init(
                     args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
                 res = simple_evaluate(
                     model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
                 print(make_table(res))
-            eval_task_by_task(eval_folder, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
