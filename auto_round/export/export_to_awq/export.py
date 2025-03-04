@@ -46,13 +46,14 @@ def pack_layer(name, model, layer_config, backend, pbar):
         if config["bits"] > 8:
             pbar.update(1)
             return
-        scale, zp = config["scale"], config["zp"]
+        linear_layer = get_module(model, name)
+        scale, zp = linear_layer.scale, linear_layer.zp
         scale = scale.t().contiguous()
         zp = zp.t().contiguous()
         config["zp"] = config["zp"].to(torch.float32)
         bits = config["bits"]
         group_size = config["group_size"]
-        linear_layer = get_module(model, name)
+
         if config["sym"]:
             zp = 2 ** (config["bits"] - 1)
         q_linear = WQLinear_GEMM.from_linear(
