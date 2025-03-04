@@ -109,7 +109,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--disable_eval", action='store_true', help="whether to do lm-eval evaluation after tuning")
 
-        self.add_argument("--native_eval", "--native", action="store_true", help="use the native lm_eval instead of eval task by task.")
+        self.add_argument(
+            "--native_eval",
+            "--native",
+            action="store_true",
+            help="use the native lm_eval instead of eval task by task.")
 
         self.add_argument("--disable_amp", action='store_true', help="disable amp")
 
@@ -592,7 +596,8 @@ def tune(args):
         else:
             if args.native_eval:
                 from auto_round.eval.evaluation import simple_evaluate
-                tasks, model_args, device_str = _eval_init(args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
+                tasks, model_args, device_str = _eval_init(
+                    args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
                 res = simple_evaluate(
                     model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
                 print(make_table(res))
