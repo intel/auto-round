@@ -49,8 +49,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
         linear_layer = get_module(model, name)
         scale, zp = linear_layer.scale, linear_layer.zp
         scale = scale.t().contiguous()
-        zp = zp.t().contiguous()
-        config["zp"] = config["zp"].to(torch.float32)
+        zp = zp.t().contiguous().to(torch.float32)
         bits = config["bits"]
         group_size = config["group_size"]
 
