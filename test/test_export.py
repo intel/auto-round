@@ -36,10 +36,6 @@ class TestAutoRound(unittest.TestCase):
     def test_autogptq_format(self):
         if not torch.cuda.is_available():
             return
-        try:
-            import auto_gptq
-        except:
-            return
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,
@@ -131,10 +127,6 @@ class TestAutoRound(unittest.TestCase):
 
 
     def test_autoround_awq_format(self):
-        try:
-            import awq
-        except:
-            return
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,
