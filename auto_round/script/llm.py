@@ -211,7 +211,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             help="lm-eval tasks")
         self.add_argument(
             "--disable_trust_remote_code", action='store_true', help="whether to disable trust_remote_code")
-        self.add_argument("--eval_bs", "--bs", "--batch_size", default=8, type=int, help="batch size in evaluation")
+        self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int, help="batch size in evaluation")
         self.add_argument("--eval_task_by_task", action='store_true', help="whether to eval task by task.")
 
 
@@ -585,11 +585,11 @@ def tune(args):
                 device_str = detect_device(device_str)
                 user_model = model.to(device_str)
 
-            if args.eval_bs is None or args.eval_bs == "auto":
-                args.eval_bs = 16
             if args.eval_task_by_task:
                 eval_task_by_task(user_model, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
             else:
+                if args.eval_bs is None:
+                    args.eval_bs = "auto"
                 from auto_round.eval.evaluation import simple_evaluate_user_model
                 res = simple_evaluate_user_model(
                     user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
