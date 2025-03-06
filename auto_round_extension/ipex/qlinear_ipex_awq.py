@@ -50,10 +50,18 @@ class QuantLinear(nn.Module):
 
     def post_init(self):
         assert self.qweight.device.type == "cpu"
+        from packaging import version
+        import importlib_metadata
         from intel_extension_for_pytorch.nn.modules.weight_only_quantization import WeightOnlyQuantizedLinear
-        self.ipex_linear = WeightOnlyQuantizedLinear.from_weight(self.qweight, self.scales, self.qzeros, \
-                                                                self.in_features, self.out_features, None, self.bias, \
-                                                                self.group_size, None, 0, 1)
+        version_ipex = version.parse(importlib_metadata.version("intel_extension_for_pytorch"))
+        if version_ipex < version.parse("2.6.0"):
+            self.ipex_linear = WeightOnlyQuantizedLinear.from_weight(self.qweight, self.scales, self.qzeros, \
+                                                                    self.in_features, self.out_features, None, self.bias, \
+                                                                    self.group_size, None, 0, 1)
+        else:
+            self.ipex_linear = WeightOnlyQuantizedLinear.from_weight(self.qweight, self.scales, self.qzeros, \
+                                                                    self.in_features, self.out_features, None, self.bias, \
+                                                                    self.group_size, None, 1, 0)
 
     @classmethod
     def from_linear(cls, linear, w_bit, group_size, init_only=False, scales=None):
@@ -85,3 +93,4 @@ class QuantLinear(nn.Module):
             self.w_bit,
             self.group_size,
         ))
+

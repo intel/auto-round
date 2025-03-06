@@ -134,10 +134,10 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
         assert ("!!!" not in res)
-
+    
     def test_force_to_autoround_format(self):
         bits = 4
-        group_size = 32
+        group_size = 128
         autoround = AutoRound(
             self.model,
             self.tokenizer,
@@ -151,10 +151,10 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         autoround.quantize()
         quantized_model_path = "./saved"
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_awq", inplace=False)
-        device = "auto"  ##cpu, hpu, cuda
+        device = "auto"  ##cpu, hpu, cuda, auto
         from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig(
-            # backend="auto_round:awq",
+            # backend="auto_round:ipex_awq",
             backend="auto"
         )
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device,
@@ -165,3 +165,4 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
         assert ("!!!" not in res)
+        
