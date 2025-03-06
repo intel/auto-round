@@ -1164,10 +1164,10 @@ def get_device_and_parallelism(device):
         device = "cuda"
         parallelism = True
     elif device == "auto":
-       device = detect_device(device) 
-       parallelism = True
+        device = detect_device(device)
+        parallelism = True
     else:
-        device = detect_device(device) 
+        device = detect_device(device)
         parallelism = False
     return device, parallelism
 
@@ -1198,4 +1198,3 @@ def is_debug_mode():
         bool: True if debugging is enabled, False otherwise.
     """
     return sys.gettrace() is not None or sys.flags.debug == 1
-
