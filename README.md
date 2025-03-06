@@ -31,7 +31,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## What's New
 
-* [2024/03]The INT2-mixed R1 model (~200GB) retains 97.9% accuracy. Check
+* [2024/03] The INT2-mixed R1 model (~200GB) retains 97.9% accuracy. Check
   out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
 * [2024/01] We provide experimental support for GGUF q4_0 and q4_1 formats.
 * [2024/11] We provide experimental support for VLM quantization, please check out
