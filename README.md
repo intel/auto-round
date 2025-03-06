@@ -85,13 +85,23 @@ auto-round \
     --output_dir ./tmp_autoround
 ```
 
-We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
+We provide recipes for best accuracy, light accuracy and fast running speed with low memory. Details as below.
 <details>
   <summary>Other Recipes</summary>
 
   ```bash
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
 auto-round-best \
+    --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --low_gpu_mem_usage \
+    --disable_eval 
+  ```
+
+  ```bash
+auto-round-light \
+## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
@@ -109,6 +119,8 @@ auto-round-fast \
   ```
 
 </details>
+
+
 
 ### API Usage (Gaudi2/CPU/GPU)
 
@@ -231,6 +243,18 @@ models.
 adopted within the community, **only 4-bits quantization is supported**. 
 
 **GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and q4_1 (W4G32) is supported in our repo**. 
+
+
+### Auto-Round Results
+For models greater than or equal to 3B, it is recommended to use auto-round-light mode to save resources and time costs(light mode is 2-3 times faster than default mode). Below are the quantization results for models ranging from 3B to 72B as a reference.
+| Config\Model | llama3.1-8b-instruct | Qwen2.5-3B-Instruct | Qwen2.5-7B-Instruct | falcon3-3B | falcon3-10B | Llama-3.3-70B-Instruct | OLMo-2-1124-7B-Instruct | Qwen2.5-72B-Instruct |
+|--------------|----------------------|---------------------|---------------------|------------|-------------|------------------------|-------------------------|----------------------|
+| 16 bits       | 0.6212               | 0.5502              | 0.6470              | 0.5203     | 0.6151      | 0.7023                 | 0.6268                  | 0.7229               |
+| Best         | 0.6115               | 0.5418              | 0.6426              | 0.5142     | 0.6092      | 0.7033                 | 0.6295                  | 0.7242               |
+| Default      | 0.6106               | 0.5492              | 0.6441              | 0.5133     | 0.6080      | 0.6925                 | 0.6253                  | 0.7252               |
+| Light        | 0.6111               | 0.5459              | 0.6453              | 0.5108     | 0.6063      | 0.6436                | 0.6261                  | 0.7243               |
+
+
 
 ### Quantization Costs
 
@@ -387,6 +411,7 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
