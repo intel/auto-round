@@ -16,7 +16,14 @@ import os
 import sys
 import argparse
 
-from auto_round.utils import clear_memory, get_fp_layer_names, set_cuda_visible_devices, logger, is_debug_mode
+from auto_round.utils import (
+    get_fp_layer_names,
+    clear_memory,
+    is_debug_mode,
+    get_device_and_parallelism,
+    set_cuda_visible_devices,
+    logger)
+
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -145,8 +152,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             action='store_true',
             help="whether to use the iter of best mes loss in the tuning phase")
 
-        self.add_argument("--disable_torch_compile", action='store_true',
-                          help="whether to disable torch compile")
+        self.add_argument("--enable_torch_compile", action='store_true',
+                          help="whether to enable torch compile")
 
         self.add_argument("--disable_deterministic_algorithms", action='store_true',
                           help="disable torch deterministic algorithms.")
@@ -276,7 +283,6 @@ def tune(args):
     import transformers
 
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoProcessor
-    from lm_eval.utils import make_table  # pylint: disable=E0401
 
     if args.format is None:
         args.format = "auto_round"
@@ -290,7 +296,9 @@ def tune(args):
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
 
     ##must set this before import torch
-    device_str, use_auto_mapping = set_cuda_visible_devices(args.device)
+    set_cuda_visible_devices(args.device)
+    device_str, use_auto_mapping = get_device_and_parallelism(args.device)
+
 
     import torch
     if not args.disable_deterministic_algorithms:
@@ -418,7 +426,7 @@ def tune(args):
     if args.quant_lm_head:
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
-            if "auto_round" not in format:
+            if "auto_round" not in format and "fake" not in format:
                 auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
@@ -438,7 +446,7 @@ def tune(args):
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
-    enable_torch_compile = False if "--disable_torch_compile" in sys.argv else None
+    enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
 
     autoround = round(
         model,
@@ -495,7 +503,8 @@ def tune(args):
 
 
 def eval(args):
-    device_str, parallelism = set_cuda_visible_devices(args.device)
+    set_cuda_visible_devices(args.device)
+    device_str, parallelism = get_device_and_parallelism(args.device)
     if parallelism:
         os.environ['AUTO_SPLIT'] = '1'
     if isinstance(args.tasks, str):
@@ -570,7 +579,8 @@ def setup_lmms_parser():
 
 
 def lmms_eval(args):
-    device_str, parallelism = set_cuda_visible_devices(args.device)
+    set_cuda_visible_devices(args.device)
+    device_str, parallelism = get_device_and_parallelism(args.device)
 
     from auto_round.mllm import lmms_eval
 
@@ -587,3 +597,5 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+
+

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import torch
-from .utils import floor_ste, round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.data_type.utils import floor_ste, round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.data_type.register import register_dtype, QUANT_FUNC_WITH_DTYPE
 
 MXFP_FORMAT_CACHE = {
@@ -39,8 +39,43 @@ FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
+def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
+    if ebits != 0:
+        private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
+
+        # The minimum representable exponent for 8 exp bits is -126
+        min_exp = -(2 ** (ebits - 1)) + 2
+        private_exp = private_exp.clip(min=min_exp)
+    else:
+        private_exp = None
+
+    # Scale up so appropriate number of mbits are in the integer portion of the number
+    tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** private_exp) * (2 ** (mbits - 2))
+
+    if mantissa_rounding == "even":
+        abs_tensor = torch.abs(tensor)
+        mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
+        tensor = torch.sign(tensor) * (floor_ste(abs_tensor + 0.5) - mask_tensor)
+    elif mantissa_rounding == "nearest":
+        tensor = round_ste(tensor)
+    elif mantissa_rounding == "floor":
+        tensor = floor_ste(tensor)
+    else:
+        raise ValueError("mantissa_rounding only supports even, nearest or floor.")
+
+    ##the clamp is False in official code
+    # max_mantissa = 2 ** (mbits - 1) - 1 ## this is incorrect
+    # tensor = torch.clamp(tensor, -max_mantissa, max_mantissa)
+
+    # Undo scaling
+    tensor = tensor / (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** (mbits - 2)) * (2 ** private_exp)
+
+    tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
+    return tensor
+
+
 def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
-         mantissa_rounding="even", data_type="mx_fp", **kwargs):
+             mantissa_rounding="even", data_type="mx_fp", **kwargs):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -71,12 +106,17 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
         shared_exp *= (max_scale.unsqueeze(dim=-1))
     else:
         shared_exp *= max_scale
-    scale_emax = 2 ** (8 - 1) - 1
+
     shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
+    shared_exp = floor_ste(shared_exp)
+    # if flush_fp32_subnorms:
+    #     tensor = tensor * (shared_exp > -FP32_EXPONENT_BIAS).type(tensor.dtype)
+
+    scale_emax = 2 ** (8 - 1) - 1
     shared_exp[shared_exp == torch.inf] = scale_emax + emax
     shared_exp[shared_exp == -torch.inf] = -scale_emax + emax
     shared_exp = (shared_exp - emax)
-    shared_exp = floor_ste(shared_exp)
+
     shared_exp[shared_exp > scale_emax] = scale_emax  ##changed Nan
     shared_exp[shared_exp < -scale_emax] = -scale_emax
     if (shared_exp.dtype == torch.float16 and (torch.any(shared_exp > 15) or torch.any(shared_exp < -24))) or (
@@ -84,38 +124,9 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
         tensor = tensor.to(torch.float32)
         shared_exp = shared_exp.to(torch.float32)
     tensor = tensor / (2 ** shared_exp)
-    is_mx_fp4 = data_type == "mx_fp4" or ("mx_fp" in data_type and bits == 4)
-    multiply = 2 if is_mx_fp4 else 1  ## 2 is a tricky setting
-    tensor = tensor + v * multiply
-    if ebits != 0:
-        private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
+    tensor = tensor + v
+    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
-        # The minimum representable exponent for 8 exp bits is -126
-        min_exp = -(2 ** (ebits - 1)) + 2
-        private_exp = private_exp.clip(min=min_exp)
-    else:
-        private_exp = None
-
-    # Scale up so appropriate number of mbits are in the integer portion of the number
-    tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** private_exp) * (2 ** (mbits - 2))
-
-    if mantissa_rounding == "even":
-        abs_tensor = torch.abs(tensor)
-        mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
-        tensor = torch.sign(tensor) * (floor_ste(abs_tensor + 0.5) - mask_tensor)
-    elif mantissa_rounding == "nearest":
-        tensor = round_ste(tensor)
-    elif mantissa_rounding == "floor":
-        tensor = floor_ste(tensor)
-    else:
-        raise ValueError("mantissa_rounding only supports even, nearest or floor.")
-    max_mantissa = 2 ** (mbits - 1) - 1
-    tensor = torch.clamp(tensor, -max_mantissa, max_mantissa)
-
-    # Undo scaling
-    tensor = tensor / (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** (mbits - 2)) * (2 ** private_exp)
-
-    tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = tensor * (2 ** shared_exp)
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
@@ -123,3 +134,15 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
 
 for key in MXFP_FORMAT_CACHE.keys():
     QUANT_FUNC_WITH_DTYPE[key] = quant_mx
+
+if __name__ == "__main__":
+    data = torch.tensor([0.0, 0.25, 0.4,0.75, 1.25,1.4, 1.75, 2.5, 2.9,3.5, 5.0, 5.1])
+    data1 = quant_element(data, 2, 3, 6.0)
+    gt = torch.tensor([0.0,0.0,0.5,1.0,1.0,1.5,2.0,2.0,3.0,4.0,4.0,6.0])
+    assert(torch.sum(torch.abs(data1-gt))<1e-6)
+
+    data_neg = data*-1
+    data2 = quant_element(data_neg, 2, 3, 6.0)
+    assert(torch.sum(torch.abs(data2-gt*-1))<1e-6)
+
+

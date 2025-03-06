@@ -30,7 +30,13 @@ import re
 import argparse
 import sys
 
-from auto_round.utils import get_fp_layer_names, set_cuda_visible_devices, clear_memory, is_debug_mode
+
+from auto_round.utils import (
+    get_fp_layer_names,
+    clear_memory,
+    is_debug_mode,
+    get_device_and_parallelism,
+    set_cuda_visible_devices)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -163,8 +169,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             help="Names of quantitative blocks, please use commas to separate them.")
 
-        self.add_argument("--disable_torch_compile", action='store_true',
-                          help="whether to disable torch compile")
+        self.add_argument("--enable_torch_compile", action='store_true',
+                          help="whether to enable torch compile")
 
         self.add_argument("--act_data_type", default=None, type=str, help="activation data type")
 
@@ -285,6 +291,16 @@ def _gguf_args_check(args):
     formats = args.format.lower().replace(' ', '').split(",")
     for format in _GGUF_CONFIG:
         if format in formats:
+            from pathlib import Path
+            from auto_round.export.export_to_gguf.convert import Model
+            hparams = Model.load_hparams(Path(args.model))
+            model_architecture = hparams["architectures"][0]
+            try:
+                model_class = Model.from_model_architecture(model_architecture)
+            except NotImplementedError:
+                logger.error(f"Model {model_architecture} is not supported to export GGUF format")
+                sys.exit(1)
+
             unsupport_list, reset_list = [], []
             gguf_config = _GGUF_CONFIG[format]
             for k, v in gguf_config.items():
@@ -338,7 +354,8 @@ def tune(args):
         assert False, "marlin backend only supports sym quantization, please remove --asym"
 
     ##must set this before import torch
-    device_str, use_auto_mapping = set_cuda_visible_devices(args.device)
+    set_cuda_visible_devices(args.device)
+    device_str, use_auto_mapping = get_device_and_parallelism(args.device)
 
     import torch
     if not args.disable_deterministic_algorithms:
@@ -346,9 +363,9 @@ def tune(args):
         # logger.info("`torch.use_deterministic_algorithms` is enabled by default for reproducibility "
         #             "and can be disabled using the `--disable_deterministic_algorithms` argument.")
 
-    if not args.disable_torch_compile:
-        logger.info("`torch.compile` is enabled by default to reduce tuning costs. "
-                    "If it causes issues, you can disable it using the `--disable_torch_compile` argument.")
+    if args.enable_torch_compile:
+        logger.info("`torch.compile` is enabled to reduce tuning costs. "
+                    "If it causes issues, you can disable it by remove `--enable_torch_compile` argument.")
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -463,7 +480,7 @@ def tune(args):
     if args.quant_lm_head:
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
-            if "auto_round" not in format:
+            if "auto_round" not in format and "fake" not in format:
                 auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
@@ -475,7 +492,7 @@ def tune(args):
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
-    enable_torch_compile = False if "--disable_torch_compile" in sys.argv else None
+    enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
 
     autoround = round(
         model,
@@ -558,7 +575,8 @@ def tune(args):
                 dispatch_model(model, model.hf_device_map)
                 user_model = model
             else:
-                user_model = model  # .to(device_str)
+                device_str = detect_device(device_str)
+                user_model = model.to(device_str)
 
             if args.eval_bs is None or args.eval_bs == "auto":
                 args.eval_bs = 16
@@ -573,7 +591,8 @@ def tune(args):
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
-    device_str, parallelism = set_cuda_visible_devices(device)
+    set_cuda_visible_devices(device)
+    device_str, parallelism = get_device_and_parallelism(device)
     ##model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code},add_bos_token=True'
     model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}'
     if parallelism:
@@ -612,3 +631,4 @@ def eval_sequence(args):
             for key in res_keys:
                 res_all[key].update(res[key])
         print(make_table(res_all))
+

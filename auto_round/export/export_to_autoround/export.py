@@ -50,7 +50,7 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
 
 
-def dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym):
+def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym):
     """
     Dynamically imports and returns the appropriate QuantLinear class based on the specified backend and parameters.
 
@@ -97,7 +97,9 @@ def pack_layer(name, model, layer_config, backend, pbar):
         layer = get_module(model, name)
         device = layer.weight.device
 
-        QuantLinear = dynamic_import_quantLinear_for_packing(backend, bits, group_size, sym)
+        scale = layer.scale
+        zp = layer.zp
+        QuantLinear = dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym)
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features
@@ -117,21 +119,19 @@ def pack_layer(name, model, layer_config, backend, pbar):
             new_layer.device = device
             set_module(model, name, new_layer)
             qlayer = new_layer
-            scale = layer_config[name]["scale"]
-            zero = layer_config[name]["zp"]
+
             # so far can only pack layer on CPU
             qlayer.to("cpu")
             ##force to float32 to be compatible with torch 2.0
-            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
             sig = inspect.signature(qlayer.pack)
             param_count = len(sig.parameters)
             if param_count == 2:
                 qlayer.pack(layer, scale)
             else:
-                qlayer.pack(layer, scale, zero, None)
+                qlayer.pack(layer, scale, zp, None)
             qlayer.to(device)
         else:
-            scale, zp = layer_config[name]["scale"].to(torch.float32), layer_config[name]["zp"].to(torch.float32)
+            scale, zp = scale.to(torch.float32),zp.to(torch.float32)
             scale = scale.t().contiguous()
             zp = zp.t().contiguous()
             if bits != 4:
@@ -286,3 +286,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

@@ -97,8 +97,8 @@ def pack_layer(name, model, layer_config, backend, pbar):
         new_layer.device = device
         set_module(model, name, new_layer)
         qlayer = new_layer
-        scale = layer_config[name]["scale"]
-        zero = layer_config[name]["zp"]
+        scale = layer.scale
+        zero = layer.zp
         # so far can only pack layer on CPU
         qlayer.to("cpu")
         ##force to float32 to be compatible with torch 2.0
