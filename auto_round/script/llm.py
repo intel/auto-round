@@ -109,6 +109,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--disable_eval", action='store_true', help="whether to do lm-eval evaluation after tuning")
 
+        self.add_argument(
+            "--eval_task_by_task",
+            action="store_true",
+            help="whether to eval task by task.")
+
         self.add_argument("--disable_amp", action='store_true', help="disable amp")
 
         self.add_argument(
@@ -194,17 +199,21 @@ class EvalArgumentParser(argparse.ArgumentParser):
             default="0",
             type=str,
             help="the device to be used for tuning. "
-                 "Currently, device settings support CPU, GPU, and HPU."
-                 "The default is set to cuda:0,"
-                 "allowing for automatic detection and switch to HPU or CPU."
-                 "set --device 0,1,2 to use multiple cards.")
-        self.add_argument("--tasks",
-                          default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                                  "openbookqa,boolq,arc_easy,arc_challenge",
-                          help="lm-eval tasks")
+            "Currently, device settings support CPU, GPU, and HPU."
+            "The default is set to cuda:0,"
+            "allowing for automatic detection and switch to HPU or CPU."
+            "set --device 0,1,2 to use multiple cards.")
+        self.add_argument(
+            "--tasks",
+            "--task",
+            default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
+            "openbookqa,boolq,arc_easy,arc_challenge",
+            help="lm-eval tasks")
         self.add_argument(
             "--disable_trust_remote_code", action='store_true', help="whether to disable trust_remote_code")
         self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int, help="batch size in evaluation")
+        self.add_argument("--eval_task_by_task", action='store_true', help="whether to eval task by task.")
+
 
 
 def setup_parser():
@@ -572,8 +581,6 @@ def tune(args):
 
         logger.info(f"Using lm-eval version {lm_eval_version}")
 
-        tasks, model_args, device_str = _eval_init(args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
-
         if args.act_bits <= 8:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
@@ -584,16 +591,25 @@ def tune(args):
                 device_str = detect_device(device_str)
                 user_model = model.to(device_str)
 
-            if args.eval_bs is None or args.eval_bs == "auto":
-                args.eval_bs = 16
-            from auto_round.eval.evaluation import simple_evaluate_user_model
-            res = simple_evaluate_user_model(
-                user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
+            if args.eval_task_by_task:
+                eval_task_by_task(user_model, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+            else:
+                if args.eval_bs is None:
+                    args.eval_bs = "auto"
+                from auto_round.eval.evaluation import simple_evaluate_user_model
+                res = simple_evaluate_user_model(
+                    user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
+                print(make_table(res))
         else:
-            from auto_round.eval.evaluation import simple_evaluate
-            res = simple_evaluate(
-                model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
-        print(make_table(res))
+            if args.eval_task_by_task:
+                eval_task_by_task(eval_folder, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+            else:
+                from auto_round.eval.evaluation import simple_evaluate
+                tasks, model_args, device_str = _eval_init(
+                    args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
+                res = simple_evaluate(
+                    model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+                print(make_table(res))
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
@@ -620,17 +636,53 @@ def eval(args):
     print(make_table(res))
 
 
-def eval_sequence(args):
-    tasks, model_args, device_str = _eval_init(args.tasks, args.model, args.device, args.disable_trust_remote_code)
+def eval_task_by_task(model, device, tasks, batch_size=None, max_batch_size=64, trust_remote_code=True):
+    set_cuda_visible_devices(device)
+    device_str, parallelism = get_device_and_parallelism(device)
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
-    from auto_round.eval.evaluation import simple_evaluate
+    import traceback
+    from auto_round.utils import logger
+    from lm_eval import simple_evaluate as lm_simple_evaluate
+    from lm_eval.models.huggingface import HFLM
+
+    # from auto_round import AutoRoundConfig
+    if batch_size is None:
+        batch_size = "auto"
+    if not isinstance(model, str):
+        parallelism = False
+    hflm = HFLM(
+        pretrained=model,
+        device=device_str,
+        batch_size=batch_size,
+        max_batch_size=max_batch_size,
+        parallelize=parallelism,
+        trust_remote_code=trust_remote_code)
+
+    if isinstance(tasks, str):
+        tasks = tasks.replace(" ", "").split(",")
 
     from lm_eval.utils import make_table  # pylint: disable=E0401
     res_all = {}
     res_keys = ["results", "versions", "n-shot", "higher_is_better"]
     for task in tasks:
-        res = simple_evaluate(model="hf", model_args=model_args, tasks=task, device=device_str, batch_size=args.eval_bs)
+        try:
+            res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size)
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                try:
+                    logger.warning("Out of memory, reset batch_size to 1 and re-try.")
+                    res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1)
+                except Exception as e:
+                    traceback.print_exc()
+                    continue
+            else:
+                traceback.print_exc()
+                continue
+        except Exception as e:
+            traceback.print_exc()
+            continue
+
         if not res_all:
             res_all = res
         else:

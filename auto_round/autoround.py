@@ -717,7 +717,7 @@ class AutoRound(object):
             self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             clear_memory()
         except RuntimeError as e:
-            if "CUDA out of memory" in str(e):
+            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
                 logger.info("switch to cpu to cache block inputs")
                 if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 16) or
                         self.__class__.__name__ == "AutoRoundMLLM"):
