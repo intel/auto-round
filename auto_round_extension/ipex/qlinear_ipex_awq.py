@@ -51,7 +51,7 @@ class QuantLinear(nn.Module):
     def post_init(self):
         assert self.qweight.device.type == "cpu"
         from packaging import version
-        import importlib_metadata
+        from auto_round.auto_quantizer import importlib_metadata
         from intel_extension_for_pytorch.nn.modules.weight_only_quantization import WeightOnlyQuantizedLinear
         version_ipex = version.parse(importlib_metadata.version("intel_extension_for_pytorch"))
         if version_ipex < version.parse("2.6.0"):
