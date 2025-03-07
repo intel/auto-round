@@ -213,75 +213,52 @@ class WQLinear_GEMM(nn.Module):
 
         # need scales and zeros info for real quantization
         assert scales is not None and zeros is not None
-        scale_zeros = zeros * scales
 
         awq_linear.scales = scales.clone().half()
         if linear.bias is not None:
             awq_linear.bias = linear.bias.clone().half()
 
         pack_num = 32 // awq_linear.w_bit
-
+        device = "cpu"
         if torch.cuda.is_available():
+            device = "cuda:0"
 
-            repeat_scales = scales.to("cuda:0").t().repeat_interleave(group_size, 1)
-            if isinstance(zeros, torch.Tensor):
-                repeat_zeros = zeros.to("cuda:0").t().repeat_interleave(group_size, 1)
-            else:
-                repeat_zeros = zeros
-            intweight = torch.round(linear.weight.to("cuda:0") / repeat_scales + repeat_zeros).to(
-                torch.int).t().contiguous().to("cpu")
-            intweight = intweight.to(dtype=torch.int32)
-            del repeat_scales
+        repeat_scales = scales.to(device).t().repeat_interleave(group_size, 1)
+        if isinstance(zeros, torch.Tensor):
+            repeat_zeros = zeros.to(device).t().repeat_interleave(group_size, 1)
         else:
-            intweight = []
-            for idx in range(awq_linear.in_features):
-                intweight.append(
-                    torch.round(
-                        (linear.weight.data[:, idx] + scale_zeros[idx // group_size])
-                        / awq_linear.scales[idx // group_size]
-                    ).to(torch.int)[:, None]
-                )
-            intweight = torch.cat(intweight, dim=1)
-            intweight = intweight.t().contiguous()
-            intweight = intweight.to(dtype=torch.int32)
+            repeat_zeros = zeros
+        intweight = torch.round(linear.weight.to(device) / repeat_scales + repeat_zeros).to(
+            torch.int).t().contiguous()
+        intweight = intweight.to(dtype=torch.int32)
+        del repeat_scales
 
-        qweight = torch.zeros(
-            (intweight.shape[0], intweight.shape[1] // 32 * awq_linear.w_bit),
-            dtype=torch.int32,
-            device=intweight.device,
-        )
+        intweight_new = intweight.reshape(-1, intweight.shape[1] // pack_num, pack_num)
 
-        for col in range(intweight.shape[1] // pack_num):
-            order_map = [0, 2, 4, 6, 1, 3, 5, 7]
-            for i in range(pack_num):
-                qweight_col = intweight[:, col * pack_num + order_map[i]]
-                qweight[:, col] |= qweight_col << (i * awq_linear.w_bit)
-        awq_linear.qweight = qweight
+        new_order_map = torch.tensor([0, 4, 1, 5, 2, 6, 3, 7], device=device) * awq_linear.w_bit
+        res = intweight_new << new_order_map
+        res = torch.sum(res, dim=-1).to(torch.int32)
+
+        awq_linear.qweight = res.to("cpu")
 
         if isinstance(zeros, torch.Tensor):
-            qzeros = torch.zeros(
-                (scales.shape[0], scales.shape[1] // 32 * awq_linear.w_bit),
-                dtype=torch.int32,
-                device=zeros.device,
-            )
-            zeros = zeros.to(dtype=torch.int32, device="cpu")
+            zeros = zeros.to(dtype=torch.int32, device=device)
 
-            for col in range(zeros.shape[1] // pack_num):
-                order_map = [0, 2, 4, 6, 1, 3, 5, 7]
-                for i in range(pack_num):
-                    qzero_col = zeros[:, col * pack_num + order_map[i]]
-                    qzeros[:, col] |= qzero_col << (i * awq_linear.w_bit)
+            zeros_new = zeros.reshape(-1, zeros.shape[1] // pack_num, pack_num)
+            zeros_new = zeros_new << new_order_map
+            qzeros = torch.sum(zeros_new, dim=-1).to(torch.int32)
+
         else:
             value = 0
             for i in range(pack_num):
                 value |= zeros << (i * awq_linear.w_bit)
             qzeros = torch.ones(
-                (scales.shape[0], scales.shape[1] // 32 * awq_linear.w_bit),
+                (scales.shape[0], scales.shape[1] // pack_num),
                 dtype=torch.int32,
-                device=qweight.device,
+                device=device,
             ) * value
 
-        awq_linear.qzeros = qzeros
+        awq_linear.qzeros = qzeros.to("cpu")
 
         return awq_linear
 
