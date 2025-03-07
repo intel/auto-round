@@ -233,20 +233,18 @@ class WQLinear_GEMM(nn.Module):
         intweight = intweight.to(dtype=torch.int32)
         del repeat_scales
 
-        intweight_new = intweight.reshape(-1, intweight.shape[1] // pack_num, pack_num)
+        intweight = intweight.reshape(-1, intweight.shape[1] // pack_num, pack_num)
 
         new_order_map = torch.tensor([0, 4, 1, 5, 2, 6, 3, 7], device=device) * awq_linear.w_bit
-        res = intweight_new << new_order_map
-        res = torch.sum(res, dim=-1).to(torch.int32)
-
-        awq_linear.qweight = res.to("cpu")
+        intweight = intweight << new_order_map
+        intweight = torch.sum(intweight, dim=-1).to(torch.int32)
+        awq_linear.qweight = intweight.to("cpu")
 
         if isinstance(zeros, torch.Tensor):
             zeros = zeros.to(dtype=torch.int32, device=device)
-
-            zeros_new = zeros.reshape(-1, zeros.shape[1] // pack_num, pack_num)
-            zeros_new = zeros_new << new_order_map
-            qzeros = torch.sum(zeros_new, dim=-1).to(torch.int32)
+            zeros = zeros.reshape(-1, zeros.shape[1] // pack_num, pack_num)
+            zeros = zeros << new_order_map
+            qzeros = torch.sum(zeros, dim=-1).to(torch.int32)
 
         else:
             value = 0

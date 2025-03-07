@@ -126,11 +126,11 @@ class QuantLinear(nn.Module, TritonModuleMixin):
 
         del repeat_scales
         intweight = intweight.reshape(-1, intweight.shape[1] // 32 * self.bits, 32 // self.bits)
-        new_order_map = torch.arange(0, 32 // self.bits, device=device) * self.bits
-        res = intweight << new_order_map
-        res = torch.sum(res, dim=-1)
+        order_map = torch.arange(0, 32 // self.bits, device=device) * self.bits
+        intweight = intweight << order_map
+        intweight = torch.sum(intweight, dim=-1)
 
-        intweight = res.t().contiguous().to(torch.int32)
+        intweight = intweight.t().contiguous().to(torch.int32)
         self.qweight = intweight.to("cpu")
 
         if isinstance(zeros, torch.Tensor):
