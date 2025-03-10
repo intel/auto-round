@@ -65,6 +65,7 @@ pip install auto-round-lib
   ```
 
 </details>
+<br>
 
 ## Model Quantization
 
@@ -85,9 +86,9 @@ auto-round \
     --output_dir ./tmp_autoround
 ```
 
-We provide recipes for best accuracy, light accuracy and fast running speed with low memory. Details as below.
+We provide recipes for 'auto-round-best', 'auto-round-light' and 'auto-round-fast' mode, running speed with low memory. Details as below.
 <details>
-  <summary>Other Recipes</summary>
+  <summary>Other Recipes & Results</summary>
 
   ```bash
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
@@ -117,10 +118,32 @@ auto-round-fast \
     --group_size 128 \
     --disable_eval 
   ```
+<br>
+
+#### Auto-Round Recipes Results
+In general, it is recommended to use the auto-round default mode. When resources or quantization time are a priority, the auto-round-light mode can be preferred for models larger than 3B. Below are the quantization results for models ranging from 3B to 72B as a reference(with torch compile enabled).
+
+- Accuracy Results
+
+| Config\Model | Qwen2.5-7B-Instruct | llama3.1-8b-instruct | falcon3-10b | OLMo-2-1124-7B-Instruct | Qwen2.5-72B-Instruct |
+|:--------------:|:---------------------:|:----------------------:|:-------------:|:-------------------------:|:----------------------:|
+| 16bits       | 0.6470              | 0.6212               | 0.6151      | 0.6268                  | 0.7229               |
+| Best         | 0.6426              | **0.6115**               | **0.6092**      | **0.6295**                  | 0.7242               |
+| Default      | 0.6441              | 0.6106               | 0.6080      | 0.6253                  | **0.7252**               |
+| Light        | **0.6453**              | 0.6111               | 0.6063      | 0.6261                  | 0.7243               |
+
+- Time Costs
+
+| Config\Model | Qwen2.5-7B-Instruct | llama3.1-8b-instruct | falcon3-10b | OLMo-2-1124-7B-Instruct | Qwen2.5-72B-Instruct |
+|:--------------|---------------------:|----------------------:|-------------:|-------------------------:|----------------------:|
+| Best         | 3425                | 3754                 | 4840        | 3360                    | 33984                |
+| Default      | 739                 | 757                  | 1046        | 704                     | 7076                 |
+| Light        | 306                 | 255                  | 410         | 311                     | 2273                 |
+
 
 </details>
 
-
+<br>
 
 ### API Usage (Gaudi2/CPU/GPU)
 
@@ -199,8 +222,15 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 - `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.
 
 </details>
+<br>
+
 
 ### API Usage for VLMs
+
+By default, AutoRoundMLLM only quantizes the text module of VLMs and uses `NeelNanda/pile-10k` for calibration.
+
+<details>
+  <summary>Detail Usage for VLMs</summary>
 
 **This feature is experimental and may be subject to changes**, including potential bug fixes, API modifications, or
 adjustments to default hype-parameters
@@ -230,7 +260,11 @@ autoround.quantize()
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
-#### Export Formats
+</details>
+
+<br>
+
+### Export Formats
 **AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
 inference. **[2,4] bits are supported**. However, it has not yet gained widespread community adoption.
 
@@ -244,17 +278,7 @@ adopted within the community, **only 4-bits quantization is supported**.
 
 **GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and q4_1 (W4G32) is supported in our repo**. 
 
-
-### Auto-Round Results
-For models greater than or equal to 3B, it is recommended to use auto-round-light mode to save resources and time costs(light mode is 2-3 times faster than default mode). Below are the quantization results for models ranging from 3B to 72B as a reference.
-| Config\Model | llama3.1-8b-instruct | Qwen2.5-3B-Instruct | Qwen2.5-7B-Instruct | falcon3-3B | falcon3-10B | Llama-3.3-70B-Instruct | OLMo-2-1124-7B-Instruct | Qwen2.5-72B-Instruct |
-|--------------|----------------------|---------------------|---------------------|------------|-------------|------------------------|-------------------------|----------------------|
-| 16 bits       | 0.6212               | 0.5502              | 0.6470              | 0.5203     | 0.6151      | 0.7023                 | 0.6268                  | 0.7229               |
-| Best         | 0.6115               | 0.5418              | 0.6426              | 0.5142     | 0.6092      | 0.7033                 | 0.6295                  | 0.7242               |
-| Default      | 0.6106               | 0.5492              | 0.6441              | 0.5133     | 0.6080      | 0.6925                 | 0.6253                  | 0.7252               |
-| Light        | 0.6111               | 0.5459              | 0.6453              | 0.5108     | 0.6063      | 0.6436                | 0.6261                  | 0.7243               |
-
-
+<br>
 
 ### Quantization Costs
 
@@ -311,8 +335,10 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
 <br>
+
+### Evaluation
 <details>
-  <summary>Evaluation</summary>
+  <summary>Click to expand</summary>
 
 ```bash
 auto-round --model saved_quantized_model \
@@ -322,6 +348,7 @@ auto-round --model saved_quantized_model \
 ```
 
 </details>
+<br>
 
 ### AutoGPTQ/AutoAWQ format
 
@@ -341,9 +368,14 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 AutoRound supports basically all the major large language models.
 
+<details>
+  <summary>Supported Models List</summary>
+
 Please note that an asterisk (*) indicates third-party quantized models, which may lack accuracy data and use a
 different recipe. We greatly appreciate their efforts and encourage more users to share their models, as we cannot
 release most of the models ourselves.
+
+
 
  Model                                     | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 |-------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -387,7 +419,11 @@ release most of the models ourselves.
 | 01-ai/Yi-6B-Chat                          | [outdated-recipe](./docs/Yi-6B-Chat-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |                                     
 | facebook/opt-2.7b                         | [outdated-recipe](./docs/opt-2.7b-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | bigscience/bloom-3b                       | [outdated-recipe](./docs/bloom-3B-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| EleutherAI/gpt-j-6b                       | [outdated-recipe](./docs/gpt-j-6B-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | 
+| EleutherAI/gpt-j-6b                       | [outdated-recipe](./docs/gpt-j-6B-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | 
+
+</details> 
+
+<br>
 
 ## Integration
 
@@ -398,6 +434,8 @@ AutoRound has been integrated into multiple repositories.
 [ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel)
 
 [pytorch/ao](https://github.com/pytorch/ao)
+
+<br>
 
 ## Reference
 
