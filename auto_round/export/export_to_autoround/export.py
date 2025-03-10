@@ -243,7 +243,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         backend = backend.replace("auto_round", "auto_gptq")
 
     model = kwargs["model"]
-    to_quant_block_names = kwargs["to_quant_block_names"]
     quant_block_list = kwargs.get("quant_block_list", None)
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     if not inplace:
