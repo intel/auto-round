@@ -37,7 +37,7 @@ import torch
 
 import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module, get_autogptq_packing_qlinear
+    get_module, logger, set_module
 import copy
 import json
 import os
@@ -49,6 +49,7 @@ import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
+from auto_round.utils import get_autogptq_packing_qlinear
 
 BLOCK_PATTERNS = [  ## copy from transformers optimum
     "transformer.h",
@@ -73,8 +74,6 @@ def pack_layer(name, model, layer_config, backend, pbar):
         sym = config["sym"]
 
         layer = get_module(model, name)
-        if hasattr(layer, "orig_layer"):
-            layer = layer.orig_layer
         device = layer.weight.device
 
         QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
@@ -110,21 +109,18 @@ def pack_layer(name, model, layer_config, backend, pbar):
             layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
         sig = inspect.signature(qlayer.pack)
         param_count = len(sig.parameters)
-        act_scale = layer.act_scale
         if param_count == 2:
-            qlayer.pack(layer, scale, act_scale, layer.w_bf16_to_fp8_scale)
+            qlayer.pack(layer, scale)
         else:
-            qlayer.pack(layer, scale, zero, act_scale, layer.w_bf16_to_fp8_scale, None)
+            qlayer.pack(layer, scale, zero, None)
         qlayer.to(device)
         pbar.update(1)
-
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
                                **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
     model = kwargs["model"]
-    model = model.to(torch.bfloat16)
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     quant_block_list = kwargs.get("quant_block_list", get_block_names(model))

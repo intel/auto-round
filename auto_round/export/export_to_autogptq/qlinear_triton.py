@@ -1,4 +1,4 @@
-# Copyright (c) 2023 Intel Corporation
+# Copyright (c) 2024 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,221 +12,151 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# MIT License
-#
-# Copyright (c) 2023 潘其威(William)
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+import math
+
+import numpy as np
 import torch
-
-import auto_round.export.export_to_autogptq.qlinear_triton
-from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module
-import copy
-import json
-import os
-
 import torch.nn as nn
 import transformers
-
-import threadpoolctl as tctl
-import inspect
-from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
-from auto_round.utils import get_autogptq_packing_qlinear
-
-BLOCK_PATTERNS = [  ## copy from transformers optimum
-    "transformer.h",
-    "model.decoder.layers",
-    "gpt_neox.layers",
-    "model.layers",
-]
+import numba
 
 
-def pack_layer(name, model, layer_config, backend, pbar):
-    with tctl.threadpool_limits(limits=1):
-        pbar.set_description(f"packing {name}")
-        if name == "lm_head":  ##dese not support lm-head
-            pbar.update(1)
-            return
-        config = layer_config[name]
-        if config["bits"] > 8:
-            pbar.update(1)
-            return
-        bits = config["bits"]
-        group_size = config["group_size"]
-        sym = config["sym"]
+##TODO different bits
+# @numba.jit(nopython=True, parallel=True)
+# def pack_array_with_numba_b4_c32(
+#         raw_array: np.ndarray, packed_array: np.ndarray
+# ) -> np.ndarray:
+#     """Pack the array with numba when bits=4 and compress_bits=32."""
+#     bits = 4
+#     n_pack = 32 // bits
+#
+#     for row in range(packed_array.shape[0]):
+#         packed_array[row] = ((((raw_array[row * n_pack + 7]) << 28)
+#                               | ((raw_array[row * n_pack + 6]) << 24)
+#                               | ((raw_array[row * n_pack + 5]) << 20)
+#                               | ((raw_array[row * n_pack + 4]) << 16)
+#                               | ((raw_array[row * n_pack + 3]) << 12)
+#                               | (raw_array[row * n_pack + 2]) << 8)
+#                              | ((raw_array[row * n_pack + 1]) << 4)
+#                              | ((raw_array[row * n_pack]) << 0))
+#
+#     return packed_array
 
-        layer = get_module(model, name)
-        device = layer.weight.device
 
-        QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
+class TritonModuleMixin:
+    @classmethod
+    def warmup(cls, model, transpose=False, seqlen=2048):
+        pass
 
-        if isinstance(layer, nn.Linear):
-            in_features = layer.in_features
-            out_features = layer.out_features
-        elif isinstance(layer, nn.Conv2d):
-            in_features = layer.in_channels
-            out_features = layer.out_channels
-        elif isinstance(layer, transformers.pytorch_utils.Conv1D):
-            in_features = layer.weight.shape[0]
-            out_features = layer.weight.shape[1]
 
-        bias = layer.bias is not None
-        ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
-        new_layer = QuantLinear(  ##pylint: disable=E1123
-            bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
+class QuantLinear(nn.Module, TritonModuleMixin):
+    QUANT_TYPE = "triton"
+
+    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs):
+        super().__init__()
+        if bits not in [2, 4, 8]:
+            raise NotImplementedError("Only 2,4,8 bits are supported.")
+        if infeatures % 32 != 0 or outfeatures % 32 != 0:
+            raise NotImplementedError("in_feature and out_feature must be divisible by 32.")
+        self.infeatures = infeatures
+        self.outfeatures = outfeatures
+        self.bits = bits
+        self.group_size = group_size if group_size != -1 else infeatures
+        self.maxq = 2 ** self.bits - 1
+
+        self.register_buffer(
+            "qweight",
+            torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
         )
-
-        new_layer.device = device
-        set_module(model, name, new_layer)
-        qlayer = new_layer
-        scale = layer.scale
-        zero = layer.zp
-        # so far can only pack layer on CPU
-        qlayer.to("cpu")
-        ##force to float32 to be compatible with torch 2.0
-        if sym and isinstance(new_layer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
-            layer, scale = layer.to("cpu"), scale.to("cpu")
-            zero = 2 ** (bits - 1)
+        self.register_buffer(
+            "qzeros",
+            torch.zeros(
+                (
+                    math.ceil(infeatures / self.group_size),
+                    outfeatures // 32 * self.bits,
+                ),
+                dtype=torch.int32,
+            ),
+        )
+        self.register_buffer(
+            "scales",
+            torch.zeros(
+                (math.ceil(infeatures / self.group_size), outfeatures),
+                dtype=torch.float16,
+            ),
+        )
+        self.register_buffer(
+            "g_idx",
+            torch.tensor([i // self.group_size for i in range(infeatures)], dtype=torch.int32),
+        )
+        if bias:
+            self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
         else:
-            layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
-        sig = inspect.signature(qlayer.pack)
-        param_count = len(sig.parameters)
-        if param_count == 2:
-            qlayer.pack(layer, scale)
+            self.bias = None
+
+        self.trainable = trainable
+
+    def post_init(self):
+        pass
+
+    def pack(self, linear, scales, zeros, g_idx=None):
+        scales_t = scales.t().contiguous()
+        self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx
+        if linear.bias is not None:
+            self.bias = linear.bias.clone().half()
+        self.scales = scales_t.clone().half()
+        device = "cpu"
+        if torch.cuda.is_available():
+            device = "cuda:0"
+
+        W = linear.weight.data.to(device).clone()
+        if isinstance(linear, nn.Conv2d):
+            W = W.flatten(1)
+        if isinstance(linear, transformers.pytorch_utils.Conv1D):
+            W = W.t()
+
+        repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
+        if isinstance(zeros, torch.Tensor):
+            repeat_zeros = zeros.to(device).repeat_interleave(self.group_size, 1)
         else:
-            qlayer.pack(layer, scale, zero, None)
-        qlayer.to(device)
-        pbar.update(1)
+            repeat_zeros = zeros
 
-def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
-                               **kwargs):
-    """Export the model to autogptq format to easily leverage cuda kernel."""
+        intweight = torch.round(W.to(device) / repeat_scales + repeat_zeros).to(
+            torch.int32)
 
-    model = kwargs["model"]
-    supported_types = kwargs["supported_types"]
-    safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
-    quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
-    tokenizer = kwargs.get("tokenizer", None)
-    processor = kwargs.get("processor", None)
-    if tokenizer is not None:
-        tokenizer.save_pretrained(output_dir)
-    if processor is not None:
-        processor.save_pretrained(output_dir)
-    ##check module quantized in block, this may have bug for mixed precision quantization
-    quantization_config = kwargs["serialization_dict"]
-    all_blocks = quant_block_list
-    flattened_list = [item for sublist in all_blocks for item in sublist]
-    common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
-    if common_prefix not in BLOCK_PATTERNS:
-        logger.error(f"auto-gptq format may not support loading this quantized model")
-        quantization_config['block_name_to_quantize'] = common_prefix
-        quantization_config.pop("to_quant_block_names", None)
+        del repeat_scales
+        intweight = intweight.reshape(-1, intweight.shape[1] // 32 * self.bits, 32 // self.bits)
+        order_map = torch.arange(0, 32 // self.bits, device=device) * self.bits
+        intweight = intweight << order_map
+        intweight = torch.sum(intweight, dim=-1)
 
-    all_to_quantized = True
-    modules_in_block_to_quantize = []
-    for block_names in all_blocks:
-        first_block = get_module(model, block_names[0])
-        for n, m in first_block.named_modules():
-            is_supported_type = False
-            for supported_type in supported_types:
-                if isinstance(m, supported_type):
-                    is_supported_type = True
-                    break
-            if not is_supported_type:
-                continue
-            if not check_to_quantized(m):
-                all_to_quantized = False
-            else:
-                modules_in_block_to_quantize.append(n)
-    modules_in_block_to_quantize = [modules_in_block_to_quantize]
-    if all_to_quantized:
-        modules_in_block_to_quantize = None
+        intweight = intweight.t().contiguous().to(torch.int32)
+        self.qweight = intweight.to("cpu")
 
-    if not inplace:
-        model = copy.deepcopy(model.to("cpu"))
+        if isinstance(zeros, torch.Tensor):
+            zeros = zeros.t().contiguous()
+            zeros -= 1
+            zeros = zeros.numpy().astype(np.uint32)
+            qzeros = np.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32)
+            i = 0
+            col = 0
+            while col < qzeros.shape[1]:
+                for j in range(i, i + (32 // self.bits)):
+                    qzeros[:, col] |= zeros[:, j] << (self.bits * (j - i))
+                i += 32 // self.bits
+                col += 1
 
-    layer_config = kwargs["layer_config"]
-    names = list(layer_config.keys())
-    max_workers = 1
-    if not torch.cuda.is_available():
-        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        with tqdm(total=len(names), leave=True) as pbar:
-            def wrapper(name):
-                pack_layer(name, model, layer_config, backend, pbar)
-
-            for _ in executor.map(wrapper, names):
-                pass
-    if output_dir is None:
-        return model
-
-    quantization_config["quant_method"] = "gptq"
-    quantization_config.pop("dataset", None)  ## pile-10k is not supported in gptq
-    quantization_config["desc_act"] = False  ## for autogptq API
-    quantization_config["true_sequential"] = False
-    quantization_config["damp_percent"] = 0.01
-    if modules_in_block_to_quantize is not None:
-        quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
-    if hasattr(model, "config"):
-        model.config.quantization_config = quantization_config
-
-    dtype = torch.float16  ##force dtype to fp16
-    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
-    return model
+            qzeros = qzeros.astype(np.int32)
+            self.qzeros = torch.from_numpy(qzeros)
+        else:
+            zeros -= 1
+            shape = scales_t.shape
+            value = 0
+            for j in range(0, (32 // self.bits)):
+                value |= zeros << (self.bits * j)
+            qzeros = np.ones((shape[0], shape[1] // 32 * self.bits), dtype=np.uint32) * value
+            qzeros = qzeros.astype(np.int32)
+            self.qzeros = torch.from_numpy(qzeros)
 
 
-def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True,
-         dtype=None):
-    """Save model state dict and configs.
-
-    Args:
-        model (`nn.Module`):
-            Model to be saved. The model can be wrapped or unwrapped.
-        save_dir (`str`):
-            Directory to which to save. Will be created if it doesn't exist.
-        max_shard_size (`str`, defaults to `"10GB"`):
-            The maximum size for a checkpoint before being sharded. Checkpoints shard will then be each of size
-            lower than this size. If expressed as a string, needs to be digits followed by a unit (like `"5MB"`).
-            <Tip warning={true}>
-
-            If a single weight of the model is bigger than `max_shard_size`, it will be in its own checkpoint shard
-            which will be bigger than `max_shard_size`.
-
-            </Tip>
-        safe_serialization (`bool`, defaults to `True`):
-            Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
-    """
-    ##max_shard_size = "10000GB"  ## API of auto-gptq with marlin does not support shard size
-    os.makedirs(save_dir, exist_ok=True)
-    model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-    config_path = os.path.join(save_dir, "config.json")
-    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
-        with open(config_path, 'r') as file:
-            data = json.load(file)
-        data["torch_dtype"] = str(dtype).split(".")[-1]
-        with open(config_path, 'w') as file:
-            json.dump(data, file, indent=2)
-
-    config_file = "quantize_config.json"
-    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
-            json.dump(model.config.quantization_config, f, indent=2)
+__all__ = ["QuantLinear"]
