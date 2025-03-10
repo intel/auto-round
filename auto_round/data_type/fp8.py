@@ -83,6 +83,8 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
         tensor = tensor.reshape(-1, orig_shape[-1])
         max_tensor = torch.max(torch.abs(tensor), dim=-1)[
                          0] * max_scale
+    elif isinstance(tensor_max,torch.Tensor):
+        max_tensor = tensor_max.clone().detach().to(tensor.device) * max_scale
     else:
         max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
     scale = max_tensor.to(torch.float32) / info.max
@@ -125,6 +127,8 @@ def quant_fp8_sym_gaudi3(tensor, max_scale=1.0, tensor_max=None, **kwargs):
         tensor = tensor.reshape(-1, orig_shape[-1])
         max_tensor = torch.max(torch.abs(tensor), dim=-1)[
                          0] * max_scale
+    elif isinstance(tensor_max, torch.Tensor):
+        max_tensor = tensor_max.clone().detach().to(tensor.device) * max_scale
     else:
         max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
     scale = max_tensor.to(torch.float32) / fp8_max
