@@ -112,7 +112,8 @@ class QuantLinear(nn.Module):
         return (
             f"{self.__class__.__name__}({self.infeatures}, {self.outfeatures}, "
             f"bits={self.bits}, group_size={self.group_size},"
-            f"scales shape: {self.scales.shape}, act_scales shape: {self.act_scales.shape}, w_bf16_to_fp8_scale shape: {self.w_bf16_to_fp8_scale.shape}"
+            f"scales shape: {self.scales.shape}, "
+            f"act_scales shape: {self.act_scales.shape}, w_bf16_to_fp8_scale shape: {self.w_bf16_to_fp8_scale.shape}"
             f")"
         )
 

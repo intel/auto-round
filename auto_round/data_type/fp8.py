@@ -79,7 +79,7 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     info = torch.finfo(torch.float8_e4m3fn)
     orig_dtype = tensor.dtype
 
-    if tensor_max is None:  ##dynamic per-te
+    if tensor_max is None:  ##dynamic per-token
         tensor = tensor.reshape(-1, orig_shape[-1])
         max_tensor = torch.max(torch.abs(tensor), dim=-1)[
                          0] * max_scale
