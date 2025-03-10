@@ -196,7 +196,7 @@ from auto_round.data_type.utils import get_gaudi_fp8_ste_func, float8_e4m3fn_ste
 
 @register_dtype("fp8_to_int_sym")
 def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0,
-                               q_scale_thresh=1e-5,**kwargs):
+                               q_scale_thresh=1e-5, **kwargs):
     """Two-stage quantization: quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
 
     This method first quantizes the input tensor into float8 format and then performs
@@ -240,4 +240,4 @@ def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
                                                                           q_scale_thresh=q_scale_thresh)
     qdq_tensor = qdq_int4_tensor * bf16_to_fp8_scale
 
-    return qdq_tensor, {"scale":scale_fp8_to_int4, "bf16_to_fp8_scale":bf16_to_fp8_scale}, None
+    return qdq_tensor, {"scale": scale_fp8_to_int4, "bf16_to_fp8_scale": bf16_to_fp8_scale}, zp_fp8_to_int4

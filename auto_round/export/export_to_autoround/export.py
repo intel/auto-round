@@ -21,12 +21,14 @@ import torch
 import torch.nn as nn
 import transformers
 
+import auto_round.export.export_to_autoround.qlinear_triton_act
 from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
 from auto_round.utils import get_autogptq_packing_qlinear
+
 
 def check_neq_config(config, data_type, bits, group_size, sym):
     """
@@ -50,7 +52,7 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
 
 
-def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym):
+def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):
     """
     Dynamically imports and returns the appropriate QuantLinear class based on the specified backend and parameters.
 
@@ -67,10 +69,13 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym):
         AssertionError: If the backend is not supported.
     """
     if "auto_round" in backend and "awq" not in backend and "gptq" not in backend:
+        if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
+            return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
         ##only support triton and exllamav2
         if not ("triton" in backend or "exllamav2" in backend):
             logger.warning_once(f"auto_round format does not support {backend}, try to pack each layer with auto_gptq")
             return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
+
         from auto_round_extension.cuda.qlinear_triton import QuantLinear
         return QuantLinear
     elif "awq" in backend:
@@ -82,24 +87,79 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym):
         assert False, f"only support auto_gptq, auto_awq and auto_round backend"
 
 
-def pack_layer(name, model, layer_config, backend, pbar):
+def pack_qact_layer(name, model, layer_config, backend, pbar):
     with tctl.threadpool_limits(limits=1):
         pbar.set_description(f"packing {name}")
-        config = layer_config[name]
-        if config["bits"] > 8:
+        layer = get_module(model, name)
+        if hasattr(layer, "orig_layer"):
+            layer = layer.orig_layer
+
+        if layer.bits > 8:
             pbar.update(1)
             return
 
-        bits = config["bits"]
-        group_size = config["group_size"]
-        sym = config["sym"]
-
-        layer = get_module(model, name)
         device = layer.weight.device
+
+        bits = layer.bits
+        group_size = layer.group_size
+        sym = layer.sym
+        act_bits = layer.act_bits
+        assert act_bits <= 8
+
+        act_scale = layer.act_scale if hasattr(layer, "act_scale") else None
+        w_bf16_to_fp8_scale = layer.w_bf16_to_fp8_scale if hasattr(layer, "w_bf16_to_fp8_scale") else None
+        scale = layer.scale
+        zp = layer.zp
+        QuantLinear = auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
+
+        if isinstance(layer, nn.Linear):
+            in_features = layer.in_features
+            out_features = layer.out_features
+        elif isinstance(layer, nn.Conv2d):
+            in_features = layer.in_channels
+            out_features = layer.out_channels
+        elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+            in_features = layer.weight.shape[0]
+            out_features = layer.weight.shape[1]
+        bias = layer.bias is not None
+        use_pc = False
+        new_layer = QuantLinear(  ##pylint: disable=E1123
+            bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype, use_pc=use_pc
+        )
+        new_layer.device = device
+        set_module(model, name, new_layer)
+        qlayer = new_layer
+
+        qlayer.to("cpu")
+
+        qlayer.pack(layer, scale, zp, act_scale, w_bf16_to_fp8_scale)
+        qlayer.to(device)
+        pbar.update(1)
+
+
+def pack_layer(name, model, layer_config, backend, pbar):
+    with tctl.threadpool_limits(limits=1):
+        pbar.set_description(f"packing {name}")
+        layer = get_module(model, name)
+        if hasattr(layer, "orig_layer"):
+            layer = layer.orig_layer
+        if layer.act_bits <= 8:
+            return pack_qact_layer(name, model, layer_config, backend, pbar)
+
+
+        if layer.bits > 8:
+            pbar.update(1)
+            return
+        device = layer.weight.device
+
+        bits = layer.bits
+        group_size = layer.group_size
+        sym = layer.sym
+        act_bits = layer.act_bits
 
         scale = layer.scale
         zp = layer.zp
-        QuantLinear = dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym)
+        QuantLinear = dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits)
 
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features
@@ -120,7 +180,6 @@ def pack_layer(name, model, layer_config, backend, pbar):
             set_module(model, name, new_layer)
             qlayer = new_layer
 
-            # so far can only pack layer on CPU
             qlayer.to("cpu")
             ##force to float32 to be compatible with torch 2.0
             sig = inspect.signature(qlayer.pack)
@@ -131,7 +190,7 @@ def pack_layer(name, model, layer_config, backend, pbar):
                 qlayer.pack(layer, scale, zp, None)
             qlayer.to(device)
         else:
-            scale, zp = scale.to(torch.float32),zp.to(torch.float32)
+            scale, zp = scale.to(torch.float32), zp.to(torch.float32)
             scale = scale.t().contiguous()
             zp = zp.t().contiguous()
             if bits != 4:

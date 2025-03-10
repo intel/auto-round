@@ -335,7 +335,7 @@ class AutoRound(object):
         # assert self.tokenizer != None or self.dataloader != None
         if self.act_bits <= 8:
             logger.warning(
-                "Activation quantization is an experimental feature with limited support and a complex API. "
+                "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently")
 
         if "mx_fp" in self.data_type:
@@ -444,7 +444,7 @@ class AutoRound(object):
 
     def dump_qinfo_to_layer_config(self):
         """
-        dump quantization scale and zp to layer configuration
+        dump quantization scale and zp to layer configuration, this function could be deleted later
         Args:
 
         Returns:
@@ -456,6 +456,8 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if n not in self.layer_config.keys():
                 continue
+            if hasattr(m,"orig_layer"):
+                m = m.orig_layer
             if not hasattr(m, "scale"):
                 self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
@@ -463,6 +465,9 @@ class AutoRound(object):
                 self.layer_config[n]["bits"] = 16
                 self.layer_config[n]["group_size"] = None
                 self.layer_config[n]["sym"] = None
+                m.bits = 16
+                m.group_size = None
+                m.sym = None
 
     def quant_layers(self, layer_names, layer_inputs):
         """Quantizes specified layers based on inputs and configuration.
@@ -1378,6 +1383,8 @@ class AutoRound(object):
             if processor is not None:
                 processor.save_pretrained(output_dir)
             return
+        if self.act_bits<=8 and format == "qdq":
+            logger.warning("Support for exporting activation quantization is limited. Please ensure that your configuration is supported.")
         if format in ["gguf:q4_0", "gguf:q4_1"]:
             if self.group_size != 32:
                 logger.error(f"{format} need group_size=32, but it is {self.group_size}, cannot export.")

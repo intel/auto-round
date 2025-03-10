@@ -141,7 +141,7 @@ class WrapperLinear(torch.nn.Module):
             tunable (bool): Whether the parameter should be tunable.
         """
         if tunable:
-            p = torch.nn.Parameter(torch.ones(shape, device=self.device, dtype=dtype)*value, requires_grad=True)
+            p = torch.nn.Parameter(torch.ones(shape, device=self.device, dtype=dtype) * value, requires_grad=True)
             self.params.update({name: p})
         else:
             p = torch.tensor(1.0 * value, device=self.device, dtype=dtype)
@@ -246,15 +246,14 @@ class WrapperLinear(torch.nn.Module):
 
         if zp is not None:
             zp = zp.reshape(shape[0], -1)
-        if isinstance(scale,dict):
+        if isinstance(scale, dict):
             for key in scale.keys():
-                if key=="scale":
-                   name = key
+                if key == "scale":
+                    name = key
+                    self.orig_layer.scale = scale[key].reshape(shape[0], -1).to("cpu")
                 else:
-                    name = "w_"+key
-                setattr(self.orig_layer, name, scale[key].to("cpu"))
-            # self.orig_layer.scale = bf16_to_int4_scale.to("cpu")
-            # self.orig_layer.w_bf16_to_fp8_scale = scale[1].to("cpu")
+                    name = "w_" + key
+                    setattr(self.orig_layer, name, scale[key].to("cpu"))
         else:
             self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
         self.orig_layer.zp = zp.to("cpu") if zp is not None else None
