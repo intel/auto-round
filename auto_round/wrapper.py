@@ -83,7 +83,7 @@ class WrapperLinear(torch.nn.Module):
     def _check_act_quantization(data_type: str):
         support_dtypes = ["int", "mx_fp", "fp", "nv_fp"]
         for support_dtype in support_dtypes:
-            if data_type.startswith(support_dtype) and len(data_type)> len(support_dtype):
+            if data_type.startswith(support_dtype) and len(data_type) > len(support_dtype):
                 ##first check the following two bits
                 suc_2str = data_type[len(support_dtype):len(support_dtype) + 2]
                 if str.isdigit(suc_2str):  ##>8
@@ -274,15 +274,20 @@ class WrapperLinear(torch.nn.Module):
 
         ##unwrapper act
         if self.enable_act_quant:
-            act_max_scale = best_params.get('act_max_scale', torch.tensor(1.0)).to(self.device)
-            act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-            _, act_scale, _ = self._qdq_act(torch.zeros((1)).to(self.device), act_max_scale=self.act_max_scale,
-                                            act_max=act_max)
+            if not self.orig_layer.act_dynamic:
+                act_max_scale = best_params.get('act_max_scale', torch.tensor(1.0)).to(self.device)
+                act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
+                tmp_shape = (1)
+                if self.orig_layer.act_group_size > 1:
+                    tmp_shape = (1, self.orig_layer.act_group_size)
+                _, act_scale, _ = self._qdq_act(torch.zeros(tmp_shape).to(self.device), act_max_scale=self.act_max_scale,
+                                                act_max=act_max)
+                self.orig_layer.act_max = torch.tensor(self.orig_layer.act_max * act_max_scale.item()).to("cpu")
+                self.orig_layer.act_scale = act_scale.to("cpu")
+
             self.orig_layer.q_scale_thresh = self.q_scale_thresh
             self.orig_layer.data_type = self.data_type
-            if not self.orig_layer.act_dynamic:
-                self.orig_layer.act_max = torch.tensor(self.orig_layer.act_max * act_max_scale.item()).to("cpu")
-            self.orig_layer.act_scale = act_scale.to("cpu")
+
             self.orig_layer.act_data_type = self.act_data_type
             self.orig_layer.act_quant_func = self.act_quant_func
             wrapper_layer = WrapperWALayer(self.orig_layer)
