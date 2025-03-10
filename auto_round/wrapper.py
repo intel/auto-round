@@ -83,7 +83,7 @@ class WrapperLinear(torch.nn.Module):
     def _check_act_quantization(data_type: str):
         support_dtypes = ["int", "mx_fp", "fp", "nv_fp"]
         for support_dtype in support_dtypes:
-            if data_type.startswith(support_dtype):
+            if data_type.startswith(support_dtype) and len(data_type)> len(support_dtype):
                 ##first check the following two bits
                 suc_2str = data_type[len(support_dtype):len(support_dtype) + 2]
                 if str.isdigit(suc_2str):  ##>8

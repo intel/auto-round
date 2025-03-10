@@ -356,7 +356,7 @@ class AutoRound(object):
                 logger.warning(
                     f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
-                    f" than gradient_accumulate_steps * batch_szie")
+                    f" than gradient_accumulate_steps * batch_size")
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
@@ -456,7 +456,7 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if n not in self.layer_config.keys():
                 continue
-            if hasattr(m,"orig_layer"):
+            if hasattr(m, "orig_layer"):
                 m = m.orig_layer
             if not hasattr(m, "scale"):
                 self.layer_config[n]["data_type"] = "float"
@@ -1383,8 +1383,10 @@ class AutoRound(object):
             if processor is not None:
                 processor.save_pretrained(output_dir)
             return
-        if self.act_bits<=8 and format == "qdq":
-            logger.warning("Support for exporting activation quantization is limited. Please ensure that your configuration is supported.")
+        if self.act_bits <= 8 and format == "qdq":
+            logger.warning(
+                "Support for exporting activation quantization is limited. "
+                "Please ensure that your configuration is supported.")
         if format in ["gguf:q4_0", "gguf:q4_1"]:
             if self.group_size != 32:
                 logger.error(f"{format} need group_size=32, but it is {self.group_size}, cannot export.")

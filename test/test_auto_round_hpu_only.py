@@ -48,7 +48,7 @@ def test_import():
 
 @pytest.mark.parametrize(
     "data_type",
-    ["fp8_gaudi3_to_int_sym", "fp8_gaudi3_to_int_sym_v2", "fp8_gaudi3_to_int_sym_pc"],
+    ["fp8_to_int_sym"],
 )
 def test_w4a8(data_type):
     from auto_round import AutoRound
