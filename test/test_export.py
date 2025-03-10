@@ -36,10 +36,6 @@ class TestAutoRound(unittest.TestCase):
     def test_autogptq_format(self):
         if not torch.cuda.is_available():
             return
-        try:
-            import auto_gptq
-        except:
-            return
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,
@@ -131,10 +127,6 @@ class TestAutoRound(unittest.TestCase):
 
 
     def test_autoround_awq_format(self):
-        try:
-            import awq
-        except:
-            return
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,
@@ -150,8 +142,11 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:awq")
-
-        from auto_round.auto_quantizer import AutoHfQuantizer
+        try:
+            import awq
+        except:
+            return
+        from auto_round import AutoRoundConfig
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
@@ -160,10 +155,6 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoawq_format(self):
-        try:
-            import awq
-        except:
-            return
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,
@@ -180,8 +171,10 @@ class TestAutoRound(unittest.TestCase):
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, \
             format="auto_awq", model_path="facebook/opt-125m")
-
-        from auto_round.auto_quantizer import AutoHfQuantizer
+        try:
+            import awq
+        except:
+            return
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"

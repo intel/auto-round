@@ -8,7 +8,7 @@ AutoRound
 [![version](https://img.shields.io/badge/release-0.4.6-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/OPEA">
-  <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
+<img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
 ---
 <div align="left">
@@ -19,7 +19,9 @@ steps,
 which competes impressively against recent methods without introducing any additional inference overhead and keeping low
 tuning cost. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
-details and quantized models in several Hugging Face Spaces, e.g. [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup) and [fbaldassarri](https://huggingface.co/fbaldassarri).
+details and quantized models in several Hugging Face Spaces,
+e.g. [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup)
+and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 <div align="center">
 
@@ -29,11 +31,11 @@ details and quantized models in several Hugging Face Spaces, e.g. [OPEA](https:/
 
 ## What's New
 
-* [2024/01]  We provide experimental support for GGUF q4_0 and q4_1 formats.
+* [2024/03] The INT2-mixed R1 model (~200GB) retains 97.9% accuracy. Check
+  out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
+* [2024/01] We provide experimental support for GGUF q4_0 and q4_1 formats.
 * [2024/11] We provide experimental support for VLM quantization, please check out
   the [README](./auto_round/mllm/README.md)
-* [2024/11] We provide some tips and tricks for LLM&VLM quantization, please check
-  out [this blog](https://medium.com/@NeuralCompressor/10-tips-for-quantizing-llms-and-vlms-with-autoround-923e733879a7)
 
 ## Installation
 
@@ -260,11 +262,13 @@ autoround.quantize()
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
+
 </details>
 
 <br>
 
 ### Export Formats
+
 **AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
 inference. **[2,4] bits are supported**. However, it has not yet gained widespread community adoption.
 
@@ -274,9 +278,10 @@ asymmetric kernel has issues** that can cause considerable accuracy drops, parti
 models.
 
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
-adopted within the community, **only 4-bits quantization is supported**. 
+adopted within the community, **only 4-bits quantization is supported**.
 
-**GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and q4_1 (W4G32) is supported in our repo**. 
+**GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and
+q4_1 (W4G32) is supported in our repo**.
 
 <br>
 
@@ -284,7 +289,8 @@ adopted within the community, **only 4-bits quantization is supported**.
 
 Testing was conducted on the Nvidia A100 80G using the nightly version of PyTorch 2.6.0.dev20241029+cu124. Please note
 that data
-loading and packing costs have been excluded from the evaluation. **We recommend enabling torch.compile for PyTorch versions 2.6 and above.**
+loading and packing costs have been excluded from the evaluation. **We recommend enabling torch.compile for PyTorch
+versions 2.6 and above.**
 
 To optimize GPU memory usage, in addition to activating `low_gpu_mem_usage`, you can set `gradient_accumulate_steps=8`
 and a
@@ -387,11 +393,11 @@ release most of the models ourselves.
 | meta-llama/Llama-3.2-11B-Vision           | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Llama-3.2-11B-Vision-Instruct-int4-sym-inc), [model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Llama-3.2-11B-Vision-Instruct-int4-sym-inc)                                                                                                                                                                                                                                                                                                                    |
 | microsoft/Phi-3.5-vision-instruct         | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Phi-3.5-vision-instruct-int4-sym-inc), [model-opea-int4-sym-gptq](https://huggingface.co/OPEA/Phi-3.5-vision-instruct-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                    |
 | liuhaotian/llava-v1.5-7b                  | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/llava-v1.5-7b-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/llava-v1.5-7b-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                     |
-| Qwen/Qwen2.5-7B-Instruct                  | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-7B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Qwen2.5-7B-Instruct-int4-sym-inc) [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-7B-Instruct-AutoRound-GPTQ-asym-4bit), [recipe](./docs/Qwen2.5-7B-Instruct-sym.md)                                                                                                                                                                    |
+| Qwen/Qwen2.5-7B-Instruct                  | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-7B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Qwen2.5-7B-Instruct-int4-sym-inc) [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-7B-Instruct-AutoRound-GPTQ-asym-4bit), [recipe](./docs/Qwen2.5-7B-Instruct-sym.md)                                                                                                                                                                              |
 | Qwen/Qwen2.5-14B-Instruct                 | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-14B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Qwen2.5-14B-Instruct-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                       |
 | Qwen/Qwen2.5-32B-Instruct                 | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-32B-Instruct-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| Qwen/Qwen2.5-Coder-32B-Instruct           | [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-Coder-32B-Instruct-AutoRound-GPTQ-4bit)                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Qwen/Qwen2.5-72B-Instruct                 | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-72B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Qwen2.5-72B-Instruct-int4-sym-inc), [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-4bit),  [model-kaitchup-autogptq-int2*](https://huggingface.co/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-2bit), [recipe](./docs/Qwen2.5-72B-Instruct-sym.md)                                              |
+| Qwen/Qwen2.5-Coder-32B-Instruct           | [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-Coder-32B-Instruct-AutoRound-GPTQ-4bit)                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Qwen/Qwen2.5-72B-Instruct                 | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-72B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Qwen2.5-72B-Instruct-int4-sym-inc), [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-4bit),  [model-kaitchup-autogptq-int2*](https://huggingface.co/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-2bit), [recipe](./docs/Qwen2.5-72B-Instruct-sym.md)                                                                  |
 | meta-llama/Meta-Llama-3.1-70B-Instruct    | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Meta-Llama-3.1-70B-Instruct-int4-sym-inc), [model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Meta-Llama-3.1-70B-Instruct-int4-sym-inc),[model-opea-int4-asym-autoround](https://huggingface.co/OPEA/Meta-Llama-3.1-70B-Instruct-int4-asym-inc)                                                                                                                                                                                                                |
 | meta-llama/Meta-Llama-3.1-8B-Instruct     | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc),[model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-asym), [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-sym), [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-8B-Instruct-int4-inc) |
 | meta-llama/Meta-Llama-3.1-8B              | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-autoround-gptq-4bit-sym)                                                                                                                                                                                                                                                                                                                                                                                                                     |

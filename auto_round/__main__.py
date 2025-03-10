@@ -14,15 +14,20 @@
 import sys
 
 def run_eval():
-    if "--native" in sys.argv:
-        sys.argv.remove("--native")
-        from auto_round.script.llm import setup_eval_parser, eval
-        args = setup_eval_parser()
-        eval(args)
+    from auto_round.script.llm import setup_eval_parser
+    args = setup_eval_parser()
+    if args.eval_task_by_task:
+        from auto_round.script.llm import eval_task_by_task
+        eval_task_by_task(
+            model=args.model,
+            device=args.device,
+            tasks=args.tasks,
+            batch_size=args.eval_bs,
+            trust_remote_code=not args.disable_trust_remote_code)
     else:
-        from auto_round.script.llm import setup_eval_parser, eval_sequence
-        args = setup_eval_parser()
-        eval_sequence(args)
+        from auto_round.script.llm import eval
+        eval(args)
+    
 
 def run():
     if "--eval" in sys.argv:
