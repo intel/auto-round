@@ -146,7 +146,6 @@ def pack_layer(name, model, layer_config, backend, pbar):
         if layer.act_bits <= 8:
             return pack_qact_layer(name, model, layer_config, backend, pbar)
 
-
         if layer.bits > 8:
             pbar.update(1)
             return
