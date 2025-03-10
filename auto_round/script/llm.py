@@ -589,6 +589,7 @@ def tune(args):
                 eval_task_by_task(user_model, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
             else:
                 if args.eval_bs is None or args.eval_bs == "auto":
+                    logger.warning("This API does not support auto currently, reset eval_bs to 16")
                     args.eval_bs = 16
                 from auto_round.eval.evaluation import simple_evaluate_user_model
                 res = simple_evaluate_user_model(
