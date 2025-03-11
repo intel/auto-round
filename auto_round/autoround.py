@@ -450,7 +450,9 @@ class AutoRound(object):
         Returns:
             None
         """
+
         # load scale and zp if use low_cpu_memory
+
         self.model = self.model.to('cpu')
 
         for n, m in self.model.named_modules():
@@ -458,7 +460,7 @@ class AutoRound(object):
                 continue
             if hasattr(m, "orig_layer"):
                 m = m.orig_layer
-            if not hasattr(m, "scale"):
+            if self.layer_config[n]["bits"] > 8:
                 self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
                     self.layer_config[n]["data_type"] = "bfloat"
@@ -1321,6 +1323,11 @@ class AutoRound(object):
         else:
             quant_block = self.quant_block
 
+        ##attach the name
+        for n, m in self.model.named_modules():
+            if isinstance(m, torch.nn.Linear):
+                m.name = n
+
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
@@ -1346,8 +1353,18 @@ class AutoRound(object):
                 device=device,
             )
             pbar.update(1)
+            for _, tmp_m in m.named_modules():
+                from auto_round.export.export_to_autogptq.export import pack_layer
+                if hasattr(tmp_m, "bits") and tmp_m.bits <= 8:
+                    pack_layer(tmp_m.name, self.model, None, "auto_round:gptq", None)
+                    tmp = 1
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+
+        ##del the name
+        for n, m in self.model.named_modules():
+            if hasattr(m, "name"):
+                delattr(m, "name")
 
         del q_input
         del input_ids
