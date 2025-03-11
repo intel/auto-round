@@ -1321,7 +1321,7 @@ class AutoRound(object):
         else:
             quant_block = self.quant_block
 
-        ##attatch the name
+        ##attach the name
         for n, m in self.model.named_modules():
             if isinstance(m, torch.nn.Linear):
                 m.name = n
