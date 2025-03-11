@@ -805,7 +805,7 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
               within a block of the model.
     """
     for n, m in model.named_modules():
-        if isinstance(m, tuple(supported_types)):
+        if isinstance(m, tuple(supported_types)) or "linear" in m.__class__.__name__.lower():
             m.tmp_name = n
     layers_in_block = []
     if bool(quant_block_list):
