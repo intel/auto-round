@@ -1415,6 +1415,8 @@ class AutoRound(object):
 
         serialization_keys = [
             "bits",
+            "act_bits",
+
             "group_size",
             "sym",
             "data_type",
@@ -1434,6 +1436,11 @@ class AutoRound(object):
             "to_quant_block_names",
             "enable_norm_bias_tuning"
         ]
+        if self.act_bits <= 8:
+            serialization_keys.extend(["act_bits",
+                                       "act_group_size",
+                                       "act_sym",
+                                       "act_dynamic"])
         if isinstance(self.dataset, str):
             serialization_keys.append("dataset")
         serialization_dict = {}
