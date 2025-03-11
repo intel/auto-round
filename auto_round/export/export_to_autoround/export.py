@@ -143,8 +143,8 @@ def pack_layer(name, model, layer_config, backend, pbar):
         layer = get_module(model, name)
         if hasattr(layer, "orig_layer"):
             layer = layer.orig_layer
-        if layer.act_bits <= 8:
-            return pack_qact_layer(name, model, layer_config, backend, pbar)
+        # if layer.act_bits <= 8:
+        #     return pack_qact_layer(name, model, layer_config, backend, pbar)
 
         if layer.bits > 8:
             pbar.update(1)
@@ -283,13 +283,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     max_workers = 1
     if not torch.cuda.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        with tqdm(total=len(names), leave=True) as pbar:
-            def wrapper(name):
-                pack_layer(name, model, layer_config, backend, pbar)
-
-            for _ in executor.map(wrapper, names):
-                pass
+    # with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    #     with tqdm(total=len(names), leave=True) as pbar:
+    #         def wrapper(name):
+    #             pack_layer(name, model, layer_config, backend, pbar)
+    #
+    #         for _ in executor.map(wrapper, names):
+    #             pass
 
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
