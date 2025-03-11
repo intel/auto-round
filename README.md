@@ -1,5 +1,6 @@
 <div align="center">
 
+
 AutoRound
 ===========================
 <h3> Advanced Quantization Algorithm for LLMs</h3>
@@ -8,7 +9,7 @@ AutoRound
 [![version](https://img.shields.io/badge/release-0.4.6-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/OPEA">
-  <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
+<img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
 ---
 <div align="left">
@@ -19,13 +20,16 @@ steps,
 which competes impressively against recent methods without introducing any additional inference overhead and keeping low
 tuning cost. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
-details and quantized models in several Hugging Face Spaces, e.g. [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup) and [fbaldassarri](https://huggingface.co/fbaldassarri).
+details and quantized models in several Hugging Face Spaces,
+e.g. [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup)
+and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 <div align="center">
 
 ![](docs/imgs/autoround_overview.png)
 
 <div align="left">
+
 
 
 ## What's New
@@ -89,7 +93,7 @@ auto-round \
 
 We provide recipes for 'auto-round-best' and 'auto-round-light' mode, running speed with low memory. Details as below.
 <details>
-  <summary>Other Recipes & Results</summary>
+  <summary>Other Recipes</summary>
 
   ```bash
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
@@ -110,40 +114,33 @@ auto-round-light \
     --disable_eval 
   ```
 
-  ```bash
+  <!-- ```bash
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
 auto-round-fast \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
     --disable_eval 
-  ```
-<br>
-
-#### Auto-Round Recipes Results
-In general, it is recommended to use the auto-round default mode. When resources or quantization time are a priority, the auto-round-light mode can be preferred for models larger than 3B. For 2bits scenario, we recommend auto-round-best mode.
-
-- Average Accuracy Results of 13 tasks(W4G128)
-
-| Config\Model | Qwen2.5-0.5B-Instruct | falcon3-3B | Qwen2.5-7B-Instruct | llama3.1-8b-instruct | falcon3-10b | Qwen2.5-72B-Instruct |
-|--------------|-----------------------|------------|---------------------|----------------------|-------------|----------------------|
-| 16bits       | 0.5541                | 0.6614     | 0.6470              | 0.6212               | 0.6151      | 0.7229               |
-| Best         | **0.5675**            | **0.6638** | 0.6426              | **0.6115**           | **0.6092**  | 0.7242               |
-| Default      | 0.5659                | 0.6496     | 0.6441              | 0.6106               | 0.6080      | **0.7252**           |
-| Light        | 0.5564                | 0.6433     | **0.6453**          | 0.6111               | 0.6063      | 0.7243               |
-
-
-- Time Costs(with torch compile enabled)
-
-| Config\Model | Qwen2.5-0.5B-Instruct | falcon3-3B | Qwen2.5-7B-Instruct | llama3.1-8b-instruct | falcon3-10b | Qwen2.5-72B-Instruct |
-|:--------------|-----------------------:|------------:|---------------------:|----------------------:|-------------:|----------------------:|
-| Best         | 383                   | 1329       | 3425                | 3754                 | 4840        | 34480                |
-| Default      | 106                   | 341        | 739                 | 757                  | 1046        | 7076                 |
-| Light        | 87                    | 166        | 306                 | 255                  | 410         | 2273                 |
-
-
+  ``` -->
 
 </details>
+<br>
+
+#### Auto-Round Recipe Results
+In general, it is recommended to use the auto-round default mode. When resources or quantization time are a priority, the auto-round-light mode can be preferred for models larger than 3B. For 2bits scenario, we recommend auto-round-best mode.
+
+- Average Accuracy of 13 tasks(W4G128) and Time Cost(enable_torch_compile) Results
+
+  | Model         |           | |  Accuracy              |        | |  |   Time Cost      |       |
+  |---------------|:-------------------|:--------|:---------|--------|-|:-----------|:---------|:-------|
+  |               | 16bits | Best   | Default | Light  || Best      | Default | Light |
+  | Qwen2.5-0.5B-Instruct | 0.5541            | **0.5675** | 0.5659  | 0.5564 || 383       | 106     | 87    |
+  | Falcon3-3B            | 0.6614            | **0.6638** | 0.6496  | 0.6433 || 1329      | 341     | 166   |
+  | Qwen2.5-7B-Instruct   | 0.6470             | 0.6426 | 0.6441  | **0.6453** || 3425      | 739     | 306   |
+  | Llama3.1-8B-Instruct   | 0.6212            | **0.6115** | 0.6106  | 0.6111 || 3754      | 757     | 255   |
+  | Falcon3-10B           | 0.6151            | **0.6092** | 0.6080   | 0.6063 || 4840      | 1046    | 410   |
+  | Qwen2.5-72B-Instruct  | 0.7229            | 0.7242 | **0.7252**  | 0.7243 || 34480     | 7076    | 2273  |
+
 
 <br>
 
