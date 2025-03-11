@@ -1354,7 +1354,7 @@ class AutoRound(object):
             for n, tmp_m in m.named_modules():
                 from auto_round.export.export_to_autogptq.export import pack_layer
                 if hasattr(m, "bits") and m.bits <= 8:
-                    pack_layer(n, self.model, None, "auto_round:gptq", None)
+                    pack_layer(tmp_m.name, self.model, None, "auto_round:gptq", None)
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
 
