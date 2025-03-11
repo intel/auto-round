@@ -12,44 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# MIT License
+#
+# Copyright (c) 2023 潘其威(William)
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 import math
+from logging import getLogger
 
 import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-import numba
+
+logger = getLogger(__name__)
 
 
-##TODO different bits
-# @numba.jit(nopython=True, parallel=True)
-# def pack_array_with_numba_b4_c32(
-#         raw_array: np.ndarray, packed_array: np.ndarray
-# ) -> np.ndarray:
-#     """Pack the array with numba when bits=4 and compress_bits=32."""
-#     bits = 4
-#     n_pack = 32 // bits
-#
-#     for row in range(packed_array.shape[0]):
-#         packed_array[row] = ((((raw_array[row * n_pack + 7]) << 28)
-#                               | ((raw_array[row * n_pack + 6]) << 24)
-#                               | ((raw_array[row * n_pack + 5]) << 20)
-#                               | ((raw_array[row * n_pack + 4]) << 16)
-#                               | ((raw_array[row * n_pack + 3]) << 12)
-#                               | (raw_array[row * n_pack + 2]) << 8)
-#                              | ((raw_array[row * n_pack + 1]) << 4)
-#                              | ((raw_array[row * n_pack]) << 0))
-#
-#     return packed_array
-
-
-class TritonModuleMixin:
-    @classmethod
-    def warmup(cls, model, transpose=False, seqlen=2048):
-        pass
-
-
-class QuantLinear(nn.Module, TritonModuleMixin):
+class QuantLinear(nn.Module):
     QUANT_TYPE = "triton"
 
     def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs):
@@ -82,9 +77,26 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             "scales",
             torch.zeros(
                 (math.ceil(infeatures / self.group_size), outfeatures),
-                dtype=torch.float16,
+                dtype=torch.bfloat16,
             ),
         )
+        use_pc = kwargs.pop("use_pc", False)
+        w_bf16_to_fp8_scale_shape = (1, self.outfeatures) if use_pc else (1,)
+        self.register_buffer(
+            "w_bf16_to_fp8_scale",
+            torch.zeros(
+                w_bf16_to_fp8_scale_shape,
+                dtype=torch.bfloat16,
+            ),
+        )
+        self.register_buffer(
+            "act_scales",
+            torch.zeros(
+                (1),
+                dtype=torch.bfloat16,
+            ),
+        )
+
         self.register_buffer(
             "g_idx",
             torch.tensor([i // self.group_size for i in range(infeatures)], dtype=torch.int32),
@@ -96,12 +108,23 @@ class QuantLinear(nn.Module, TritonModuleMixin):
 
         self.trainable = trainable
 
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}({self.infeatures}, {self.outfeatures}, "
+            f"bits={self.bits}, group_size={self.group_size},"
+            f"scales shape: {self.scales.shape}, "
+            f"act_scales shape: {self.act_scales.shape}, w_bf16_to_fp8_scale shape: {self.w_bf16_to_fp8_scale.shape}"
+            f")"
+        )
+
     def post_init(self):
         pass
 
-    def pack(self, linear, scales, zeros, g_idx=None):
+    def pack(self, linear, scales, zeros, act_scales, w_bf16_to_fp8_scale, g_idx=None):
         scales_t = scales.t().contiguous()
         self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx
+        self.act_scales.data.copy_(act_scales.squeeze().clone())
+        self.w_bf16_to_fp8_scale.data.copy_(w_bf16_to_fp8_scale.squeeze().clone())
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
@@ -136,7 +159,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         if isinstance(zeros, torch.Tensor):
             zeros = zeros.t().contiguous()
             zeros -= 1
-            zeros = zeros.numpy().astype(np.uint32)
+            zeros = zeros.to(torch.float16).numpy().astype(np.uint32)
             qzeros = np.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=np.uint32)
             i = 0
             col = 0
@@ -157,6 +180,56 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             qzeros = np.ones((shape[0], shape[1] // 32 * self.bits), dtype=np.uint32) * value
             qzeros = qzeros.astype(np.int32)
             self.qzeros = torch.from_numpy(qzeros)
+
+    @classmethod
+    def warmup(cls, model, transpose=False, seqlen=2048):
+        return
+        # """
+        # Pre-tunes the quantized kernel
+        # """
+        # from tqdm import tqdm
+        #
+        # kn_values = {}
+        #
+        # for _, m in model.named_modules():
+        #     if not isinstance(m, cls):
+        #         continue
+        #
+        #     k = m.infeatures
+        #     n = m.outfeatures
+        #
+        #     if (k, n) not in kn_values:
+        #         kn_values[(k, n)] = (
+        #             m.qweight,
+        #             m.scales,
+        #             m.qzeros,
+        #             m.g_idx,
+        #             m.bits,
+        #             m.maxq,
+        #         )
+        #
+        # logger.info(f"Found {len(kn_values)} unique KN Linear values.")
+        # logger.info("Warming up autotune cache ...")
+        # with torch.no_grad():
+        #     for m in tqdm(range(0, math.ceil(math.log2(seqlen)) + 1)):
+        #         m = 2 ** m
+        #         for (k, n), (
+        #                 qweight,
+        #                 scales,
+        #                 qzeros,
+        #                 g_idx,
+        #                 bits,
+        #                 maxq,
+        #         ) in kn_values.items():
+        #             if transpose:
+        #                 a = torch.randn(m, k, dtype=torch.float16, device=model.device)
+        #                 quant_matmul_248(a, qweight, scales, qzeros, g_idx, bits, maxq)
+        #                 a = torch.randn(m, n, dtype=torch.float16, device=model.device)
+        #                 transpose_quant_matmul_248(a, qweight, scales, qzeros, g_idx, bits, maxq)
+        #             else:
+        #                 a = torch.randn(m, k, dtype=torch.float16, device=model.device)
+        #                 quant_matmul_inference_only_248(a, qweight, scales, qzeros, g_idx, bits, maxq)
+        # del kn_values
 
 
 __all__ = ["QuantLinear"]

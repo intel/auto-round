@@ -177,7 +177,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--enable_torch_compile", action='store_true',
                           help="whether to enable torch compile")
 
-        self.add_argument("--act_data_type", default=None, type=str, help="activation data type")
+        self.add_argument("--act_data_type","--act_dtype", default=None, type=str, help="activation data type")
 
         self.add_argument("--disable_act_dynamic", action='store_true', help="activation static quantization")
 
@@ -414,12 +414,18 @@ def tune(args):
             torch_dtype=torch_dtype,
             trust_remote_code=not args.disable_trust_remote_code)
     else:
-        model = model_cls.from_pretrained(
-            model_name,
-            low_cpu_mem_usage=True,
-            torch_dtype=torch_dtype,
-            trust_remote_code=not args.disable_trust_remote_code,
-            device_map="auto" if use_auto_mapping else None)
+        from auto_round.utils import _use_hpu_compile_mode
+        if _use_hpu_compile_mode():
+            model = model_cls.from_pretrained(
+                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                attn_implementation="eager",
+                trust_remote_code=not args.disable_trust_remote_code, device_map="auto" if use_auto_mapping else None
+            )
+        else:
+            model = model_cls.from_pretrained(
+                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                trust_remote_code=not args.disable_trust_remote_code, device_map="auto" if use_auto_mapping else None
+            )
 
     from auto_round import AutoRound, AutoRoundAdam
 
