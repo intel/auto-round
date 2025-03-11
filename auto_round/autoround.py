@@ -450,6 +450,8 @@ class AutoRound(object):
         Returns:
             None
         """
+        return
+
         # load scale and zp if use low_cpu_memory
         self.model = self.model.to('cpu')
 
@@ -458,7 +460,7 @@ class AutoRound(object):
                 continue
             if hasattr(m, "orig_layer"):
                 m = m.orig_layer
-            if not hasattr(m, "scale"):
+            if m.bits>8:
                 self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
                     self.layer_config[n]["data_type"] = "bfloat"
@@ -1351,7 +1353,7 @@ class AutoRound(object):
                 device=device,
             )
             pbar.update(1)
-            for n, tmp_m in m.named_modules():
+            for _, tmp_m in m.named_modules():
                 from auto_round.export.export_to_autogptq.export import pack_layer
                 if hasattr(m, "bits") and m.bits <= 8:
                     pack_layer(tmp_m.name, self.model, None, "auto_round:gptq", None)
