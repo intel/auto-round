@@ -59,21 +59,23 @@ BLOCK_PATTERNS = [  ## copy from transformers optimum
 ]
 
 
-def pack_layer(name, model, layer_config, backend, pbar):
+def pack_layer(name, model, layer_config, backend, pbar=None):
     with tctl.threadpool_limits(limits=1):
-        pbar.set_description(f"packing {name}")
+        if pbar is not None:
+            pbar.set_description(f"packing {name}")
         if name == "lm_head":  ##dese not support lm-head
-            pbar.update(1)
+            if pbar is not None:
+                pbar.update(1)
             return
-        config = layer_config[name]
-        if config["bits"] > 8:
-            pbar.update(1)
-            return
-        bits = config["bits"]
-        group_size = config["group_size"]
-        sym = config["sym"]
-
         layer = get_module(model, name)
+        bits = layer.bits
+        group_size = layer.group_size
+        sym = layer.sym
+        if layer.bits > 8:
+            if pbar is not None:
+                pbar.update(1)
+            return
+
         device = layer.weight.device
 
         QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
@@ -114,7 +116,8 @@ def pack_layer(name, model, layer_config, backend, pbar):
         else:
             qlayer.pack(layer, scale, zero, None)
         qlayer.to(device)
-        pbar.update(1)
+        if pbar is not None:
+            pbar.update(1)
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
                                **kwargs):
@@ -172,7 +175,8 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
-                pack_layer(name, model, layer_config, backend, pbar)
+                pass
+                ##pack_layer(name, model, layer_config, backend, pbar)
 
             for _ in executor.map(wrapper, names):
                 pass

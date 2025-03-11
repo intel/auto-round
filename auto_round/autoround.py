@@ -1321,6 +1321,11 @@ class AutoRound(object):
         else:
             quant_block = self.quant_block
 
+        ##attatch the name
+        for n, m in self.model.named_modules():
+            if isinstance(m, torch.nn.Linear):
+                m.name = n
+
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
@@ -1346,8 +1351,17 @@ class AutoRound(object):
                 device=device,
             )
             pbar.update(1)
+            for n, tmp_m in m.named_modules():
+                from auto_round.export.export_to_autogptq.export import pack_layer
+                if hasattr(m, "bits") and m.bits <= 8:
+                    pack_layer(n, self.model, None, "auto_round:gptq", None)
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+
+        ##del the name
+        for n, m in self.model.named_modules():
+            if hasattr(m, "name"):
+                delattr(m, "name")
 
         del q_input
         del input_ids
