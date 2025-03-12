@@ -32,6 +32,11 @@ from packaging import version
 import gc
 from .special_model_handler import shareable_keywords, SPECIAL_MULTIMODAL_BLOCK
 
+supported_formats = [
+    "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
+    "gguf:q4_0", "gguf:q4_1", "itrex", "itrex_xpu", "fake"
+]
+
 
 @lru_cache(None)
 def warning_once(self, msg: str):
@@ -515,11 +520,11 @@ def check_to_quantized(config):
     """
     if isinstance(config, dict):
 
-        if int(config["bits"]) > 8:
+        if int(config["bits"]) > 8 and int(config["act_bits"] > 8):
             return False
         return True
     else:
-        if int(config.bits) > 8:
+        if int(config.bits) > 8 and int(config.act_bits) > 8:
             return False
         return True
 
@@ -1157,6 +1162,7 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 
     return True, ""
 
+
 def get_device_and_parallelism(device):
     from auto_round.utils import detect_device
     devices = device.replace(" ", "").split(',')
@@ -1170,6 +1176,7 @@ def get_device_and_parallelism(device):
         device = detect_device(device)
         parallelism = False
     return device, parallelism
+
 
 def set_cuda_visible_devices(device):
     devices = device.replace(" ", "").split(',')
