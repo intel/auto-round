@@ -22,7 +22,7 @@ import torch.nn as nn
 import transformers
 
 import auto_round.export.export_to_autoround.qlinear_triton_act
-from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module
+from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module, supported_layer_types
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
@@ -140,6 +140,9 @@ def pack_layer(name, model, backend):
         layer = get_module(model, name)
         if hasattr(layer, "orig_layer"):
             layer = layer.orig_layer
+
+        if not isinstance(layer,supported_layer_types): ##already packed
+            return
         if layer.act_bits <= 8:
             return pack_qact_layer(name, model)
 

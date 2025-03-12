@@ -16,7 +16,6 @@ import os
 import re
 
 import torch
-import transformers
 import copy
 import time
 from typing import Optional, Union, List
@@ -24,9 +23,6 @@ from transformers import set_seed
 from torch import autocast
 from tqdm import tqdm
 import accelerate
-from packaging import version
-
-import auto_round.export.export_to_autogptq.export
 from .wrapper import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from .special_model_handler import (
     shareable_keywords,
@@ -55,7 +51,8 @@ from .utils import (
     unsupport_meta_device, clear_memory,
     compile_func,
     find_matching_blocks, is_debug_mode,
-    TORCH_VERSION_AT_LEAST_2_6
+    TORCH_VERSION_AT_LEAST_2_6,
+    supported_layer_types
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -198,7 +195,7 @@ class AutoRound(object):
         self.minmax_lr = minmax_lr or self.lr
 
         self.data_type = data_type
-        self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
+        self.supported_types = supported_layer_types
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.device = detect_device(device)
@@ -402,7 +399,8 @@ class AutoRound(object):
                 logger.error(f"unsupported format {format_}, please choose from {supported_formats}")
                 exit(-1)
 
-        if len(formats) == 1 and ("awq" in formats or "gptq" in formats) and not self.has_qlayer_outside_block:
+        if len(formats) == 1 and ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[
+            0]) and not self.has_qlayer_outside_block:  ##TODO support more
             self.is_packing_immediate = True
 
         for index in range(len(formats)):
@@ -422,7 +420,7 @@ class AutoRound(object):
 
         self._check_format_compatibility(formats)
 
-        model,_ = self.quantize()
+        model, _ = self.quantize()
 
         inplace = False if len(format) > 1 else True
         folders = []
@@ -465,7 +463,6 @@ class AutoRound(object):
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         logger.info("caching done")
         pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
-        pack_layer = auto_round.export.export_to_autogptq.export.pack_layer  ## TODO support awq,gptq later
 
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
@@ -493,19 +490,12 @@ class AutoRound(object):
                 pbar=pbar
             )
             if self.is_packing_immediate:
-                assert len(self.formats) == 0
-                for n, m in self.model.named_modules():
-                    if isinstance(m, torch.nn.Linear):
-                        m.name = n
-                for _, tmp_m in m.named_modules():
+                assert len(self.formats) == 1
 
-                    if hasattr(tmp_m, "bits") and tmp_m.bits <= 8:
-                        pack_layer(tmp_m.name, self.model, self.formats)
+
 
         self.quant_layers(layer_names, all_inputs)  ##TODO pack layer immediately
-        for n, m in self.model.named_modules():
-            if hasattr(m, "name"):
-                delattr(m, "name")
+
         end_time = time.time()
         cost_time = end_time - self.start_time
         logger.info(f"quantization tuning time {cost_time}")
@@ -1362,7 +1352,7 @@ class AutoRound(object):
             inputs,
             block_names,
             nblocks=1,
-            device=torch.device("cpu"),
+            device="cpu",
             pbar=None
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
@@ -1407,6 +1397,10 @@ class AutoRound(object):
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
+        from auto_round.export.export_to_autoround.export import pack_layer## TODO support awq,gptq later
+        for n, m in self.model.named_modules():
+            if isinstance(m, tuple(self.supported_types)):
+                m.name = n
 
         for i in range(0, len(block_names), nblocks):
             if nblocks == 1:
@@ -1429,9 +1423,17 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
             )
+            for _, tmp_m in m.named_modules():
+                if hasattr(tmp_m, "bits") and check_to_quantized(tmp_m):
+                    pack_layer(tmp_m.name, self.model, self.formats[0])
+
             pbar.update(1)
 
+
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        for n, m in self.model.named_modules():
+                if hasattr(m, "name"):
+                    delattr(m, "name")
 
         del q_input
         del input_ids

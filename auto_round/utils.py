@@ -31,11 +31,14 @@ from functools import lru_cache
 from packaging import version
 import gc
 from .special_model_handler import shareable_keywords, SPECIAL_MULTIMODAL_BLOCK
+import transformers
 
-supported_formats = [
+supported_formats = (
     "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
     "gguf:q4_0", "gguf:q4_1", "itrex", "itrex_xpu", "fake"
-]
+)
+supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D)
+
 
 
 @lru_cache(None)
