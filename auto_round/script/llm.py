@@ -272,24 +272,10 @@ def setup_eval_parser():
 
 def _gguf_args_check(args):
     from auto_round.utils import logger
-
-    _GGUF_CONFIG = {
-        "gguf:q4_0": {
-            "bits": 4,
-            "act_bits": 16,
-            "group_size": 32,
-            "asym": False,
-        },
-        "gguf:q4_1": {
-            "bits": 4,
-            "act_bits": 16,
-            "group_size": 32,
-            "asym": True,
-        }
-    }
+    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
     formats = args.format.lower().replace(' ', '').split(",")
-    for format in _GGUF_CONFIG:
+    for format in GGUF_CONFIG:
         if format in formats:
             from pathlib import Path
             from auto_round.export.export_to_gguf.convert import Model
@@ -302,7 +288,7 @@ def _gguf_args_check(args):
                 sys.exit(1)
 
             unsupport_list, reset_list = [], []
-            gguf_config = _GGUF_CONFIG[format]
+            gguf_config = GGUF_CONFIG[format]
             for k, v in gguf_config.items():
                 if getattr(args, k) != v:
                     unsupport_list.append(f"{k}={getattr(args, k)}")
@@ -337,7 +323,7 @@ def tune(args):
         args.format = "auto_round"
     supported_formats = [
         "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
-        "gguf:q4_0", "gguf:q4_1", "itrex", "itrex_xpu", "fake"
+        "gguf:q4_0", "gguf:q4_1", "gguf:q4_k", "gguf:q4_k_s", "itrex", "itrex_xpu", "fake"
     ]
     formats = args.format.lower().replace(' ', '').split(",")
     for format in formats:
@@ -550,8 +536,7 @@ def tune(args):
         save_folder = f'{export_dir}-{save_format_}'
         autoround.save_quantized(save_folder, format=format_, inplace=inplace)
         if 'gguf' in format_:
-            gguf_format = format_.upper().split(":")[-1]
-            if not any([file.endswith(f"{gguf_format}.gguf") for file in os.listdir(save_folder)]):
+            if not any([file.endswith(".gguf") for file in os.listdir(save_folder)]):
                 logger.error(f"fail to export {format_}")
         else:
             eval_folder = save_folder
