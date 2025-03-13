@@ -1423,9 +1423,10 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
             )
-            for _, tmp_m in m.named_modules():
-                if hasattr(tmp_m, "bits") and check_to_quantized(tmp_m):
-                    pack_layer(tmp_m.name, self.model, self.formats[0])
+            if self.is_packing_immediate:
+                for _, tmp_m in m.named_modules():
+                    if hasattr(tmp_m, "bits") and check_to_quantized(tmp_m):
+                        pack_layer(tmp_m.name, self.model, self.formats[0])
 
             pbar.update(1)
 
