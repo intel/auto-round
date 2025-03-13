@@ -46,34 +46,34 @@ def test_import():
         WeightOnlyLinear, save_quantized_as_itrex)
 
 
-# @pytest.mark.parametrize(
-#     "data_type",
-#     ["fp8_to_int_sym"],
-# )
-# def test_w4a8(data_type):
-#     from auto_round import AutoRound
-#     from transformers import AutoModelForCausalLM, AutoTokenizer
-#
-#     model_name = "facebook/opt-125m"
-#     model = AutoModelForCausalLM.from_pretrained(
-#         model_name,
-#         torch_dtype="auto",
-#         attn_implementation="eager",
-#         trust_remote_code=True,
-#     )
-#     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-#
-#     autoround = AutoRound(
-#         model,
-#         tokenizer,
-#         bits=4,
-#         group_size=128,
-#         iters=2,
-#         seqlen=2,
-#         data_type=data_type,
-#         act_data_type="fp8_gaudi3_sym",
-#         act_bits=8,
-#         act_dynamic=False,
-#     )
-#     q_model, qconfig = autoround.quantize()
-#     assert q_model is not None, f"Expected q_model to be not None"
+@pytest.mark.parametrize(
+    "data_type",
+    ["fp8_to_int_sym"],
+)
+def test_w4a8(data_type):
+    from auto_round import AutoRound
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    model_name = "facebook/opt-125m"
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype="auto",
+        attn_implementation="eager",
+        trust_remote_code=True,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+
+    autoround = AutoRound(
+        model,
+        tokenizer,
+        bits=4,
+        group_size=128,
+        iters=2,
+        seqlen=2,
+        data_type=data_type,
+        act_data_type="fp8_sym",
+        act_bits=8,
+        act_dynamic=False,
+    )
+    q_model, qconfig = autoround.quantize()
+    assert q_model is not None, f"Expected q_model to be not None"
