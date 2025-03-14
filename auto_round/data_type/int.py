@@ -38,6 +38,7 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
+    scale_value = kwargs["scale_value"]
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = 2 ** (bits - 1)
@@ -56,7 +57,7 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
     scale = scale.unsqueeze(dim=-1)
     zp = zp.unsqueeze(dim=-1)
-    int_w = round_ste(tensor / scale + v)
+    int_w = round_ste(tensor / scale * (1.0 + scale_value) + v)
     q = torch.clamp(int_w + zp, 0, 2 ** bits - 1)
     qdq_result = (scale * (q - zp)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
