@@ -31,6 +31,7 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
         "q4_0": gguf.LlamaFileType.MOSTLY_Q4_0,
         "q4_1": gguf.LlamaFileType.MOSTLY_Q4_1,
         "q4_k": gguf.LlamaFileType.MOSTLY_Q4_K_S,
+        "q4_k_s": gguf.LlamaFileType.MOSTLY_Q4_K_S,
         "auto": gguf.LlamaFileType.GUESSED,
     }
 
