@@ -109,6 +109,7 @@ class WrapperLinear(torch.nn.Module):
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
         self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
         self._init_params("value", p_dtype, weight_reshape.shape, 0, True)
+        self._init_params("scale_value", p_dtype, weight_reshape.shape, 0, True)
         # Min-max scale initialization
         shape = get_scale_shape(orig_weight, orig_layer.group_size)
         self._init_params("min_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
@@ -148,7 +149,7 @@ class WrapperLinear(torch.nn.Module):
 
         setattr(self, name, p)
 
-    def _qdq_weight(self, value, min_scale, max_scale):
+    def _qdq_weight(self, value, min_scale, max_scale,scale_value):
         """Quantizes and dequantizes weights with tuning parameters.
 
         Args:
@@ -179,6 +180,7 @@ class WrapperLinear(torch.nn.Module):
             tensor_max=self.weight_max,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
+            scale_value =scale_value
 
         )
         weight_q = weight_q.to(weight.dtype)
@@ -230,13 +232,14 @@ class WrapperLinear(torch.nn.Module):
         """
         best_params = best_params or {}
         v = best_params.get('value', torch.tensor(0.0)).to(self.device)
+        scale_value = best_params.get('scale_value', torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get('min_scale', torch.tensor(1.0)).to(self.device)
         max_scale = best_params.get('max_scale', torch.tensor(1.0)).to(self.device)
 
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
         ##unwrapper weight
-        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
+        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale,scale_value)
         self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
 
@@ -334,7 +337,7 @@ class WrapperLinear(torch.nn.Module):
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
         x = x.to(self.device)
-        weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
+        weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale,self.scale_value)
 
         if self.enable_act_quant:
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None

@@ -30,7 +30,7 @@ import re
 import argparse
 import sys
 
-
+import auto_round.utils
 from auto_round.utils import (
     get_fp_layer_names,
     clear_memory,
@@ -177,7 +177,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--enable_torch_compile", action='store_true',
                           help="whether to enable torch compile")
 
-        self.add_argument("--act_data_type","--act_dtype", default=None, type=str, help="activation data type")
+        self.add_argument("--act_data_type", "--act_dtype", default=None, type=str, help="activation data type")
 
         self.add_argument("--disable_act_dynamic", action='store_true', help="activation static quantization")
 
@@ -199,21 +199,20 @@ class EvalArgumentParser(argparse.ArgumentParser):
             default="0",
             type=str,
             help="the device to be used for tuning. "
-            "Currently, device settings support CPU, GPU, and HPU."
-            "The default is set to cuda:0,"
-            "allowing for automatic detection and switch to HPU or CPU."
-            "set --device 0,1,2 to use multiple cards.")
+                 "Currently, device settings support CPU, GPU, and HPU."
+                 "The default is set to cuda:0,"
+                 "allowing for automatic detection and switch to HPU or CPU."
+                 "set --device 0,1,2 to use multiple cards.")
         self.add_argument(
             "--tasks",
             "--task",
             default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
-            "openbookqa,boolq,arc_easy,arc_challenge",
+                    "openbookqa,boolq,arc_easy,arc_challenge",
             help="lm-eval tasks")
         self.add_argument(
             "--disable_trust_remote_code", action='store_true', help="whether to disable trust_remote_code")
         self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int, help="batch size in evaluation")
         self.add_argument("--eval_task_by_task", action='store_true', help="whether to eval task by task.")
-
 
 
 def setup_parser():
@@ -344,10 +343,7 @@ def tune(args):
     tasks = args.tasks
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = [
-        "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
-        "gguf:q4_0", "gguf:q4_1", "itrex", "itrex_xpu", "fake"
-    ]
+    supported_formats = auto_round.utils.supported_formats
     formats = args.format.lower().replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
@@ -542,8 +538,14 @@ def tune(args):
         act_data_type=args.act_data_type,
         act_dynamic=not args.disable_act_dynamic,
         device_map=args.device_map)
-    model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
+    if model_name.split('/')[-1].strip('.') == "":
+        export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
+    else:
+        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
+
+    model, folders = autoround.qsave(export_dir, format=args.format)
+
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
         shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
@@ -551,31 +553,11 @@ def tune(args):
     model.eval()
     clear_memory()
 
-    if model_name.split('/')[-1].strip('.') == "":
-        export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
-    else:
-        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
-
-    format_list = args.format.replace(' ', '').split(',')
-    inplace = False if len(format_list) > 1 else True
-    eval_folder = None
-    for format_ in format_list:
-        save_format_ = format_.replace(":", "-")
-        save_format_ = save_format_.replace("_", "-")
-        save_folder = f'{export_dir}-{save_format_}'
-        autoround.save_quantized(save_folder, format=format_, inplace=inplace)
-        if 'gguf' in format_:
-            gguf_format = format_.upper().split(":")[-1]
-            if not any([file.endswith(f"{gguf_format}.gguf") for file in os.listdir(save_folder)]):
-                logger.error(f"fail to export {format_}")
-        else:
-            eval_folder = save_folder
-
     lm_eval_version = get_library_version("lm-eval")
 
     if isinstance(tasks, str):
         tasks = tasks.split(',')
-
+    eval_folder = folders[-1]
     if not args.disable_eval and eval_folder is not None:
         from lm_eval.utils import make_table  # pylint: disable=E0401
 

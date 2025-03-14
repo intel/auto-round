@@ -452,8 +452,8 @@ class AutoRoundQuantizer(HfQuantizer):
                                                                                    "quant_block_list") else None
 
         if quant_block_list is None:
-            to_quant_block_names = quantization_config.to_quant_block_names if hasattr(quantization_config,
-                                                                                   "to_quant_block_names") else None
+            to_quant_block_names = quantization_config.block_name_to_quantize if hasattr(quantization_config,
+                                                                                   "block_name_to_quantize") else None
             if to_quant_block_names is not None:
                 if isinstance(to_quant_block_names, (list, tuple)):
                     quant_block_list = to_quant_block_names

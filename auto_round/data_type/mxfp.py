@@ -124,7 +124,13 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
         tensor = tensor.to(torch.float32)
         shared_exp = shared_exp.to(torch.float32)
     tensor = tensor / (2 ** shared_exp)
-    tensor = tensor + v
+    scale_value = kwargs.get("scale_value",None)
+    if scale_value is not None:
+        tensor = tensor*scale_value + v
+    else:
+        tensor = tensor + v
+
+
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
     tensor = tensor * (2 ** shared_exp)
