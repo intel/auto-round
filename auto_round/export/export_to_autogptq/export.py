@@ -123,9 +123,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     model = kwargs["model"]
     supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
-    to_quant_block_names = kwargs["to_quant_block_names"]
     quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
-    logger.info("Saving quantized model to autogptq format, this may take a while...")
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     if tokenizer is not None:

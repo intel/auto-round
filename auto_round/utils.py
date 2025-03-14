@@ -984,16 +984,6 @@ TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 # 2. Lazy Mode (By default)
 
 
-def _check_hpu_compile_mode():
-    assert (
-            os.getenv("PT_HPU_LAZY_MODE") == "0"
-    ), "Please set `PT_HPU_LAZY_MODE=0` to use HPU compile mode"
-    # Note: this is a temporary solution, will be removed in the future
-    assert (
-            os.getenv("PT_ENABLE_INT64_SUPPORT") == "1"
-    ), "Please set `PT_ENABLE_INT64_SUPPORT=1` to use HPU compile mode"
-
-
 def is_hpu_lazy_mode():
     return os.getenv("PT_HPU_LAZY_MODE") != "0"
 
@@ -1004,7 +994,6 @@ def _use_hpu_compile_mode():
 
 def compile_func_on_hpu(func):
     if _use_hpu_compile_mode():
-        _check_hpu_compile_mode()
         return torch.compile(func, backend="hpu_backend")
     return func
 
@@ -1164,10 +1153,10 @@ def get_device_and_parallelism(device):
         device = "cuda"
         parallelism = True
     elif device == "auto":
-       device = detect_device(device) 
-       parallelism = True
+        device = detect_device(device)
+        parallelism = True
     else:
-        device = detect_device(device) 
+        device = detect_device(device)
         parallelism = False
     return device, parallelism
 
@@ -1198,4 +1187,3 @@ def is_debug_mode():
         bool: True if debugging is enabled, False otherwise.
     """
     return sys.gettrace() is not None or sys.flags.debug == 1
-

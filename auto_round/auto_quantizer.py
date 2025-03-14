@@ -126,7 +126,7 @@ class AutoHfQuantizer:
             else:
                 quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
         quant_method = quantization_config.quant_method
-
+    
         # Again, we need a special care for bnb as we have a single quantization config
         # class for both 4-bit and 8-bit quantization
         if quant_method == QuantizationMethod.BITS_AND_BYTES:
@@ -169,16 +169,30 @@ class AutoHfQuantizer:
         else:
             warning_msg = ""
 
+        loading_attr_dict = quantization_config_from_args.get_loading_attributes() \
+                if quantization_config_from_args is not None else None
         if isinstance(quantization_config, dict):
             if "auto-round" in quantization_config["quant_method"]:
                 quantization_config = AutoRoundConfig.from_dict(quantization_config)
             else:
-                quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
+                if  isinstance(quantization_config_from_args, (AutoRoundConfig)):
+                    logger.info(f"Loading quantized model in auto_round format.")
+                    tmp_backend = quantization_config["quant_method"]
+                    target_backend = quantization_config["backend"] if "backend" in quantization_config else "auto"
+                    if loading_attr_dict is not None and "backend" in loading_attr_dict:
+                        target_backend = loading_attr_dict["backend"]
+                        loading_attr_dict.pop("backend")
+                    if "auto_round" not in target_backend:
+                        target_backend = f"auto_round:{tmp_backend}" # 
+                    quantization_config = AutoRoundConfig.from_dict(quantization_config)
+                    setattr(quantization_config, "backend", target_backend)
+                else:
+                    quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
 
         if isinstance(quantization_config,
                       (GPTQConfig, AwqConfig, AutoRoundConfig)) and quantization_config_from_args is not None:
             # special case for GPTQ / AWQ config collision
-            loading_attr_dict = quantization_config_from_args.get_loading_attributes()
+            
             for attr, val in loading_attr_dict.items():
                 setattr(quantization_config, attr, val)
             warning_msg += (
@@ -270,7 +284,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
 
     def get_loading_attributes(self):
         # attributes_dict = copy.deepcopy(self.__dict__)
-        loading_attibutes_dict = {"target_backend": self.backend}
+        loading_attibutes_dict = {"backend": self.backend}
         # loading_attributes = ["backend"]
         # loading_attibutes_dict = {i: j for i, j in attributes_dict.items() if i in loading_attributes}
         return loading_attibutes_dict
@@ -419,6 +433,7 @@ class AutoRoundQuantizer(HfQuantizer):
             quantization_config.target_backend = quantization_config.backend
 
         target_device = self.detect_device(quantization_config.target_backend, quantization_config.backend)
+        target_device = self.detect_device(None, quantization_config.backend)
 
         self.target_device = target_device
 
@@ -781,4 +796,5 @@ if version.parse(transformers.__version__) < version.parse("4.38.0"):
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
+
 

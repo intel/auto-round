@@ -25,7 +25,7 @@ from torch import autocast
 from tqdm import tqdm
 import accelerate
 from packaging import version
-from .quantizer import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
+from .wrapper import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from .special_model_handler import (
     shareable_keywords,
     init_cache_for_special_model,
@@ -335,7 +335,7 @@ class AutoRound(object):
         # assert self.tokenizer != None or self.dataloader != None
         if self.act_bits <= 8:
             logger.warning(
-                "Activation quantization is an experimental feature with limited support and a complex API."
+                "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently")
 
         if "mx_fp" in self.data_type:
@@ -348,7 +348,7 @@ class AutoRound(object):
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
-                logger.warning(f"reset batch_size to {self.nsamples} as n_sample({self.nsamples})"
+                logger.warning(f"reset batch_size to {self.nsamples} as nsamples({self.nsamples})"
                                f" is smaller than batch_size({self.batch_size})")
                 self.batch_size = self.nsamples
             if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
@@ -356,7 +356,7 @@ class AutoRound(object):
                 logger.warning(
                     f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
-                    f" than gradient_accumulate_steps * batch_szie")
+                    f" than gradient_accumulate_steps * batch_size")
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
@@ -401,7 +401,6 @@ class AutoRound(object):
 
             if "input_ids" in inputs.keys():
                 total_samples = len(inputs["input_ids"])
-                self.n_samples = total_samples
                 if total_samples < self.batch_size:
                     self.batch_size = total_samples
                     logger.warning(f"force the train batch size to {total_samples}")
@@ -445,7 +444,7 @@ class AutoRound(object):
 
     def dump_qinfo_to_layer_config(self):
         """
-        dump quantization scale and zp to layer configuration
+        dump quantization scale and zp to layer configuration, this function could be deleted later
         Args:
 
         Returns:
@@ -457,6 +456,8 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if n not in self.layer_config.keys():
                 continue
+            if hasattr(m, "orig_layer"):
+                m = m.orig_layer
             if not hasattr(m, "scale"):
                 self.layer_config[n]["data_type"] = "float"
                 if self.amp_dtype == torch.bfloat16:
@@ -464,6 +465,9 @@ class AutoRound(object):
                 self.layer_config[n]["bits"] = 16
                 self.layer_config[n]["group_size"] = None
                 self.layer_config[n]["sym"] = None
+                m.bits = 16
+                m.group_size = None
+                m.sym = None
 
     def quant_layers(self, layer_names, layer_inputs):
         """Quantizes specified layers based on inputs and configuration.
@@ -718,7 +722,7 @@ class AutoRound(object):
             self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
             clear_memory()
         except RuntimeError as e:
-            if "CUDA out of memory" in str(e):
+            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
                 logger.info("switch to cpu to cache block inputs")
                 if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 16) or
                         self.__class__.__name__ == "AutoRoundMLLM"):
@@ -1370,7 +1374,7 @@ class AutoRound(object):
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
             return
-        if format == "fake" or format == "qdq" or self.act_bits <= 8:  ##TODO fix act quantizaiton later
+        if format == "fake" or format == "qdq":  ##TODO fix act quantizaiton later
             self.model = self.model.to("cpu")
             self.model.save_pretrained(output_dir)
             if self.tokenizer is not None:
@@ -1379,6 +1383,10 @@ class AutoRound(object):
             if processor is not None:
                 processor.save_pretrained(output_dir)
             return
+        if self.act_bits <= 8 and format == "qdq":
+            logger.warning(
+                "Support for exporting activation quantization is limited. "
+                "Please ensure that your configuration is supported.")
         if format in ["gguf:q4_0", "gguf:q4_1"]:
             if self.group_size != 32:
                 logger.error(f"{format} need group_size=32, but it is {self.group_size}, cannot export.")
@@ -1407,6 +1415,8 @@ class AutoRound(object):
 
         serialization_keys = [
             "bits",
+            "act_bits",
+
             "group_size",
             "sym",
             "data_type",
@@ -1426,6 +1436,11 @@ class AutoRound(object):
             "to_quant_block_names",
             "enable_norm_bias_tuning"
         ]
+        if self.act_bits <= 8:
+            serialization_keys.extend(["act_bits",
+                                       "act_group_size",
+                                       "act_sym",
+                                       "act_dynamic"])
         if isinstance(self.dataset, str):
             serialization_keys.append("dataset")
         serialization_dict = {}
