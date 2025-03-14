@@ -42,6 +42,11 @@ def run_best():
     from auto_round.script.llm import setup_best_parser, tune
     args = setup_best_parser()
     tune(args)
+    
+def run_light():
+    from auto_round.script.llm import setup_light_parser, tune
+    args = setup_light_parser()
+    tune(args)
 
 def run_fast():
     from auto_round.script.llm import setup_fast_parser, tune
@@ -78,3 +83,4 @@ def switch():
 
 if __name__ == '__main__':
     switch()
+
