@@ -113,7 +113,6 @@ class WrapperLinear(torch.nn.Module):
         shape = get_scale_shape(orig_weight, orig_layer.group_size)
         self._init_params("min_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
         self._init_params("max_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
-        self.dq = True if orig_layer.data_type.endswith("_dq") else False
 
         self.weight_quant_func, self.data_type = get_quant_func(orig_layer.data_type, orig_layer.bits,
                                                                 orig_layer.sym)
@@ -168,39 +167,22 @@ class WrapperLinear(torch.nn.Module):
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             weight = weight.t()
 
-        if self.dq:
-            weight_q, scale, zp, wmin_m, d_scale, d_wmin_m = self.weight_quant_func(
-                weight,
-                bits=self.orig_layer.bits,
-                group_size=self.orig_layer.group_size,
-                v=value,
-                min_scale=min_scale,
-                max_scale=max_scale,
-                scale_dtype=self.orig_layer.scale_dtype,
-                tensor_min=self.weight_min,
-                tensor_max=self.weight_max,
-                data_type=self.data_type,
-                q_scale_thresh=self.q_scale_thresh)
-        else:
-            weight_q, scale, zp = self.weight_quant_func(
-                weight,
-                bits=self.orig_layer.bits,
-                group_size=self.orig_layer.group_size,
-                v=value,
-                min_scale=min_scale,
-                max_scale=max_scale,
-                scale_dtype=self.orig_layer.scale_dtype,
-                tensor_min=self.weight_min,
-                tensor_max=self.weight_max,
-                data_type=self.data_type,
-                q_scale_thresh=self.q_scale_thresh)
+        weight_q, scale, zp = self.weight_quant_func(
+            weight,
+            bits=self.orig_layer.bits,
+            group_size=self.orig_layer.group_size,
+            v=value,
+            min_scale=min_scale,
+            max_scale=max_scale,
+            scale_dtype=self.orig_layer.scale_dtype,
+            tensor_min=self.weight_min,
+            tensor_max=self.weight_max,
+            data_type=self.data_type,
+            q_scale_thresh=self.q_scale_thresh)
         weight_q = weight_q.to(weight.dtype)
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             weight_q = weight_q.t()
-        if self.dq:
-            return weight_q, scale, zp, wmin_m, d_scale, d_wmin_m 
-        else:
-            return weight_q, scale, zp
+        return weight_q, scale, zp
 
     def _qdq_act(self, x, act_max_scale, act_max=None):
         """Quantizes and dequantizes activations.
@@ -252,35 +234,36 @@ class WrapperLinear(torch.nn.Module):
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
         ##unwrapper weight
-        if self.dq:
-            qdq_weight, scale, zp, wmin_m, d_scale, d_wmin_m = self._qdq_weight(v, min_scale, max_scale)
-        else:
-            qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
-        # for test
-        # self.orig_layer.weight.data.copy_(qdq_weight)
+        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
+
+        self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
 
         shape = qdq_weight.shape
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             shape = qdq_weight.t().shape
 
-        if zp is not None:
-            zp = zp.reshape(shape[0], -1)
-        if self.dq:
-            self.orig_layer.wmin_m = wmin_m.cpu().reshape(shape[0], -1)
-            self.orig_layer.d_scale = d_scale.cpu()
-            self.orig_layer.d_wmin_m = d_wmin_m.cpu()
-        if isinstance(scale, dict):
-            for key in scale.keys():
-                if key == "scale":
-                    name = key
-                    self.orig_layer.scale = scale[key].reshape(shape[0], -1).to("cpu")
+        def _set_dict_attr(attr_dict, attr_name):
+            for key in attr_dict.keys():
+                if key == attr_name:
+                    setattr(self.orig_layer, attr_name, attr_dict[key].reshape(shape[0], -1).to("cpu"))
                 else:
                     name = "w_" + key
-                    setattr(self.orig_layer, name, scale[key].to("cpu"))
+                    setattr(self.orig_layer, name, attr_dict[key].to("cpu"))
+                    
+        if isinstance(scale, dict):
+            _set_dict_attr(scale, "scale")
         else:
             self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
-        self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+        
+        if zp is not None:
+            if isinstance(zp, dict):
+                _set_dict_attr(zp, "zp")
+            else:
+                zp = zp.reshape(shape[0], -1)
+                self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+        else:
+            self.orig_layer.zp = None
 
         ##unwrapper bias
         if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
@@ -358,10 +341,7 @@ class WrapperLinear(torch.nn.Module):
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
         x = x.to(self.device)
-        if self.dq:
-            weight_q, _, _, _, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
-        else:
-            weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
+        weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
         if self.enable_act_quant:
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
