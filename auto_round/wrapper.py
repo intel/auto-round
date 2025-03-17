@@ -178,7 +178,10 @@ class WrapperLinear(torch.nn.Module):
             tensor_min=self.weight_min,
             tensor_max=self.weight_max,
             data_type=self.data_type,
-            q_scale_thresh=self.q_scale_thresh)
+            q_scale_thresh=self.q_scale_thresh,
+            super_bits=self.orig_layer.super_bits,
+            super_group_size=self.orig_layer.super_group_size
+            )
         weight_q = weight_q.to(weight.dtype)
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             weight_q = weight_q.t()

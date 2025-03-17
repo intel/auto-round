@@ -186,6 +186,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
 
+        self.add_argument("--super_group_size", default=-1, type=int, help="the number of super group size when use double quant.")
+
+        self.add_argument("--super_bits", default=-1, type=int, help="number of scale and mins quant bits for double quant.")
+
 
 class EvalArgumentParser(argparse.ArgumentParser):
 
@@ -295,6 +299,15 @@ def _gguf_args_check(args):
             except NotImplementedError:
                 logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                 sys.exit(1)
+            
+            if format.endswith("_k") and hparams["hidden_size"] % 256 !=0:
+                model_name = args.model.split('/')
+                model_name = model_name[-1] if model_name[-1] else model_name[-2]
+                hidden_size = hparams["hidden_size"]
+                logger.error(
+                    f"Currently only support pure mode for format: {format}. "
+                    f"{model_name} is not supported, cause hidden_size({hidden_size}) % 256 !=0")
+                sys.exit(-1)
 
             unsupport_list, reset_list = [], []
             gguf_config = GGUF_CONFIG[format]
@@ -326,14 +339,17 @@ def tune(args):
     from auto_round import AutoRoundConfig
     from auto_round.utils import detect_device, get_library_version, detect_device_count
     from auto_round.utils import logger
+    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
     tasks = args.tasks
     if args.format is None:
         args.format = "auto_round"
     supported_formats = [
         "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
-        "gguf:q4_0", "gguf:q4_1", "gguf:q4_k", "gguf:q4_k_s", "itrex", "itrex_xpu", "fake"
+        "itrex", "itrex_xpu", "fake"
     ]
+    supported_formats.extend(list(GGUF_CONFIG.keys()))
+
     formats = args.format.lower().replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
@@ -527,7 +543,10 @@ def tune(args):
         enable_torch_compile=enable_torch_compile,
         act_data_type=args.act_data_type,
         act_dynamic=not args.disable_act_dynamic,
-        device_map=args.device_map)
+        device_map=args.device_map,
+        super_group_size=args.super_group_size,
+        super_bits=args.super_bits,
+        )
     model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:

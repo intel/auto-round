@@ -1253,12 +1253,16 @@ class Model(OriModel):
                         data_qtype = gguf.GGMLQuantizationType.F16
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_BF16:
                         data_qtype = gguf.GGMLQuantizationType.BF16
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q8_0:
+                        data_qtype = gguf.GGMLQuantizationType.Q8_0
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_0:
                         data_qtype = gguf.GGMLQuantizationType.Q4_0
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_1:
                         data_qtype = gguf.GGMLQuantizationType.Q4_1
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S:
                         data_qtype = gguf.GGMLQuantizationType.Q4_K
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K_S:
+                        data_qtype = gguf.GGMLQuantizationType.Q2_K
                     else:
                         raise ValueError(
                             f"Unknown file type: {self.ftype.name}")
