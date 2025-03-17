@@ -44,6 +44,8 @@ def ggml_quant(data: np.array, ggml_type, scale=None, zp=None, **kwargs):
     blocks = data.reshape((n_blocks, block_size))
 
     new_data = GGML_QUANT_BLOCK[ggml_type](blocks, scale, zp, **kwargs)
+    assert new_data.dtype == np.uint8
+    assert new_data.shape[-1] == type_size
     new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)
     return new_data
 
@@ -60,6 +62,7 @@ def bf16_quant_block(blocks: np.array, scale=None, zp=None):
 
 @register_block("q4_0")
 def q4_0_quant_block(blocks: np.array, scale=None, zp=None):
+    scale = None
     if scale is not None:
         d = scale.reshape((-1, 1))
     else:

@@ -545,6 +545,8 @@ def tune(args):
     format_list = args.format.replace(' ', '').split(',')
     inplace = False if len(format_list) > 1 else True
     eval_folder = None
+
+    eval_gguf_model = False
     for format_ in format_list:
         save_format_ = format_.replace(":", "-")
         save_format_ = save_format_.replace("_", "-")
@@ -553,8 +555,8 @@ def tune(args):
         if 'gguf' in format_:
             if not any([file.endswith(".gguf") for file in os.listdir(save_folder)]):
                 logger.error(f"fail to export {format_}")
-        else:
-            eval_folder = save_folder
+            eval_gguf_model = True
+        eval_folder = save_folder
 
     lm_eval_version = get_library_version("lm-eval")
 
@@ -566,7 +568,11 @@ def tune(args):
 
         logger.info(f"Using lm-eval version {lm_eval_version}")
 
-        if args.act_bits <= 8:
+        if args.act_bits <= 8 or eval_gguf_model:
+            if eval_gguf_model:
+                for file in os.listdir(eval_folder):
+                    gguf_file = file
+                user_model = AutoModelForCausalLM.from_pretrained(save_folder, gguf_file=gguf_file)
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
 
