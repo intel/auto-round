@@ -131,16 +131,23 @@ In general, it is recommended to use the auto-round default mode. When resources
 
 - Average Accuracy of 13 tasks(W4G128) and Time Cost(enable_torch_compile) Results
 
-  | Model         |           | |  Accuracy              |        | |  |   Time Cost      |       |
-  |---------------|:-------------------|:--------|:---------|--------|-|:-----------|:---------|:-------|
-  |               | 16bits | Best   | Default | Light  || Best      | Default | Light |
-  | Qwen2.5-0.5B-Instruct | 0.5541            | **0.5675** | 0.5659  | 0.5564 || 383       | 106     | 87    |
-  | Falcon3-3B            | 0.6614            | **0.6638** | 0.6496  | 0.6433 || 1329      | 341     | 166   |
-  | Qwen2.5-7B-Instruct   | 0.6470             | 0.6426 | 0.6441  | **0.6453** || 3425      | 739     | 306   |
-  | Llama3.1-8B-Instruct   | 0.6212            | **0.6115** | 0.6106  | 0.6111 || 3754      | 757     | 255   |
-  | Falcon3-10B           | 0.6151            | **0.6092** | 0.6080   | 0.6063 || 4840      | 1046    | 410   |
-  | Qwen2.5-72B-Instruct  | 0.7229            | 0.7242 | **0.7252**  | 0.7243 || 34480     | 7076    | 2273  |
+  | Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct | Llama3.1-8B-Instruct | Falcon3-10B          | Qwen2.5-72B-Instruct  |
+  |---------|-----------------------|----------------------|---------------------|----------------------|----------------------|-----------------------|
+  | 16bits  | 0.5541                | 0.6614               | 0.6470              | 0.6212               | 0.6151               | 0.7229                |
+  | Best    | **0.5675**<br/>7min   | **0.6638**<br/>23min | 0.6426<br/>58min    | **0.6115**<br/>63min | **0.6092**<br/>81min | 0.7242<br/>575min     |
+  | Default | 0.5659<br/>2min       | 0.6496<br/>6min      | 0.6441<br/>13min    | 0.6106<br/>13min     | 0.6080<br/>13min     | **0.7252**<br/>118min |
+  | Light   | 0.5564<br/>2min       | 0.6433<br/>3min      | **0.6453**<br/>5min | 0.6111<br/>5min      | 0.6063<br/>6min      | 0.7243<br/>37min      |
 
+
+
+- Average Accuracy of 13 tasks(W2G64) and Time Cost(enable_torch_compile) Results
+
+  | Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct | Llama3.1-8B-Instruct | Falcon3-10B          | Qwen2.5-72B-Instruct  |
+  |---------|-----------------------|----------------------|---------------------|----------------------|----------------------|-----------------------|
+  | 16bits  | 0.5541                |  0.6614        | 0.6470              | 0.6212               | 0.6151               | 0.7229                |
+  | Best    | **0.3794**<br/>6min   | **0.5272**<br/>24min | **0.6097**<br/>56min| **0.5533**<br/>59min     | **0.6066**<br/>79min     | **0.7201**<br/>564min     |
+  | Default | 0.3762<br/>2min       | 0.5232<br/>6min      | 0.6004<br/>13min    | 0.5057<br/>13min     | 0.5972<br/>18min     | 0.7143<br/>122min |
+  | Light   | 0.3540<br/>2min       | 0.5041<br/>3min      | 0.5532<br/>5min     | 0.4572<br/>6min      | 0.5716<br/>7min      | 0.7089<br/>11min      |
 
 <br>
 
