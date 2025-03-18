@@ -138,18 +138,20 @@ In general, it is recommended to use the auto-round default mode. When resources
   | Default | 0.5659(2m)       | 0.6496(6m)      | 0.6441(13m)    | 0.6080(18m)     | **0.7252**(118m) |
   | Light   | 0.5564(2m)       | 0.6433(3m)      | **0.6453**(5m) | 0.6063(6m)      | 0.7243(37m)      |
 
-<details>
-  <summary>W2G64 quantization Results</summary>
+  <details>
+    <summary>W2G64 quantization Results</summary>
 
-- Average Accuracy of 13 tasks(W2G64) and Time Cost(enable_torch_compile) Results
+  - Average Accuracy of 13 tasks(W2G64) and Time Cost(enable_torch_compile) Results
 
-  | Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct | Falcon3-10B          | Qwen2.5-72B-Instruct  |
-  |---------|-----------------------|----------------------|---------------------|----------------------|-----------------------|
-  | 16bits  | 0.5541                |  0.6614        | 0.6470              | 0.6151               | 0.7229                |
-  | Best    | **0.3794**(6m)   | **0.5272**(24m) | **0.6097**(56m)| **0.6066**(79m)     | **0.7201**(564m)     |
-  | Default | 0.3762(2m)       | 0.5232(6m)      | 0.6004(13m)    | 0.5972(18m)     | 0.7143(122m) |
-  | Light   | 0.3540(2m)       | 0.5041(3m)      | 0.5532(5m)     | 0.5716(7m)      | 0.7089(38m)      |
-</details>
+    | Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct | Falcon3-10B          | Qwen2.5-72B-Instruct  |
+    |---------|-----------------------|----------------------|---------------------|----------------------|-----------------------|
+    | 16bits  | 0.5541                |  0.6614        | 0.6470              | 0.6151               | 0.7229                |
+    | Best    | **0.3794**(6m)   | **0.5272**(24m) | **0.6097**(56m)| **0.6066**(79m)     | **0.7201**(564m)     |
+    | Default | 0.3762(2m)       | 0.5232(6m)      | 0.6004(13m)    | 0.5972(18m)     | 0.7143(122m) |
+    | Light   | 0.3540(2m)       | 0.5041(3m)      | 0.5532(5m)     | 0.5716(7m)      | 0.7089(38m)      |
+  </details>
+
+In conclusion, we recommend using auto-round for Int4 and auto-round-best for Int2. However, you may adjust the configuration to suit your specific requirements and available resources.
 
 <br>
 
