@@ -40,7 +40,6 @@ supported_formats = (
 supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D)
 
 
-
 @lru_cache(None)
 def warning_once(self, msg: str):
     self.warning(msg)
@@ -804,8 +803,8 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     return False, seqlen, bs
 
 
-def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D], quant_block_list=None):
+def get_layer_names_in_block(model, supported_types=(torch.nn.Linear,
+                                                     transformers.modeling_utils.Conv1D), quant_block_list=None):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -813,7 +812,7 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
               within a block of the model.
     """
     for n, m in model.named_modules():
-        if isinstance(m, tuple(supported_types)):
+        if isinstance(m, supported_types):
             m.tmp_name = n
     layers_in_block = []
     if bool(quant_block_list):

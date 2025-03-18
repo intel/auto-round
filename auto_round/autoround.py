@@ -390,7 +390,7 @@ class AutoRound(object):
         ##check lm_head, mixed_bits, bits, each layer supporting, etc
         pass
 
-    def qsave(self, output_dir: str = "tmp_autoround", format: str = "auto_round"):
+    def qsave(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         ##check format config
         formats = format.replace(' ', '').split(',')
         from auto_round.utils import supported_formats
@@ -399,8 +399,13 @@ class AutoRound(object):
                 logger.error(f"unsupported format {format_}, please choose from {supported_formats}")
                 exit(-1)
 
+        if len(format) > 1:
+            inplace = False
+        inplace = kwargs.get("inplace", inplace)
+        kwargs.pop("inplace", None)
+
         if len(formats) == 1 and ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[
-            0]) and not self.has_qlayer_outside_block:  ##TODO support more
+            0]) and not self.has_qlayer_outside_block and inplace:  ##TODO support more
             self.is_packing_immediate = True
 
         for index in range(len(formats)):
@@ -422,13 +427,12 @@ class AutoRound(object):
 
         model, _ = self.quantize()
 
-        inplace = False if len(format) > 1 else True
         folders = []
         for format in formats:
             save_format_ = format.replace(":", "-")
             save_format_ = save_format_.replace("_", "-")
             save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
-            self.save_quantized(save_folder, format=format, inplace=inplace)
+            self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
             folders.append(save_folder)
 
         return model, folders
@@ -491,8 +495,6 @@ class AutoRound(object):
             )
             if self.is_packing_immediate:
                 assert len(self.formats) == 1
-
-
 
         self.quant_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
@@ -1397,7 +1399,7 @@ class AutoRound(object):
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
-        from auto_round.export.export_to_autoround.export import pack_layer## TODO support awq,gptq later
+
         for n, m in self.model.named_modules():
             if isinstance(m, tuple(self.supported_types)):
                 m.name = n
@@ -1424,17 +1426,18 @@ class AutoRound(object):
                 device=device,
             )
             if self.is_packing_immediate:
+                from auto_round.export import PACKING_LAYER_WITH_FORMAT
                 for _, tmp_m in m.named_modules():
                     if hasattr(tmp_m, "bits") and check_to_quantized(tmp_m):
-                        pack_layer(tmp_m.name, self.model, self.formats[0])
+                        target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
+                        PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.name, self.model, self.formats[0])
 
             pbar.update(1)
 
-
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for n, m in self.model.named_modules():
-                if hasattr(m, "name"):
-                    delattr(m, "name")
+            if hasattr(m, "name"):
+                delattr(m, "name")
 
         del q_input
         del input_ids
