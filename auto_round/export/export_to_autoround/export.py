@@ -154,10 +154,10 @@ def pack_layer(layer_name, model, backend):
     if not isinstance(layer, supported_layer_types):  ##already packed
         return
 
-    if layer.act_bits <= 8:
+    if int(layer.act_bits) <= 8:
         return pack_qact_layer(layer_name, model)
 
-    if layer.bits > 8:
+    if int(layer.bits) > 8:
         return
 
     device = layer.weight.device
