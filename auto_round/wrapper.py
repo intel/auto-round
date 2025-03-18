@@ -73,8 +73,10 @@ class WrapperLinear(torch.nn.Module):
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
-        self.enable_act_quant = self.orig_layer.act_bits <= 8 or self._check_act_quantization(
-            self.orig_layer.act_data_type)
+        self.enable_act_quant = False
+        if hasattr(self.orig_layer, "act_bits"):
+            self.enable_act_quant = self.orig_layer.act_bits <= 8 or self._check_act_quantization(
+                self.orig_layer.act_data_type)
         self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
         self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward

@@ -527,7 +527,6 @@ class AutoRound(object):
         None
         """
         layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
-        breakpoint()
         keys = ["data_type", "bits", "group_size", "sym", "scale_dtype"]
         if self.act_bits <= 8:
             keys.extend(["act_bits", "act_group_size", "act_sym","act_dynamic", "act_data_type"])
