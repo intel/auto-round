@@ -107,7 +107,7 @@ auto-round-best \
 
   ```bash
 auto-round-light \
-## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+## light accuracy, 2-3X speedup, slight accuracy drop at W4 and larger accuracy drop at W2
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
@@ -127,7 +127,7 @@ auto-round-fast \
 <br>
 
 #### Auto-Round Recipe Results
-In conclusion, we recommend using auto-round for Int4 and auto-round-best for Int2. However, you may adjust the configuration to suit your specific requirements and available resources.
+In conclusion, we recommend using auto-round for INT4 and auto-round-best for INT2. However, you may adjust the configuration to suit your specific requirements and available resources.
 
 - Average Accuracy of 13 tasks(W4G128) and Time Cost(enable_torch_compile) Results
 
