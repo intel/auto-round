@@ -544,7 +544,7 @@ def tune(args):
     else:
         export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
 
-    model, folders = autoround.qsave(export_dir, format=args.format)
+    model, folders = autoround.quantize_and_save(export_dir, format=args.format)
 
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil

@@ -390,53 +390,81 @@ class AutoRound(object):
         ##check lm_head, mixed_bits, bits, each layer supporting, etc
         pass
 
-    def qsave(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
-        ##check format config
+    def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
+        """Quantizes the model and saves it in the specified format(s).
+
+        This function checks the validity of the requested format(s), quantizes
+        the model accordingly, and saves it to the specified output directory.
+        If multiple formats are provided, the model is saved separately for each format.
+
+        Args:
+            output_dir (str, optional): The directory where the quantized model
+                will be saved. Defaults to "tmp_autoround".
+            format (str, optional): The quantization format(s) to use, separated
+                by commas if multiple. Defaults to "auto_round".
+            inplace (bool, optional): Whether to modify the model in place if only
+                one format is used. Defaults to True.
+            **kwargs: Additional arguments for the quantization and saving process.
+
+        Returns:
+            model: A qdq model or packed model based on the configurations
+            folders: The folder paths where the quantized models are saved.
+
+        Raises:
+            ValueError: If an unsupported format is specified.
+        """
+        # Validate and process the specified formats
         formats = format.replace(' ', '').split(',')
         from auto_round.utils import supported_formats
         for format_ in formats:
             if format_ not in supported_formats:
-                logger.error(f"unsupported format {format_}, please choose from {supported_formats}")
+                logger.error(f"Unsupported format {format_}, please choose from {supported_formats}")
                 exit(-1)
 
+        # If multiple formats are specified, enforce inplace=False
         if len(format) > 1:
             inplace = False
         inplace = kwargs.get("inplace", inplace)
         kwargs.pop("inplace", None)
 
-        if len(formats) == 1 and ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[
-            0]) and not self.has_qlayer_outside_block and inplace:  ##TODO support more
+        # Determine if immediate packing is required
+        if (len(formats) == 1 and
+                ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[0]) and
+                not self.has_qlayer_outside_block and inplace):  # TODO: Support more formats
             self.is_packing_immediate = True
 
+        # Adjust format settings based on compatibility
         for index in range(len(formats)):
             format = formats[index]
             if "auto_round" in format:
-                if self.sym and (
-                        "gptq" not in format and "awq" not in format):
+                if self.sym and ("gptq" not in format and "awq" not in format):
                     format = format.replace('auto_round', 'auto_round:gptq')
                     formats[index] = format
 
-                if not ("triton" in format or "exllamav2" in format or "awq" in format or "gptq" in format):
-                    logger.info(f"AutoRound format does not support {format}, try to pack each layer with AutoGPTQ")
+                if not any(f in format for f in ["triton", "exllamav2", "awq", "gptq"]):
+                    logger.info(f"AutoRound format does not support {format}, attempting to use AutoGPTQ")
                     format = format.replace("auto_round", "auto_gptq")
                     formats[index] = format
+
+        # Remove duplicates from formats list
         formats = list(set(formats))
         self.formats = formats
 
+        # Check format compatibility
         self._check_format_compatibility(formats)
 
+        # Perform model quantization
         model, _ = self.quantize()
 
+        # Save the quantized model in the specified formats
         folders = []
         for format in formats:
-            save_format_ = format.replace(":", "-")
-            save_format_ = save_format_.replace("_", "-")
+            save_format_ = format.replace(":", "-").replace("_", "-")
             save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
             self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
             folders.append(save_folder)
 
         return model, folders
-
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
         the entry of AutoRound.
@@ -571,7 +599,8 @@ class AutoRound(object):
             layer_config (dict): The configuration dictionary for each layer containing various configuration options.
 
         Returns:
-            bool: Returns True if there are quantized layers outside the blocks (e.g., lm-head), otherwise returns False.
+            bool: Returns True if there are quantized layers outside the blocks (e.g., lm-head),
+                  otherwise returns False.
         """
         # Get the names of layers in quantization blocks
         layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
@@ -603,7 +632,8 @@ class AutoRound(object):
                 for key in keys:
                     if key not in layer_config[n].keys():
                         layer_config[n][key] = getattr(self, key)
-            # If the layer is not in the config and not part of a quantization block, use default configuration and set specific values
+            # If the layer is not in the config and not part of a quantization block,
+            # use default configuration and set specific values
             else:
                 layer_config[n] = {}
                 for key in keys:
