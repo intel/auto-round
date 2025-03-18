@@ -527,11 +527,8 @@ class AutoRound(object):
         None
         """
         layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
-        keys = ["data_type", "bits", "group_size", "sym", "scale_dtype"]
-        if self.act_bits <= 8:
-            keys.extend(["act_bits", "act_group_size", "act_sym","act_dynamic", "act_data_type"])
-        if self.data_type.endswith("_dq"):
-            keys.extend(["super_bits", "super_group_size"])
+        keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
+                "act_dynamic", "act_data_type", "super_bits", "super_group_size"]
         for n, m in self.model.named_modules():
             ##delete keys to avoid conflict with the previous tuning
             for key in keys:
