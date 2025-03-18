@@ -91,7 +91,7 @@ auto-round \
     --output_dir ./tmp_autoround
 ```
 
-We offer two configurations, 'auto-round-best' and 'auto-round-light', designed for optimal accuracy and improved speed, respectively. Details are as follows.
+We offer two configurations, `auto-round-best` and `auto-round-light`, designed for optimal accuracy and improved speed, respectively. Details are as follows.
 <details>
   <summary>Other Recipes</summary>
 
