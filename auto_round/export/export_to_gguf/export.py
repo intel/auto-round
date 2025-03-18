@@ -82,7 +82,7 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
             small_first_shard=False)
         model_instance.write()
         rt = time.time() - st
-        logger.info(f"Model successfully exported to {model_instance.fname_out}, runing time={rt}")
+        logger.info(f"Model successfully exported to {model_instance.fname_out}, running time={rt}")
 
     shutil.rmtree(tmp_work_dir, ignore_errors=True)
 
