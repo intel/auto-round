@@ -386,9 +386,9 @@ class AutoRound(object):
                     f" as nsamples must equal or greater"
                     f" than gradient_accumulate_steps * batch_size")
 
-    def _check_format_compatibility(self, format):  ##TODO
-        ##check lm_head, mixed_bits, bits, each layer supporting, etc
-        pass
+    # def _check_format_compatibility(self, format):  ##TODO
+    #     ##check lm_head, mixed_bits, bits, each layer supporting, etc
+    #     pass
 
     def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
@@ -450,8 +450,8 @@ class AutoRound(object):
         formats = list(set(formats))
         self.formats = formats
 
-        # Check format compatibility
-        self._check_format_compatibility(formats)
+        # # Check format compatibility
+        # self._check_format_compatibility(formats)
 
         # Perform model quantization
         model, _ = self.quantize()
