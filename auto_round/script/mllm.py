@@ -346,6 +346,9 @@ def tune(args):
             elif "mllama" in model_type:
                 from transformers import MllamaForConditionalGeneration
                 cls = MllamaForConditionalGeneration
+            elif "gemma3" in model_type:
+                from transformers import Gemma3ForConditionalGeneration
+                cls = Gemma3ForConditionalGeneration
             else:
                 cls = AutoModelForCausalLM
 
