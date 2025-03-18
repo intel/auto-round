@@ -18,7 +18,7 @@ GGUF_CONFIG["gguf:q4_0"] = {"bits": 4, "act_bits": 16, "group_size": 32, "asym":
 
 GGUF_CONFIG["gguf:q4_1"] = {"bits": 4, "act_bits": 16, "group_size": 32, "asym": True, "data_type": "int"}
 
-GGUF_CONFIG["gguf:q4_k"] = GGUF_CONFIG["gguf:q4_k_S"] = {
+GGUF_CONFIG["gguf:q4_k_S"] = {
     "bits": 4,
     "act_bits": 16,
     "super_group_size": 8,
@@ -28,7 +28,7 @@ GGUF_CONFIG["gguf:q4_k"] = GGUF_CONFIG["gguf:q4_k_S"] = {
     "data_type": "int_asym_dq"
 }
 
-GGUF_CONFIG["gguf:q2_k"] = GGUF_CONFIG["gguf:q2_k_s"] = {
+GGUF_CONFIG["gguf:q2_k_s"] = {
     "bits": 2,
     "act_bits": 16,
     "super_group_size": 16,

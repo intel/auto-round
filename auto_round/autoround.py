@@ -527,8 +527,12 @@ class AutoRound(object):
         None
         """
         layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
-        keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
-                "act_dynamic", "act_data_type", "super_bits", "super_group_size"]
+        breakpoint()
+        keys = ["data_type", "bits", "group_size", "sym", "scale_dtype"]
+        if self.act_bits <= 8:
+            keys.extend(["act_bits", "act_group_size", "act_sym","act_dynamic", "act_data_type"])
+        if self.data_type.endswith("_dq"):
+            keys.extend(["super_bits", "super_group_size"])
         for n, m in self.model.named_modules():
             ##delete keys to avoid conflict with the previous tuning
             for key in keys:
@@ -1667,6 +1671,8 @@ class AutoRoundOPT(AutoRound):
             enable_torch_compile: bool = False,
             device_map: Union[str, dict] = None,
             optimizer="AdamW",
+            super_bits: int = None,
+            super_group_size: int = None,
             **kwargs,
     ):
         super(AutoRoundOPT, self).__init__(
@@ -1707,6 +1713,8 @@ class AutoRoundOPT(AutoRound):
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
             device_map=device_map,
+            super_bits=super_bits,
+            super_group_size=super_group_size,
             **kwargs,
         )
 
@@ -1841,6 +1849,8 @@ class AutoRoundAdam(AutoRoundOPT):
             enable_torch_compile: bool = False,
             device_map: Union[str, dict] = None,
             optimizer="AdamW",
+            super_bits: int = None,
+            super_group_size: int = None,
             **kwargs,
     ):
         super(AutoRoundAdam, self).__init__(
@@ -1882,5 +1892,7 @@ class AutoRoundAdam(AutoRoundOPT):
             enable_torch_compile=enable_torch_compile,
             device_map=device_map,
             optimizer=optimizer,
+            super_bits=super_bits,
+            super_group_size=super_group_size,
             **kwargs,
         )

@@ -186,9 +186,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
 
-        self.add_argument("--super_group_size", default=-1, type=int, help="the number of super group size when use double quant.")
+        self.add_argument(
+            "--super_group_size", default=-1, type=int, help="the number of super group size when use double quant.")
 
-        self.add_argument("--super_bits", default=-1, type=int, help="number of scale and mins quant bits for double quant.")
+        self.add_argument(
+            "--super_bits", default=-1, type=int, help="number of scale and mins quant bits for double quant.")
 
 
 class EvalArgumentParser(argparse.ArgumentParser):
@@ -299,8 +301,8 @@ def _gguf_args_check(args):
             except NotImplementedError:
                 logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                 sys.exit(1)
-            
-            if format.endswith("_k") and hparams["hidden_size"] % 256 !=0:
+
+            if format.endswith("_k") and ("hidden_size" in hparams and hparams["hidden_size"] % 256 !=0):
                 model_name = args.model.split('/')
                 model_name = model_name[-1] if model_name[-1] else model_name[-2]
                 hidden_size = hparams["hidden_size"]
@@ -656,7 +658,7 @@ def eval_task_by_task(model, device, tasks, tokenizer=None, batch_size=None, max
     from auto_round.utils import logger
     from lm_eval import simple_evaluate as lm_simple_evaluate
     from lm_eval.models.huggingface import HFLM
-    from transformers import AutoModelForCausalLM, AutoTokenizer    
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     # from auto_round import AutoRoundConfig
     if batch_size is None:
