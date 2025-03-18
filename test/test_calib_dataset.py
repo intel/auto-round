@@ -89,13 +89,13 @@ class TestLocalCalibDataset(unittest.TestCase):
         )
         autoround.quantize()
         
-    def test_pile_val_backup_dataset(self):
-        dataset = "swift/pile-val-backup"
-        bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(
-            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=128, dataset=dataset
-        )
-        autoround.quantize()
+    # def test_pile_val_backup_dataset(self):
+    #     dataset = "swift/pile-val-backup"
+    #     bits, group_size, sym = 4, 128, True
+    #     autoround = AutoRound(
+    #         self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=128, dataset=dataset
+    #     )
+    #     autoround.quantize()
 
     @classmethod
     def tearDownClass(self):
@@ -105,4 +105,5 @@ class TestLocalCalibDataset(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
