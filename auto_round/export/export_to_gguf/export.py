@@ -19,6 +19,7 @@ import torch
 from .convert import Model
 from auto_round.utils import logger, LazyImport
 from pathlib import Path
+import time
 
 gguf = LazyImport("gguf")
 
@@ -40,6 +41,7 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
 
 def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
     """Export the model to gguf format."""
+    st = time.time()
 
     model = kwargs["model"]
     tokenizer = kwargs.get("tokenizer", None)
@@ -81,7 +83,8 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
             dry_run=False,
             small_first_shard=False)
         model_instance.write()
-        logger.info(f"Model successfully exported to {model_instance.fname_out}")
+        rt = time.time() - st
+        logger.info(f"Model successfully exported to {model_instance.fname_out}, runing time={rt}")
 
     shutil.rmtree(tmp_work_dir, ignore_errors=True)
 

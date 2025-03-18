@@ -14,6 +14,7 @@
 
 import numpy as np
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor
 
 QK_K = 256
 K_SCALE_SIZE = 12
@@ -38,15 +39,40 @@ def register_block(name):
     return register
 
 
-def ggml_quant(data: np.array, ggml_type, scale=None, zp=None, **kwargs):
+def ggml_quant(data: np.array, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, worker=0):
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
 
     data = data.astype(np.float32, copy=False)
     shape = data.shape
     n_blocks = data.size // block_size
     blocks = data.reshape((n_blocks, block_size))
+    
+    if worker > 0:
+        n_groups = (data.shape[0] // worker) or 1
+        blocks = np.array_split(blocks, n_groups, axis=0)
+        scale = np.array_split(scale, n_groups, axis=0) if scale is not None else [None] * n_groups
+        zp = np.array_split(zp, n_groups, axis=0) if zp is not None else [None] * n_groups
+        wmin_m = np.array_split(wmin_m, n_groups, axis=0) if wmin_m is not None else [None] * n_groups
+        d_scale = np.array_split(d_scale, n_groups, axis=0) if d_scale is not None else [None] * n_groups
+        d_wmin_m = np.array_split(d_wmin_m, n_groups, axis=0) if d_wmin_m is not None else [None] * n_groups
 
-    new_data = GGML_QUANT_BLOCK[ggml_type](blocks, scale, zp, **kwargs)
+
+        quant_func = GGML_QUANT_BLOCK[ggml_type]
+        if ggml_type.endswith("_k"):
+            with ProcessPoolExecutor(worker) as executor:
+                result = executor.map(quant_func, blocks, scale, zp, wmin_m, d_scale, d_wmin_m)
+            new_data = np.array(list(result), dtype=np.uint8)
+        else:
+            with ProcessPoolExecutor(n_groups) as executor:
+                result = executor.map(quant_func, blocks, scale, zp)
+            new_data = np.array(list(result), dtype=np.uint8)
+    else:
+        quant_func = GGML_QUANT_BLOCK[ggml_type]
+        if ggml_type.endswith("_k"):
+            new_data = quant_func(blocks, scale, zp, wmin_m=wmin_m, d_scale=d_scale, d_wmin_m=d_wmin_m)
+        else:
+            new_data = quant_func(blocks, scale, zp)
+
     assert new_data.dtype == np.uint8
     assert new_data.shape[-1] == type_size
     new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)
@@ -216,7 +242,8 @@ def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         inv_mins = np.where(d_wmin_m == 0, 0, 1 / output_dmin)
 
 
-    for i in tqdm(range(nb), desc="packing layer"):
+    # for i in tqdm(range(nb), desc="packing layer"):
+    for i in range(nb):
         all_L = np.empty(blocks[i].shape, dtype=np.uint8)
 
         if scale is not None:
@@ -230,7 +257,7 @@ def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         else:
             for j in range(QK_K // 16):
                 tmp_scale, tmp_l, the_min = make_qkx2_quants(
-                    blocks[i][j], weight[i][j], nmax=3, group_size=16, rmin=-0.5, rdelta=0.1, nstep=0, use_mad=False)
+                    blocks[i][j], weight[i][j], nmax=3, group_size=16, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=True)
                 all_L[j] = tmp_l
                 scales[j] = tmp_scale
                 mins[j] = the_min
@@ -294,8 +321,8 @@ def q4_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         inv_mins = np.where(d_wmin_m == 0, 0, 1 / output_dmin)
 
 
-    for i in tqdm(range(nb), desc="packing layer"):
-    # for i in range(nb):
+    # for i in tqdm(range(nb), desc="packing layer"):
+    for i in range(nb):
         all_L = np.empty(blocks[i].shape, dtype=np.uint8)
 
         if scale is not None:
@@ -353,3 +380,19 @@ def q4_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 
     # [d, dmin, scale, qs]
     return np.concatenate([output_d, output_dmin, output_scale, output_qs], axis=-1)
+
+
+if __name__ == "__main__":
+    from transformers import set_seed
+    set_seed(42)
+    import numpy as np
+    data = np.random.randn(2048, 2048)
+    scale = np.random.randn(2048, 64)
+    wmin_m = np.random.randn(131072, 1)
+    d_scale = np.random.randn(16384, 1)
+    d_wmin_m = np.random.randn(16384, 1)
+    import time
+    st = time.time()
+    new_data = ggml_quant(data, "q4_k", scale=scale, zp=None, wmin_m=wmin_m, d_scale=d_scale,d_wmin_m=d_wmin_m,worker=32)
+    print("runing time:" , time.time() - st)
+    print(new_data)

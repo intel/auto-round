@@ -591,7 +591,7 @@ def tune(args):
             if eval_gguf_model:
                 for file in os.listdir(eval_folder):
                     gguf_file = file
-                user_model = AutoModelForCausalLM.from_pretrained(save_folder, gguf_file=gguf_file)
+                user_model = AutoModelForCausalLM.from_pretrained(save_folder, gguf_file=gguf_file, device_map="auto")
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
 
@@ -647,7 +647,7 @@ def eval(args):
     print(make_table(res))
 
 
-def eval_task_by_task(model, device, tasks, batch_size=None, max_batch_size=64, trust_remote_code=True):
+def eval_task_by_task(model, device, tasks, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
@@ -656,14 +656,30 @@ def eval_task_by_task(model, device, tasks, batch_size=None, max_batch_size=64, 
     from auto_round.utils import logger
     from lm_eval import simple_evaluate as lm_simple_evaluate
     from lm_eval.models.huggingface import HFLM
+    from transformers import AutoModelForCausalLM, AutoTokenizer    
 
     # from auto_round import AutoRoundConfig
     if batch_size is None:
         batch_size = "auto"
+    is_gguf_file = False
     if not isinstance(model, str):
         parallelism = False
+    else:
+        if os.path.isfile(model) and model.endswith(".gguf"):
+            is_gguf_file = True
+            gguf_file = model
+            model = os.path.dirname(model)
+        else:
+            for file in os.listdir(model):
+                if file.endswith(".gguf"):
+                    is_gguf_file = True
+                    gguf_file = file
+    if is_gguf_file:
+        tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
+        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto")
     hflm = HFLM(
         pretrained=model,
+        tokenizer=tokenizer,
         device=device_str,
         batch_size=batch_size,
         max_batch_size=max_batch_size,
