@@ -91,7 +91,7 @@ auto-round \
     --output_dir ./tmp_autoround
 ```
 
-We provide recipes for 'auto-round-best' and 'auto-round-light' mode, running speed with low memory. Details as below.
+We offer two configurations, 'auto-round-best' and 'auto-round-light', designed for optimal accuracy and improved speed, respectively. Details are as follows.
 <details>
   <summary>Other Recipes</summary>
 
