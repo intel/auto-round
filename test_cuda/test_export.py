@@ -173,6 +173,7 @@ class TestAutoRound(unittest.TestCase):
                        "she is a great artist, she is a great artist, she is a great artist, she is")
         shutil.rmtree("./saved", ignore_errors=True)
 
+
     #
     def test_autoawq_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
