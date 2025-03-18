@@ -127,7 +127,7 @@ auto-round-fast \
 <br>
 
 #### Auto-Round Recipe Results
-In general, it is recommended to use the auto-round default mode. When resources or quantization time are a priority, the auto-round-light mode can be preferred for models larger than 3B. For 2bits scenario, we recommend auto-round-best mode.
+In conclusion, we recommend using auto-round for Int4 and auto-round-best for Int2. However, you may adjust the configuration to suit your specific requirements and available resources.
 
 - Average Accuracy of 13 tasks(W4G128) and Time Cost(enable_torch_compile) Results
 
@@ -150,8 +150,6 @@ In general, it is recommended to use the auto-round default mode. When resources
     | Default | 0.3762(2m)       | 0.5232(6m)      | 0.6004(13m)    | 0.5972(18m)     | 0.7143(122m) |
     | Light   | 0.3540(2m)       | 0.5041(3m)      | 0.5532(5m)     | 0.5716(7m)      | 0.7089(38m)      |
   </details>
-
-In conclusion, we recommend using auto-round for Int4 and auto-round-best for Int2. However, you may adjust the configuration to suit your specific requirements and available resources.
 
 <br>
 
