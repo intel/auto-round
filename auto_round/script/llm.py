@@ -30,11 +30,9 @@ import re
 import argparse
 import sys
 
-import auto_round.utils
 from auto_round.utils import (
     get_fp_layer_names,
     clear_memory,
-    is_debug_mode,
     get_device_and_parallelism,
     set_cuda_visible_devices)
 
@@ -368,9 +366,10 @@ def tune(args):
         args.format = "auto_round"
 
     formats = args.format.lower().replace(' ', '').split(",")
+    from auto_round.utils import supported_formats
     for format in formats:
-        if format not in auto_round.supported_formats:
-            raise ValueError(f"{format} is not supported, we only support {auto_round.supported_formats}")
+        if format not in supported_formats:
+            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
 
     args = _gguf_args_check(args)
 
