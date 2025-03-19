@@ -26,7 +26,7 @@ class TestAutoRoundCmd(unittest.TestCase):
             assert False, "cmd line test fail, please have a check"
 
         res = os.system(
-            f"cd .. && {python_path} -m auto_round --model 'facebook/opt-125m' --iter 2 --nsamples 1 --format auto_round,auto_gptq --output_dir ./saved --tasks piqa,openbookqa")
+            f"cd .. && {python_path} -m auto_round --model 'facebook/opt-125m' --iter 2 --nsamples 1 --format auto_gptq,auto_round --output_dir ./saved --tasks piqa,openbookqa")
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
         
