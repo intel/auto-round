@@ -133,15 +133,15 @@ In conclusion, we recommend using auto-round for INT4 and auto-round-best for IN
 
   | Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct | Falcon3-10B          | Qwen2.5-72B-Instruct  |
   |---------|-----------------------|----------------------|---------------------|----------------------|-----------------------|
-  | 16bits  | 0.5541                | 0.6614               | 0.6470              | 0.6151               | 0.7229                |
-  | Best    | **0.5675**(7m)   | **0.6638**(23m) | 0.6426(58m)    | **0.6092**(81m) | 0.7242(575m)     |
-  | Default | 0.5659(2m)       | 0.6496(6m)      | 0.6441(13m)    | 0.6080(18m)     | **0.7252**(118m) |
-  | Light   | 0.5564(2m)       | 0.6433(3m)      | **0.6453**(5m) | 0.6063(6m)      | 0.7243(37m)      |
+  | 16bits  | 0.4192                | 0.5203               | 0.6470              | 0.6151               | 0.7229                |
+  | Best    | **0.4137**(7m)   | **0.5142**(23m) | 0.6426(58m)    | **0.6092**(81m) | 0.7242(575m)     |
+  | Default | 0.4129(2m)       | 0.5133(6m)      | 0.6441(13m)    | 0.6080(18m)     | **0.7252**(118m) |
+  | Light   | 0.4052(2m)       | 0.5108(3m)      | **0.6453**(5m) | 0.6063(6m)      | 0.7243(37m)      |
 
-  <details>
-    <summary>W2G64 quantization Results</summary>
+  <!-- <details>
+    <summary>W2G64 quantization Results</summary> -->
 
-  - Average Accuracy of 13 tasks(W2G64) and Time Cost(enable_torch_compile) Results
+  <!-- - Average Accuracy of 13 tasks(W2G64) and Time Cost(enable_torch_compile) Results
 
     | Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct | Falcon3-10B          | Qwen2.5-72B-Instruct  |
     |---------|-----------------------|----------------------|---------------------|----------------------|-----------------------|
@@ -149,7 +149,7 @@ In conclusion, we recommend using auto-round for INT4 and auto-round-best for IN
     | Best    | **0.3794**(6m)   | **0.5272**(24m) | **0.6097**(56m)| **0.6066**(79m)     | **0.7201**(564m)     |
     | Default | 0.3762(2m)       | 0.5232(6m)      | 0.6004(13m)    | 0.5972(18m)     | 0.7143(122m) |
     | Light   | 0.3540(2m)       | 0.5041(3m)      | 0.5532(5m)     | 0.5716(7m)      | 0.7089(38m)      |
-  </details>
+  </details> -->
 
 <br>
 
@@ -459,6 +459,7 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
