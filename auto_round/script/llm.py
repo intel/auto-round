@@ -186,6 +186,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
 
+        self.add_argument(
+            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant.")
+
+        self.add_argument(
+            "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant.")
+
 
 class EvalArgumentParser(argparse.ArgumentParser):
 
@@ -254,6 +260,29 @@ def setup_best_parser():
     return args
 
 
+def setup_light_parser():
+    parser = BasicArgumentParser()
+
+    parser.add_argument("--group_size", default=128, type=int, help="group size")
+
+    parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
+
+    parser.add_argument("--iters", "--iter", default=50, type=int, help="iterations to tune each block")
+
+    parser.add_argument(
+        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples")
+
+    parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
+
+    parser.add_argument(
+        "--lr", default=5e-3, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
+
+    args = parser.parse_args()
+    args.low_gpu_mem_usage = True
+
+    return args
+
+
 def setup_fast_parser():
     parser = BasicArgumentParser()
 
@@ -281,24 +310,10 @@ def setup_eval_parser():
 
 def _gguf_args_check(args):
     from auto_round.utils import logger
-
-    _GGUF_CONFIG = {
-        "gguf:q4_0": {
-            "bits": 4,
-            "act_bits": 16,
-            "group_size": 32,
-            "asym": False,
-        },
-        "gguf:q4_1": {
-            "bits": 4,
-            "act_bits": 16,
-            "group_size": 32,
-            "asym": True,
-        }
-    }
+    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
     formats = args.format.lower().replace(' ', '').split(",")
-    for format in _GGUF_CONFIG:
+    for format in GGUF_CONFIG:
         if format in formats:
             from pathlib import Path
             from auto_round.export.export_to_gguf.convert import Model
@@ -310,8 +325,17 @@ def _gguf_args_check(args):
                 logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                 sys.exit(1)
 
+            if format.endswith("_k") and ("hidden_size" in hparams and hparams["hidden_size"] % 256 !=0):
+                model_name = args.model.split('/')
+                model_name = model_name[-1] if model_name[-1] else model_name[-2]
+                hidden_size = hparams["hidden_size"]
+                logger.error(
+                    f"Currently only support pure mode for format: {format}. "
+                    f"{model_name} is not supported, cause hidden_size({hidden_size}) % 256 !=0")
+                sys.exit(-1)
+
             unsupport_list, reset_list = [], []
-            gguf_config = _GGUF_CONFIG[format]
+            gguf_config = GGUF_CONFIG[format]
             for k, v in gguf_config.items():
                 if getattr(args, k) != v:
                     unsupport_list.append(f"{k}={getattr(args, k)}")
@@ -340,14 +364,17 @@ def tune(args):
     from auto_round import AutoRoundConfig
     from auto_round.utils import detect_device, get_library_version, detect_device_count
     from auto_round.utils import logger
+    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
     tasks = args.tasks
     if args.format is None:
         args.format = "auto_round"
     supported_formats = [
         "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
-        "gguf:q4_0", "gguf:q4_1", "itrex", "itrex_xpu", "fake"
+        "itrex", "itrex_xpu", "fake"
     ]
+    supported_formats.extend(list(GGUF_CONFIG.keys()))
+
     formats = args.format.lower().replace(' ', '').split(",")
     for format in formats:
         if format not in supported_formats:
@@ -541,7 +568,10 @@ def tune(args):
         enable_torch_compile=enable_torch_compile,
         act_data_type=args.act_data_type,
         act_dynamic=not args.disable_act_dynamic,
-        device_map=args.device_map)
+        device_map=args.device_map,
+        super_group_size=args.super_group_size,
+        super_bits=args.super_bits,
+        )
     model, _ = autoround.quantize()
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
@@ -559,17 +589,18 @@ def tune(args):
     format_list = args.format.replace(' ', '').split(',')
     inplace = False if len(format_list) > 1 else True
     eval_folder = None
+
+    eval_gguf_model = False
     for format_ in format_list:
         save_format_ = format_.replace(":", "-")
         save_format_ = save_format_.replace("_", "-")
         save_folder = f'{export_dir}-{save_format_}'
         autoround.save_quantized(save_folder, format=format_, inplace=inplace)
         if 'gguf' in format_:
-            gguf_format = format_.upper().split(":")[-1]
-            if not any([file.endswith(f"{gguf_format}.gguf") for file in os.listdir(save_folder)]):
+            if not any([file.endswith(".gguf") for file in os.listdir(save_folder)]):
                 logger.error(f"fail to export {format_}")
-        else:
-            eval_folder = save_folder
+            eval_gguf_model = True
+        eval_folder = save_folder
 
     lm_eval_version = get_library_version("lm-eval")
 
@@ -581,7 +612,11 @@ def tune(args):
 
         logger.info(f"Using lm-eval version {lm_eval_version}")
 
-        if args.act_bits <= 8:
+        if args.act_bits <= 8 or eval_gguf_model:
+            if eval_gguf_model:
+                for file in os.listdir(eval_folder):
+                    gguf_file = file
+                user_model = AutoModelForCausalLM.from_pretrained(save_folder, gguf_file=gguf_file, device_map="auto")
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
 
@@ -616,8 +651,7 @@ def tune(args):
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
-    ##model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code},add_bos_token=True'
-    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}'
+    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}' #,add_bos_token={True}
     if parallelism:
         model_args += ",parallelize=True"
     if isinstance(tasks, str):
@@ -637,7 +671,7 @@ def eval(args):
     print(make_table(res))
 
 
-def eval_task_by_task(model, device, tasks, batch_size=None, max_batch_size=64, trust_remote_code=True):
+def eval_task_by_task(model, device, tasks, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
@@ -646,14 +680,30 @@ def eval_task_by_task(model, device, tasks, batch_size=None, max_batch_size=64, 
     from auto_round.utils import logger
     from lm_eval import simple_evaluate as lm_simple_evaluate
     from lm_eval.models.huggingface import HFLM
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     # from auto_round import AutoRoundConfig
     if batch_size is None:
         batch_size = "auto"
+    is_gguf_file = False
     if not isinstance(model, str):
         parallelism = False
+    else:
+        if os.path.isfile(model) and model.endswith(".gguf"):
+            is_gguf_file = True
+            gguf_file = model
+            model = os.path.dirname(model)
+        else:
+            for file in os.listdir(model):
+                if file.endswith(".gguf"):
+                    is_gguf_file = True
+                    gguf_file = file
+    if is_gguf_file:
+        tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
+        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto")
     hflm = HFLM(
         pretrained=model,
+        tokenizer=tokenizer,
         device=device_str,
         batch_size=batch_size,
         max_batch_size=max_batch_size,
@@ -690,3 +740,4 @@ def eval_task_by_task(model, device, tasks, batch_size=None, max_batch_size=64, 
             for key in res_keys:
                 res_all[key].update(res[key])
         print(make_table(res_all))
+

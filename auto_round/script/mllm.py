@@ -405,6 +405,9 @@ def tune(args):
             elif "gemma3" in model_type:
                 from transformers import Gemma3ForConditionalGeneration
                 cls = Gemma3ForConditionalGeneration
+            elif "mistral3" in model_type:
+                from transformers import Mistral3ForConditionalGeneration 
+                cls = Mistral3ForConditionalGeneration
             else:
                 cls = AutoModelForCausalLM
 

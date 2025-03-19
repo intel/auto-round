@@ -162,6 +162,8 @@ class AutoRound(object):
             enable_norm_bias_tuning: bool = False,
             enable_torch_compile: bool = False,
             device_map: Union[str, dict] = None,
+            super_bits: int = None,
+            super_group_size: int = None,
             **kwargs,
     ):
         self.quantized = False
@@ -222,6 +224,9 @@ class AutoRound(object):
         self.optimizer = self.get_optimizer(None)
         self.batch_dim = None
         self.infer_bs_coeff = 1
+
+        self.super_bits = super_bits
+        self.super_group_size = super_group_size
 
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
@@ -523,7 +528,7 @@ class AutoRound(object):
         """
         layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
         keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
-                "act_dynamic", "act_data_type"]
+                "act_dynamic", "act_data_type", "super_bits", "super_group_size"]
         for n, m in self.model.named_modules():
             ##delete keys to avoid conflict with the previous tuning
             for key in keys:
@@ -1662,6 +1667,8 @@ class AutoRoundOPT(AutoRound):
             enable_torch_compile: bool = False,
             device_map: Union[str, dict] = None,
             optimizer="AdamW",
+            super_bits: int = None,
+            super_group_size: int = None,
             **kwargs,
     ):
         super(AutoRoundOPT, self).__init__(
@@ -1702,6 +1709,8 @@ class AutoRoundOPT(AutoRound):
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
             device_map=device_map,
+            super_bits=super_bits,
+            super_group_size=super_group_size,
             **kwargs,
         )
 
@@ -1836,6 +1845,8 @@ class AutoRoundAdam(AutoRoundOPT):
             enable_torch_compile: bool = False,
             device_map: Union[str, dict] = None,
             optimizer="AdamW",
+            super_bits: int = None,
+            super_group_size: int = None,
             **kwargs,
     ):
         super(AutoRoundAdam, self).__init__(
@@ -1877,5 +1888,7 @@ class AutoRoundAdam(AutoRoundOPT):
             enable_torch_compile=enable_torch_compile,
             device_map=device_map,
             optimizer=optimizer,
+            super_bits=super_bits,
+            super_group_size=super_group_size,
             **kwargs,
         )
