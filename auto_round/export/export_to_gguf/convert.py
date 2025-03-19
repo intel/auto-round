@@ -624,7 +624,7 @@ class OriModel:
         # use in llama.cpp to implement the same pre-tokenizer
 
         chktxt = (
-            '\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български \'\'\'\'\'\'```````""""......!!!!!!?????? I\'ve been \'told he\'s there, \'RE you sure? \'M not sure I\'ll make it, \'D you like some tea? We\'Ve a\'lL'
+            '\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български \'\'\'\'\'\'```````""""......!!!!!!?????? I\'ve been \'told he\'s there, \'RE you sure? \'M not sure I\'ll make it, \'D you like some tea? We\'Ve a\'lL' # pylint: disable=C0301
         )  # pylint: disable=C0301
 
         chktok = tokenizer.encode(chktxt)
@@ -2731,7 +2731,8 @@ class Phi3MiniModel(Model):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f"replacing token {token_id}: {tokens[token_id].decode('utf-8')!r}"
+                                f" -> {token.decode('utf-8')!r}"
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -2750,7 +2751,8 @@ class Phi3MiniModel(Model):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f"replacing token {token_id}: {tokens[token_id].decode('utf-8')!r}"
+                                f" -> {token.decode('utf-8')!r}"
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -2832,7 +2834,8 @@ class Phi3MiniModel(Model):
 
         if len(long_factors) != len(short_factors) or len(long_factors) != rope_dims / 2:
             raise ValueError(
-                f'The length of rope long and short factors must be {rope_dims / 2}. long_factors = {len(long_factors)}, short_factors = {len(short_factors)}.'
+                f"The length of rope long and short factors must be {rope_dims / 2}."
+                f" long_factors = {len(long_factors)}, short_factors = {len(short_factors)}."
             )
 
         yield (
@@ -3544,7 +3547,6 @@ class GemmaModel(Model):
             logger.debug(f"Skipping get tensor {name!r} in safetensors so that convert can end normally.")
             return []
 
-        # ref: https://github.com/huggingface/transformers/blob/fc37f38915372c15992b540dfcbbe00a916d4fc6/src/transformers/models/gemma/modeling_gemma.py#L89
         if name.endswith("norm.weight"):
             data_torch = data_torch + 1
 
@@ -4241,7 +4243,8 @@ class ArcticModel(Model):
                             token_score = 0.0
 
                         logger.info(
-                            f"Setting added token {token_id} to '{token_content}' (type: {token_type}, score: {token_score:.2f})"
+                            f"Setting added token {token_id} to '{token_content}'"
+                            f" (type: {token_type}, score: {token_score:.2f})"
                         )
                         tokens[token_id] = token_content.encode("utf-8")
                         toktypes[token_id] = token_type
@@ -4638,10 +4641,6 @@ class T5Model(Model):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
 
-        # T5 based models contain shared token embeddings tensors saved randomly as either "encoder.embed_tokens.weight",
-        # "decoder.embed_tokens.weight" or "shared.weight" tensor. In some models there are even multiple of them stored
-        # in the safetensors files. We use the first tensor from these three as the token embeddings for both encoder
-        # and decoder and ignore the remaining ones.
         if name in ["decoder.embed_tokens.weight", "encoder.embed_tokens.weight", "shared.weight"]:
             if not self.shared_token_embeddings_found:
                 name = "shared.weight"
@@ -4777,10 +4776,6 @@ class T5EncoderModel(Model):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
 
-        # T5 based models contain shared token embeddings tensors saved randomly as either "encoder.embed_tokens.weight",
-        # "decoder.embed_tokens.weight" or "shared.weight" tensor. In some models there are even multiple of them stored
-        # in the safetensors files. We use the first tensor from these three as the token embeddings for both encoder
-        # and decoder and ignore the remaining ones.
         if name in ["decoder.embed_tokens.weight", "encoder.embed_tokens.weight", "shared.weight"]:
             if not self.shared_token_embeddings_found:
                 name = "shared.weight"
@@ -4903,8 +4898,6 @@ class ChatGLMModel(Model):
 
             text = piece.encode("utf-8")
             score = 0.0
-            # Referencing the tokenizer Python implementation(https://huggingface.co/THUDM/chatglm3-6b/blob/main/tokenization_chatglm.py),
-            # it is only valid if it is less than tokenizer.tokenizer.sp_model.vocab_size()
             if len(piece) != 0 and token_id < tokenizer.tokenizer.sp_model.vocab_size():
                 score = tokenizer.tokenizer.sp_model.get_score(token_id)
 
