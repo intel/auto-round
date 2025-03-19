@@ -166,6 +166,11 @@ class WrapperLinear(torch.nn.Module):
             weight = self.orig_layer.get_weight().to(self.device)
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             weight = weight.t()
+        
+        quant_kwargs = {}
+        if hasattr(self.orig_layer, "super_bits"):
+            quant_kwargs["super_bits"] = self.orig_layer.super_bits
+            quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
 
         weight_q, scale, zp = self.weight_quant_func(
             weight,
@@ -179,8 +184,8 @@ class WrapperLinear(torch.nn.Module):
             tensor_max=self.weight_max,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
-
-        )
+            **quant_kwargs
+            )
         weight_q = weight_q.to(weight.dtype)
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             weight_q = weight_q.t()
@@ -237,6 +242,7 @@ class WrapperLinear(torch.nn.Module):
             self.orig_layer.to(self.device)
         ##unwrapper weight
         qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
+
         self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
 
@@ -244,19 +250,27 @@ class WrapperLinear(torch.nn.Module):
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             shape = qdq_weight.t().shape
 
-        if zp is not None:
-            zp = zp.reshape(shape[0], -1)
-        if isinstance(scale, dict):
-            for key in scale.keys():
-                if key == "scale":
-                    name = key
-                    self.orig_layer.scale = scale[key].reshape(shape[0], -1).to("cpu")
+        def _set_dict_attr(attr_dict, attr_name):
+            for key in attr_dict.keys():
+                if key == attr_name:
+                    setattr(self.orig_layer, attr_name, attr_dict[key].reshape(shape[0], -1).to("cpu"))
                 else:
                     name = "w_" + key
-                    setattr(self.orig_layer, name, scale[key].to("cpu"))
+                    setattr(self.orig_layer, name, attr_dict[key].to("cpu"))
+                    
+        if isinstance(scale, dict):
+            _set_dict_attr(scale, "scale")
         else:
             self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
-        self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+        
+        if zp is not None:
+            if isinstance(zp, dict):
+                _set_dict_attr(zp, "zp")
+            else:
+                zp = zp.reshape(shape[0], -1)
+                self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+        else:
+            self.orig_layer.zp = None
 
         ##unwrapper bias
         if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
