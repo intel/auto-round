@@ -1253,16 +1253,16 @@ class Model(OriModel):
                         data_qtype = gguf.GGMLQuantizationType.F16
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_BF16:
                         data_qtype = gguf.GGMLQuantizationType.BF16
-                    # elif self.ftype == gguf.LlamaFileType.MOSTLY_Q8_0:
-                    #     data_qtype = gguf.GGMLQuantizationType.Q8_0
-                    # elif self.ftype == gguf.LlamaFileType.MOSTLY_TQ1_0:
-                    #     data_qtype = gguf.GGMLQuantizationType.TQ1_0
-                    # elif self.ftype == gguf.LlamaFileType.MOSTLY_TQ2_0:
-                    #     data_qtype = gguf.GGMLQuantizationType.TQ2_0
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q8_0:
+                        data_qtype = gguf.GGMLQuantizationType.Q8_0
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_0:
                         data_qtype = gguf.GGMLQuantizationType.Q4_0
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_1:
                         data_qtype = gguf.GGMLQuantizationType.Q4_1
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S:
+                        data_qtype = gguf.GGMLQuantizationType.Q4_K
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K_S:
+                        data_qtype = gguf.GGMLQuantizationType.Q2_K
                     else:
                         raise ValueError(
                             f"Unknown file type: {self.ftype.name}")
@@ -1285,11 +1285,23 @@ class Model(OriModel):
                             scale = module.scale
                             if isinstance(scale, torch.Tensor):
                                 scale = scale.numpy()
-                            zp = module.zp
+                            zp = module.zp if hasattr(module, "zp") else None
                             if isinstance(zp, torch.Tensor):
                                 zp = zp.numpy()
-                            data = ggml_quant(data, data_qtype.name.lower(), scale,
-                                            zp)
+                            if data_qtype.name.lower().endswith("_k"):
+                                d_scale = module.w_d_scale.numpy()
+                                d_wmin_m = module.w_d_wmin_m.numpy()
+                                wmin_m = module.w_wmin_m.numpy()
+                                data = ggml_quant(
+                                    data,
+                                    data_qtype.name.lower(),
+                                    scale,
+                                    zp,
+                                    wmin_m=wmin_m,
+                                    d_scale=d_scale,
+                                    d_wmin_m=d_wmin_m)
+                            else:
+                                data = ggml_quant(data, data_qtype.name.lower(), scale, zp)
                         else:
                             data_qtype = gguf.GGMLQuantizationType.F32
                     else:
