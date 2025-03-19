@@ -1446,6 +1446,8 @@ class AutoRound(object):
                 m.name = n
 
         for i in range(0, len(block_names), nblocks):
+            if i!=0:
+                pbar.update(1)
             if nblocks == 1:
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
@@ -1472,8 +1474,9 @@ class AutoRound(object):
                     if hasattr(tmp_m, "bits") and check_to_quantized(tmp_m):
                         target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
                         PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.name, self.model, self.formats[0])
-
-            pbar.update(1)
+        pbar.set_description(f"Quantizing done")
+        pbar.update(1)
+        pbar.close()
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for n, m in self.model.named_modules():
