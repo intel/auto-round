@@ -454,7 +454,11 @@ class AutoRound(object):
                     formats[index] = format
 
         # Remove duplicates from formats list
-        formats = list(set(formats))
+        def remove_duplicates(lst):
+            seen = set()
+            return [x for x in lst if not (x in seen or seen.add(x))]
+
+        formats = remove_duplicates(formats)
         self.formats = formats
 
         # # Check format compatibility
