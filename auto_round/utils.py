@@ -18,11 +18,8 @@ import os
 import sys
 import subprocess
 from collections import UserDict
-from typing import Union, Optional
 import re
-# for cpu usage
 import cpuinfo
-import numpy as np
 import psutil
 import torch
 from torch.amp import autocast
@@ -32,11 +29,16 @@ from packaging import version
 import gc
 from .special_model_handler import shareable_keywords, SPECIAL_MULTIMODAL_BLOCK
 import transformers
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
 supported_formats = (
     "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
-    "gguf:q4_0", "gguf:q4_1", "itrex", "itrex_xpu", "fake"
+    "itrex", "itrex_xpu", "fake"
 )
+
+
+supported_formats = supported_formats + tuple(GGUF_CONFIG.keys())
+
 supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D)
 
 

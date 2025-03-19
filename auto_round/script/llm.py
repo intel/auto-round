@@ -324,7 +324,7 @@ def _gguf_args_check(args):
                 logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                 sys.exit(1)
 
-            if format.endswith("_k") and ("hidden_size" in hparams and hparams["hidden_size"] % 256 !=0):
+            if format.endswith("_k") and ("hidden_size" in hparams and hparams["hidden_size"] % 256 != 0):
                 model_name = args.model.split('/')
                 model_name = model_name[-1] if model_name[-1] else model_name[-2]
                 hidden_size = hparams["hidden_size"]
@@ -358,27 +358,19 @@ def _gguf_args_check(args):
 def tune(args):
     import transformers
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
+    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig
 
-    from auto_round import AutoRoundConfig
-    from auto_round.utils import detect_device, get_library_version, detect_device_count
+    from auto_round.utils import detect_device, get_library_version
     from auto_round.utils import logger
-    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
     tasks = args.tasks
     if args.format is None:
         args.format = "auto_round"
 
-    supported_formats = [
-        "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
-        "itrex", "itrex_xpu", "fake"
-    ]
-    supported_formats.extend(list(GGUF_CONFIG.keys()))
-
     formats = args.format.lower().replace(' ', '').split(",")
     for format in formats:
-        if format not in supported_formats:
-            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+        if format not in auto_round.supported_formats:
+            raise ValueError(f"{format} is not supported, we only support {auto_round.supported_formats}")
 
     args = _gguf_args_check(args)
 
@@ -571,8 +563,8 @@ def tune(args):
         device_map=args.device_map,
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
-        )
-    
+    )
+
     model_name = args.model.rstrip("/")
     if model_name.split('/')[-1].strip('.') == "":
         export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
@@ -597,20 +589,26 @@ def tune(args):
         from lm_eval.utils import make_table  # pylint: disable=E0401
 
         logger.info(f"Using lm-eval version {lm_eval_version}")
+        eval_gguf_model = False
+        for file in os.listdir(eval_folder):
+            if file.endswith("guff"):
+                eval_gguf_model = True
+                break
 
         if args.act_bits <= 8 or eval_gguf_model:
             if eval_gguf_model:
                 for file in os.listdir(eval_folder):
                     gguf_file = file
-                user_model = AutoModelForCausalLM.from_pretrained(save_folder, gguf_file=gguf_file, device_map="auto")
-            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                from accelerate.big_modeling import dispatch_model
-
-                dispatch_model(model, model.hf_device_map)
-                user_model = model
+                user_model = AutoModelForCausalLM.from_pretrained(eval_folder, gguf_file=gguf_file, device_map="auto")
             else:
-                device_str = detect_device(device_str)
-                user_model = model.to(device_str)
+                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                    from accelerate.big_modeling import dispatch_model
+
+                    dispatch_model(model, model.hf_device_map)
+                    user_model = model
+                else:
+                    device_str = detect_device(device_str)
+                    user_model = model.to(device_str)
 
             if args.eval_task_by_task:
                 eval_task_by_task(user_model, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
@@ -637,7 +635,7 @@ def tune(args):
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
-    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}' #,add_bos_token={True}
+    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}'  # ,add_bos_token={True}
     if parallelism:
         model_args += ",parallelize=True"
     if isinstance(tasks, str):
@@ -726,4 +724,3 @@ def eval_task_by_task(model, device, tasks, tokenizer=None, batch_size=None, max
             for key in res_keys:
                 res_all[key].update(res[key])
         print(make_table(res_all))
-
