@@ -187,10 +187,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
 
         self.add_argument(
-            "--super_group_size", default=-1, type=int, help="the number of super group size when use double quant.")
+            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant.")
 
         self.add_argument(
-            "--super_bits", default=-1, type=int, help="number of scale and mins quant bits for double quant.")
+            "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant.")
 
 
 class EvalArgumentParser(argparse.ArgumentParser):

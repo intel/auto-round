@@ -166,6 +166,11 @@ class WrapperLinear(torch.nn.Module):
             weight = self.orig_layer.get_weight().to(self.device)
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             weight = weight.t()
+        
+        quant_kwargs = {}
+        if hasattr(self.orig_layer, "super_bits"):
+            quant_kwargs["super_bits"] = self.orig_layer.super_bits
+            quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
 
         weight_q, scale, zp = self.weight_quant_func(
             weight,
@@ -179,8 +184,7 @@ class WrapperLinear(torch.nn.Module):
             tensor_max=self.weight_max,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
-            super_bits=self.orig_layer.super_bits,
-            super_group_size=self.orig_layer.super_group_size
+            **quant_kwargs
             )
         weight_q = weight_q.to(weight.dtype)
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
