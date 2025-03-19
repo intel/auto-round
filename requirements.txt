@@ -1,5 +1,5 @@
 accelerate
-datasets
+datasets<=3.3.2
 py-cpuinfo
 sentencepiece
 numpy < 2.0
