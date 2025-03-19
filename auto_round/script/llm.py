@@ -260,6 +260,29 @@ def setup_best_parser():
     return args
 
 
+def setup_light_parser():
+    parser = BasicArgumentParser()
+
+    parser.add_argument("--group_size", default=128, type=int, help="group size")
+
+    parser.add_argument("--batch_size", "--train_bs", "--bs", default=8, type=int, help="train batch size")
+
+    parser.add_argument("--iters", "--iter", default=50, type=int, help="iterations to tune each block")
+
+    parser.add_argument(
+        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples")
+
+    parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
+
+    parser.add_argument(
+        "--lr", default=5e-3, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
+
+    args = parser.parse_args()
+    args.low_gpu_mem_usage = True
+
+    return args
+
+
 def setup_fast_parser():
     parser = BasicArgumentParser()
 
@@ -628,8 +651,7 @@ def tune(args):
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
-    ##model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code},add_bos_token=True'
-    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}'
+    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}' #,add_bos_token={True}
     if parallelism:
         model_args += ",parallelize=True"
     if isinstance(tasks, str):
@@ -718,3 +740,4 @@ def eval_task_by_task(model, device, tasks, tokenizer=None, batch_size=None, max
             for key in res_keys:
                 res_all[key].update(res[key])
         print(make_table(res_all))
+
