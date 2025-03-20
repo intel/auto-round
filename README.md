@@ -70,7 +70,6 @@ pip install auto-round-lib
   ```
 
 </details>
-<br>
 
 ## Model Quantization
 
@@ -124,7 +123,6 @@ auto-round-fast \
   ``` -->
 
 </details>
-<br>
 
 In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the configuration to suit your specific requirements and available resources.
 
@@ -138,7 +136,7 @@ Average Accuracy of 13 tasks(W4G128) and Time Cost(enable_torch_compile) Results
 | Light   | 0.4052(2m)       | 0.5108(3m)      | **0.6453**(5m) | 0.6063(6m)      | 0.7243(37m)      |
 
 
-<br>
+
 
 ### API Usage (Gaudi2/CPU/GPU)
 
@@ -217,7 +215,6 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 - `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.
 
 </details>
-<br>
 
 
 ### API Usage for VLMs
@@ -256,7 +253,7 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
 </details>
 
-<br>
+
 
 ### Export Formats
 **AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
@@ -273,7 +270,7 @@ adopted within the community, **only 4-bits quantization is supported**.
 **GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and
 q4_1 (W4G32) is supported in our repo**.
 
-<br>
+
 
 ### Quantization Costs
 
@@ -330,7 +327,6 @@ inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
-<br>
 
 #### Evaluation
 <details>
@@ -344,7 +340,7 @@ auto-round --model saved_quantized_model \
 ```
 
 </details>
-<br>
+
 
 ### AutoGPTQ/AutoAWQ format
 
@@ -420,7 +416,7 @@ release most of the models ourselves.
 </details> 
  
 
-<br>
+
 
 ## Integration
 
@@ -432,7 +428,7 @@ AutoRound has been integrated into multiple repositories.
 
 [pytorch/ao](https://github.com/pytorch/ao)
 
-<br>
+
 
 ## Reference
 
@@ -446,6 +442,7 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
