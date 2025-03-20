@@ -313,8 +313,17 @@ def _gguf_args_check(args):
     from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
     formats = args.format.lower().replace(' ', '').split(",")
+    formats = sorted(formats, key=lambda x:len(x))
+    pattern = re.compile("q\d_k")
+    pre_dq_format = None
     for format in GGUF_CONFIG:
         if format in formats:
+            if re.search(pattern, format):
+                if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
+                    logger.error(f"Cannot eport {pre_dq_format} and {format} at the same time.")
+                    sys.exit(-1)
+                else:
+                    pre_dq_format = format
             from pathlib import Path
             from auto_round.export.export_to_gguf.convert import Model
             hparams = Model.load_hparams(Path(args.model))
@@ -325,7 +334,7 @@ def _gguf_args_check(args):
                 logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                 sys.exit(1)
 
-            if format.endswith("_k") and ("hidden_size" in hparams and hparams["hidden_size"] % 256 !=0):
+            if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 !=0):
                 model_name = args.model.split('/')
                 model_name = model_name[-1] if model_name[-1] else model_name[-2]
                 hidden_size = hparams["hidden_size"]
@@ -342,15 +351,9 @@ def _gguf_args_check(args):
                     reset_list.append(f"{k}={v}")
                     setattr(args, k, v)
             if len(unsupport_list) > 0:
-                if len(formats) > 1:
-                    logger.error(
-                        f"format {format} not support for {', '.join(unsupport_list)},"
-                        f" please reset to {', '.join(reset_list)}, and retry")
-                    exit(-1)
-                else:
-                    logger.error(
-                        f"format {format} not support for {', '.join(unsupport_list)},"
-                        f" reset to {', '.join(reset_list)}.")
+                logger.error(
+                    f"format {format} not support for {', '.join(unsupport_list)},"
+                    f" reset to {', '.join(reset_list)}.")
             logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
 
     return args
@@ -586,11 +589,10 @@ def tune(args):
     else:
         export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
 
-    format_list = args.format.replace(' ', '').split(',')
+    format_list = args.format.lower().replace(' ', '').split(',')
     inplace = False if len(format_list) > 1 else True
     eval_folder = None
 
-    eval_gguf_model = False
     for format_ in format_list:
         save_format_ = format_.replace(":", "-")
         save_format_ = save_format_.replace("_", "-")
@@ -599,9 +601,10 @@ def tune(args):
         if 'gguf' in format_:
             if not any([file.endswith(".gguf") for file in os.listdir(save_folder)]):
                 logger.error(f"fail to export {format_}")
-            eval_gguf_model = True
         eval_folder = save_folder
 
+    if format_list[-1].startswith("gguf"):
+        eval_gguf_model = True
     lm_eval_version = get_library_version("lm-eval")
 
     if isinstance(tasks, str):
@@ -614,9 +617,11 @@ def tune(args):
 
         if args.act_bits <= 8 or eval_gguf_model:
             if eval_gguf_model:
+                # gguf floder only contains one file
                 for file in os.listdir(eval_folder):
                     gguf_file = file
-                user_model = AutoModelForCausalLM.from_pretrained(save_folder, gguf_file=gguf_file, device_map="auto")
+                model = AutoModelForCausalLM.from_pretrained(
+                    save_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
 
@@ -627,7 +632,7 @@ def tune(args):
                 user_model = model.to(device_str)
 
             if args.eval_task_by_task:
-                eval_task_by_task(user_model, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+                eval_task_by_task(user_model, tokenizer=tokenizer, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
             else:
                 if args.eval_bs is None or args.eval_bs == "auto":
                     logger.warning("This API does not support auto currently, reset eval_bs to 16")
@@ -671,7 +676,8 @@ def eval(args):
     print(make_table(res))
 
 
-def eval_task_by_task(model, device, tasks, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True):
+def eval_task_by_task(
+        model, device=None, tasks=None, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
@@ -740,4 +746,3 @@ def eval_task_by_task(model, device, tasks, tokenizer=None, batch_size=None, max
             for key in res_keys:
                 res_all[key].update(res[key])
         print(make_table(res_all))
-
