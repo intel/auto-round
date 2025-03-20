@@ -18,11 +18,8 @@ import os
 import sys
 import subprocess
 from collections import UserDict
-from typing import Union, Optional
 import re
-# for cpu usage
 import cpuinfo
-import numpy as np
 import psutil
 import torch
 from torch.amp import autocast
@@ -31,6 +28,18 @@ from functools import lru_cache
 from packaging import version
 import gc
 from .special_model_handler import shareable_keywords, SPECIAL_MULTIMODAL_BLOCK
+import transformers
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+
+supported_formats = (
+    "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
+    "itrex", "itrex_xpu", "fake"
+)
+
+
+supported_formats = supported_formats + tuple(GGUF_CONFIG.keys())
+
+supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D)
 
 
 @lru_cache(None)
@@ -515,11 +524,11 @@ def check_to_quantized(config):
     """
     if isinstance(config, dict):
 
-        if int(config["bits"]) > 8:
+        if int(config["bits"]) > 8 and int(config["act_bits"] > 8):
             return False
         return True
     else:
-        if int(config.bits) > 8:
+        if int(config.bits) > 8 and int(config.act_bits) > 8:
             return False
         return True
 
@@ -796,8 +805,8 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     return False, seqlen, bs
 
 
-def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D], quant_block_list=None):
+def get_layer_names_in_block(model, supported_types=(torch.nn.Linear,
+                                                     transformers.modeling_utils.Conv1D), quant_block_list=None):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -805,7 +814,7 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
               within a block of the model.
     """
     for n, m in model.named_modules():
-        if isinstance(m, tuple(supported_types)):
+        if isinstance(m, supported_types):
             m.tmp_name = n
     layers_in_block = []
     if bool(quant_block_list):
@@ -1146,6 +1155,7 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 
     return True, ""
 
+
 def get_device_and_parallelism(device):
     from auto_round.utils import detect_device
     devices = device.replace(" ", "").split(',')
@@ -1159,6 +1169,7 @@ def get_device_and_parallelism(device):
         device = detect_device(device)
         parallelism = False
     return device, parallelism
+
 
 def set_cuda_visible_devices(device):
     devices = device.replace(" ", "").split(',')

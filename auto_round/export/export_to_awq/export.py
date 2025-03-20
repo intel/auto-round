@@ -28,7 +28,7 @@ from auto_round.utils import (logger, get_module,
                               set_module,
                               check_to_quantized,
                               get_multimodal_block_names,
-                              extract_block_names_to_str)
+                              extract_block_names_to_str, supported_layer_types)
 import copy
 import json
 from .utils import WQLinear_GEMM
@@ -36,35 +36,37 @@ from concurrent.futures import ThreadPoolExecutor
 import threadpoolctl as tctl
 from tqdm import tqdm
 
-def pack_layer(name, model, layer_config, backend, pbar):
-    with tctl.threadpool_limits(limits=1):
-        pbar.set_description(f"packing {name}")
-        if name == "lm_head":  ##dese not support lm-head
-            pbar.update(1)
-            return
-        config = layer_config[name]
-        if config["bits"] > 8:
-            pbar.update(1)
-            return
-        linear_layer = get_module(model, name)
-        scale, zp = linear_layer.scale, linear_layer.zp
-        scale = scale.t().contiguous()
-        zp = zp.t().contiguous().to(torch.float32)
-        bits = config["bits"]
-        group_size = config["group_size"]
 
-        if config["sym"]:
-            zp = 2 ** (config["bits"] - 1)
-        q_linear = WQLinear_GEMM.from_linear(
-            linear=linear_layer,
-            w_bit=bits,
-            group_size=group_size,
-            init_only=False,
-            scales=scale,
-            zeros=zp,
-        )
-        set_module(model, name, q_linear)
-        pbar.update(1)
+def pack_layer(name, model, backend):
+    if name == "lm_head":  ##dese not support lm-head
+        return
+    layer = get_module(model, name)
+
+    if not isinstance(layer, supported_layer_types):  ##already packed
+        return
+
+    bits = layer.bits
+
+    if bits > 8:
+        return
+
+    group_size = layer.group_size
+    sym = layer.sym
+    linear_layer = get_module(model, name)
+    scale, zp = linear_layer.scale, linear_layer.zp
+    scale = scale.t().contiguous()
+    zp = zp.t().contiguous().to(torch.float32)
+    if sym:
+        zp = 2 ** (bits - 1)
+    q_linear = WQLinear_GEMM.from_linear(
+        linear=linear_layer,
+        w_bit=bits,
+        group_size=group_size,
+        init_only=False,
+        scales=scale,
+        zeros=zp,
+    )
+    set_module(model, name, q_linear)
 
 
 def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
@@ -102,7 +104,10 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
-                pack_layer(name, compressed_model, layer_config, backend, pbar)
+                pbar.set_description(f"packing {name}")
+                with tctl.threadpool_limits(limits=1):
+                    pack_layer(name, compressed_model, backend)
+                pbar.update(1)
 
             for _ in executor.map(wrapper, names):
                 pass

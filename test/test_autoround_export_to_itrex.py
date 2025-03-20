@@ -90,7 +90,7 @@ class TestAutoroundExport(unittest.TestCase):
         self.assertEqual(config.desc_act, loaded_config.desc_act)
         self.assertEqual(config.bits, loaded_config.bits)
         self.assertEqual(config.sym, loaded_config.sym)
-        
+
     def test_xpu_export(self):
         model = copy.deepcopy(self.gptj)
         out1 = model(self.lm_input)
