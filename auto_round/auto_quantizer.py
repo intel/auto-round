@@ -613,7 +613,8 @@ class AutoRoundQuantizer(HfQuantizer):
                         "For better inference performance, please install exllamav2 kernel "
                         "via `pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`")
 
-            QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym)
+            from auto_round.eval.qlinear_exllamav2 import QuantLinear
+            # QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym)
 
             layer_device = get_device(layer)
 
