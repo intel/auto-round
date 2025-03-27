@@ -75,6 +75,7 @@ class TestAutoroundExport(unittest.TestCase):
         optq_2 = round(model, self.tokenizer, device="cpu", nsamples=20, seqlen=10)
         q_model, layer_config2 = optq_2.quantize()
         compressed_model = pack_model(model=q_model, layer_config=layer_config2, inplace=False)
+        compressed_model = compressed_model.to(torch.float32)
         out4 = q_model(self.lm_input)
         out5 = compressed_model(self.lm_input)
         self.assertTrue(torch.all(out1[0] == out6[0]))
