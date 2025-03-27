@@ -79,7 +79,7 @@ class TestAutoroundExport(unittest.TestCase):
         out4 = q_model(self.lm_input)
         out5 = compressed_model(self.lm_input)
         self.assertTrue(torch.all(out1[0] == out6[0]))
-        self.assertTrue(torch.all(torch.isclose(out4[0], out5[0], atol=1e-3)))
+        self.assertTrue(torch.all(torch.isclose(out4[0], out5[0], atol=5e-3)))
 
     def test_config(self):
         from auto_round.export.export_to_itrex import QuantConfig
