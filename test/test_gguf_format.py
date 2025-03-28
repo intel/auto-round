@@ -19,12 +19,11 @@ class LLMDataLoader:
             yield torch.ones([1, 10], dtype=torch.long)
 
 
-class TestAutoRound(unittest.TestCase):
+class TestGGUF(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         self.model_name = "meta-llama/Llama-3.2-1B"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        self.model.model.layers = self.model.model.layers[:3]
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
     
@@ -54,6 +53,11 @@ class TestAutoRound(unittest.TestCase):
         text = "There is a girl who likes adventure,"
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
+
+        from auto_round.eval.evaluation import simple_evaluate_user_model
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="piqa")
+        self.assertGreater(result['results']['piqa']['acc,none'], 0.45)
+        
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_basic_usage(self):
@@ -65,5 +69,58 @@ class TestAutoRound(unittest.TestCase):
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
         shutil.rmtree("./saved", ignore_errors=True)
+
+    def test_q4_0(self):
+        bits, group_size, sym = 4, 32, True
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=1,
+            data_type="int"
+        )
+        autoround.quantize()
+        quantized_model_path = "./saved"
+
+        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q4_0")
+        gguf_file = os.listdir(quantized_model_path)[0]
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
+        text = "There is a girl who likes adventure,"
+        inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
+        print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
+
+        from auto_round.eval.evaluation import simple_evaluate_user_model
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="piqa")
+        self.assertGreater(result['results']['piqa']['acc,none'], 0.55)
+        shutil.rmtree("./saved", ignore_errors=True)
+    
+    def test_q4_1(self):
+        bits, group_size, sym = 4, 32, False
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=1,
+            data_type="int"
+        )
+        autoround.quantize()
+        quantized_model_path = "./saved"
+
+        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q4_1")
+        gguf_file = os.listdir(quantized_model_path)[0]
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
+        text = "There is a girl who likes adventure,"
+        inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
+        print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
+
+        from auto_round.eval.evaluation import simple_evaluate_user_model
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="piqa")
+        self.assertGreater(result['results']['piqa']['acc,none'], 0.55)
+        shutil.rmtree("./saved", ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()

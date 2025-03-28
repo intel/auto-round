@@ -1282,7 +1282,19 @@ class Model(OriModel):
                         layer_name = name[:-len(suffix)]
                         module = get_module(self.model, layer_name)
                         if hasattr(module, "scale"):
+
+                            if hasattr(self, "permute"):
+                                bs = module.scale.shape[0]
+                                for attr in ["scale", "zp", "w_d_scale", "w_d_wmin_m", "w_wmin_m"]:
+                                    if hasattr(module, attr) and getattr(module, attr) is not None:
+                                        attr_tensor = getattr(module, attr)
+                                        ori_shape = attr_tensor.shape
+                                        attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), name, bid)[0][1]
+                                        attr_tensor = attr_tensor.reshape(ori_shape)
+                                        setattr(module, attr, attr_tensor)
+
                             scale = module.scale
+                            
                             if isinstance(scale, torch.Tensor):
                                 scale = scale.numpy()
                             zp = module.zp if hasattr(module, "zp") else None

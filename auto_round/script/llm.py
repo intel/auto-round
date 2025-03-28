@@ -315,7 +315,7 @@ def _gguf_args_check(args):
     formats = args.format.lower().replace(' ', '').split(",")
     formats = sorted(formats, key=lambda x:len(x))
     pattern = re.compile("q\d_k")
-    pre_dq_format = None
+    pre_dq_format = ""
     for format in GGUF_CONFIG:
         if format in formats:
             if re.search(pattern, format):
@@ -605,6 +605,8 @@ def tune(args):
 
     if format_list[-1].startswith("gguf"):
         eval_gguf_model = True
+    else:
+        eval_gguf_model = False
     lm_eval_version = get_library_version("lm-eval")
 
     if isinstance(tasks, str):
@@ -622,6 +624,7 @@ def tune(args):
                     gguf_file = file
                 model = AutoModelForCausalLM.from_pretrained(
                     save_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
+                tokenizer = AutoTokenizer.from_pretrained(save_folder, gguf_file=gguf_file)
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
 
@@ -632,7 +635,8 @@ def tune(args):
                 user_model = model.to(device_str)
 
             if args.eval_task_by_task:
-                eval_task_by_task(user_model, tokenizer=tokenizer, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+                eval_task_by_task(
+                    user_model, tokenizer=tokenizer, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
             else:
                 if args.eval_bs is None or args.eval_bs == "auto":
                     logger.warning("This API does not support auto currently, reset eval_bs to 16")
