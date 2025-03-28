@@ -293,7 +293,7 @@ class AutoRound(object):
             "act_sym",
             "act_dynamic",
             "act_data_type",
-            "super_bits", 
+            "super_bits",
             "super_group_size"
         ]
 
@@ -431,9 +431,10 @@ class AutoRound(object):
         # only support to export afp8
         if self.act_bits <= 8 and "fp8" not in self.act_data_type:
             if len(formats) > 1 or "fake" not in formats:
-                logger.error(f"Currently only support to export fp8 model for activation quantization. Change format to fake.")
+                logger.error(
+                    f"Currently only support to export fp8 model for activation quantization. Change format to fake.")
                 formats = ["fake"]
-            
+
         # If multiple formats are specified, enforce inplace=False
         if len(formats) > 1:
             inplace = False
@@ -1511,7 +1512,8 @@ class AutoRound(object):
         # only support to export afp8
         if self.act_bits <= 8 and "fp8" not in self.act_data_type:
             if format != "fake":
-                logger.error(f"Currently only support to export fp8 model for activation quantization. Change format to fake.")
+                logger.error(
+                    f"Currently only support to export fp8 model for activation quantization. Change format to fake.")
                 format = "fake"
 
         if self.low_cpu_mem_usage:
