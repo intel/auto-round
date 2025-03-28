@@ -14,6 +14,7 @@
 
 import os
 import re
+import sys
 
 import torch
 import copy
@@ -350,7 +351,22 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
+    def _dq_check(self):
+        """Reset the default value of super_bits and super_group_size"""
+        if self.data_type.endswith("_dq"):
+            if self.super_bits is None:
+                if self.bits == 4:
+                    self.super_bits = 6
+                elif self.bits == 2:
+                    self.super_bits = 4
+            if self.super_group_size is None:
+                if self.bits == 4:
+                    self.super_group_size = 32
+                if self.bits == 2:
+                    self.super_group_size = 16
+            
     def check_configs(self):
+
         """Checks if the configurations are valid.
 
         Raises:
@@ -392,6 +408,7 @@ class AutoRound(object):
                     f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
                     f" than gradient_accumulate_steps * batch_size")
+        self._dq_check()
 
     # def _check_format_compatibility(self, format):  ##TODO
     #     ##check lm_head, mixed_bits, bits, each layer supporting, etc
@@ -494,6 +511,7 @@ class AutoRound(object):
             folders.append(save_folder)
 
         return model, folders
+
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
         the entry of AutoRound.
@@ -1537,6 +1555,13 @@ class AutoRound(object):
                         " change format to auto_round"
                     )
                     format = "auto_round"
+
+        if re.search("q\d_k", format) and not self.data_type.endswith("_dq"):
+            logger.error(
+                f"datatype<{self.data_type}> not support to export {format} format."
+                " Please change export format or data_type."
+            )
+            sys.exit(-1)
 
         if self.low_cpu_mem_usage:
             self.model = self.model.to('cpu')
