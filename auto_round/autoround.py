@@ -429,11 +429,22 @@ class AutoRound(object):
                 exit(-1)
 
         # only support to export afp8
-        if self.act_bits <= 8 and "fp8" not in self.act_data_type:
-            if len(formats) > 1 or "fake" not in formats:
-                logger.error(
-                    f"Currently only support to export fp8 model for activation quantization. Change format to fake.")
-                formats = ["fake"]
+        if self.act_bits <= 8:
+            if "fp8" not in self.act_data_type:
+                if len(formats) > 1 or "fake" not in formats:
+                    logger.warning(
+                        f"Currently only support to export auto_round format quantized model"
+                        " with fp8 dtype activation for activation quantization."
+                        " Change format to fake and save."
+                        )
+                    formats = ["fake"]
+            else:
+                if len(formats) > 1 or "auto_round" not in formats:
+                    logger.warning(
+                        f"Currently only support to export auto_round format for W{self.bits}AFP8 model,"
+                        " change format to auto_round"
+                    )
+                    formats = ["auto_round"]
 
         # If multiple formats are specified, enforce inplace=False
         if len(formats) > 1:
@@ -1510,11 +1521,22 @@ class AutoRound(object):
             object: The compressed model object.
         """
         # only support to export afp8
-        if self.act_bits <= 8 and "fp8" not in self.act_data_type:
-            if format != "fake":
-                logger.error(
-                    f"Currently only support to export fp8 model for activation quantization. Change format to fake.")
-                format = "fake"
+        if self.act_bits <= 8:
+            if "fp8" not in self.act_data_type:
+                if format != "fake":
+                    logger.warning(
+                        f"Currently only support to export auto_round format quantized model"
+                        " with fp8 dtype activation for activation quantization."
+                        " Change format to fake and save."
+                        )
+                    format = "fake"
+            else:
+                if format != "auto_round":
+                    logger.warning(
+                        f"Currently only support to export auto_round format for W{self.bits}AFP8 model,"
+                        " change format to auto_round"
+                    )
+                    format = "auto_round"
 
         if self.low_cpu_mem_usage:
             self.model = self.model.to('cpu')
