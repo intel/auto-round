@@ -278,6 +278,57 @@ def setup_lmeval_parser():
     args = parser.parse_args()
     return args
 
+def _gguf_args_check(args):
+    from auto_round.utils import logger
+
+    _GGUF_CONFIG = {
+        "gguf:q4_0": {
+            "bits": 4,
+            "act_bits": 16,
+            "group_size": 32,
+            "asym": False,
+        },
+        "gguf:q4_1": {
+            "bits": 4,
+            "act_bits": 16,
+            "group_size": 32,
+            "asym": True,
+        }
+    }
+
+    formats = args.format.lower().replace(' ', '').split(",")
+    for format in _GGUF_CONFIG:
+        if format in formats:
+            from pathlib import Path
+            from auto_round.export.export_to_gguf.convert import Model
+            hparams = Model.load_hparams(Path(args.model))
+            model_architecture = hparams["architectures"][0]
+            try:
+                model_class = Model.from_model_architecture(model_architecture)
+            except NotImplementedError:
+                logger.error(f"Model {model_architecture} is not supported to export GGUF format")
+                sys.exit(1)
+
+            unsupport_list, reset_list = [], []
+            gguf_config = _GGUF_CONFIG[format]
+            for k, v in gguf_config.items():
+                if getattr(args, k) != v:
+                    unsupport_list.append(f"{k}={getattr(args, k)}")
+                    reset_list.append(f"{k}={v}")
+                    setattr(args, k, v)
+            if len(unsupport_list) > 0:
+                if len(formats) > 1:
+                    logger.error(
+                        f"format {format} not support for {', '.join(unsupport_list)},"
+                        f" please reset to {', '.join(reset_list)}, and retry")
+                    exit(-1)
+                else:
+                    logger.error(
+                        f"format {format} not support for {', '.join(unsupport_list)},"
+                        f" reset to {', '.join(reset_list)}.")
+            logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
+
+    return args
 
 def tune(args):
     import transformers
@@ -286,7 +337,9 @@ def tune(args):
 
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = ["auto_round", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_awq", "fake"]
+    supported_formats = [
+        "auto_round", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_awq", "gguf:q4_0", "gguf:q4_1", "fake"
+    ]
     if not args.quant_nontext_module:
         supported_formats.extend(["auto_gptq", "auto_gptq:marlin"])
 
@@ -294,6 +347,9 @@ def tune(args):
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+
+    args = _gguf_args_check(args)
+
 
     ##must set this before import torch
     set_cuda_visible_devices(args.device)
@@ -349,6 +405,9 @@ def tune(args):
             elif "gemma3" in model_type:
                 from transformers import Gemma3ForConditionalGeneration
                 cls = Gemma3ForConditionalGeneration
+            elif "mistral3" in model_type:
+                from transformers import Mistral3ForConditionalGeneration 
+                cls = Mistral3ForConditionalGeneration
             else:
                 cls = AutoModelForCausalLM
 
@@ -600,5 +659,3 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-
-

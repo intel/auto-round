@@ -17,15 +17,13 @@ import re
 import sys
 
 import torch
-import transformers
 import copy
 import time
-from typing import Optional, Union
+from typing import Optional, Union, List
 from transformers import set_seed
 from torch import autocast
 from tqdm import tqdm
 import accelerate
-from packaging import version
 from .wrapper import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from .special_model_handler import (
     shareable_keywords,
@@ -54,7 +52,8 @@ from .utils import (
     unsupport_meta_device, clear_memory,
     compile_func,
     find_matching_blocks, is_debug_mode,
-    TORCH_VERSION_AT_LEAST_2_6
+    TORCH_VERSION_AT_LEAST_2_6,
+    supported_layer_types
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -173,7 +172,7 @@ class AutoRound(object):
         set_seed(self.seed)
         assert not unsupport_meta_device(model), (
             "AutoRound does not support for params on meta device."
-            " Please use more gpus vis set `--device 0,1,2,3` or just use one gpu")
+            " Please use more gpus by setting `--device 0,1,2,3` or just use one gpu")
 
         ## important tuning hype-parameters
         self.amp = amp
@@ -199,7 +198,7 @@ class AutoRound(object):
         self.minmax_lr = minmax_lr or self.lr
 
         self.data_type = data_type
-        self.supported_types = [torch.nn.Linear, transformers.modeling_utils.Conv1D]
+        self.supported_types = supported_layer_types
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.device = detect_device(device)
@@ -268,7 +267,38 @@ class AutoRound(object):
 
         self.set_device_map_in_blocks(self.device_map)
 
-        self.set_layerwise_config(self.layer_config)  ##better place in the end
+        self.is_packing_immediate = False  ## whether to pack the layer immediately after tuning
+
+        self.serialization_keys = [
+            "bits",
+            "group_size",
+            "sym",
+            "data_type",
+            "enable_quanted_input",
+            "enable_minmax_tuning",
+            "data_type",
+            "seqlen",
+            "batch_size",
+            "scale_dtype",
+            "lr",
+            "minmax_lr",
+            "gradient_accumulate_steps",
+            "iters",
+            "amp",
+            "nsamples",
+            "low_gpu_mem_usage",
+            "to_quant_block_names",
+            "enable_norm_bias_tuning",
+            "act_bits",
+            "act_group_size",
+            "act_sym",
+            "act_dynamic",
+            "act_data_type",
+            "super_bits",
+            "super_group_size"
+        ]
+
+        self.has_qlayer_outside_block = self.set_layerwise_config(self.layer_config)  ##better place in the end
 
     def set_device_map_in_blocks(self, device_map):
         """Sets the device map for specific blocks in the model.
@@ -378,8 +408,109 @@ class AutoRound(object):
                     f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
                     f" than gradient_accumulate_steps * batch_size")
-        
         self._dq_check()
+
+    # def _check_format_compatibility(self, format):  ##TODO
+    #     ##check lm_head, mixed_bits, bits, each layer supporting, etc
+    #     pass
+
+    def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
+        """Quantizes the model and saves it in the specified format(s).
+
+        This function checks the validity of the requested format(s), quantizes
+        the model accordingly, and saves it to the specified output directory.
+        If multiple formats are provided, the model is saved separately for each format.
+
+        Args:
+            output_dir (str, optional): The directory where the quantized model
+                will be saved. Defaults to "tmp_autoround".
+            format (str, optional): The quantization format(s) to use, separated
+                by commas if multiple. Defaults to "auto_round".
+            inplace (bool, optional): Whether to modify the model in place if only
+                one format is used. Defaults to True.
+            **kwargs: Additional arguments for the quantization and saving process.
+
+        Returns:
+            model: A qdq model or packed model based on the configurations
+            folders: The folder paths where the quantized models are saved.
+
+        Raises:
+            ValueError: If an unsupported format is specified.
+        """
+        # Validate and process the specified formats
+        formats = format.replace(' ', '').split(',')
+        from auto_round.utils import supported_formats
+        for format_ in formats:
+            if format_ not in supported_formats:
+                logger.error(f"Unsupported format {format_}, please choose from {supported_formats}")
+                exit(-1)
+
+        # only support to export afp8
+        if self.act_bits <= 8:
+            if "fp8" not in self.act_data_type:
+                if len(formats) > 1 or "fake" not in formats:
+                    logger.warning(
+                        f"Currently only support to export auto_round format quantized model"
+                        " with fp8 dtype activation for activation quantization."
+                        " Change format to fake and save."
+                        )
+                    formats = ["fake"]
+            else:
+                if len(formats) > 1 or "auto_round" not in formats:
+                    logger.warning(
+                        f"Currently only support to export auto_round format for W{self.bits}AFP8 model,"
+                        " change format to auto_round"
+                    )
+                    formats = ["auto_round"]
+
+        # If multiple formats are specified, enforce inplace=False
+        if len(formats) > 1:
+            inplace = False
+        inplace = kwargs.get("inplace", inplace)
+        kwargs.pop("inplace", None)
+
+        # Determine if immediate packing is required
+        if (len(formats) == 1 and
+                ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[0]) and
+                not self.has_qlayer_outside_block and inplace):  # TODO: Support more formats
+            self.is_packing_immediate = True
+
+        # Adjust format settings based on compatibility
+        for index in range(len(formats)):
+            format = formats[index]
+            if "auto_round" in format:
+                if self.sym and ("gptq" not in format and "awq" not in format):
+                    format = format.replace('auto_round', 'auto_round:gptq')
+                    formats[index] = format
+
+                if not any(f in format for f in ["triton", "exllamav2", "awq", "gptq"]):
+                    logger.info(f"AutoRound format does not support {format}, attempting to use AutoGPTQ")
+                    format = format.replace("auto_round", "auto_gptq")
+                    formats[index] = format
+
+        # Remove duplicates from formats list
+        def remove_duplicates(lst):
+            seen = set()
+            return [x for x in lst if not (x in seen or seen.add(x))]
+
+        formats = remove_duplicates(formats)
+        self.formats = formats
+
+        # # Check format compatibility
+        # self._check_format_compatibility(formats)
+
+        # Perform model quantization
+        model, _ = self.quantize()
+
+        # Save the quantized model in the specified formats
+        folders = []
+        for format in formats:
+            save_format_ = format.replace(":", "-").replace("_", "-")
+            save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
+            self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
+            folders.append(save_folder)
+
+        return model, folders
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
@@ -411,6 +542,7 @@ class AutoRound(object):
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         logger.info("caching done")
         pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
+
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
@@ -436,10 +568,10 @@ class AutoRound(object):
                 device=self.device,
                 pbar=pbar
             )
+            if self.is_packing_immediate:
+                assert len(self.formats) == 1
 
-        self.quant_layers(layer_names, all_inputs)
-
-        self.dump_qinfo_to_layer_config()
+        self.quant_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
         end_time = time.time()
         cost_time = end_time - self.start_time
@@ -462,35 +594,7 @@ class AutoRound(object):
         logger.info(summary_info)
 
         self.quantized = True
-        ##self.model = self.model.to(self.model_orig_dtype)##keep it as amp dtype
         return self.model, self.layer_config
-
-    def dump_qinfo_to_layer_config(self):
-        """
-        dump quantization scale and zp to layer configuration, this function could be deleted later
-        Args:
-
-        Returns:
-            None
-        """
-        # load scale and zp if use low_cpu_memory
-        self.model = self.model.to('cpu')
-
-        for n, m in self.model.named_modules():
-            if n not in self.layer_config.keys():
-                continue
-            if hasattr(m, "orig_layer"):
-                m = m.orig_layer
-            if not hasattr(m, "scale"):
-                self.layer_config[n]["data_type"] = "float"
-                if self.amp_dtype == torch.bfloat16:
-                    self.layer_config[n]["data_type"] = "bfloat"
-                self.layer_config[n]["bits"] = 16
-                self.layer_config[n]["group_size"] = None
-                self.layer_config[n]["sym"] = None
-                m.bits = 16
-                m.group_size = None
-                m.sym = None
 
     def quant_layers(self, layer_names, layer_inputs):
         """Quantizes specified layers based on inputs and configuration.
@@ -520,7 +624,6 @@ class AutoRound(object):
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
-        device = next(self.model.parameters()).device
         if self.enable_torch_compile:
             quant_layer = compile_func(self.quant_layer, self.device)
         else:
@@ -535,44 +638,71 @@ class AutoRound(object):
             clear_memory(q_layer_input)
 
     def set_layerwise_config(self, layer_config):
-        """Sets the layer-wise configuration based on the provided layer_config.
-           By default, only quantize layers in blocks.
+        """
+        Sets the layer-wise configuration based on the provided `layer_config`.
+        By default, only quantize layers in blocks.
 
         Args:
-        layer_config: The layer configuration.
+            layer_config (dict): The configuration dictionary for each layer containing various configuration options.
 
         Returns:
-        None
+            bool: Returns True if there are quantized layers outside the blocks (e.g., lm-head),
+                  otherwise returns False.
         """
+        # Get the names of layers in quantization blocks
         layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
-        keys = ["data_type", "bits", "group_size", "sym", "scale_dtype", "act_bits", "act_group_size", "act_sym",
-                "act_dynamic", "act_data_type", "super_bits", "super_group_size"]
+
+        # List of configuration keys
+        keys = self.serialization_keys
+
+        has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
+
+        # Iterate through all modules in the model
         for n, m in self.model.named_modules():
-            ##delete keys to avoid conflict with the previous tuning
+
+            # Delete previous configuration to avoid conflicts with prior tuning
             for key in keys:
                 if hasattr(m, key):
                     delattr(m, key)
 
+            # Skip unsupported types
             if not isinstance(m, tuple(self.supported_types)):
                 continue
-            ##not set in layer config, so use the default values
+
+            # If the layer is not in the config and is part of a quantization block, use default configuration
             if n not in layer_config.keys() and n in layers_in_blocks:
                 layer_config[n] = {}
                 for key in keys:
                     layer_config[n][key] = getattr(self, key)
-            elif n in layer_config.keys():  ## partly set
+            # If the layer is partially configured, fill in missing values
+            elif n in layer_config.keys():
                 for key in keys:
                     if key not in layer_config[n].keys():
                         layer_config[n][key] = getattr(self, key)
-            else:  ##not in layer_config and layers in block,
+            # If the layer is not in the config and not part of a quantization block,
+            # use default configuration and set specific values
+            else:
                 layer_config[n] = {}
                 for key in keys:
                     layer_config[n][key] = getattr(self, key)
                 layer_config[n]["bits"] = 16
                 layer_config[n]["act_bits"] = 16
 
+            if n in layers_in_blocks:
+                layer_config[n]["in_blocks"] = True
+            else:
+                layer_config[n]["in_blocks"] = False
+
+            # If the layer is outside a block and requires quantization, mark it as a quantized layer outside the block
+            if n not in layers_in_blocks and check_to_quantized(layer_config[n]):
+                has_qlayer_outside_block = True
+
+            # Apply the configuration to the corresponding layer in the model
             for key in keys:
                 setattr(m, key, layer_config[n][key])
+
+        # Return whether there are quantized layers outside the blocks
+        return has_qlayer_outside_block
 
     @torch.no_grad()
     def get_block_outputs(self, block, input_ids, input_others, bs, device, cache_device, save_output=True):
@@ -1301,7 +1431,7 @@ class AutoRound(object):
             inputs,
             block_names,
             nblocks=1,
-            device=torch.device("cpu"),
+            device="cpu",
             pbar=None
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
@@ -1347,7 +1477,13 @@ class AutoRound(object):
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
+        for n, m in self.model.named_modules():
+            if isinstance(m, tuple(self.supported_types)):
+                m.name = n
+
         for i in range(0, len(block_names), nblocks):
+            if i!=0:
+                pbar.update(1)
             if nblocks == 1:
                 n = block_names[i]
                 pbar.set_description(f"Quantizing {n}")
@@ -1368,9 +1504,20 @@ class AutoRound(object):
                 q_input=q_input,
                 device=device,
             )
-            pbar.update(1)
+            if self.is_packing_immediate:
+                from auto_round.export import PACKING_LAYER_WITH_FORMAT
+                for _, tmp_m in m.named_modules():
+                    if hasattr(tmp_m, "bits") and check_to_quantized(tmp_m):
+                        target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
+                        PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.name, self.model, self.formats[0])
+        pbar.set_description(f"Quantizing done")
+        pbar.update(1)
+        pbar.close()
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        for n, m in self.model.named_modules():
+            if hasattr(m, "name"):
+                delattr(m, "name")
 
         del q_input
         del input_ids
@@ -1391,6 +1538,24 @@ class AutoRound(object):
         Returns:
             object: The compressed model object.
         """
+        # only support to export afp8
+        if self.act_bits <= 8:
+            if "fp8" not in self.act_data_type:
+                if format != "fake":
+                    logger.warning(
+                        f"Currently only support to export auto_round format quantized model"
+                        " with fp8 dtype activation for activation quantization."
+                        " Change format to fake and save."
+                        )
+                    format = "fake"
+            else:
+                if format != "auto_round":
+                    logger.warning(
+                        f"Currently only support to export auto_round format for W{self.bits}AFP8 model,"
+                        " change format to auto_round"
+                    )
+                    format = "auto_round"
+
         if re.search("q\d_k", format) and not self.data_type.endswith("_dq"):
             logger.error(
                 f"datatype<{self.data_type}> not support to export {format} format."
@@ -1443,38 +1608,10 @@ class AutoRound(object):
         if "awq" in format and not self.bits == 4:
             raise ValueError("The AWQ format only supports W4 quantization ")
 
-        serialization_keys = [
-            "bits",
-            "act_bits",
-
-            "group_size",
-            "sym",
-            "data_type",
-            "enable_quanted_input",
-            "enable_minmax_tuning",
-            "data_type",
-            "seqlen",
-            "batch_size",
-            "scale_dtype",
-            "lr",
-            "minmax_lr",
-            "gradient_accumulate_steps",
-            "iters",
-            "amp",
-            "nsamples",
-            "low_gpu_mem_usage",
-            "to_quant_block_names",
-            "enable_norm_bias_tuning"
-        ]
-        if self.act_bits <= 8:
-            serialization_keys.extend(["act_bits",
-                                       "act_group_size",
-                                       "act_sym",
-                                       "act_dynamic"])
         if isinstance(self.dataset, str):
-            serialization_keys.append("dataset")
+            self.serialization_keys.append("dataset")
         serialization_dict = {}
-        for key in serialization_keys:
+        for key in self.serialization_keys:
             serialization_dict[key] = getattr(self, key)
         from .version import __version__
 

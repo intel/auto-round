@@ -30,11 +30,9 @@ import re
 import argparse
 import sys
 
-
 from auto_round.utils import (
     get_fp_layer_names,
     clear_memory,
-    is_debug_mode,
     get_device_and_parallelism,
     set_cuda_visible_devices)
 
@@ -177,7 +175,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--enable_torch_compile", action='store_true',
                           help="whether to enable torch compile")
 
-        self.add_argument("--act_data_type","--act_dtype", default=None, type=str, help="activation data type")
+        self.add_argument("--act_data_type", "--act_dtype", default=None, type=str, help="activation data type")
 
         self.add_argument("--disable_act_dynamic", action='store_true', help="activation static quantization")
 
@@ -205,21 +203,20 @@ class EvalArgumentParser(argparse.ArgumentParser):
             default="0",
             type=str,
             help="the device to be used for tuning. "
-            "Currently, device settings support CPU, GPU, and HPU."
-            "The default is set to cuda:0,"
-            "allowing for automatic detection and switch to HPU or CPU."
-            "set --device 0,1,2 to use multiple cards.")
+                 "Currently, device settings support CPU, GPU, and HPU."
+                 "The default is set to cuda:0,"
+                 "allowing for automatic detection and switch to HPU or CPU."
+                 "set --device 0,1,2 to use multiple cards.")
         self.add_argument(
             "--tasks",
             "--task",
             default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
-            "openbookqa,boolq,arc_easy,arc_challenge",
+                    "openbookqa,boolq,arc_easy,arc_challenge",
             help="lm-eval tasks")
         self.add_argument(
             "--disable_trust_remote_code", action='store_true', help="whether to disable trust_remote_code")
         self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int, help="batch size in evaluation")
         self.add_argument("--eval_task_by_task", action='store_true', help="whether to eval task by task.")
-
 
 
 def setup_parser():
@@ -362,23 +359,17 @@ def _gguf_args_check(args):
 def tune(args):
     import transformers
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig, AutoProcessor
+    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig
 
-    from auto_round import AutoRoundConfig
-    from auto_round.utils import detect_device, get_library_version, detect_device_count
+    from auto_round.utils import detect_device, get_library_version
     from auto_round.utils import logger
-    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
     tasks = args.tasks
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = [
-        "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
-        "itrex", "itrex_xpu", "fake"
-    ]
-    supported_formats.extend(list(GGUF_CONFIG.keys()))
 
     formats = args.format.lower().replace(' ', '').split(",")
+    from auto_round.utils import supported_formats
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
@@ -574,9 +565,16 @@ def tune(args):
         device_map=args.device_map,
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
-        )
-    model, _ = autoround.quantize()
+    )
+
     model_name = args.model.rstrip("/")
+    if model_name.split('/')[-1].strip('.') == "":
+        export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
+    else:
+        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
+
+    model, folders = autoround.quantize_and_save(export_dir, format=args.format)
+
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil
         shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
@@ -611,11 +609,16 @@ def tune(args):
 
     if isinstance(tasks, str):
         tasks = tasks.split(',')
-
+    eval_folder = folders[-1]
     if not args.disable_eval and eval_folder is not None:
         from lm_eval.utils import make_table  # pylint: disable=E0401
 
         logger.info(f"Using lm-eval version {lm_eval_version}")
+        eval_gguf_model = False
+        for file in os.listdir(eval_folder):
+            if file.endswith("guff"):
+                eval_gguf_model = True
+                break
 
         if args.act_bits <= 8 or eval_gguf_model:
             if eval_gguf_model:
@@ -623,16 +626,17 @@ def tune(args):
                 for file in os.listdir(eval_folder):
                     gguf_file = file
                 model = AutoModelForCausalLM.from_pretrained(
-                    save_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
+                    eval_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
                 tokenizer = AutoTokenizer.from_pretrained(save_folder, gguf_file=gguf_file)
-            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                from accelerate.big_modeling import dispatch_model
-
-                dispatch_model(model, model.hf_device_map)
-                user_model = model
             else:
-                device_str = detect_device(device_str)
-                user_model = model.to(device_str)
+                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                    from accelerate.big_modeling import dispatch_model
+
+                    dispatch_model(model, model.hf_device_map)
+                    user_model = model
+                else:
+                    device_str = detect_device(device_str)
+                    user_model = model.to(device_str)
 
             if args.eval_task_by_task:
                 eval_task_by_task(
@@ -660,7 +664,7 @@ def tune(args):
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
-    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}' #,add_bos_token={True}
+    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}'  # ,add_bos_token={True}
     if parallelism:
         model_args += ",parallelize=True"
     if isinstance(tasks, str):

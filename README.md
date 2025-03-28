@@ -70,7 +70,6 @@ pip install auto-round-lib
   ```
 
 </details>
-<br>
 
 ## Model Quantization
 
@@ -124,11 +123,11 @@ auto-round-fast \
   ``` -->
 
 </details>
-<br>
 
-In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the configuration to suit your specific requirements and available resources.
+In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the configuration to suit your specific requirements and available resources. 
 
-Average Accuracy of 13 tasks(W4G128) and Time Cost(enable_torch_compile) Results
+W4G128 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version of PyTorch 2.6.0 with enable_torch_compile):
+
 
 | Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct | Falcon3-10B          | Qwen2.5-72B-Instruct  |
 |---------|-----------------------|----------------------|---------------------|----------------------|-----------------------|
@@ -138,7 +137,8 @@ Average Accuracy of 13 tasks(W4G128) and Time Cost(enable_torch_compile) Results
 | Light   | 0.4052(2m)       | 0.5108(3m)      | **0.6453**(5m) | 0.6063(6m)      | 0.7243(37m)      |
 
 
-<br>
+
+
 
 ### API Usage (Gaudi2/CPU/GPU)
 
@@ -157,8 +157,8 @@ autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sy
 ## the best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
 # autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
 
-## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-# autoround = AutoRound(model, tokenizer, nsamples=128, iters=200, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym )
+## 2-3X speedup, slight accuracy drop at W4G128
+# autoround = AutoRound(model, tokenizer, nsamples=128, iters=50, lr=5e-3, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym )
 
 autoround.quantize()
 output_dir = "./tmp_autoround"
@@ -217,7 +217,6 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 - `device`: The device to be used for tuning. The default is set to 'auto', allowing for automatic detection.
 
 </details>
-<br>
 
 
 ### API Usage for VLMs
@@ -256,7 +255,7 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
 </details>
 
-<br>
+
 
 ### Export Formats
 **AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
@@ -273,7 +272,7 @@ adopted within the community, **only 4-bits quantization is supported**.
 **GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and
 q4_1 (W4G32) is supported in our repo**.
 
-<br>
+
 
 ### Quantization Costs
 
@@ -330,7 +329,6 @@ inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
-<br>
 
 #### Evaluation
 <details>
@@ -344,7 +342,7 @@ auto-round --model saved_quantized_model \
 ```
 
 </details>
-<br>
+
 
 ### AutoGPTQ/AutoAWQ format
 
@@ -420,7 +418,7 @@ release most of the models ourselves.
 </details> 
  
 
-<br>
+
 
 ## Integration
 
@@ -432,7 +430,7 @@ AutoRound has been integrated into multiple repositories.
 
 [pytorch/ao](https://github.com/pytorch/ao)
 
-<br>
+
 
 ## Reference
 
@@ -446,6 +444,7 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 

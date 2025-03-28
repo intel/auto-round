@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Union
 import torch
 import transformers
 from auto_round.export.register import register_format
-from auto_round.utils import get_module, logger, set_module, detect_device
+from auto_round.utils import get_module, logger, set_module, detect_device, check_to_quantized
 
 from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear
@@ -203,7 +203,7 @@ def pack_model(
         q_config = layer_config
     
     for k, v in q_config.items():
-        if "float" in v["data_type"]:
+        if check_to_quantized(v) is False:
             continue
         logger.info(f"Packing {k}")
         dtype = v["data_type"]

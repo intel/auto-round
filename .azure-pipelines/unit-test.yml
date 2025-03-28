@@ -36,7 +36,7 @@ stages:
     jobs:
       - job:
         displayName: Unit Test
-        timeoutInMinutes: 120
+        timeoutInMinutes: 240
         steps:
           - template: template/ut-template.yml
             parameters:

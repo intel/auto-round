@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.export.register import EXPORT_FORMAT, register_format
+from auto_round.export.register import EXPORT_FORMAT,PACKING_LAYER_WITH_FORMAT, register_format,register_layer_packing
 
 
 @register_format("auto_gptq")
@@ -53,3 +53,27 @@ def _save_quantized_as_autoawq(*args, **kwargs):
 def _save_quantized_as_autoawq(*args, **kwargs):
     from auto_round.export.export_to_gguf.export import save_quantized_as_gguf
     return save_quantized_as_gguf(*args, **kwargs)
+
+
+@register_layer_packing("auto_round")
+def _packing_layer_with_autoround(*args, **kwargs):
+    from auto_round.export.export_to_autoround.export import pack_layer
+
+    return pack_layer(*args, **kwargs)
+
+
+@register_layer_packing("auto_gptq")
+def _packing_layer_with_autogptq(*args, **kwargs):
+    from auto_round.export.export_to_autogptq.export import pack_layer
+
+    return pack_layer(*args, **kwargs)
+
+
+@register_layer_packing("auto_awq")
+def _packing_layer_with_autoawq(*args, **kwargs):
+    from auto_round.export.export_to_awq.export import pack_layer
+
+    return pack_layer(*args, **kwargs)
+
+
+

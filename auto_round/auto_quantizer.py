@@ -178,6 +178,10 @@ class AutoHfQuantizer:
                 if  isinstance(quantization_config_from_args, (AutoRoundConfig)):
                     logger.info(f"Loading quantized model in auto_round format.")
                     tmp_backend = quantization_config["quant_method"]
+                    if "auto-round" not in tmp_backend and "gptq" not in tmp_backend and  "awq" not in tmp_backend:
+                        logger.error("could not convert to auto_round format, currently only supports `gptq`,`awq` or "
+                                     "`auto-round` format")
+                        exit(-1)
                     target_backend = quantization_config["backend"] if "backend" in quantization_config else "auto"
                     if loading_attr_dict is not None and "backend" in loading_attr_dict:
                         target_backend = loading_attr_dict["backend"]
@@ -470,6 +474,22 @@ class AutoRoundQuantizer(HfQuantizer):
         extra_config = {}
         if hasattr(quantization_config, "extra_config"):
             extra_config = quantization_config.extra_config
+        if hasattr(quantization_config, "modules_in_block_to_quantize"):##gptq format
+            modules_in_block_to_quantize_tmp = quantization_config.modules_in_block_to_quantize
+            modules_in_block_to_quantize = [item for sublist in modules_in_block_to_quantize_tmp for item in sublist]
+            for layer_name in layer_names:
+                quantized = False
+                for qname in modules_in_block_to_quantize:
+                    if qname in layer_name:
+                        quantized=True
+                        break
+                if not quantized:
+                    extra_config[layer_name]={"bits":16}
+        if hasattr(quantization_config, "modules_to_not_convert"):
+            for layer_name in quantization_config.modules_to_not_convert:
+                extra_config[layer_name]={"bits":16}
+
+
 
         layer_names += extra_config.keys()
         layer_names = list(set(layer_names))
