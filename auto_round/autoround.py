@@ -428,8 +428,14 @@ class AutoRound(object):
                 logger.error(f"Unsupported format {format_}, please choose from {supported_formats}")
                 exit(-1)
 
+        # only support to export afp8
+        if self.act_bits <= 8 and "fp8" not in self.act_data_type:
+            if len(formats) > 1 or "fake" not in formats:
+                logger.error(f"Currently only support to export fp8 model for activation quantization. Change format to fake.")
+                formats = ["fake"]
+            
         # If multiple formats are specified, enforce inplace=False
-        if len(format) > 1:
+        if len(formats) > 1:
             inplace = False
         inplace = kwargs.get("inplace", inplace)
         kwargs.pop("inplace", None)
@@ -1502,6 +1508,12 @@ class AutoRound(object):
         Returns:
             object: The compressed model object.
         """
+        # only support to export afp8
+        if self.act_bits <= 8 and "fp8" not in self.act_data_type:
+            if format != "fake":
+                logger.error(f"Currently only support to export fp8 model for activation quantization. Change format to fake.")
+                format = "fake"
+
         if self.low_cpu_mem_usage:
             self.model = self.model.to('cpu')
 
