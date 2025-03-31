@@ -355,7 +355,18 @@ class AutoRoundQuantizer(HfQuantizer):
         # Return None if no matching backend or alias is found
         return None
 
+    def detect_auto_device(self):
+        if torch.cuda.is_available():
+            return "cuda"
+        elif is_hpu_supported():
+            return "hpu"
+        elif torch.xpu.is_available():
+            return "xpu"
+        else:
+            return "cpu"
+
     def detect_device(self, target_backend, orig_backend):
+        ##TODO need to refine later
         """Detects the appropriate device for the specified backend.
 
         This function determines the device type based on the target backend. If the target backend is
@@ -385,29 +396,30 @@ class AutoRoundQuantizer(HfQuantizer):
             return "cuda"
         elif "hpu" in target_backend:
             return "hpu"
+        elif "xpu" in target_backend:
+            return "xpu"
         elif "cpu" in target_backend:
             return "cpu"
 
         # Determine the device automatically based on availability
         if target_backend.split(":")[0] == "auto":
-            if torch.cuda.is_available():
-                return "cuda"
-            elif is_hpu_supported():
-                return "hpu"
-            else:
-                return "cpu"
+            return self.detect_auto_device()
+
 
         # Find the backend and determine the device type from BackendInfos
         backend = self.find_backend(target_backend)
         if backend is None:
-            raise ValueError("Backend not found, please set it to 'auto' to have a try ")
+            raise ValueError("Backend is not found, please set it to 'auto' to have a try ")
 
         device = BackendInfos[backend].device[0]
         if "cuda" in device and torch.cuda.is_available():
             return device
         elif "hpu" in device and is_hpu_supported():
             return device
+        elif "xpu" in device and torch.xpu.is_available():
+            return device
         else:
+
             return "cpu"
 
     def convert_model(self, model: nn.Module):
@@ -672,6 +684,19 @@ class AutoRoundQuantizer(HfQuantizer):
             layer.post_init()
 
 
+    def xpu_post_init(self,model):
+        message = "Repacking to XPU format"
+        from auto_round_extension.ipex import ipex_qlinear_classes
+        cpu_layers = tuple(list(ipex_qlinear_classes))
+        layers = []  ## ipex post_init  will add one more layer
+        for n, m in model.named_modules():
+            if isinstance(m, cpu_layers):
+                layers.append((n, m))
+        for n, layer in tqdm(layers, desc=message, total=len(layers),
+                             leave=True):
+            layer.post_init()
+
+
         return model
 
     def repack_marlin(self, model):
@@ -783,6 +808,8 @@ class AutoRoundQuantizer(HfQuantizer):
         # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits.
         if self.target_device == "cpu":
             model = self.cpu_post_init(model)
+        elif self.target_device == "xpu":
+            model = self.xpu_post_init(model)
 
         return model
 

@@ -588,6 +588,8 @@ def detect_device(device=None):
         elif is_optimum_habana_available():  # pragma: no cover
             device = torch.device("hpu")
             # logger.info("Using HPU device")
+        elif torch.xpu.is_available():  # pragma: no cover
+            device = torch.device("xpu")
         # Use CPU as a fallback
         else:
             device = torch.device("cpu")
@@ -1159,9 +1161,13 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 def get_device_and_parallelism(device):
     from auto_round.utils import detect_device
     devices = device.replace(" ", "").split(',')
-    if all(s.isdigit() for s in devices) and len(devices) > 1:
+    if all(s.isdigit() for s in devices) and len(devices) > 1 and torch.cuda.is_available():
         device = "cuda"
         parallelism = True
+    elif all(s.isdigit() for s in devices) and len(devices) > 1 and is_hpu_supported():
+        device = "xpu"
+        parallelism = False
+    # pragma: no cover
     elif device == "auto":
         device = detect_device(device)
         parallelism = True
