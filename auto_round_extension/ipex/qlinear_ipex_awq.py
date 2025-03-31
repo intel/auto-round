@@ -6,9 +6,7 @@ class QuantLinear(nn.Module):
     def __init__(self, w_bit, group_size, in_features, out_features, bias, dev):
         super().__init__()
         assert w_bit == 4, "Only 4 bit are supported for now."
-
-        self.use_bf16 = True # Intel platform support bf16 even without amx.
-
+        self.compute_dtype = torch.float16 if torch.xpu.is_available() else torch.bfloat16
         self.in_features = in_features
         self.out_features = out_features
         self.w_bit = w_bit
@@ -32,13 +30,13 @@ class QuantLinear(nn.Module):
             "scales",
             torch.zeros(
                 (in_features // self.group_size, out_features),
-                dtype=torch.bfloat16 if self.use_bf16 else torch.float32,
+                dtype=self.compute_dtype,
                 device=dev,
             ))
         if bias:
             self.register_buffer(
                 "bias",
-                torch.zeros((out_features), dtype=torch.bfloat16 if self.use_bf16 else torch.float32, device=dev),
+                torch.zeros((out_features), dtype=self.compute_dtype, device=dev),
             )
         else:
             self.register_buffer(
@@ -49,17 +47,14 @@ class QuantLinear(nn.Module):
         self.register_buffer("qweight", qweight)
 
     def post_init(self):
-        assert self.qweight.device.type == "cpu"
-        from packaging import version
-        from auto_round.auto_quantizer import importlib_metadata
-        from intel_extension_for_pytorch.nn.modules.weight_only_quantization import WeightOnlyQuantizedLinear
+        assert self.qweight.device.type == "cpu" or self.qweight.device.type == "xpu"
         import intel_extension_for_pytorch as ipex
 
         self.ipex_linear = ipex.llm.quantization.IPEXWeightOnlyQuantizedLinear.from_weight(self.qweight,
                                                                                            self.scales,
                                                                                            self.qzeros, \
-                                                                                           self.infeatures,
-                                                                                           self.outfeatures,
+                                                                                           self.in_features,
+                                                                                           self.out_features,
                                                                                            None,
                                                                                            self.bias, \
                                                                                            self.group_size,
