@@ -682,6 +682,7 @@ class AutoRoundQuantizer(HfQuantizer):
         for n, layer in tqdm(layers, desc=message, total=len(layers),
                              leave=True):
             layer.post_init()
+        return model
 
 
     def xpu_post_init(self,model):
@@ -695,9 +696,9 @@ class AutoRoundQuantizer(HfQuantizer):
         for n, layer in tqdm(layers, desc=message, total=len(layers),
                              leave=True):
             layer.post_init()
-
-
         return model
+
+
 
     def repack_marlin(self, model):
         """Repack the model to use Marlin format for quantized layers.
