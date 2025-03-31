@@ -69,9 +69,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--dataset", default="NeelNanda/pile-10k", type=str, help="the dataset for quantization training")
 
         self.add_argument(
-            "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
-
-        self.add_argument(
             "--minmax_lr",
             default=None,
             type=float,
@@ -232,6 +229,9 @@ def setup_parser():
         "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples")
 
     parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
+    
+    self.add_argument(
+            "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
     return args
@@ -250,6 +250,9 @@ def setup_best_parser():
         "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples")
 
     parser.add_argument("--nsamples", "--nsample", default=512, type=int, help="number of samples")
+    
+    self.add_argument(
+            "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
     args.low_gpu_mem_usage = True
@@ -293,6 +296,9 @@ def setup_fast_parser():
         "--seqlen", "--seq_len", default=512, type=int, help="sequence length of the calibration samples")
 
     parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
+    
+    self.add_argument(
+            "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
 
@@ -723,3 +729,4 @@ def eval_task_by_task(model, device, tasks, tokenizer=None, batch_size=None, max
             for key in res_keys:
                 res_all[key].update(res[key])
         print(make_table(res_all))
+

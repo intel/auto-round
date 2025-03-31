@@ -37,7 +37,7 @@ class TestAutoRoundCmd(unittest.TestCase):
             assert False, "cmd line test fail, please have a check"
         
         res = os.system(
-            f"cd .. && auto_round_light --format auto_round --output_dir ./saved")
+            f"cd .. && {python_path} -c 'from auto_round.__main__ import run_light; run_light()' --format auto_round --output_dir ./saved --tasks piqa,openbookqa")
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
