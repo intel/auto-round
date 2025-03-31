@@ -1164,7 +1164,7 @@ def get_device_and_parallelism(device):
     if all(s.isdigit() for s in devices) and len(devices) > 1 and torch.cuda.is_available():
         device = "cuda"
         parallelism = True
-    elif all(s.isdigit() for s in devices) and len(devices) > 1 and is_hpu_supported():
+    elif all(s.isdigit() for s in devices) and len(devices) > 1 and torch.xpu.is_available():
         device = "xpu"
         parallelism = False
     # pragma: no cover
