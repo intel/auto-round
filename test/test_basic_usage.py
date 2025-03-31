@@ -35,7 +35,11 @@ class TestAutoRoundCmd(unittest.TestCase):
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
-
+        
+        res = os.system(
+            f"cd .. && auto_round_light --format auto_round --output_dir ./saved")
+        if res > 0 or res == -1:
+            assert False, "cmd line test fail, please have a check"
 
         # test mllm script
         # test auto_round_mllm help

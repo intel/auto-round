@@ -129,12 +129,12 @@ In conclusion, we recommend using **auto-round for INT4 and auto-round-best for 
 W4G128 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version of PyTorch 2.6.0 with enable_torch_compile):
 
 
-| Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct | Falcon3-10B          | Qwen2.5-72B-Instruct  |
-|---------|-----------------------|----------------------|---------------------|----------------------|-----------------------|
-| 16bits  | 0.4192                | 0.5203               | 0.6470              | 0.6151               | 0.7229                |
-| Best    | **0.4137**(7m)   | **0.5142**(23m) | 0.6426(58m)    | **0.6092**(81m) | 0.7242(575m)     |
-| Default | 0.4129(2m)       | 0.5133(6m)      | 0.6441(13m)    | 0.6080(18m)     | **0.7252**(118m) |
-| Light   | 0.4052(2m)       | 0.5108(3m)      | **0.6453**(5m) | 0.6063(6m)      | 0.7243(37m)      |
+| Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct |  Meta-Llama-3.1-8B-Instruct |  Falcon3-10B          | Qwen2.5-72B-Instruct  |
+|---------|-----------------------|----------------------|---------------------|----------------------|----------------------|-----------------------|
+| 16bits  | 0.4192                | 0.5203               | 0.6470              | 0.6212               | 0.6151               | 0.7229                |
+| Best    | **0.4137**(7m)   | **0.5142**(23m) | 0.6426(58m)    | **0.6116**(81m) | **0.6092**(81m) | 0.7242(575m)     |
+| Default | 0.4129(2m)       | 0.5133(6m)      | 0.6441(13m)    | 0.6106(18m)     | 0.6080(18m)     | **0.7252**(118m) |
+| Light   | 0.4052(2m)       | 0.5108(3m)      | **0.6453**(5m) | 0.6104(6m)      | 0.6063(6m)      | 0.7243(37m)      |
 
 
 
@@ -157,8 +157,8 @@ autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sy
 ## the best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
 # autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
 
-## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-# autoround = AutoRound(model, tokenizer, nsamples=128, iters=200, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym )
+## 2-3X speedup, slight accuracy drop at W4G128
+# autoround = AutoRound(model, tokenizer, nsamples=128, iters=50, lr=5e-3, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym )
 
 autoround.quantize()
 output_dir = "./tmp_autoround"
@@ -444,6 +444,7 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
