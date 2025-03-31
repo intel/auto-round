@@ -230,7 +230,7 @@ def setup_parser():
 
     parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
     
-    self.add_argument(
+    parser.add_argument(
             "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
@@ -251,7 +251,7 @@ def setup_best_parser():
 
     parser.add_argument("--nsamples", "--nsample", default=512, type=int, help="number of samples")
     
-    self.add_argument(
+    parser.add_argument(
             "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
@@ -297,7 +297,7 @@ def setup_fast_parser():
 
     parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
     
-    self.add_argument(
+    parser.add_argument(
             "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
