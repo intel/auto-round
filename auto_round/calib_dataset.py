@@ -109,8 +109,8 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
         error_message = str(e)
         # Check for proxy or SSL error
         if "proxy" in error_message.lower() or isinstance(e, ssl.SSLError) or "SSL" in error_message.upper():
-            logger.error(f"Network error detected. Please checking proxy settings or using a VPN. Error: {error_message}. " \
-                        "Or consider using a backup dataset by `pip install modelscope`" \
+            logger.error(f"Network error detected. Please checking proxy settings or using a VPN." \
+                "Error: {error_message}. Or consider using a backup dataset by `pip install modelscope`" \
                      " and set '--dataset swift/pile-val-backup' in AutoRound API.")
         else:
             logger.error(f"Failed to load the dataset: {error_message}")
