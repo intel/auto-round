@@ -35,8 +35,8 @@ class TestGGUF(unittest.TestCase):
     def test_q2_k_export(self):
         bits, group_size, sym = 2, 16, False
         model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         autoround = AutoRound(
             model,
             tokenizer,
