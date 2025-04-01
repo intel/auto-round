@@ -353,17 +353,12 @@ class AutoRound(object):
 
     def _dq_check(self):
         """Reset the default value of super_bits and super_group_size"""
+        from auto_round.export.export_to_gguf.config import GGUF_CONFIG
         if self.data_type.endswith("_dq"):
-            if self.super_bits is None:
-                if self.bits == 4:
-                    self.super_bits = 6
-                elif self.bits == 2:
-                    self.super_bits = 4
-            if self.super_group_size is None:
-                if self.bits == 4:
-                    self.super_group_size = 32
-                if self.bits == 2:
-                    self.super_group_size = 16
+            gguf_config = GGUF_CONFIG[f"gguf:q{self.bits}_k_s"]
+            self.super_bits = gguf_config["super_bits"] if self.super_bits is None else self.super_bits
+            self.super_group_size = gguf_config["super_group_size"] \
+                if self.super_group_size is None else self.super_group_size
             
     def check_configs(self):
 

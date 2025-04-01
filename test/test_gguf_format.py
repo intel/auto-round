@@ -22,7 +22,7 @@ class LLMDataLoader:
 class TestGGUF(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.model_name = "meta-llama/Llama-3.2-1B"
+        self.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
@@ -34,9 +34,12 @@ class TestGGUF(unittest.TestCase):
     
     def test_q2_k_export(self):
         bits, group_size, sym = 2, 16, False
+        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         autoround = AutoRound(
-            self.model,
-            self.tokenizer,
+            model,
+            tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -49,10 +52,12 @@ class TestGGUF(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q2_k_s")
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file="Llama-3.2-1B-445M-Q2_K_S.gguf", device_map="auto")
+        gguf_file = os.listdir(quantized_model_path)[0]
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
-        print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
+        result = self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0])
+        self.assertAlmostEqual(result, "There is a girl who likes adventure, networkacades mou也不知道 Geli实质 Noiseuu Gree Accounting")
 
         from auto_round.eval.evaluation import simple_evaluate_user_model
         result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="piqa")
