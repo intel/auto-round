@@ -11,33 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import gc
-import importlib.util
-import warnings
-from dataclasses import dataclass
+
 from logging import getLogger
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Union
 
 import torch
 import torch.nn as nn
-from packaging import version
-from transformers.modeling_utils import PreTrainedModel
+
 from transformers.pytorch_utils import Conv1D
-from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
-from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
-from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
+
 from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
                               find_matching_blocks, get_layer_names_in_block, check_to_quantized)
 
 from auto_round.inference.backend import get_layer_backend, dynamic_import_inference_linear, find_backend
 
-from auto_round.inference.backend import BackendInfos
-from transformers.utils.versions import require_version
-from enum import Enum
-from tqdm import tqdm
-
 logger = getLogger(__name__)
-import sys
 
 supported_devices = ("cpu", "hpu", "xpu", "cuda")
 

@@ -26,7 +26,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import gc
 import importlib.util
 import warnings
 from dataclasses import dataclass
@@ -37,20 +36,14 @@ import torch
 import torch.nn as nn
 from packaging import version
 from transformers.modeling_utils import PreTrainedModel
-from transformers.pytorch_utils import Conv1D
 from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
-from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
-                              find_matching_blocks)
+from auto_round.utils import (is_hpu_supported)
 from auto_round.inference.convert_model import convert_hf_model
 
-from auto_round.inference.backend import get_layer_backend, dynamic_import_inference_linear
-
-from auto_round.inference.backend import BackendInfos
-from transformers.utils.versions import require_version
 from enum import Enum
-from tqdm import tqdm
+
 
 logger = getLogger(__name__)
 import sys
@@ -317,32 +310,6 @@ class AutoRoundQuantizer(HfQuantizer):
             torch_dtype = torch.float16
         return torch_dtype
 
-    # def cpu_post_init(self, model):
-    #     message = "Repacking to CPU format"
-    #     from auto_round_extension.qbits import qbits_qlinear_classes, qbits_awq_classes
-    #     from auto_round_extension.ipex import ipex_qlinear_classes
-    #     cpu_layers = tuple(list(qbits_qlinear_classes) + list(ipex_qlinear_classes) + list(qbits_awq_classes))
-    #     layers = []  ## ipex post_init  will add one more layer
-    #     for n, m in model.named_modules():
-    #         if isinstance(m, cpu_layers):
-    #             layers.append((n, m))
-    #     for n, layer in tqdm(layers, desc=message, total=len(layers),
-    #                          leave=True):
-    #         layer.post_init()
-    #     return model
-    #
-    # def xpu_post_init(self, model):
-    #     message = "Repacking to XPU format"
-    #     from auto_round_extension.ipex import ipex_qlinear_classes
-    #     cpu_layers = tuple(list(ipex_qlinear_classes))
-    #     layers = []  ## ipex post_init  will add one more layer
-    #     for n, m in model.named_modules():
-    #         if isinstance(m, cpu_layers):
-    #             layers.append((n, m))
-    #     for n, layer in tqdm(layers, desc=message, total=len(layers),
-    #                          leave=True):
-    #         layer.post_init()
-    #     return model
 
     def post_init_model(self, model):
         """Post-initialization that require device information, for example buffers initialization on device.
@@ -365,20 +332,6 @@ class AutoRoundQuantizer(HfQuantizer):
             for n, m in model.named_modules():
                 if hasattr(m, "post_init") and callable(getattr(m, "post_init")):
                     m.post_init()
-        # if self.need_marlin_repacking:
-        #     require_version("gptqmodel",
-        #                     "marlin format requires gptqmodel to be installed, "
-        #                     "`pip install -v gptqmodel --no-build-isolation `")
-        #     self.repack_marlin(model)
-        # from auto_round_extension.cuda.post_init import autoround_post_init
-        # model = autoround_post_init(model)
-        # # there are no side-effects after call qbits_post_init when model quant-type not equal to qbits.
-        # if self.target_device == "cpu":
-        #     model = self.cpu_post_init(model)
-        # elif self.target_device == "xpu":
-        #     model = self.xpu_post_init(model)
-        #
-        # return model
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if model.__class__.main_input_name != "input_ids":
