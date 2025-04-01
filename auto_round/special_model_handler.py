@@ -14,7 +14,8 @@
 
 import torch
 from collections import UserDict
-shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
+shareable_keywords = ("position_ids", "cache_position", "position_embeddings",
+                        "position_embeddings_global", "position_embeddings_local")
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama") # Limitations on batch_size
 skippable_cache_keys = ("past_key_value",)
 
@@ -126,4 +127,5 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
                     f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}")
             return 1, accumulate_steps
     return batch_size, gradient_accumulate_steps
+
 

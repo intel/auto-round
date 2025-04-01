@@ -997,7 +997,14 @@ class AutoRound(object):
                             self.inputs[name][key] = [data]
                         else:
                             data = post_process_cache_data(self.batch_size, data, key)
-                            self.inputs[name][key] = list(torch.split(data, 1, dim=self.batch_dim))
+                            try:
+                                self.inputs[name][key] = list(torch.split(data, 1, dim=self.batch_dim))
+                            except:
+                                logger.error(
+                                f"this model has not been supported, "
+                                f"please raise an issue in https://github.com/intel/auto-round/issues"
+                                f" or try to set the `batch_size` to 1 and "
+                                f"`gradient_accumulate_steps` to your current batch size.")
                     else:  # append cache inputs
                         new_data = post_process_cache_data(self.batch_size, kwargs[key], key)
                         if new_data is None:  # shareable args or NoneType
@@ -2029,3 +2036,4 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+
