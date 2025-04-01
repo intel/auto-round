@@ -1216,15 +1216,17 @@ def _gguf_args_check(args):
                     sys.exit(-1)
                 else:
                     pre_dq_format = format
-            from pathlib import Path
-            from auto_round.export.export_to_gguf.convert import Model
-            hparams = Model.load_hparams(Path(args.model))
-            model_architecture = hparams["architectures"][0]
-            try:
-                model_class = Model.from_model_architecture(model_architecture)
-            except NotImplementedError:
-                logger.error(f"Model {model_architecture} is not supported to export GGUF format")
-                sys.exit(1)
+            
+            if os.path.isdir(args.model):
+                from pathlib import Path
+                from auto_round.export.export_to_gguf.convert import Model
+                hparams = Model.load_hparams(Path(args.model))
+                model_architecture = hparams["architectures"][0]
+                try:
+                    model_class = Model.from_model_architecture(model_architecture)
+                except NotImplementedError:
+                    logger.error(f"Model {model_architecture} is not supported to export GGUF format")
+                    sys.exit(1)
 
             if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 !=0):
                 model_name = args.model.split('/')
