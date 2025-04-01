@@ -23,7 +23,7 @@ from transformers.pytorch_utils import Conv1D
 from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
                               find_matching_blocks, get_layer_names_in_block, check_to_quantized)
 
-from auto_round.inference.backend import get_layer_backend, dynamic_import_inference_linear, find_backend
+from auto_round.inference.backend import get_layer_backend, dynamic_import_inference_linear, find_backend, BackendInfos
 
 logger = getLogger(__name__)
 
@@ -137,7 +137,10 @@ def get_layer_config(model, quantization_config):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
 
     # Process AWQ format: exclude specified modules from quantization
-    for layer_name in getattr(quantization_config, "modules_to_not_convert", []):
+    modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
+    if modules_to_not_convert is None:
+        modules_to_not_convert = []
+    for layer_name in modules_to_not_convert:
         extra_config[layer_name] = {"bits": 16}
 
     # Merge and deduplicate layer names
@@ -181,6 +184,10 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         dict: Flags indicating which backends were used.
     """
     backend_flags = {"used_autogptq": False, "used_autoawq": False, "used_qbits": False, "used_ipex": False}
+    must_use_target_backend = False
+    if target_backend:
+        must_use_target_backend = True
+
     target_backend = target_backend or orig_backend  # Default to original backend if not specified
 
     for layer_name, config in layer_configs.items():
@@ -192,9 +199,19 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         if in_features is None:
             continue  # Skip unsupported layer types
 
-        # Determine backend
-        layer_backend = _get_layer_backend(target_device, available_devices, target_backend, orig_backend, config,
-                                           in_features, out_features)
+        ##TODO cache bakend
+        if must_use_target_backend:
+            layer_backend = target_backend
+            layer_backend = find_backend(layer_backend)
+            devices = BackendInfos[layer_backend].device
+            for device in devices:
+                if device in available_devices or device in target_device:
+                    target_device = device
+                    break
+        else:
+            # Determine backend
+            layer_backend = _get_layer_backend(target_device, available_devices, target_backend, orig_backend, config,
+                                               in_features, out_features)
         if not layer_backend:
             raise ValueError(f"No compatible backend found for layer {layer_name} with config {config}")
 

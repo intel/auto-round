@@ -168,13 +168,13 @@ BackendInfos['auto_round:qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, Fal
                                                   requirements=["intel-extension-for-transformers"]
                                                   )
 
-BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True],
-                                                   packing_format="awq",
-                                                   bits=[2, 4, 8], group_size=None,
-                                                   priority=0 if "intel" in get_cpu_manufacturer() else 5,
-                                                   feature_checks=[],
-                                                   requirements=["intel-extension-for-transformers"]
-                                                   )
+# BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True], ## for awq, not robust
+#                                                    packing_format="awq",
+#                                                    bits=[2, 4, 8], group_size=None,
+#                                                    priority=0 if "intel" in get_cpu_manufacturer() else 5,
+#                                                    feature_checks=[],
+#                                                    requirements=["intel-extension-for-transformers"]
+#                                                    )
 
 BackendInfos['auto_round:ipex_gptq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
                                                    packing_format="ipex_gptq",
@@ -182,14 +182,16 @@ BackendInfos['auto_round:ipex_gptq'] = BackendInfo(device=["cpu", "xpu"], sym=[T
                                                    priority=5 if "intel" in get_cpu_manufacturer() else 5,
                                                    feature_checks=[],
                                                    convertable_format=["triton_zp+-1"],
+                                                   alias=["ipex_gptq"],
                                                    requirements=["intel-extension-for-pytorch>=2.5"]
                                                    )
 
-BackendInfos['auto_round:ipex_awq_xpu'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
+BackendInfos['auto_round:ipex_awq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
                                                       packing_format="ipex_awq",
                                                       bits=[4], group_size=None,
                                                       priority=1,
                                                       feature_checks=[],
+                                                      alias=["ipex_awq"],
                                                       ##convertable_format=["triton_zp+-1", "awq"],
                                                       convertable_format=["awq"],
                                                       requirements=["intel-extension-for-pytorch>=2.6"]
