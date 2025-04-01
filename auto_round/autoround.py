@@ -999,7 +999,7 @@ class AutoRound(object):
                             data = post_process_cache_data(self.batch_size, data, key)
                             try:
                                 self.inputs[name][key] = list(torch.split(data, 1, dim=self.batch_dim))
-                            except:
+                            except:  ## TODO force to bs=1
                                 logger.error(
                                 f"this model has not been supported, "
                                 f"please raise an issue in https://github.com/intel/auto-round/issues"
