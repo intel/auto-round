@@ -105,9 +105,15 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     try:
         calib_dataset = load_dataset(dataset_name, split=split)
     except Exception as e:
-        logger.error(f"Failed to load the dataset: {e}." \
-                     "Consider using a backup dataset by `pip install modelscope`" \
+        import ssl
+        error_message = str(e)
+        # Check for proxy or SSL error
+        if "proxy" in error_message.lower() or isinstance(e, ssl.SSLError) or "SSL" in error_message.upper():
+            logger.error(f"Network error detected, please checking proxy settings." \
+                "Error: {error_message}. Or consider using a backup dataset by `pip install modelscope`" \
                      " and set '--dataset swift/pile-val-backup' in AutoRound API.")
+        else:
+            logger.error(f"Failed to load the dataset: {error_message}")
         sys.exit(1)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
@@ -640,4 +646,5 @@ def get_dataloader(
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
+
 
