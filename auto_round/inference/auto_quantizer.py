@@ -105,7 +105,6 @@ def is_auto_round_available():
             )
 
 
-
 class AutoHfQuantizer:
     """The Auto-HF quantizer class that takes care of automatically instantiating to the correct
     `HfQuantizer` given the `QuantizationConfig`."""
@@ -264,7 +263,8 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.dataset = dataset
         self.group_size = group_size
         self.sym = sym
-        self.target_backend = backend
+        self.target_backend = kwargs.get("target_backend", "auto")
+        self.backend = backend
         self.layer_config = layer_config
         if kwargs is not None:
             for key in kwargs.keys():
@@ -280,7 +280,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
             raise ValueError("group_size must be greater than 0 or equal to -1")
 
     def get_loading_attributes(self):
-        loading_attibutes_dict = {"target_backend": self.target_backend}
+        loading_attibutes_dict = {"target_backend": self.backend}
         return loading_attibutes_dict
 
     def to_dict(self):
@@ -317,10 +317,6 @@ class AutoRoundQuantizer(HfQuantizer):
             torch_dtype = torch.float16
         return torch_dtype
 
-
-
-
-
     # def cpu_post_init(self, model):
     #     message = "Repacking to CPU format"
     #     from auto_round_extension.qbits import qbits_qlinear_classes, qbits_awq_classes
@@ -348,7 +344,6 @@ class AutoRoundQuantizer(HfQuantizer):
     #         layer.post_init()
     #     return model
 
-
     def post_init_model(self, model):
         """Post-initialization that require device information, for example buffers initialization on device.
 
@@ -361,12 +356,13 @@ class AutoRoundQuantizer(HfQuantizer):
             pass
 
         model.quantize_config = StoreAttr()
-        if hasattr(self,"used_backend_info") and self.used_backend_info["used_autogptq"]:
-            from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init
+        if hasattr(self, "used_backend_info") and self.used_backend_info["used_autogptq"]:
+            from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init # pylint: disable=E0401
             model = gptq_post_init(model, use_act_order=False)
-        if hasattr(self, "used_backend_info") and self.used_backend_info["used_ipex"] or self.used_backend_info["used_qbits"]:
-            logger.info("repacking to CPU/XPU format") ## TODO use tqdm to show progress
-            for n,m in model.named_modules():
+        if hasattr(self, "used_backend_info") and self.used_backend_info["used_ipex"] or self.used_backend_info[
+            "used_qbits"]:
+            logger.info("repacking to CPU/XPU format")  ## TODO use tqdm to show progress
+            for n, m in model.named_modules():
                 if hasattr(m, "post_init") and callable(getattr(m, "post_init")):
                     m.post_init()
         # if self.need_marlin_repacking:
@@ -390,12 +386,12 @@ class AutoRoundQuantizer(HfQuantizer):
                            "certain types(Llava/Qwen-VL/Phi-3-vision) of multimodal models.")
 
         if self.pre_quantized:
-            model,used_backend_info = convert_hf_model(model)
+            model, used_backend_info = convert_hf_model(model)
             self.used_backend_info = used_backend_info
 
     def _process_model_after_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if self.pre_quantized:
-            model = self.post_init_model(model)
+            self.post_init_model(model)
         else:
             raise NotImplementedError
 

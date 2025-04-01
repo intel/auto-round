@@ -102,7 +102,7 @@ def get_layer_config(model, quantization_config):
             - quant_block_list (list, optional): Predefined list of blocks to quantize.
             - to_quant_block_names (list or str, optional): Blocks to quantize (if quant_block_list is None).
             - extra_config (dict, optional): Per-layer overrides for quantization settings.
-            - modules_in_block_to_quantize (list, optional): Specific modules within a block for quantization (GPTQ format).
+            - modules_in_block_to_quantize (list, optional): Specific modules within a block for quantization.
             - modules_to_not_convert (list, optional): Layers excluded from quantization (AWQ format).
 
     Returns:
