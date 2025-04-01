@@ -305,64 +305,13 @@ def setup_eval_parser():
     return args
 
 
-def _gguf_args_check(args):
-    from auto_round.utils import logger
-    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
-
-    formats = args.format.lower().replace(' ', '').split(",")
-    formats = sorted(formats, key=lambda x:len(x))
-    pattern = re.compile("q\d_k")
-    pre_dq_format = ""
-    for format in GGUF_CONFIG:
-        if format in formats:
-            if re.search(pattern, format):
-                if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
-                    logger.error(f"Cannot eport {pre_dq_format} and {format} at the same time.")
-                    sys.exit(-1)
-                else:
-                    pre_dq_format = format
-            from pathlib import Path
-            from auto_round.export.export_to_gguf.convert import Model
-            hparams = Model.load_hparams(Path(args.model))
-            model_architecture = hparams["architectures"][0]
-            try:
-                model_class = Model.from_model_architecture(model_architecture)
-            except NotImplementedError:
-                logger.error(f"Model {model_architecture} is not supported to export GGUF format")
-                sys.exit(1)
-
-            if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 !=0):
-                model_name = args.model.split('/')
-                model_name = model_name[-1] if model_name[-1] else model_name[-2]
-                hidden_size = hparams["hidden_size"]
-                logger.error(
-                    f"Currently only support pure mode for format: {format}. "
-                    f"{model_name} is not supported, cause hidden_size({hidden_size}) % 256 !=0")
-                sys.exit(-1)
-
-            unsupport_list, reset_list = [], []
-            gguf_config = GGUF_CONFIG[format]
-            for k, v in gguf_config.items():
-                if getattr(args, k) != v:
-                    unsupport_list.append(f"{k}={getattr(args, k)}")
-                    reset_list.append(f"{k}={v}")
-                    setattr(args, k, v)
-            if len(unsupport_list) > 0:
-                logger.error(
-                    f"format {format} not support for {', '.join(unsupport_list)},"
-                    f" reset to {', '.join(reset_list)}.")
-            logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
-
-    return args
-
-
 def tune(args):
     import transformers
 
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig
 
     from auto_round.utils import detect_device, get_library_version
-    from auto_round.utils import logger
+    from auto_round.utils import logger, _gguf_args_check
 
     tasks = args.tasks
     if args.format is None:
@@ -582,29 +531,6 @@ def tune(args):
     model.eval()
     clear_memory()
 
-    if model_name.split('/')[-1].strip('.') == "":
-        export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
-    else:
-        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
-
-    format_list = args.format.lower().replace(' ', '').split(',')
-    inplace = False if len(format_list) > 1 else True
-    eval_folder = None
-
-    for format_ in format_list:
-        save_format_ = format_.replace(":", "-")
-        save_format_ = save_format_.replace("_", "-")
-        save_folder = f'{export_dir}-{save_format_}'
-        autoround.save_quantized(save_folder, format=format_, inplace=inplace)
-        if 'gguf' in format_:
-            if not any([file.endswith(".gguf") for file in os.listdir(save_folder)]):
-                logger.error(f"fail to export {format_}")
-        eval_folder = save_folder
-
-    if format_list[-1].startswith("gguf"):
-        eval_gguf_model = True
-    else:
-        eval_gguf_model = False
     lm_eval_version = get_library_version("lm-eval")
 
     if isinstance(tasks, str):
@@ -627,7 +553,7 @@ def tune(args):
                     gguf_file = file
                 model = AutoModelForCausalLM.from_pretrained(
                     eval_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
-                tokenizer = AutoTokenizer.from_pretrained(save_folder, gguf_file=gguf_file)
+                tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
             else:
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     from accelerate.big_modeling import dispatch_model

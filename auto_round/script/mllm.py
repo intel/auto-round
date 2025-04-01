@@ -22,7 +22,9 @@ from auto_round.utils import (
     is_debug_mode,
     get_device_and_parallelism,
     set_cuda_visible_devices,
-    logger)
+    logger,
+    _gguf_args_check
+    )
 
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -278,57 +280,6 @@ def setup_lmeval_parser():
     args = parser.parse_args()
     return args
 
-def _gguf_args_check(args):
-    from auto_round.utils import logger
-
-    _GGUF_CONFIG = {
-        "gguf:q4_0": {
-            "bits": 4,
-            "act_bits": 16,
-            "group_size": 32,
-            "asym": False,
-        },
-        "gguf:q4_1": {
-            "bits": 4,
-            "act_bits": 16,
-            "group_size": 32,
-            "asym": True,
-        }
-    }
-
-    formats = args.format.lower().replace(' ', '').split(",")
-    for format in _GGUF_CONFIG:
-        if format in formats:
-            from pathlib import Path
-            from auto_round.export.export_to_gguf.convert import Model
-            hparams = Model.load_hparams(Path(args.model))
-            model_architecture = hparams["architectures"][0]
-            try:
-                model_class = Model.from_model_architecture(model_architecture)
-            except NotImplementedError:
-                logger.error(f"Model {model_architecture} is not supported to export GGUF format")
-                sys.exit(1)
-
-            unsupport_list, reset_list = [], []
-            gguf_config = _GGUF_CONFIG[format]
-            for k, v in gguf_config.items():
-                if getattr(args, k) != v:
-                    unsupport_list.append(f"{k}={getattr(args, k)}")
-                    reset_list.append(f"{k}={v}")
-                    setattr(args, k, v)
-            if len(unsupport_list) > 0:
-                if len(formats) > 1:
-                    logger.error(
-                        f"format {format} not support for {', '.join(unsupport_list)},"
-                        f" please reset to {', '.join(reset_list)}, and retry")
-                    exit(-1)
-                else:
-                    logger.error(
-                        f"format {format} not support for {', '.join(unsupport_list)},"
-                        f" reset to {', '.join(reset_list)}.")
-            logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
-
-    return args
 
 def tune(args):
     import transformers

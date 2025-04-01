@@ -1198,3 +1198,54 @@ def is_debug_mode():
         bool: True if debugging is enabled, False otherwise.
     """
     return sys.gettrace() is not None or sys.flags.debug == 1
+
+
+def _gguf_args_check(args):
+    from auto_round.utils import logger
+    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+
+    formats = args.format.lower().replace(' ', '').split(",")
+    formats = sorted(formats, key=lambda x:len(x))
+    pattern = re.compile("q\d_k")
+    pre_dq_format = ""
+    for format in GGUF_CONFIG:
+        if format in formats:
+            if re.search(pattern, format):
+                if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
+                    logger.error(f"Cannot eport {pre_dq_format} and {format} at the same time.")
+                    sys.exit(-1)
+                else:
+                    pre_dq_format = format
+            from pathlib import Path
+            from auto_round.export.export_to_gguf.convert import Model
+            hparams = Model.load_hparams(Path(args.model))
+            model_architecture = hparams["architectures"][0]
+            try:
+                model_class = Model.from_model_architecture(model_architecture)
+            except NotImplementedError:
+                logger.error(f"Model {model_architecture} is not supported to export GGUF format")
+                sys.exit(1)
+
+            if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 !=0):
+                model_name = args.model.split('/')
+                model_name = model_name[-1] if model_name[-1] else model_name[-2]
+                hidden_size = hparams["hidden_size"]
+                logger.error(
+                    f"Currently only support pure mode for format: {format}. "
+                    f"{model_name} is not supported, cause hidden_size({hidden_size}) % 256 !=0")
+                sys.exit(-1)
+
+            unsupport_list, reset_list = [], []
+            gguf_config = GGUF_CONFIG[format]
+            for k, v in gguf_config.items():
+                if getattr(args, k) != v:
+                    unsupport_list.append(f"{k}={getattr(args, k)}")
+                    reset_list.append(f"{k}={v}")
+                    setattr(args, k, v)
+            if len(unsupport_list) > 0:
+                logger.error(
+                    f"format {format} not support for {', '.join(unsupport_list)},"
+                    f" reset to {', '.join(reset_list)}.")
+            logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
+
+    return args
