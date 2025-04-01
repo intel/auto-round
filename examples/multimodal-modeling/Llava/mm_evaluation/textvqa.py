@@ -1,4 +1,3 @@
-import sys
 import os
 import math
 from tqdm import tqdm
@@ -14,7 +13,8 @@ from llava.utils import disable_torch_init
 from llava.eval.m4c_evaluator import TextVQAAccuracyEvaluator
 from llava.mm_utils import tokenizer_image_token, process_images
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-from llava.conversation import conv_templates, SeparatorStyle
+from llava.conversation import conv_templates
+
 
 def split_list(lst, n):
     """Split a list into n (roughly) equal-sized chunks"""
@@ -194,7 +194,6 @@ class TextVQAEvaluator(object):
 
 
 if __name__ == "__main__":
-    import sys
     import time
     import argparse
     from llava.mm_utils import get_model_name_from_path
@@ -243,7 +242,7 @@ if __name__ == "__main__":
             try:
                 from auto_round import AutoRoundConfig
             except:
-                from auto_round.auto_quantizer import AutoHfQuantizer
+                from auto_round.inference.auto_quantizer import AutoHfQuantizer
                 
     model_path = args.model_name
     model_name = get_model_name_from_path(model_path)

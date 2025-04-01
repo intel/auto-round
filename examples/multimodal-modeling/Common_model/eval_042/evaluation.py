@@ -1,7 +1,6 @@
 import itertools
 import logging
 import random
-import time
 from collections import defaultdict
 from typing import TYPE_CHECKING, List, Optional, Union
 
@@ -106,7 +105,6 @@ def simple_evaluate(
     :return
         Dictionary of results
     """
-    from auto_round.auto_quantizer import AutoHfQuantizer
     eval_logger.setLevel(getattr(logging, f"{verbosity}"))
     start_date = time.time()
 
@@ -598,10 +596,10 @@ if __name__ == "__main__":
     if hasattr(config, "quantization_config"):
         quantization_config = config.quantization_config
         if "quant_method" in quantization_config and "auto-round" in quantization_config["quant_method"]:
-            from auto_round.auto_quantizer import AutoHfQuantizer
+            pass
         elif "quant_method" in quantization_config and quantization_config["quant_method"] == "gptq":
             if args.device == "hpu":
-                from auto_round.auto_quantizer import AutoHfQuantizer
+                pass
                 
 
     test_tasks = args.tasks

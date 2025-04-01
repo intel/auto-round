@@ -200,8 +200,9 @@ import requests
 import torch
 from PIL import Image
 from transformers import MllamaForConditionalGeneration, AutoProcessor
-from auto_round.auto_quantizer import AutoHfQuantizer
-quantized_model_path="./tmp_autoround"
+from auto_round.inference.auto_quantizer import AutoHfQuantizer
+
+quantized_model_path = "./tmp_autoround"
 model = MllamaForConditionalGeneration.from_pretrained(
     quantized_model_path, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True)
 processor = AutoProcessor.from_pretrained(quantized_model_path)

@@ -15,5 +15,5 @@ from .autoround import AutoRound, AutoRoundAdam, AutoRoundOPT
 from .mllm import AutoRoundMLLM
 from auto_round.utils import LazyImport
 
-from .auto_quantizer import AutoHfQuantizer,AutoRoundConfig
+from auto_round.inference.auto_quantizer import AutoHfQuantizer,AutoRoundConfig
 from .version import __version__

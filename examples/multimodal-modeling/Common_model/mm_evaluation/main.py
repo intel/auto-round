@@ -50,7 +50,7 @@ if __name__ == "__main__":
             try:
                 from auto_round import AutoRoundConfig
             except:
-                from auto_round.auto_quantizer import AutoHfQuantizer
+                from auto_round.inference.auto_quantizer import AutoHfQuantizer
     model_name = args.model_name
     torch_dtype = torch.float
     if args.model_dtype != None:

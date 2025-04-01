@@ -1,7 +1,6 @@
 import itertools
 import logging
 import random
-import time
 from collections import defaultdict
 from typing import TYPE_CHECKING, List, Optional, Union
 
@@ -106,7 +105,6 @@ def simple_evaluate(
     :return
         Dictionary of results
     """
-    from auto_round.auto_quantizer import AutoHfQuantizer
     eval_logger.setLevel(getattr(logging, f"{verbosity}"))
     start_date = time.time()
 
@@ -602,7 +600,7 @@ if __name__ == "__main__":
             try:
                 from auto_round import AutoRoundConfig
             except:
-                from auto_round.auto_quantizer import AutoHfQuantizer
+                from auto_round.inference.auto_quantizer import AutoHfQuantizer
     
     model_args += f",autogptq=True,gptq_use_triton=True"
     if args.trust_remote_code:

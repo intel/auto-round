@@ -217,7 +217,7 @@ BackendInfos['auto_round:hpu_zp'] = BackendInfo(device=["hpu"], sym=[True, False
                                                 convertable_format=["triton_zp+-1"])
 
 
-def check_compatible(backend_name, device, bits, group_size, sym, packing_format, in_features, out_features,
+def   check_compatible(backend_name, device, bits, group_size, sym, packing_format, in_features, out_features,
                      check_requirements=True):
     """Checks if the given configuration is compatible with the specified backend.
 
@@ -468,6 +468,32 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
 
     return QuantLinear
 
+def find_backend(target_backend: str):
+    """Finds the matching backend key based on the target backend or its alias.
+
+    This function checks if the provided `target_backend` is directly present in `BackendInfos`.
+    If not, it iterates through the backends to see if the `target_backend` matches any backend's alias.
+
+    Args:
+        target_backend (str):
+            The name of the backend or alias to find.
+
+    Returns:
+        str or None:
+            The backend key if a match is found, otherwise `None`.
+    """
+    # Directly return if target_backend exists in BackendInfos
+    if target_backend in BackendInfos:
+        return target_backend
+
+    # Search through BackendInfos to check if target_backend matches any backend alias
+    for key in BackendInfos.keys():
+        backendInfo = BackendInfos[key]
+        if backendInfo.alias is not None and target_backend in backendInfo.alias:
+            return key
+
+    # Return None if no matching backend or alias is found
+    return None
 
 def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_features, out_features):
     """Selects the most suitable backend for the layer based on compatibility and priority.
@@ -505,6 +531,7 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
             If no compatible backend is found for the given layer configuration.
     """
     # Check if the provided backend is in BackendInfos
+    backend = find_backend(backend)
     assert backend in BackendInfos.keys(), \
         f"Unsupported backend {backend}, please set it to `auto` to try automatic selection"
 
@@ -547,7 +574,7 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
                     logger.error(str_info)
             exit(-1)
 
-        raise ValueError(f"None of the backends support this layer")
+        return None
 
     # Sort the compatible backends by priority and return the one with the highest priority
     supported_backends = sorted(supported_backends, key=lambda support_backend: BackendInfos[support_backend].priority,
