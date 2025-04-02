@@ -449,9 +449,7 @@ def select_dataset(dataset, indices):
     try:
         return dataset.select(indices)
     except:
-        from torch.utils.data import IterableDataset, DataLoader
         list_data=list(select(dataset, indices))
-
         import pandas as pd
         df = pd.DataFrame(list_data)
         dataset = Dataset.from_pandas(df)
