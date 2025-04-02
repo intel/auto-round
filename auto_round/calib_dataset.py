@@ -16,7 +16,7 @@ import json
 import random
 
 import torch
-from datasets import IterableDataset
+from datasets import IterableDataset, Dataset
 from torch.utils.data import DataLoader
 import sys
 from .utils import is_local_path, logger
@@ -449,7 +449,15 @@ def select_dataset(dataset, indices):
     try:
         return dataset.select(indices)
     except:
-        return select(dataset, indices)
+        from torch.utils.data import IterableDataset, DataLoader
+        list_data=list(select(dataset, indices))
+
+        import pandas as pd
+        df = pd.DataFrame(list_data)
+        dataset = Dataset.from_pandas(df)
+        return dataset
+
+
 
 
 def get_dataloader(
