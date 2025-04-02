@@ -40,10 +40,9 @@ from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 from auto_round.utils import (is_hpu_supported)
-from auto_round.inference.convert_model import convert_hf_model
-
+from auto_round.inference.convert_model import convert_hf_model, infer_target_device
+from tqdm import tqdm
 from enum import Enum
-
 
 logger = getLogger(__name__)
 import sys
@@ -289,9 +288,11 @@ class AutoRoundQuantizer(HfQuantizer):
     optimum_quantizer = None
 
     def __init__(self, quantization_config: QuantizationConfigMixin, **kwargs):
+        self.device_map = None
         super().__init__(quantization_config, **kwargs)
 
     def validate_environment(self, *args, **kwargs):
+        self.device_map = kwargs.get("device_map", None)
         if not is_auto_round_available():
             raise ImportError("Loading a AutoRound quantized model requires auto-round library (`pip install "
                               "auto-round`)")
@@ -306,10 +307,12 @@ class AutoRoundQuantizer(HfQuantizer):
                                   "auto-round` or install from source")
 
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
+        self.target_device = infer_target_device(self.device_map)
         if torch_dtype is None:
             torch_dtype = torch.float16
+        elif torch_dtype != torch.float16:
+            logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency on CUDA")
         return torch_dtype
-
 
     def post_init_model(self, model):
         """Post-initialization that require device information, for example buffers initialization on device.
@@ -324,22 +327,29 @@ class AutoRoundQuantizer(HfQuantizer):
 
         model.quantize_config = StoreAttr()
         if hasattr(self, "used_backend_info") and self.used_backend_info["used_autogptq"]:
-            from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init # pylint: disable=E0401
+            from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init  # pylint: disable=E0401
             model = gptq_post_init(model, use_act_order=False)
-        if hasattr(self, "used_backend_info") and self.used_backend_info["used_ipex"] or self.used_backend_info[
+        elif hasattr(self, "used_backend_info") and self.used_backend_info["used_ipex"] or self.used_backend_info[
             "used_qbits"]:
-            logger.info("repacking to CPU/XPU format")  ## TODO use tqdm to show progress
+            message = "repacking to CPU/XPU format"
+            layers = []  ## ipex post_init  will add one more layer
             for n, m in model.named_modules():
-                if hasattr(m, "post_init") and callable(getattr(m, "post_init")):
+                if hasattr(m, "QUANT_TYPE") and ("qbits" in m.QUANT_TYPE or "ipex" in m.QUANT_TYPE):
                     m.post_init()
 
+            for n, layer in tqdm(layers, desc=message, total=len(layers),
+                                 leave=True):
+                layer.post_init()
+
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
-        if model.__class__.main_input_name != "input_ids":
-            logger.warning("We can only quantize pure text models and " \
-                           "certain types(Llava/Qwen-VL/Phi-3-vision) of multimodal models.")
+        # if model.__class__.main_input_name != "input_ids":
+        #     logger.warning("We can only quantize pure text models and " \
+        #                    "certain types(Llava/Qwen-VL/Phi-3-vision) of multimodal models.")
 
         if self.pre_quantized:
-            model, used_backend_info = convert_hf_model(model)
+            target_device = self.target_device if hasattr(self, self.target_device) else infer_target_device(
+                self.device_map)
+            model, used_backend_info = convert_hf_model(model, target_device)
             self.used_backend_info = used_backend_info
 
     def _process_model_after_weight_loading(self, model: "PreTrainedModel", **kwargs):

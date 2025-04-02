@@ -68,6 +68,7 @@ def convert_dtype_torch2str(dtype):
 
 
 class QuantLinear(nn.Module):
+    QUANT_TYPE = "qbits_awq"
 
     def __init__(self, w_bit, group_size, in_features, out_features, bias, zero_point, dev):
         super().__init__()

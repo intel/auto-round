@@ -98,7 +98,7 @@ feature_multiply_checker_marlin = functools.partial(feature_multiply_checker, in
 
 feature_num_greater_checker_1024 = functools.partial(feature_num_greater_checker, num=1024)
 
-BackendInfos['auto_round:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
+BackendInfos['exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                                    packing_format="triton",
                                                    bits=[4], group_size=None,
                                                    priority=5,
@@ -107,7 +107,7 @@ BackendInfos['auto_round:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, F
                                                    requirements=[check_auto_round_exllamav2_installed]
                                                    )
 
-BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
+BackendInfos['tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                                   packing_format="triton",
                                                   bits=[2, 4, 8], group_size=None,
                                                   priority=0, feature_checks=[feature_multiply_checker_32],
@@ -119,8 +119,7 @@ BackendInfos['gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              bits=[4], group_size=None,
                                              priority=5,
                                              feature_checks=[feature_multiply_checker_32],
-                                             alias=["auto_round:gptq:exllamav2", "auto_round:auto_gptq:exllamav2",
-                                                    'gptq', 'auto_gptq', "auto_round:gptq", "auto_round:auto_gptq"],
+                                             alias=['gptq', 'auto_gptq'],
                                              requirements=["auto-gptq>=0.7.1"]
                                              )
 
@@ -128,8 +127,7 @@ BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                             packing_format="triton_zp+-1",
                                             bits=[2, 4, 8], group_size=None,
                                             priority=0, feature_checks=[feature_multiply_checker_32],
-                                            alias=["auto_round:gptq:tritonv2", "auto_round:auto_gptq:tritonv2",
-                                                   "auto_gptq:tritonv2"],
+                                            alias=["auto_gptq:tritonv2"],
                                             requirements=["auto-gptq>=0.7.1", "triton<3.0,>=2.0"]
                                             )
 
@@ -137,7 +135,7 @@ BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
                                         packing_format="triton_zp+-1",
                                         bits=[2, 3, 4, 8], group_size=None,
                                         priority=1, feature_checks=[feature_multiply_checker_32],
-                                        alias=["auto_round:auto_gptq:cuda", "auto_gptq:cuda", "auto_round:gptq:cuda"],
+                                        alias=["auto_gptq:cuda"],
                                         convertable_format=["triton_zp+-1"],
                                         requirements=["auto-gptq>=0.7.1"]
                                         )
@@ -146,12 +144,12 @@ BackendInfos['awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##ac
                                        packing_format="awq",
                                        bits=[4], group_size=None,
                                        priority=4,
-                                       alias=["auto_awq:gemm", "auto_round:awq:gemm", "auto_round:auto_awq:gemm", "awq",
-                                              "auto_awq", "auto_round:awq", "auto_round:auto_awq"],
+                                       alias=["auto_awq:gemm", "awq",
+                                              "auto_awq"],
                                        requirements=["autoawq"]
                                        )
 
-BackendInfos['auto_round:qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
+BackendInfos['qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
                                                packing_format="qbits",
                                                bits=[2, 4, 8], group_size=None,
                                                priority=0 if "intel" in get_cpu_manufacturer() else 5,
@@ -159,7 +157,7 @@ BackendInfos['auto_round:qbits'] = BackendInfo(device=["cpu"], sym=[True, False]
                                                convertable_format=["triton"],
                                                requirements=["intel-extension-for-transformers"])
 
-BackendInfos['auto_round:qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
+BackendInfos['qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
                                                   packing_format="qbits_zp+-1",
                                                   bits=[2, 4, 8], group_size=None,
                                                   priority=0 if "intel" in get_cpu_manufacturer() else 5,
@@ -176,7 +174,7 @@ BackendInfos['auto_round:qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, Fal
 #                                                    requirements=["intel-extension-for-transformers"]
 #                                                    )
 
-BackendInfos['auto_round:ipex_gptq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
+BackendInfos['ipex_gptq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
                                                    packing_format="ipex_gptq",
                                                    bits=[4], group_size=None,
                                                    priority=5 if "intel" in get_cpu_manufacturer() else 5,
@@ -186,7 +184,7 @@ BackendInfos['auto_round:ipex_gptq'] = BackendInfo(device=["cpu", "xpu"], sym=[T
                                                    requirements=["intel-extension-for-pytorch>=2.5"]
                                                    )
 
-BackendInfos['auto_round:ipex_awq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
+BackendInfos['ipex_awq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
                                                       packing_format="ipex_awq",
                                                       bits=[4], group_size=None,
                                                       priority=1,
@@ -205,21 +203,21 @@ BackendInfos['auto_round:ipex_awq'] = BackendInfo(device=["cpu", "xpu"], sym=[Tr
 #                                                 alias=["marlin", "auto_gptq:marlin", "auto_round:gptq:marlin",
 #                                                        "auto_round:auto_gptq:marlin"])
 
-BackendInfos['auto_round:hpu'] = BackendInfo(device=["hpu"], sym=[True, False],
+BackendInfos['hpu'] = BackendInfo(device=["hpu"], sym=[True, False],
                                              packing_format="hpu",
                                              bits=[4],
                                              priority=0,
                                              convertable_format=["triton"]
                                              )
 
-BackendInfos['auto_round:hpu_zp'] = BackendInfo(device=["hpu"], sym=[True, False],
+BackendInfos['hpu_zp'] = BackendInfo(device=["hpu"], sym=[True, False],
                                                 packing_format="hpu_zp+-1",
                                                 bits=[4],
                                                 priority=0,
                                                 convertable_format=["triton_zp+-1"])
 
 
-def   check_compatible(backend_name, device, bits, group_size, sym, packing_format, in_features, out_features,
+def check_compatible(backend_name, device, bits, group_size, sym, packing_format, in_features, out_features,
                      check_requirements=True):
     """Checks if the given configuration is compatible with the specified backend.
 

@@ -167,8 +167,7 @@ def get_device(obj: Union[torch.Tensor, nn.Module]):
     return next(obj.parameters()).device
 
 
-def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, target_device, orig_backend,
-                             available_devices):
+def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, target_device, orig_backend):
     """
     Replaces linear layers in the given module with quantized layers.
 
@@ -178,11 +177,11 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         target_backend (str): Backend for quantization (device and format).
         target_device (str): Device for execution ('cuda', 'cpu', 'hpu').
         orig_backend (str): Original backend of the model.
-        available_devices (list): List of available devices.
 
     Returns:
         dict: Flags indicating which backends were used.
     """
+
     backend_flags = {"used_autogptq": False, "used_autoawq": False, "used_qbits": False, "used_ipex": False}
     must_use_target_backend = False
     if target_backend:
@@ -199,18 +198,18 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         if in_features is None:
             continue  # Skip unsupported layer types
 
-        ##TODO cache bakend
+        ##TODO cache backend
         if must_use_target_backend:
             layer_backend = target_backend
             layer_backend = find_backend(layer_backend)
             devices = BackendInfos[layer_backend].device
-            for device in devices:
-                if device in available_devices or device in target_device:
-                    target_device = device
-                    break
+            if target_device not in devices:
+                raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
+
+
         else:
             # Determine backend
-            layer_backend = _get_layer_backend(target_device, available_devices, target_backend, orig_backend, config,
+            layer_backend = _get_layer_backend(target_device, target_backend, orig_backend, config,
                                                in_features, out_features)
         if not layer_backend:
             raise ValueError(f"No compatible backend found for layer {layer_name} with config {config}")
@@ -237,16 +236,14 @@ def _get_layer_features(layer):
     return None, None  # Unsupported layer type
 
 
-def _get_layer_backend(target_device, available_devices, target_backend, orig_backend, config, in_features,
+def _get_layer_backend(target_device, target_backend, orig_backend, config, in_features,
                        out_features):
     """Determines the best backend for a given layer."""
-    devices = [target_device] + available_devices if target_device == "auto" else [target_device]
-    for device in devices:
-        backend = get_layer_backend(device, target_backend, orig_backend, config["bits"], config["group_size"],
-                                    config["sym"], in_features, out_features)
-        if backend:
-            return backend
-    return None
+
+    backend = get_layer_backend(target_device, target_backend, orig_backend, config["bits"], config["group_size"],
+                                config["sym"], in_features, out_features)
+
+    return backend
 
 
 def _update_backend_flags(layer_backend, flags):
@@ -295,7 +292,25 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
                            weight_dtype=layer.weight.dtype)
 
 
-def convert_hf_model(model: nn.Module):
+def infer_target_device(device_map=None):
+    if device_map is None:
+        target_device = "cpu"
+    elif isinstance(device_map, dict):
+        devices = set(device_map.values())
+        target_device = "cpu"
+        for device in devices:
+            if device != "cpu" and device != "disk":
+                if isinstance(device, int):
+                    target_device = get_available_devices()[0]
+                else:
+                    target_device = str(device).split(":")[0]
+    else:
+        target_device = get_available_devices()[0]
+    assert isinstance(target_device, str)
+    return target_device
+
+
+def convert_hf_model(model: nn.Module, target_device="cpu"):
     """Converts the given model to an AutoRound model by replacing its layers with quantized layers.
 
     This method extracts the quantization configuration from the model and adjusts its layers
@@ -320,19 +335,10 @@ def convert_hf_model(model: nn.Module):
         quantization_config.target_backend = quantization_config.backend
 
     ##target_backend could be None
-    target_device, target_backend = parse_target_device_and_backend(quantization_config.target_backend)
-    available_devices = get_available_devices()
-    if target_device != "auto":
-        if target_device not in available_devices:
-            logger.error(f"Target device '{target_device}' is not supported. Available devices: {available_devices}")
-        else:
-            available_devices.pop(available_devices.index(target_device))
-    else:
-        if len(available_devices) == 1 and target_device == "auto":
-            target_device = available_devices[0]
+    _, target_backend = parse_target_device_and_backend(quantization_config.target_backend)
 
     if ("hpu" == target_device or "cpu" == target_device) and model.dtype != torch.bfloat16:
-        logger.info(f"Change the dtype to `bfloat16` as {target_device.upper()} does not support float16")
+        logger.info(f"Change the dtype to `bfloat16`")
         model = model.to(torch.bfloat16)
 
     if hasattr(quantization_config, "backend"):  # pragma: no cover
@@ -346,9 +352,9 @@ def convert_hf_model(model: nn.Module):
         logger.warning("Quantization backend must be specified. Set it to 'gptq' by default.")
 
     layer_configs = get_layer_config(model, quantization_config)
-
+    if backend.startswith("auto_round:"):
+        backend = backend[len("auto_round:"):]
     backend = find_backend(backend)
 
-    used_backend_info = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend,
-                                                 available_devices)
+    used_backend_info = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
     return model, used_backend_info

@@ -29,7 +29,7 @@ BITS_DTYPE_MAPPING = {
 
 
 class QuantLinear(nn.Module):
-    QUANT_TYPE = "qbits"
+    QUANT_TYPE = "qbits_gptq"
 
     def __init__(
         self,
