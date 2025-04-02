@@ -48,11 +48,11 @@ def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=Non
     if system_prompt is None:
         system_prompt = "You are a helpful assistant."
     for text in samples:
-        if system_prompt=="":
+        if system_prompt == "":
             message = [{"role": "user", "content": text}]
         else:
             message = [{"role": "system", "content": system_prompt},
-                   {"role": "user", "content": text}]
+                       {"role": "user", "content": text}]
         try:
             chat_templated = tokenizer.apply_chat_template(
                 message,
@@ -205,7 +205,7 @@ def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=No
 
 @register_dataset("codeparrot/github-code-clean")
 def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/github-code-clean", split=None, seed=42,
-                                  apply_chat_template=False,system_prompt=None):
+                                  apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -236,7 +236,8 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
             if not apply_chat_template:
                 example = tokenizer(examples["code"], truncation=True, max_length=seqlen)
             else:
-                example = apply_chat_template_to_samples(examples["code"], tokenizer, seqlen,system_prompt=system_prompt)
+                example = apply_chat_template_to_samples(examples["code"], tokenizer, seqlen,
+                                                         system_prompt=system_prompt)
             return example
 
         return default_tokenizer_function
