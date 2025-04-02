@@ -182,7 +182,7 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         dict: Flags indicating which backends were used.
     """
 
-    backend_flags = {"used_autogptq": False, "used_autoawq": False, "used_qbits": False, "used_ipex": False}
+    backend_flags = {"used_autogptq": False, "used_gptqmodel":False, "used_autoawq": False, "used_qbits": False, "used_ipex": False}
     must_use_target_backend = False
     if target_backend:
         must_use_target_backend = True
@@ -206,14 +206,12 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
                f"{config['bits']}_{config['group_size']}_{config['sym']}_{in_features}_{out_features}")
         if key in backend_cache:
             layer_backend = backend_cache[key]
-        ##TODO cache backend
         elif must_use_target_backend:
             layer_backend = target_backend
             layer_backend = find_backend(layer_backend)
             devices = BackendInfos[layer_backend].device
             if target_device not in devices:
                 raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
-
         else:
             # Determine backend
             layer_backend = _get_layer_backend(target_device, target_backend, orig_backend, config,
@@ -261,6 +259,8 @@ def _update_backend_flags(layer_backend, flags):
         flags["used_qbits"] = True
     elif "ipex" in layer_backend:
         flags["used_ipex"] = True
+    elif "gptqmodel" in layer_backend:
+        flags["used_gptqmodel"] = True
     elif "gptq" in layer_backend and "gptqmodel" not in layer_backend:
         flags["used_autogptq"] = True
     elif "awq" in layer_backend:
@@ -291,7 +291,8 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
                                        has_zero_points=not config["sym"])
     elif "awq" in layer_backend:
         return QuantLinear.from_linear(layer, config["bits"], config["group_size"], init_only=True)
-
+    elif "gptqmodel:marlin" in layer_backend:
+        return QuantLinear(config["bits"], config["group_size"], False,config["sym"], in_features, out_features, bias)
     # Default quantized layer creation
     try:
         return QuantLinear(config["bits"], config["group_size"], in_features, out_features, bias,

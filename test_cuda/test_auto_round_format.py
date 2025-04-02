@@ -110,6 +110,7 @@ class TestAutoRound(unittest.TestCase):
             torch.cuda.empty_cache()
 
     ##TODO add asym later
+
     def test_autoround_gptq_sym_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
