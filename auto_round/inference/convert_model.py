@@ -202,7 +202,8 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         if in_features is None:
             continue  # Skip unsupported layer types
 
-        key = f"{target_device}_{target_backend}_{orig_backend}_{config['bits']}_{config['group_size']}_{config['sym']}_{in_features}_{out_features}"
+        key = (f"{target_device}_{target_backend}_{orig_backend}_"
+               f"{config['bits']}_{config['group_size']}_{config['sym']}_{in_features}_{out_features}")
         if key in backend_cache:
             layer_backend = backend_cache[key]
         ##TODO cache backend
@@ -366,6 +367,8 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         backend = backend[len("auto_round:"):]
     backend = find_backend(backend)
 
+    if target_backend.startswith("auto_round:"):
+        target_backend = target_backend[len("auto_round:"):]
     used_backend_info = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
     end_time = time.time()
     logger.warning(end_time - start_time)
