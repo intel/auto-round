@@ -48,7 +48,10 @@ def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=Non
     if system_prompt is None:
         system_prompt = "You are a helpful assistant."
     for text in samples:
-        message = [{"role": "system", "content": system_prompt},
+        if system_prompt=="":
+            message = [{"role": "user", "content": text}]
+        else:
+            message = [{"role": "system", "content": system_prompt},
                    {"role": "user", "content": text}]
         try:
             chat_templated = tokenizer.apply_chat_template(
