@@ -189,6 +189,10 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
 
     target_backend = target_backend or orig_backend  # Default to original backend if not specified
 
+    import_exllama_reminder_cnt = 0
+
+    backend_cache = {}
+
     for layer_name, config in layer_configs.items():
         if not check_to_quantized(config):
             continue  # Skip layers that do not require quantization
@@ -198,14 +202,16 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         if in_features is None:
             continue  # Skip unsupported layer types
 
+        key = f"{target_device}_{target_backend}_{orig_backend}_{config['bits']}_{config['group_size']}_{config['sym']}_{in_features}_{out_features}"
+        if key in backend_cache:
+            layer_backend = backend_cache[key]
         ##TODO cache backend
-        if must_use_target_backend:
+        elif must_use_target_backend:
             layer_backend = target_backend
             layer_backend = find_backend(layer_backend)
             devices = BackendInfos[layer_backend].device
             if target_device not in devices:
                 raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
-
 
         else:
             # Determine backend
@@ -217,8 +223,10 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         # Update backend usage flags
         _update_backend_flags(layer_backend, backend_flags)
 
-        # Import ExLlamaV2 kernels if needed
-        _import_exllamav2_kernels(layer_backend)
+        # Check ExLlamaV2 kernel
+        if import_exllama_reminder_cnt <= 0:
+            _import_exllamav2_kernels(layer_backend)
+            import_exllama_reminder_cnt += 1
 
         # Create and replace layer
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
@@ -329,6 +337,8 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         ValueError:
             If the quantization backend is not specified in the configuration.
     """
+    import time
+    start_time = time.time()
 
     quantization_config = model.config.quantization_config
     if not hasattr(quantization_config, "target_backend"):
@@ -357,4 +367,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     backend = find_backend(backend)
 
     used_backend_info = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
+    end_time = time.time()
+    logger.warning(end_time - start_time)
+
     return model, used_backend_info
