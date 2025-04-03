@@ -39,13 +39,18 @@ def register_block(name):
     return register
 
 
-def ggml_quant(data: np.array, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, worker=16):
+def ggml_quant(data: np.array, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
 
     data = data.astype(np.float32, copy=False)
     shape = data.shape
     n_blocks = data.size // block_size
     blocks = data.reshape((n_blocks, block_size))
+
+    if ggml_type.endswith("_k"):
+        worker = 16
+    else:
+        worker = 0
 
     if worker > 0:
         n_groups = (data.shape[0] // worker) or 1
