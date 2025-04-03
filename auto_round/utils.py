@@ -1228,14 +1228,14 @@ def _gguf_args_check(args):
                     logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                     sys.exit(1)
 
-            if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 !=0):
-                model_name = args.model.split('/')
-                model_name = model_name[-1] if model_name[-1] else model_name[-2]
-                hidden_size = hparams["hidden_size"]
-                logger.error(
-                    f"Currently only support pure mode for format: {format}. "
-                    f"{model_name} is not supported, cause hidden_size({hidden_size}) % 256 !=0")
-                sys.exit(-1)
+                if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 !=0):
+                    model_name = args.model.split('/')
+                    model_name = model_name[-1] if model_name[-1] else model_name[-2]
+                    hidden_size = hparams["hidden_size"]
+                    logger.error(
+                        f"Currently only support pure mode for format: {format}. "
+                        f"{model_name} is not supported, cause hidden_size({hidden_size}) % 256 !=0")
+                    sys.exit(-1)
 
             unsupport_list, reset_list = [], []
             gguf_config = GGUF_CONFIG[format]
