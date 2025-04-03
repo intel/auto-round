@@ -22,6 +22,8 @@ class LLMDataLoader:
 class TestGGUF(unittest.TestCase):
     @classmethod
     def setUpClass(self):
+        # install gguf-py
+        os.system("git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .")
         self.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -31,6 +33,7 @@ class TestGGUF(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
+        shutil.rmtree("llama.cpp", ignore_errors=True)
     
     def test_q2_k_export(self):
         bits, group_size, sym = 2, 16, False
