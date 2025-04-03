@@ -95,19 +95,29 @@ class QuantLinear(nn.Module):
         self.wf = torch.tensor(list(range(0, 32, self.bits)), dtype=torch.int32).unsqueeze(0)
 
     def post_init(self):
-        assert self.qweight.device.type == "cpu"
+        assert self.qweight.device.type == "cpu" or self.qweight.device.type == "xpu"
 
         # if not self.training and IPEX_AVAILABLE:
         if not self.training:
-            from intel_extension_for_pytorch.nn.modules.weight_only_quantization import WeightOnlyQuantizedLinear
+            import intel_extension_for_pytorch as ipex
+            from intel_extension_for_pytorch.nn.modules.weight_only_quantization import WeightOnlyQuantizedLinear, \
+                QuantDtype, QuantMethod
             from packaging import version
             from auto_round.utils import get_library_version
             ipex_version = get_library_version("intel_extension_for_pytorch")
             if version.parse(ipex_version) >= version.parse("2.5"):
-                self.ipex_linear = WeightOnlyQuantizedLinear.from_weight(self.qweight, self.scales, self.qzeros, \
-                                                                         self.infeatures, self.outfeatures, None,
-                                                                         self.bias, \
-                                                                         self.group_size, self.g_idx, 0, 0)
+                self.ipex_linear = ipex.llm.quantization.IPEXWeightOnlyQuantizedLinear.from_weight(self.qweight,
+                                                                                                   self.scales,
+                                                                                                   self.qzeros, \
+                                                                                                   self.infeatures,
+                                                                                                   self.outfeatures,
+                                                                                                   None,
+                                                                                                   self.bias, \
+                                                                                                   self.group_size,
+                                                                                                   None,
+                                                                                                   ipex.llm.quantization.QuantMethod.GPTQ_GEMM,
+                                                                                                   ipex.llm.quantization.QuantDtype.INT4
+                                                                                                   )
             else:
                 import intel_extension_for_pytorch as ipex
                 from intel_extension_for_pytorch.nn.modules import WeightOnlyQuantizedLinear as ipex_linear

@@ -34,3 +34,26 @@ def register_format(name):
         return format
 
     return register
+
+
+
+PACKING_LAYER_WITH_FORMAT = {}
+
+def register_layer_packing(name):
+    """Class decorator to register a EXPORT subclass to the registry.
+
+    Decorator function used before a Pattern subclass.
+
+    Args:
+        cls (class): The subclass of register.
+        name: A string. Define the export type.
+
+    Returns:
+        cls: The class of register.
+    """
+
+    def register(format):
+        PACKING_LAYER_WITH_FORMAT[name] = format
+        return format
+
+    return register

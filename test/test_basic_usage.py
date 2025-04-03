@@ -26,7 +26,13 @@ class TestAutoRoundCmd(unittest.TestCase):
             assert False, "cmd line test fail, please have a check"
 
         res = os.system(
-            f"cd .. && {python_path} -m auto_round --model 'facebook/opt-125m' --iter 2 --nsamples 1 --format auto_gptq,auto_round --disable_eval --output_dir ./saved")
+            f"cd .. && {python_path} -m auto_round --model 'facebook/opt-125m' --iter 2 --nsamples 1 --format auto_gptq,auto_round --output_dir ./saved --tasks piqa,openbookqa")
+        if res > 0 or res == -1:
+            assert False, "cmd line test fail, please have a check"
+        
+        res = os.system(
+            f"cd .. && {python_path} -m auto_round --model 'facebook/opt-125m' --iter 1 --nsamples 1 --eval_task_by_task --tasks piqa,openbookqa --bs 32"
+        )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
@@ -43,7 +49,7 @@ class TestAutoRoundCmd(unittest.TestCase):
             f"cd .. && {python_path} -m auto_round --mllm --eval -h")
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
-        
+
         # test auto_round_mllm --lmms help
         res = os.system(
             f"cd .. && {python_path} -m auto_round --mllm --lmms -h")

@@ -237,7 +237,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         autoround.quantize()
-
+    #
     def test_signround(self):
         bits, group_size, sym = 4, -1, False
         autoround = AutoRound(
@@ -271,6 +271,7 @@ class TestAutoRound(unittest.TestCase):
             layer_config=layer_config,
         )
         autoround.quantize()
+
     def test_wa_quant(self):
         bits, group_size, sym, act_bits = 4, 128, False, 4
         autoround = AutoRound(
@@ -285,7 +286,7 @@ class TestAutoRound(unittest.TestCase):
             act_bits=4,
         )
         autoround.quantize()
-    
+
     def test_auto_device_map(self):
         bits, group_size, sym = 4, 128, False
         model_name = "facebook/opt-125m"
@@ -301,7 +302,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         autoround.quantize()
-    
+
     def test_fp32(self):
         bits, group_size, sym = 4, 128, False
         model_name = "facebook/opt-125m"
@@ -325,8 +326,8 @@ class TestAutoRound(unittest.TestCase):
         model_name = "facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32, trust_remote_code=True,
                                                      device_map='auto')
-        layer_config = {"model.decoder.layers.0.self_attn.q_proj": {"bits": "16"},
-                        "model.decoder.layers.1.self_attn.k_proj": {"bits": "16"}}
+        layer_config = {"model.decoder.layers.0.self_attn.q_proj": {"bits": 16},
+                        "model.decoder.layers.1.self_attn.k_proj": {"bits": 16}}
         autoround = AutoRound(
             model,
             self.tokenizer,
@@ -342,9 +343,13 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
+        from auto_round import AutoRoundConfig
+        quantization_config = AutoRoundConfig(
+            backend="cpu:auto_round:qbits_zp"
+        )
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map='auto')
+                                                     device_map='cpu',quantization_config=quantization_config)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)

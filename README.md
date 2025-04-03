@@ -1,12 +1,16 @@
 <div align="center">
 
+
 AutoRound
 ===========================
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.4.4-green)](https://github.com/intel/auto-round)
-[![license](https://img.shields.io/badge/license-Apache%202-blue)](https://github.com/intel/auto-round/blob/main/LICENSE)
+[![version](https://img.shields.io/badge/release-0.4.6-green)](https://github.com/intel/auto-round)
+[![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
+<a href="https://huggingface.co/OPEA">
+<img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
+</a>
 ---
 <div align="left">
 
@@ -16,7 +20,9 @@ steps,
 which competes impressively against recent methods without introducing any additional inference overhead and keeping low
 tuning cost. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
-details and quantized models in several Hugging Face Spaces, e.g. [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup) and [fbaldassarri](https://huggingface.co/fbaldassarri).
+details and quantized models in several Hugging Face Spaces,
+e.g. [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup)
+and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 <div align="center">
 
@@ -24,35 +30,17 @@ details and quantized models in several Hugging Face Spaces, e.g. [OPEA](https:/
 
 <div align="left">
 
+
+
 ## What's New
 
-* [2024/12] Many quantized LLMs/VLMs using AutoRound are released in [OPEA Space](https://huggingface.co/OPEA)
+* [2024/03] The INT2-mixed R1 model (~200GB) retains 97.9% accuracy. Check
+  out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
+* [2024/01] We provide experimental support for GGUF q4_0 and q4_1 formats.
 * [2024/11] We provide experimental support for VLM quantization, please check out
   the [README](./auto_round/mllm/README.md)
-* [2024/11] We provide some tips and tricks for LLM&VLM quantization, please check
-  out [this blog](https://medium.com/@NeuralCompressor/10-tips-for-quantizing-llms-and-vlms-with-autoround-923e733879a7)
-
-[//]: # (* [2024/10] AutoRound has been integrated to [torch/ao]&#40;https://github.com/pytorch/ao&#41;, check out)
-
-[//]: # (  their [release note]&#40;https://github.com/pytorch/ao/releases/tag/v0.6.1&#41;)
-
-[//]: # (* [2024/10] Important update: We now support full-range symmetric quantization and have made it the default)
-
-[//]: # (  configuration. This configuration is typically better or comparable to asymmetric quantization and significantly)
-
-[//]: # (  outperforms other symmetric variants, especially at low bit-widths like 2-bit, check)
-
-[//]: # (  out [some accuracy data]&#40;./docs/full_range_sym.md&#41;.)
-
-[//]: # (* [2024/08] AutoRound format supports Intel Gaudi2 devices. Please refer)
-
-[//]: # (  to [Intel/Qwen2-7B-int4-inc]&#40;https://huggingface.co/Intel/Qwen2-7B-int4-inc&#41;.)
-
-[//]: # (* [2024/08] AutoRound introduces several experimental features, including fast tuning of norm/bias parameters &#40;for 2-bit)
-
-[//]: # (  and W4A4, check out [more details]&#40;./docs/tuning_norm_bias.md&#41;&#41;, activation quantization, and the mx_fp data type.)
-
 ## Installation
+
 
 ### Install from pypi
 
@@ -97,12 +85,12 @@ auto-round \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --format "auto_gptq,auto_round" \
+    --format "auto_gptq,auto_awq,auto_round" \
     --disable_eval \
     --output_dir ./tmp_autoround
 ```
 
-We provide two recipes for best accuracy and fast running speed with low memory. Details as below.
+We offer two configurations, `auto-round-best` and `auto-round-light`, designed for optimal accuracy and improved speed, respectively. Details are as follows.
 <details>
   <summary>Other Recipes</summary>
 
@@ -117,15 +105,40 @@ auto-round-best \
   ```
 
   ```bash
-## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-auto-round-fast \
+auto-round-light \
+## light accuracy, 2-3X speedup, slight accuracy drop at W4 and larger accuracy drop at W2
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
     --disable_eval 
   ```
 
+  <!-- ```bash
+## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
+auto-round-fast \
+    --model facebook/opt-125m \
+    --bits 4 \
+    --group_size 128 \
+    --disable_eval 
+  ``` -->
+
 </details>
+
+In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the configuration to suit your specific requirements and available resources. 
+
+W4G128 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version of PyTorch 2.6.0 with enable_torch_compile):
+
+
+| Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct | Falcon3-10B          | Qwen2.5-72B-Instruct  |
+|---------|-----------------------|----------------------|---------------------|----------------------|-----------------------|
+| 16bits  | 0.4192                | 0.5203               | 0.6470              | 0.6151               | 0.7229                |
+| Best    | **0.4137**(7m)   | **0.5142**(23m) | 0.6426(58m)    | **0.6092**(81m) | 0.7242(575m)     |
+| Default | 0.4129(2m)       | 0.5133(6m)      | 0.6441(13m)    | 0.6080(18m)     | **0.7252**(118m) |
+| Light   | 0.4052(2m)       | 0.5108(3m)      | **0.6453**(5m) | 0.6063(6m)      | 0.7243(37m)      |
+
+
+
+
 
 ### API Usage (Gaudi2/CPU/GPU)
 
@@ -144,8 +157,8 @@ autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sy
 ## the best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
 # autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
 
-## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-# autoround = AutoRound(model, tokenizer, nsamples=128, iters=200, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym )
+## 2-3X speedup, slight accuracy drop at W4G128
+# autoround = AutoRound(model, tokenizer, nsamples=128, iters=50, lr=5e-3, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym )
 
 autoround.quantize()
 output_dir = "./tmp_autoround"
@@ -205,7 +218,12 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 </details>
 
+
 ### API Usage for VLMs
+
+
+<details>
+  <summary>Click to expand</summary>
 
 **This feature is experimental and may be subject to changes**, including potential bug fixes, API modifications, or
 adjustments to default hype-parameters
@@ -231,18 +249,37 @@ autoround = AutoRoundMLLM(model, tokenizer, processor,
                           bits=bits, group_size=group_size, sym=sym)
 autoround.quantize()
 
-# save the quantized model, set format='auto_gptq' to use AutoGPTQ format
+# save the quantized model, set format='auto_gptq' or 'auto_awq' to use other formats
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
+</details>
+
+
+
+### Export Formats
+**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
+inference. **[2,4] bits are supported**. However, it has not yet gained widespread community adoption.
+
+**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
+community, **[2,3,4,8] bits are supported**. However, **the
+asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
+models.
+
+**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
+adopted within the community, **only 4-bits quantization is supported**. 
+
+**GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and
+q4_1 (W4G32) is supported in our repo**.
+
+
 
 ### Quantization Costs
 
 Testing was conducted on the Nvidia A100 80G using the nightly version of PyTorch 2.6.0.dev20241029+cu124. Please note
 that data
-loading and packing costs have been excluded from the evaluation. **We enable torch.compile for Torch 2.6, but not for
-2.5
-due to encountered issues.**
+loading and packing costs have been excluded from the evaluation. **We recommend enabling torch.compile for PyTorch
+versions 2.6 and above.**
 
 To optimize GPU memory usage, in addition to activating `low_gpu_mem_usage`, you can set `gradient_accumulate_steps=8`
 and a
@@ -292,9 +329,10 @@ inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
-<br>
+
+#### Evaluation
 <details>
-  <summary>Evaluation</summary>
+  <summary>Click to expand</summary>
 
 ```bash
 auto-round --model saved_quantized_model \
@@ -304,6 +342,7 @@ auto-round --model saved_quantized_model \
 ```
 
 </details>
+
 
 ### AutoGPTQ/AutoAWQ format
 
@@ -323,9 +362,14 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 AutoRound supports basically all the major large language models.
 
+<details>
+  <summary>Supported Models List</summary>
+
 Please note that an asterisk (*) indicates third-party quantized models, which may lack accuracy data and use a
 different recipe. We greatly appreciate their efforts and encourage more users to share their models, as we cannot
 release most of the models ourselves.
+
+
 
  Model                                     | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 |-------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -337,11 +381,11 @@ release most of the models ourselves.
 | meta-llama/Llama-3.2-11B-Vision           | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Llama-3.2-11B-Vision-Instruct-int4-sym-inc), [model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Llama-3.2-11B-Vision-Instruct-int4-sym-inc)                                                                                                                                                                                                                                                                                                                    |
 | microsoft/Phi-3.5-vision-instruct         | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Phi-3.5-vision-instruct-int4-sym-inc), [model-opea-int4-sym-gptq](https://huggingface.co/OPEA/Phi-3.5-vision-instruct-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                    |
 | liuhaotian/llava-v1.5-7b                  | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/llava-v1.5-7b-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/llava-v1.5-7b-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                     |
-| Qwen/Qwen2.5-7B-Instruct                  | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-7B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Qwen2.5-7B-Instruct-int4-sym-inc) [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-7B-Instruct-AutoRound-GPTQ-asym-4bit), [recipe](./docs/Qwen2.5-7B-Instruct-sym.md)                                                                                                                                                                    |
+| Qwen/Qwen2.5-7B-Instruct                  | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-7B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Qwen2.5-7B-Instruct-int4-sym-inc) [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-7B-Instruct-AutoRound-GPTQ-asym-4bit), [recipe](./docs/Qwen2.5-7B-Instruct-sym.md)                                                                                                                                                                              |
 | Qwen/Qwen2.5-14B-Instruct                 | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-14B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Qwen2.5-14B-Instruct-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                       |
 | Qwen/Qwen2.5-32B-Instruct                 | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-32B-Instruct-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| Qwen/Qwen2.5-Coder-32B-Instruct           | [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-Coder-32B-Instruct-AutoRound-GPTQ-4bit)                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Qwen/Qwen2.5-72B-Instruct                 | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-72B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Qwen2.5-72B-Instruct-int4-sym-inc), [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-4bit),  [model-kaitchup-autogptq-int2*](https://huggingface.co/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-2bit), [recipe](./docs/Qwen2.5-72B-Instruct-sym.md)                                              |
+| Qwen/Qwen2.5-Coder-32B-Instruct           | [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-Coder-32B-Instruct-AutoRound-GPTQ-4bit)                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Qwen/Qwen2.5-72B-Instruct                 | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Qwen2.5-72B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Qwen2.5-72B-Instruct-int4-sym-inc), [model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-4bit),  [model-kaitchup-autogptq-int2*](https://huggingface.co/kaitchup/Qwen2.5-72B-Instruct-AutoRound-GPTQ-2bit), [recipe](./docs/Qwen2.5-72B-Instruct-sym.md)                                                                  |
 | meta-llama/Meta-Llama-3.1-70B-Instruct    | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Meta-Llama-3.1-70B-Instruct-int4-sym-inc), [model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Meta-Llama-3.1-70B-Instruct-int4-sym-inc),[model-opea-int4-asym-autoround](https://huggingface.co/OPEA/Meta-Llama-3.1-70B-Instruct-int4-asym-inc)                                                                                                                                                                                                                |
 | meta-llama/Meta-Llama-3.1-8B-Instruct     | [model-opea-int4-sym-autoround](https://huggingface.co/OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc),[model-opea-int4-sym-autogptq](https://huggingface.co/OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc),[model-kaitchup-autogptq-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-asym), [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-Instruct-autoround-gptq-4bit-sym), [recipe](https://huggingface.co/Intel/Meta-Llama-3.1-8B-Instruct-int4-inc) |
 | meta-llama/Meta-Llama-3.1-8B              | [model-kaitchup-autogptq-sym-int4*](https://huggingface.co/kaitchup/Meta-Llama-3.1-8B-autoround-gptq-4bit-sym)                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -369,7 +413,12 @@ release most of the models ourselves.
 | 01-ai/Yi-6B-Chat                          | [outdated-recipe](./docs/Yi-6B-Chat-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |                                     
 | facebook/opt-2.7b                         | [outdated-recipe](./docs/opt-2.7b-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | bigscience/bloom-3b                       | [outdated-recipe](./docs/bloom-3B-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| EleutherAI/gpt-j-6b                       | [outdated-recipe](./docs/gpt-j-6B-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | 
+| EleutherAI/gpt-j-6b                       | [outdated-recipe](./docs/gpt-j-6B-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | 
+
+</details> 
+ 
+
+
 
 ## Integration
 
@@ -380,6 +429,8 @@ AutoRound has been integrated into multiple repositories.
 [ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel)
 
 [pytorch/ao](https://github.com/pytorch/ao)
+
+
 
 ## Reference
 
@@ -393,6 +444,9 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
+
+
 
 
 

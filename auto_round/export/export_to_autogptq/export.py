@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 # MIT License
 #
 # Copyright (c) 2023 潘其威(William)
@@ -36,8 +35,9 @@
 # SOFTWARE.
 import torch
 
+import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module
+    get_module, logger, set_module, supported_layer_types
 import copy
 import json
 import os
@@ -59,58 +59,62 @@ BLOCK_PATTERNS = [  ## copy from transformers optimum
 ]
 
 
-def pack_layer(name, model, layer_config, backend, pbar):
-    with tctl.threadpool_limits(limits=1):
-        pbar.set_description(f"packing {name}")
-        if name == "lm_head":  ##dese not support lm-head
-            pbar.update(1)
-            return
-        config = layer_config[name]
-        if config["bits"] > 8:
-            pbar.update(1)
-            return
-        bits = config["bits"]
-        group_size = config["group_size"]
-        sym = config["sym"]
+def pack_layer(name, model, backend):
 
-        layer = get_module(model, name)
-        device = layer.weight.device
+    if name == "lm_head":  ##dese not support lm-head
+        return
+    layer = get_module(model, name)
 
-        QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
+    if not isinstance(layer, supported_layer_types):  ##already packed
+        return
 
-        if isinstance(layer, nn.Linear):
-            in_features = layer.in_features
-            out_features = layer.out_features
-        elif isinstance(layer, nn.Conv2d):
-            in_features = layer.in_channels
-            out_features = layer.out_channels
-        elif isinstance(layer, transformers.pytorch_utils.Conv1D):
-            in_features = layer.weight.shape[0]
-            out_features = layer.weight.shape[1]
+    bits = layer.bits
+    if bits > 8:
+        return
 
-        bias = layer.bias is not None
-        ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
-        new_layer = QuantLinear(  ##pylint: disable=E1123
-            bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
-        )
+    group_size = layer.group_size
+    sym = layer.sym
 
-        new_layer.device = device
-        set_module(model, name, new_layer)
-        qlayer = new_layer
-        scale = layer_config[name]["scale"]
-        zero = layer_config[name]["zp"]
-        # so far can only pack layer on CPU
-        qlayer.to("cpu")
-        ##force to float32 to be compatible with torch 2.0
+    device = layer.weight.device
+
+    QuantLinear = get_autogptq_packing_qlinear(backend, bits, group_size, sym)
+
+    if isinstance(layer, nn.Linear):
+        in_features = layer.in_features
+        out_features = layer.out_features
+    elif isinstance(layer, nn.Conv2d):
+        in_features = layer.in_channels
+        out_features = layer.out_channels
+    elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+        in_features = layer.weight.shape[0]
+        out_features = layer.weight.shape[1]
+
+    bias = layer.bias is not None
+    ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
+    new_layer = QuantLinear(  ##pylint: disable=E1123
+        bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
+    )
+
+    new_layer.device = device
+    set_module(model, name, new_layer)
+    qlayer = new_layer
+    scale = layer.scale
+    zero = layer.zp
+    # so far can only pack layer on CPU
+    qlayer.to("cpu")
+    ##force to float32 to be compatible with torch 2.0
+    if sym and isinstance(new_layer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
+        layer, scale = layer.to("cpu"), scale.to("cpu")
+        zero = 2 ** (bits - 1)
+    else:
         layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
-        sig = inspect.signature(qlayer.pack)
-        param_count = len(sig.parameters)
-        if param_count == 2:
-            qlayer.pack(layer, scale)
-        else:
-            qlayer.pack(layer, scale, zero, None)
-        qlayer.to(device)
-        pbar.update(1)
+    sig = inspect.signature(qlayer.pack)
+    param_count = len(sig.parameters)
+    if param_count == 2:
+        qlayer.pack(layer, scale)
+    else:
+        qlayer.pack(layer, scale, zero, None)
+    qlayer.to(device)
 
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
@@ -118,11 +122,8 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
     model = kwargs["model"]
-    supported_types = kwargs["supported_types"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
-    to_quant_block_names = kwargs["to_quant_block_names"]
     quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
-    logger.info("Saving quantized model to autogptq format, this may take a while...")
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     if tokenizer is not None:
@@ -138,21 +139,20 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         logger.error(f"auto-gptq format may not support loading this quantized model")
         quantization_config['block_name_to_quantize'] = common_prefix
         quantization_config.pop("to_quant_block_names", None)
-        
+
+    ## as layers maybe already packed, we need to check in layer_config
+    layer_config = kwargs["layer_config"]
+    for n,m in model.named_modules():
+        m.tmp_name=n
 
     all_to_quantized = True
     modules_in_block_to_quantize = []
     for block_names in all_blocks:
         first_block = get_module(model, block_names[0])
         for n, m in first_block.named_modules():
-            is_supported_type = False
-            for supported_type in supported_types:
-                if isinstance(m, supported_type):
-                    is_supported_type = True
-                    break
-            if not is_supported_type:
+            if m.tmp_name not in layer_config.keys():
                 continue
-            if not check_to_quantized(m):
+            if not check_to_quantized(layer_config[m.tmp_name]):
                 all_to_quantized = False
             else:
                 modules_in_block_to_quantize.append(n)
@@ -160,15 +160,25 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     if all_to_quantized:
         modules_in_block_to_quantize = None
 
+    for n, m in model.named_modules():
+        delattr(m,"tmp_name")
+
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
 
     layer_config = kwargs["layer_config"]
     names = list(layer_config.keys())
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    max_workers = 1
+    if not torch.cuda.is_available():
+        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
-                pack_layer(name, model, layer_config, backend, pbar)
+                pbar.set_description(f"packing {name}")
+                with tctl.threadpool_limits(limits=1):
+                    pack_layer(name, model, backend)
+                pbar.update(1)
 
             for _ in executor.map(wrapper, names):
                 pass
@@ -184,11 +194,14 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
-    save(model, output_dir, safe_serialization=safe_serialization)
+
+    dtype = torch.float16  ##force dtype to fp16
+    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
     return model
 
 
-def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True):
+def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True,
+         dtype=None):
     """Save model state dict and configs.
 
     Args:
@@ -211,10 +224,15 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     ##max_shard_size = "10000GB"  ## API of auto-gptq with marlin does not support shard size
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    config_path = os.path.join(save_dir, "config.json")
+    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
+        with open(config_path, 'r') as file:
+            data = json.load(file)
+        data["torch_dtype"] = str(dtype).split(".")[-1]
+        with open(config_path, 'w') as file:
+            json.dump(data, file, indent=2)
+
     config_file = "quantize_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-
-

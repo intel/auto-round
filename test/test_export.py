@@ -36,10 +36,6 @@ class TestAutoRound(unittest.TestCase):
     def test_autogptq_format(self):
         if not torch.cuda.is_available():
             return
-        try:
-            import auto_gptq
-        except:
-            return
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,
@@ -122,19 +118,15 @@ class TestAutoRound(unittest.TestCase):
         quantization_config = AutoRoundConfig(
             backend=device
         )
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device, quantization_config=quantization_config)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device,
+                                                     quantization_config=quantization_config)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
-
     def test_autoround_awq_format(self):
-        try:
-            import awq
-        except:
-            return
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,
@@ -151,8 +143,12 @@ class TestAutoRound(unittest.TestCase):
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:awq")
 
-        from auto_round.auto_quantizer import AutoHfQuantizer
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
+        from auto_round import AutoRoundConfig
+        quantization_config = AutoRoundConfig(
+            backend="cpu"
+        )
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu",
+                                                     quantization_config=quantization_config)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -160,10 +156,6 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoawq_format(self):
-        try:
-            import awq
-        except:
-            return
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
             self.model,
@@ -179,9 +171,11 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, \
-            format="auto_awq", model_path="facebook/opt-125m")
-
-        from auto_round.auto_quantizer import AutoHfQuantizer
+                                 format="auto_awq", model_path="facebook/opt-125m")
+        try:
+            import awq
+        except:
+            return
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"

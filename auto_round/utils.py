@@ -19,9 +19,7 @@ import sys
 import subprocess
 from collections import UserDict
 import re
-# for cpu usage
 import cpuinfo
-import numpy as np
 import psutil
 import torch
 from torch.amp import autocast
@@ -30,6 +28,18 @@ from functools import lru_cache
 from packaging import version
 import gc
 from .special_model_handler import shareable_keywords, SPECIAL_MULTIMODAL_BLOCK
+import transformers
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+
+supported_formats = (
+    "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
+    "itrex", "itrex_xpu", "fake"
+)
+
+
+supported_formats = supported_formats + tuple(GGUF_CONFIG.keys())
+
+supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D)
 
 
 @lru_cache(None)
@@ -519,11 +529,11 @@ def check_to_quantized(config):
     """
     if isinstance(config, dict):
 
-        if int(config["bits"]) > 8:
+        if int(config["bits"]) > 8 and int(config["act_bits"] > 8):
             return False
         return True
     else:
-        if int(config.bits) > 8:
+        if int(config.bits) > 8 and int(config.act_bits) > 8:
             return False
         return True
 
@@ -579,14 +589,16 @@ def detect_device(device=None):
     if device is None or device == "auto":
         if torch.cuda.is_available():
             device = torch.device("cuda")
-            logger.info("Using GPU device")
+            # logger.info("Using GPU device")
         elif is_optimum_habana_available():  # pragma: no cover
             device = torch.device("hpu")
-            logger.info("Using HPU device")
+            # logger.info("Using HPU device")
+        elif torch.xpu.is_available():  # pragma: no cover
+            device = torch.device("xpu")
         # Use CPU as a fallback
         else:
             device = torch.device("cpu")
-            logger.info("Using CPU device")
+            # logger.info("Using CPU device")
         if dev_idx is not None and str(device) != "cpu":
             device = str(device) + f":{dev_idx}"
         return str(device)
@@ -800,8 +812,8 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     return False, seqlen, bs
 
 
-def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D], quant_block_list=None):
+def get_layer_names_in_block(model, supported_types=(torch.nn.Linear,
+                                                     transformers.modeling_utils.Conv1D), quant_block_list=None):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -809,7 +821,7 @@ def get_layer_names_in_block(model, supported_types=[torch.nn.Linear,
               within a block of the model.
     """
     for n, m in model.named_modules():
-        if isinstance(m, tuple(supported_types)):
+        if isinstance(m, supported_types):
             m.tmp_name = n
     layers_in_block = []
     if bool(quant_block_list):
@@ -948,6 +960,9 @@ def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
 
 
 def _clear_memory_for_cpu_and_cuda(tensor=None):
+    if isinstance(tensor, list):
+        for i in range(len(tensor)):
+            tensor[i] = None
     if tensor is not None:
         del tensor
     gc.collect()
@@ -985,16 +1000,6 @@ TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 # 2. Lazy Mode (By default)
 
 
-def _check_hpu_compile_mode():
-    assert (
-            os.getenv("PT_HPU_LAZY_MODE") == "0"
-    ), "Please set `PT_HPU_LAZY_MODE=0` to use HPU compile mode"
-    # Note: this is a temporary solution, will be removed in the future
-    assert (
-            os.getenv("PT_ENABLE_INT64_SUPPORT") == "1"
-    ), "Please set `PT_ENABLE_INT64_SUPPORT=1` to use HPU compile mode"
-
-
 def is_hpu_lazy_mode():
     return os.getenv("PT_HPU_LAZY_MODE") != "0"
 
@@ -1005,23 +1010,19 @@ def _use_hpu_compile_mode():
 
 def compile_func_on_hpu(func):
     if _use_hpu_compile_mode():
-        _check_hpu_compile_mode()
         return torch.compile(func, backend="hpu_backend")
     return func
 
 
-def compile_func_on_cuda_or_cpu(func, enable_torch_compile):
-    if enable_torch_compile or (TORCH_VERSION_AT_LEAST_2_6_PRE_RELEASE and enable_torch_compile != False):
-        return torch.compile(func)
-    else:
-        return func
+def compile_func_on_cuda_or_cpu(func):
+    return torch.compile(func)
 
 
-def compile_func(fun, device, enable_torch_compile):
+def compile_func(fun, device):
     if "hpu" in str(device):
         return compile_func_on_hpu(fun)  ## use auto by default
     else:
-        return compile_func_on_cuda_or_cpu(fun, enable_torch_compile)
+        return compile_func_on_cuda_or_cpu(fun)
 
 
 def is_numba_available():  # pragma: no cover
@@ -1160,3 +1161,51 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
             return False, f"Layer {layer_name} out_features is not multiple of 32 // bits"
 
     return True, ""
+
+
+def get_device_and_parallelism(device):
+    from auto_round.utils import detect_device
+    devices = device.replace(" ", "").split(',')
+    if all(s.isdigit() for s in devices) and len(devices) > 1 and torch.cuda.is_available():
+        device = "cuda"
+        parallelism = True
+    elif all(s.isdigit() for s in devices) and len(devices) > 1 and torch.xpu.is_available():
+        device = "xpu"
+        parallelism = False
+    # pragma: no cover
+    elif device == "auto":
+        device = detect_device(device)
+        parallelism = True
+    else:
+        device = detect_device(device)
+        parallelism = False
+    return device, parallelism
+
+
+def set_cuda_visible_devices(device):
+    devices = device.replace(" ", "").split(',')
+    if all(s.isdigit() for s in devices):
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
+            current_visible_devices = current_visible_devices.split(',')
+            indices = [int(device) for device in devices]
+            try:
+                pick_device = [current_visible_devices[i] for i in indices]
+            except:
+                raise ValueError(
+                    "Invalid '--device' value: It must be smaller than the number of available devices."
+                    " For example, with CUDA_VISIBLE_DEVICES=4,5, "
+                    "--device 0,1 is valid, but --device 4,5 is not supported.")
+            visible_devices = ','.join(pick_device)
+            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = device
+
+
+def is_debug_mode():
+    """Checks if the Python interpreter is running in debug mode.
+
+    Returns:
+        bool: True if debugging is enabled, False otherwise.
+    """
+    return sys.gettrace() is not None or sys.flags.debug == 1

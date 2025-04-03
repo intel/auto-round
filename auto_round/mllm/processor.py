@@ -20,7 +20,7 @@ from .utils import fetch_image
 PROCESSORS = {}
 
 
-def regist_processor(name):
+def register_processor(name):
     def register(processor):
         PROCESSORS[name] = processor
         return processor
@@ -28,11 +28,11 @@ def regist_processor(name):
     return register
 
 
-@regist_processor("basic")
+@register_processor("basic")
 class BasicProcessor:
     def __init__(self):
         pass
-    
+
     def post_init(self, model, tokenizer, processor=None, image_processor=None, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
@@ -111,12 +111,13 @@ class BasicProcessor:
         return ret
 
 
-@regist_processor("hf")
+@register_processor("hf")
 class HFProcessor(BasicProcessor):
+    # evaluation on: Qwen2-VL, mllama, Mistral-Small
     IMAGE_TOKEN = '<image>'
     def __init__(self):
         pass
-    
+
     def post_init(self, model, tokenizer, processor=None, image_processor=None, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
@@ -139,24 +140,33 @@ class HFProcessor(BasicProcessor):
 
         messages = []
         for content in text:
-            messages.append({
-                "role": content['role'],
-                "content": [
-                    {"text": content["content"].replace(self.IMAGE_TOKEN, ""), "type": "text"}
-                ]
-            })
-            if self.IMAGE_TOKEN in content['content']:
-                messages[-1]["content"].append({"text": None, "type": "image"})
-        text = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+            if content["role"] == "user":
+                messages.append({
+                    "role": content['role'],
+                    "content": [
+                        {"text": content["content"].replace(self.IMAGE_TOKEN, ""), "type": "text"}
+                    ]
+                })
+                if self.IMAGE_TOKEN in content['content']:
+                    # messages[-1]["content"].append({"text": None, "type": "image"})
+                    messages[-1]["content"].append({"type": "image"})
+            else:
+                messages.append({
+                    "role": content['role'],
+                    "content": content["content"]
+                })
+
+        text = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, return_dict=False)
         if images is not None:
             images = self.image_processor(images)
-        ret = self.processor(text=text, images=images, return_tensors="pt") 
+        ret = self.processor(
+            text=text, images=images, return_tensors="pt", add_special_tokens=False)
         if squeeze:
             ret = self.squeeze_result(ret)
         return ret
-                
 
-@regist_processor("qwen2_vl")
+
+@register_processor("qwen2_vl")
 class Qwen2VLProcessor(HFProcessor):
     @staticmethod
     def squeeze_result(ret):
@@ -167,7 +177,7 @@ class Qwen2VLProcessor(HFProcessor):
         return ret
 
 
-@regist_processor("cogvlm2")
+@register_processor("cogvlm2")
 class CogVLM2Processor(BasicProcessor):
     def get_input(
             self, text, images, truncation=False,
@@ -175,7 +185,7 @@ class CogVLM2Processor(BasicProcessor):
 
         if images is not None:
             images = self.image_processor(images)
-        
+
         padding_len = 2303
         max_length = 0 if max_length is None else max_length
         max_length += padding_len
@@ -250,7 +260,7 @@ from ..utils import LazyImport
 llava_train = LazyImport("llava.train.train")
 
 
-@regist_processor("llava")
+@register_processor("llava")
 class LlavaProcessor(BasicProcessor):
     def post_init(self, model, tokenizer, image_processor=None, **kwargs):
         self.model = model
@@ -292,12 +302,45 @@ class LlavaProcessor(BasicProcessor):
         return self.collator_func(batch)
 
 
-@regist_processor("deepseek_vl_v2")
-class DeepseekVL2Processor(BasicProcessor):
+@register_processor("deepseek_v2")
+class DeepSeekV2Processor(BasicProcessor):
+    IMAGE_TOKEN = '<image>'
     def get_input(
-        self, 
-        text,
-        images,
-        return_tensors="pt",
-        squeeze=True, max_length=None, truncation=False, truncation_strategy="text", **kwargs):
-        breakpoint()
+            self, text, images, max_length=None,
+            squeeze=True, truncation=False, truncation_strategy="text", **kwargs):
+        
+        messages = []
+        for content in text:
+            if content["role"] == "user":
+                messages.append({
+                    "role": content['role'],
+                    "content": content["content"].replace(self.IMAGE_TOKEN, "")
+                })
+                if self.IMAGE_TOKEN in content['content']:
+                    messages[-1]["images"] = [images]
+            else:
+                messages.append({
+                    "role": content['role'],
+                    "content": content["content"]
+                })
+
+        if images is not None:
+            pil_image = [self.image_processor(images)]
+        else:
+            pil_image = None
+
+        prepare_inputs = self.processor(
+            conversations=messages,
+            images=pil_image,
+            force_batchify=True,
+            system_prompt=""
+        ).to(self.model.device)
+        prepare_inputs = prepare_inputs.to(self.model.device)
+
+        # run image encoder to get the image embeddings
+        ret = self.model.prepare_inputs_embeds(**prepare_inputs)
+        ret = {
+            "inputs_embeds": ret[0],
+            "attention_mask": prepare_inputs.attention_mask[0],
+        }
+        return ret

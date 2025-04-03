@@ -112,7 +112,7 @@ class AutoRoundMLLM(AutoRound):
         act_dynamic (bool): Whether to use dynamic activation quantization. Default is True.
         to_quant_block_names (str|list): A string or list whose elements are list of 
                             block's layer names to be quantized.
-        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True
+        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer
         **kwargs: Additional keyword arguments.
 
 
@@ -160,7 +160,7 @@ class AutoRoundMLLM(AutoRound):
             to_quant_block_names: Union[str, list] = None,
             enable_norm_bias_tuning: bool = False,
             truncation: bool = None,
-            enable_torch_compile: bool = None,
+            enable_torch_compile: bool = False,
             **kwargs,
     ):
         all_blocks = get_multimodal_block_names(model, quant_nontext_module)
@@ -350,7 +350,10 @@ class AutoRoundMLLM(AutoRound):
                         data_new[key] = to_device(data[key], self.model.device)
                         if key in ['images', 'pixel_values']:
                             data_new[key] = to_dtype(data_new[key], self.model.dtype)
-                    input_ids = data_new["input_ids"]
+                    if "input_ids" in data_new:
+                        input_ids = data_new["input_ids"]
+                    else:
+                        input_ids = data_new["inputs_embeds"]
 
                 if input_ids.shape[-1] < self.seqlen:
                     pbar.update(1)
@@ -414,3 +417,4 @@ class AutoRoundMLLM(AutoRound):
         compressed_model = super().save_quantized(
             output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs)
         return compressed_model
+
