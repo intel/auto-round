@@ -16,7 +16,6 @@ import functools
 from dataclasses import dataclass, field
 from typing import List, Any, Optional
 
-
 from transformers.utils.versions import require_version
 
 from auto_round.utils import get_library_version, logger
@@ -137,31 +136,30 @@ BackendInfos['gptqmodel:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, Fal
                                                  packing_format="triton_zp",
                                                  bits=[2, 4, 8], group_size=[-1, 16, 32, 64, 128],
                                                  priority=2, feature_checks=[in_output_feature_multiply_checker_32],
-                                                 requirements=[ "triton<3.0,>=2.0"]
+                                                 requirements=["triton<3.0,>=2.0"]
                                                  )
 
 BackendInfos['gptqmodel:tritonv2_zp'] = BackendInfo(device=["cuda"], sym=[False],
-                                                 packing_format="triton_zp+-1",
-                                                 bits=[2, 4, 8], group_size=[-1, 16, 32, 64, 128],
-                                                 priority=2, feature_checks=[in_output_feature_multiply_checker_32],
-                                                 requirements=[ "triton<3.0,>=2.0"]
-                                                 )
-
+                                                    packing_format="triton_zp+-1",
+                                                    bits=[2, 4, 8], group_size=[-1, 16, 32, 64, 128],
+                                                    priority=2, feature_checks=[in_output_feature_multiply_checker_32],
+                                                    requirements=["triton<3.0,>=2.0"]
+                                                    )
 
 BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
-                                                 packing_format="triton_zp",
-                                                 bits=[4, 8], group_size=[-1, 32, 64, 128],
-                                                 priority=6, feature_checks=[in_output_feature_multiply_checker_32],
-                                                 alias=["marlin"],
-                                                 requirements=["gptqmodel>=2.0"]
-                                                 )
+                                               packing_format="triton_zp",
+                                               bits=[4, 8], group_size=[-1, 32, 64, 128],
+                                               priority=6, feature_checks=[in_output_feature_multiply_checker_32],
+                                               alias=["marlin"],
+                                               requirements=["gptqmodel>=2.0"]
+                                               )
 BackendInfos['gptqmodel:marlin_zp+-1'] = BackendInfo(device=["cuda"], sym=[True],
-                                                 packing_format="triton_zp+-1",
-                                                 bits=[4, 8], group_size=[-1, 32, 64, 128],
-                                                 priority=6, feature_checks=[in_output_feature_multiply_checker_32],
-                                                 alias=["marlin"],
-                                                 requirements=["gptqmodel>=2.0"]
-                                                 )
+                                                     packing_format="triton_zp+-1",
+                                                     bits=[4, 8], group_size=[-1, 32, 64, 128],
+                                                     priority=6, feature_checks=[in_output_feature_multiply_checker_32],
+                                                     alias=["marlin"],
+                                                     requirements=["gptqmodel>=2.0"]
+                                                     )
 
 BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
                                         packing_format="triton_zp+-1",
@@ -371,7 +369,6 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         from auto_round_extension.ipex.qlinear_ipex_awq import QuantLinear
         return QuantLinear
 
-
     if "hpu" in backend:
         try:
             import habana_frameworks.torch.hpu  # pylint: disable=E0401
@@ -385,7 +382,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
             from auto_round_extension.hpu.qlinear_hpu import QuantLinear
             return QuantLinear
     if "gptqmodel" in backend:
-        return get_gptqmodel_infer_linear(backend,bits,group_size,sym)
+        return get_gptqmodel_infer_linear(backend, bits, group_size, sym)
 
     if "gptq" in backend and "gptqmodel" not in backend:
         return get_autogptq_infer_linear(backend, bits, group_size, sym)
@@ -407,14 +404,15 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
             return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
 
 
-def  get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
-    import gptqmodel
+def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
+    import gptqmodel  # pylint: disable=E0401
     if "marlin" in backend:
         return gptqmodel.nn_modules.qlinear.marlin.MarlinQuantLinear
     elif "tritonv2" in backend:
-        return  gptqmodel.nn_modules.qlinear.tritonv2.TritonV2QuantLinear
+        return gptqmodel.nn_modules.qlinear.tritonv2.TritonV2QuantLinear
     else:
         raise ValueError(f"Unsupported {backend}")
+
 
 def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     """Returns the appropriate QuantLinear class based on backend configuration.
@@ -573,15 +571,9 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
 
     packing_format = BackendInfos[orig_backend].packing_format
 
-    # # Check if the provided backend supports the layer configuration
-    # if check_compatible(backend, device, bits, group_size, sym, packing_format, in_features, out_features):
-    #     return backend
-
     # Find and store other compatible backends
     supported_backends = []
     for key in BackendInfos.keys():
-        # if key == backend:
-        #     continue
         if check_compatible(key, device, bits, group_size, sym, packing_format, in_features, out_features):
             supported_backends.append(key)
 

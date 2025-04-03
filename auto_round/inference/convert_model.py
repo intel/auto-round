@@ -182,7 +182,8 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         dict: Flags indicating which backends were used.
     """
 
-    backend_flags = {"used_autogptq": False, "used_gptqmodel":False, "used_autoawq": False, "used_qbits": False, "used_ipex": False}
+    backend_flags = {"used_autogptq": False, "used_gptqmodel": False, "used_autoawq": False, "used_qbits": False,
+                     "used_ipex": False}
     must_use_target_backend = False
     if target_backend:
         must_use_target_backend = True
@@ -292,7 +293,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
     elif "awq" in layer_backend:
         return QuantLinear.from_linear(layer, config["bits"], config["group_size"], init_only=True)
     elif "gptqmodel:marlin" in layer_backend:
-        return QuantLinear(config["bits"], config["group_size"], False,config["sym"], in_features, out_features, bias)
+        return QuantLinear(config["bits"], config["group_size"], False, config["sym"], in_features, out_features, bias)
     # Default quantized layer creation
     try:
         return QuantLinear(config["bits"], config["group_size"], in_features, out_features, bias,
@@ -339,8 +340,6 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         ValueError:
             If the quantization backend is not specified in the configuration.
     """
-    import time
-    start_time = time.time()
 
     quantization_config = model.config.quantization_config
     if not hasattr(quantization_config, "target_backend"):
@@ -371,7 +370,4 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     if target_backend.startswith("auto_round:"):
         target_backend = target_backend[len("auto_round:"):]
     used_backend_info = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
-    end_time = time.time()
-    logger.warning(end_time - start_time)
-
     return model, used_backend_info
