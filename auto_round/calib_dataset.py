@@ -16,7 +16,7 @@ import json
 import random
 
 import torch
-from datasets import IterableDataset
+from datasets import IterableDataset, Dataset
 from torch.utils.data import DataLoader
 import sys
 from .utils import is_local_path, logger
@@ -43,23 +43,41 @@ def register_dataset(name):
     return register
 
 
-def apply_chat_template_to_samples(samples, tokenizer, seqlen):
-    from jinja2 import Template
-    chat_template = tokenizer.chat_template if tokenizer.chat_template is not None \
-        else tokenizer.default_chat_template
-    template = Template(chat_template)
+def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=None):
     rendered_messages = []
+    if system_prompt is None:
+        system_prompt = "You are a helpful assistant."
     for text in samples:
-        message = [{"role": "system", "content": "You are a helpful assistant."},
-                   {"role": "user", "content": text}]
-        rendered_message = template.render(messages=message, add_generation_prompt=True, \
-                                           bos_token=tokenizer.bos_token)
-        rendered_messages.append(rendered_message)
+        if system_prompt == "":
+            message = [{"role": "user", "content": text}]
+        else:
+            message = [{"role": "system", "content": system_prompt},
+                       {"role": "user", "content": text}]
+        try:
+            chat_templated = tokenizer.apply_chat_template(
+                message,
+                tokenize=False,
+                add_generation_prompt=True,
+
+            )
+        except:
+            logger.warning(
+                "Failed to apply chat template. removing the system role in chat history."
+            )
+            message_modified = [msg for msg in message if msg["role"] != "system"]
+            chat_templated = tokenizer.apply_chat_template(
+                message_modified,
+                tokenize=False,
+                add_generation_prompt=True,
+
+            )
+
+        rendered_messages.append(chat_templated)
     example = tokenizer(rendered_messages, truncation=True, max_length=seqlen)
     return example
 
 
-def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False):
+def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False, system_prompt=None):
     """Returns a default tokenizer function.
 
     Args:
@@ -71,11 +89,11 @@ def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False):
     seqlen to the "text" field of examples.
     """
 
-    def default_tokenizer_function(examples, apply_chat_template=apply_chat_template):
+    def default_tokenizer_function(examples):
         if not apply_chat_template:
             example = tokenizer(examples["text"], truncation=True, max_length=seqlen)
         else:
-            example = apply_chat_template_to_samples(examples["text"], tokenizer, seqlen)
+            example = apply_chat_template_to_samples(examples["text"], tokenizer, seqlen, system_prompt)
         return example
 
     return default_tokenizer_function
@@ -83,7 +101,7 @@ def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False):
 
 @register_dataset("NeelNanda/pile-10k")
 def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42,
-                     apply_chat_template=False):
+                     apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -101,13 +119,20 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
 
     split = "train"
 
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template,
+                                                system_prompt=system_prompt)
     try:
         calib_dataset = load_dataset(dataset_name, split=split)
     except Exception as e:
-        logger.error(f"Failed to load the dataset: {e}." \
-                     "Consider using a backup dataset by `pip install modelscope`" \
-                     " and set '--dataset swift/pile-val-backup' in AutoRound API.")
+        import ssl
+        error_message = str(e)
+        # Check for proxy or SSL error
+        if "proxy" in error_message.lower() or isinstance(e, ssl.SSLError) or "SSL" in error_message.upper():
+            logger.error(f"Network error detected, please checking proxy settings." \
+                         "Error: {error_message}. Or consider using a backup dataset by `pip install modelscope`" \
+                         " and set '--dataset swift/pile-val-backup' in AutoRound API.")
+        else:
+            logger.error(f"Failed to load the dataset: {error_message}")
         sys.exit(1)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
@@ -117,7 +142,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
 
 @register_dataset("swift/pile-val-backup")
 def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup", split=None, seed=42,
-                         apply_chat_template=False):
+                         apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -131,11 +156,11 @@ def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup"
     Returns:
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
     """
-    from datasets import load_dataset
 
     split = "validation"
 
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template,
+                                                system_prompt=system_prompt)
     from transformers.utils.versions import require_version
     require_version("modelscope", "Loading 'swift/pile-val-backup' dataset requires modelscope to be installed, " \
                                   "`pip install modelscope`")
@@ -150,7 +175,8 @@ def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup"
 
 
 @register_dataset("BAAI/CCI3-HQ")
-def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_chat_template=False):
+def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_chat_template=False,
+                        system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -166,7 +192,8 @@ def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=No
     """
     from datasets import load_dataset
 
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template,
+                                                system_prompt=system_prompt)
 
     calib_dataset = load_dataset(dataset_name, split='train', streaming=True)
     calib_dataset = calib_dataset.take(10000)
@@ -178,7 +205,7 @@ def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=No
 
 @register_dataset("codeparrot/github-code-clean")
 def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/github-code-clean", split=None, seed=42,
-                                  apply_chat_template=False):
+                                  apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -193,7 +220,7 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
     A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
     """
 
-    def get_default_tokenizer_function(tokenizer, seqlen, apply_chat_template=False):
+    def get_default_tokenizer_function():
         """Returns a default tokenizer function.
 
         Args:
@@ -205,18 +232,19 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
          of seqlen to the "code" field of examples.
         """
 
-        def default_tokenizer_function(examples, apply_chat_template=apply_chat_template):
+        def default_tokenizer_function(examples):
             if not apply_chat_template:
                 example = tokenizer(examples["code"], truncation=True, max_length=seqlen)
             else:
-                example = apply_chat_template_to_samples(examples["code"], tokenizer, seqlen)
+                example = apply_chat_template_to_samples(examples["code"], tokenizer, seqlen,
+                                                         system_prompt=system_prompt)
             return example
 
         return default_tokenizer_function
 
     from datasets import load_dataset
 
-    tokenizer_function = get_default_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
+    tokenizer_function = get_default_tokenizer_function()
 
     calib_dataset = load_dataset(dataset_name, split='train', streaming=True)
     calib_dataset = calib_dataset.take(10000)
@@ -233,7 +261,8 @@ def get_new_chinese_title_dataset(
         dataset_name="madao33/new-title-chinese",
         split=None,
         seed=42,
-        apply_chat_template=False
+        apply_chat_template=False,
+        system_prompt=None
 ):
     """
     Returns a tokenized dataset for the specified parameters.
@@ -250,7 +279,7 @@ def get_new_chinese_title_dataset(
         A tokenized and shuffled dataset.
     """
 
-    def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template):
+    def get_tokenizer_function():
         """Returns a default tokenizer function.
 
         Args:
@@ -262,11 +291,12 @@ def get_new_chinese_title_dataset(
         of seqlen to the "text" field of examples.
         """
 
-        def default_tokenizer_function(examples, apply_chat_template=apply_chat_template):
+        def default_tokenizer_function(examples):
             if not apply_chat_template:
                 example = tokenizer(examples["content"], truncation=True, max_length=seqlen)
             else:
-                example = apply_chat_template_to_samples(examples["content"], tokenizer, seqlen)
+                example = apply_chat_template_to_samples(examples["content"], tokenizer, seqlen,
+                                                         system_prompt=system_prompt)
             return example
 
         return default_tokenizer_function
@@ -274,7 +304,7 @@ def get_new_chinese_title_dataset(
     split = "train"
     from datasets import load_dataset
 
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
+    tokenizer_function = get_tokenizer_function()
 
     calib_dataset = load_dataset(dataset_name, split=split)
     calib_dataset = calib_dataset.shuffle(seed=seed)
@@ -284,7 +314,8 @@ def get_new_chinese_title_dataset(
 
 
 @register_dataset("mbpp")
-def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42, apply_chat_template=False):
+def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42, apply_chat_template=False,
+                     system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
 
     Args:
@@ -300,7 +331,8 @@ def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42
     """
     from datasets import load_dataset
 
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template,
+                                                system_prompt=system_prompt)
 
     samples = []
     splits = split
@@ -323,7 +355,8 @@ def get_mbpp_dataset(tokenizer, seqlen, dataset_name="mbpp", split=None, seed=42
 
 
 @register_dataset("local")
-def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, apply_chat_template=False):
+def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, seed=42, apply_chat_template=False,
+                      system_prompt=None):
     """Returns a dataloader for a custom dataset and split.
     We allow the input of a json or text file containing a processed text sample each line.
 
@@ -338,7 +371,8 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
     Returns:
     A dataloader for a custom dataset and split, using the provided tokenizer and sequence length.
     """
-    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template,
+                                                system_prompt=system_prompt)
 
     def load_local_data(data_path):
         if data_path.endswith(".json"):
@@ -443,7 +477,11 @@ def select_dataset(dataset, indices):
     try:
         return dataset.select(indices)
     except:
-        return select(dataset, indices)
+        list_data = list(select(dataset, indices))
+        import pandas as pd
+        df = pd.DataFrame(list_data)
+        dataset = Dataset.from_pandas(df)
+        return dataset
 
 
 def get_dataloader(
@@ -529,12 +567,13 @@ def get_dataloader(
         return dataset_new
 
     datasets, data_lens = [], {}
+    system_prompt = "You are a helpful assistant."
     for name in dataset_names:
         split = None
         do_concat = False
         apply_chat_template = False
+
         if ":" in name:
-            split_list = name.split(":")
             name, split_list = name.split(":")[0], name.split(":")[1:]
             for ele in split_list:
                 key, values = ele.split('=')[0], ele.split('=')[1:]
@@ -546,6 +585,9 @@ def get_dataloader(
                     do_concat = False if (len(values) > 0 and values[0].lower() == 'false') else True
                 if key == "apply_chat_template":
                     apply_chat_template = False if (len(values) > 0 and values[0].lower() == 'false') else True
+                if key == "system_prompt":
+                    system_prompt = values[0]
+                    apply_chat_template = True
         if is_local_path(name):
             get_dataset = CALIB_DATASETS.get("local")
         else:
@@ -564,6 +606,7 @@ def get_dataloader(
             split=split,
             dataset_name=name,
             apply_chat_template=apply_chat_template,
+            system_prompt=system_prompt
         )
         if not isinstance(dataset, IterableDataset):
             dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
@@ -640,4 +683,3 @@ def get_dataloader(
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
-
