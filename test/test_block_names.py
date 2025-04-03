@@ -1,4 +1,3 @@
-import copy
 import shutil
 import sys
 import unittest
@@ -172,8 +171,7 @@ class TestQuantizationBlocks(unittest.TestCase):
             return
         quantized_model_path = "./saved"
         autoround.save_quantized(quantized_model_path, inplace=False, safe_serialization=False, format="auto_round")
-        
-        from auto_round.auto_quantizer import AutoHfQuantizer
+
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"

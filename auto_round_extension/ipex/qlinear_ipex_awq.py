@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class QuantLinear(nn.Module):
-
+    QUANT_TYPE = "ipex_awq"
     def __init__(self, w_bit, group_size, in_features, out_features, bias, dev):
         super().__init__()
         assert w_bit == 4, "Only 4 bit are supported for now."

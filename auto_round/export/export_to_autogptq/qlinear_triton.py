@@ -108,6 +108,8 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         device = "cpu"
         if torch.cuda.is_available():
             device = "cuda:0"
+        elif torch.xpu.is_available():
+            device = "xpu:0"
 
         W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):

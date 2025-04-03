@@ -12,12 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
-import random
-import time
-from typing import TYPE_CHECKING, List, Optional, Union
+from typing import Optional, Union
 
-import lm_eval
 from lm_eval import simple_evaluate as lm_simple_evaluate
 import os
 
@@ -52,7 +48,7 @@ def simple_evaluate(
     try:
         from auto_round import AutoRoundConfig
     except:
-        from auto_round.auto_quantizer import AutoHfQuantizer
+        from auto_round.inference.auto_quantizer import AutoHfQuantizer
 
     return lm_simple_evaluate(
         model=model,

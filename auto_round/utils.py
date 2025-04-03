@@ -523,14 +523,13 @@ def check_to_quantized(config):
             False otherwise.
     """
     if isinstance(config, dict):
-
-        if int(config["bits"]) > 8 and int(config["act_bits"] > 8):
-            return False
-        return True
+        bits = int(config.get("bits",4))
+        act_bits = int(config.get("act_bits", 16))
     else:
-        if int(config.bits) > 8 and int(config.act_bits) > 8:
-            return False
-        return True
+        bits = int(config.bits) if hasattr(config,"bits") else 4
+        act_bits = int(config.act_bits) if hasattr(config,"act_bits") else 16
+
+    return bits <= 8 or act_bits <= 8
 
 
 def detect_device_count():
