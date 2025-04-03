@@ -137,7 +137,7 @@ BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
                                         packing_format="triton_zp+-1",
                                         bits=[2, 3, 4, 8], group_size=None,
                                         priority=1, feature_checks=[feature_multiply_checker_32],
-                                        alias=["auto_round:auto_gptq:cuda","auto_gptq:cuda","auto_round:gptq:cuda"],
+                                        alias=["auto_round:auto_gptq:cuda", "auto_gptq:cuda", "auto_round:gptq:cuda"],
                                         convertable_format=["triton_zp+-1"],
                                         requirements=["auto-gptq>=0.7.1"]
                                         )
@@ -169,31 +169,31 @@ BackendInfos['auto_round:qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, Fal
                                                   )
 
 BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True],
-                                                  packing_format="awq",
-                                                  bits=[2, 4, 8], group_size=None,
-                                                  priority=0 if "intel" in get_cpu_manufacturer() else 5,
-                                                  feature_checks=[],
-                                                  requirements=["intel-extension-for-transformers"]
-                                                  )
+                                                   packing_format="awq",
+                                                   bits=[2, 4, 8], group_size=None,
+                                                   priority=0 if "intel" in get_cpu_manufacturer() else 5,
+                                                   feature_checks=[],
+                                                   requirements=["intel-extension-for-transformers"]
+                                                   )
 
-BackendInfos['auto_round:ipex_gptq'] = BackendInfo(device=["cpu"], sym=[True, False],
+BackendInfos['auto_round:ipex_gptq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
                                                    packing_format="ipex_gptq",
                                                    bits=[4], group_size=None,
                                                    priority=5 if "intel" in get_cpu_manufacturer() else 5,
                                                    feature_checks=[],
                                                    convertable_format=["triton_zp+-1"],
-                                                   requirements=["intel-extension-for-pytorch>=2.4"]
+                                                   requirements=["intel-extension-for-pytorch>=2.5"]
                                                    )
 
-BackendInfos['auto_round:ipex_awq'] = BackendInfo(device=["cpu"], sym=[True, False],
-                                                  packing_format="ipex_awq",
-                                                  bits=[4], group_size=None,
-                                                  priority=5 if "intel" in get_cpu_manufacturer() else 5,
-                                                  feature_checks=[],
-                                                  ##convertable_format=["triton_zp+-1", "awq"],
-                                                  convertable_format=["awq"],
-                                                  requirements=["intel-extension-for-pytorch>=2.4"]
-                                                  )
+BackendInfos['auto_round:ipex_awq_xpu'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
+                                                      packing_format="ipex_awq",
+                                                      bits=[4], group_size=None,
+                                                      priority=1,
+                                                      feature_checks=[],
+                                                      ##convertable_format=["triton_zp+-1", "awq"],
+                                                      convertable_format=["awq"],
+                                                      requirements=["intel-extension-for-pytorch>=2.6"]
+                                                      )
 
 # BackendInfos['auto_round:marlin'] = BackendInfo(device=["gpu"], sym=[True],
 #                                                 packing_format="marlin",
@@ -554,4 +554,3 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
                                 reverse=True)
 
     return supported_backends[0]
-
