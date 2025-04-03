@@ -178,6 +178,9 @@ class AutoRoundMLLM(AutoRound):
                 self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
             dataset = self.template.default_dataset if dataset is None else dataset
         
+        if model.config.model_type == "deepseek_vl_v2":
+           model.forward = model.language.forward
+        
         from ..calib_dataset import CALIB_DATASETS
         from .mllm_dataset import MLLM_DATASET
         if isinstance(dataset, str):
@@ -276,6 +279,7 @@ class AutoRoundMLLM(AutoRound):
                 template=self.template,
                 model=self.model,
                 tokenizer=self.tokenizer,
+                processor=self.processor,
                 image_processor=self.image_processor,
                 dataset=dataset,
                 extra_data_dir=self.extra_data_dir,
@@ -344,9 +348,12 @@ class AutoRoundMLLM(AutoRound):
                     data_new = {}
                     for key in data.keys():
                         data_new[key] = to_device(data[key], self.model.device)
-                        if key == 'images':
+                        if key in ['images', 'pixel_values']:
                             data_new[key] = to_dtype(data_new[key], self.model.dtype)
-                    input_ids = data_new["input_ids"]
+                    if "input_ids" in data_new:
+                        input_ids = data_new["input_ids"]
+                    else:
+                        input_ids = data_new["inputs_embeds"]
 
                 if input_ids.shape[-1] < self.seqlen:
                     pbar.update(1)

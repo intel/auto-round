@@ -190,6 +190,7 @@ def get_mllm_dataloader(
         template,
         model,
         tokenizer,
+        processor,
         image_processor=None,
         dataset="liuhaotian/llava_conv_58k",
         extra_data_dir=None,
@@ -222,7 +223,9 @@ def get_mllm_dataloader(
     """
     if isinstance(template, str):
         from .template import get_template
-        template = get_template(template, model=model, tokenizer=tokenizer, image_processor=image_processor)
+        template = get_template(
+            template, model=model, tokenizer=tokenizer,
+            processor=processor, image_processor=image_processor)
 
     if os.path.isfile(dataset) or dataset in MLLM_DATASET.keys():
         dataset = MLLM_DATASET['liuhaotian/llava'](
