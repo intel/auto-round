@@ -55,7 +55,7 @@ class TestGGUF(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q2_k_s")
-        gguf_file = os.listdir(quantized_model_path)[0]
+        gguf_file = "Qwen2.5-1.5B-Instruct-1.5B-Q2_K_S.gguf"
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
@@ -93,7 +93,7 @@ class TestGGUF(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q4_0")
-        gguf_file = os.listdir(quantized_model_path)[0]
+        gguf_file = "Qwen2.5-0.5B-Instruct-494M-Q4_0.gguf"
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
@@ -119,7 +119,7 @@ class TestGGUF(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q4_1")
-        gguf_file = os.listdir(quantized_model_path)[0]
+        gguf_file = "Qwen2.5-0.5B-Instruct-494M-Q4_1.gguf"
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
