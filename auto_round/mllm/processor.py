@@ -156,7 +156,8 @@ class HFProcessor(BasicProcessor):
                     "content": content["content"]
                 })
 
-        text = self.processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, return_dict=False)
+        text = self.processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False, return_dict=False)
         if images is not None:
             images = self.image_processor(images)
         ret = self.processor(
@@ -308,7 +309,7 @@ class DeepSeekV2Processor(BasicProcessor):
     def get_input(
             self, text, images, max_length=None,
             squeeze=True, truncation=False, truncation_strategy="text", **kwargs):
-        
+
         messages = []
         for content in text:
             if content["role"] == "user":
