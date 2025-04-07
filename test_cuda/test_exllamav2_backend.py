@@ -59,7 +59,6 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
     @classmethod
     def tearDownClass(self):
-        return
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
