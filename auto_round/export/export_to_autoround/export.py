@@ -71,12 +71,8 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     if "auto_round" in backend and "awq" not in backend and "gptq" not in backend:
         if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
             return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
-        ##only support triton and exllamav2
-        if not ("triton" in backend or "exllamav2" in backend):
-            logger.warning_once(f"auto_round format does not support {backend}, try to pack each layer with auto_gptq")
-            return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
 
-        from auto_round_extension.cuda.qlinear_triton import QuantLinear
+        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
         return QuantLinear
     elif "awq" in backend:
         from ..export_to_awq.utils import WQLinear_GEMM
@@ -242,11 +238,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
     if (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
         backend = backend.replace('auto_round', 'auto_round:gptq')
-
-    if not ("triton" in backend or "marlin" in backend or "exllamav2" in backend or
-            "awq" in backend or "gptq" in backend):
-        logger.info(f"AutoRound format does not support {backend}, try to pack each layer with AutoGPTQ")
-        backend = backend.replace("auto_round", "auto_gptq")
 
     model = kwargs["model"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]

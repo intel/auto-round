@@ -209,7 +209,7 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
             layer_backend = backend_cache[key]
         elif must_use_target_backend:
             layer_backend = target_backend
-            layer_backend = find_backend(layer_backend)
+            layer_backend = find_backend(layer_backend,orig_backend)
             devices = BackendInfos[layer_backend].device
             if target_device not in devices:
                 raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")

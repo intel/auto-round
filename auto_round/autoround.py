@@ -466,11 +466,6 @@ class AutoRound(object):
                     format = format.replace('auto_round', 'auto_round:gptq')
                     formats[index] = format
 
-                if not any(f in format for f in ["triton", "exllamav2", "awq", "gptq"]):
-                    logger.info(f"AutoRound format does not support {format}, attempting to use AutoGPTQ")
-                    format = format.replace("auto_round", "auto_gptq")
-                    formats[index] = format
-
         # Remove duplicates from formats list
         def remove_duplicates(lst):
             seen = set()

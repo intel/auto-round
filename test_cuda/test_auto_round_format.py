@@ -25,6 +25,7 @@ class TestAutoRound(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         self.model_name = "/models/opt-125m"
+        self.model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
 
         self.llm_dataloader = LLMDataLoader()
 
@@ -75,10 +76,9 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
 
-
-    def test_marlin(self):
+    def test_tritonv2_bf16(self):
         model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
-        quantization_config = AutoRoundConfig(backend="exllamav2")
+        quantization_config = AutoRoundConfig(backend="gptq:tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16,
@@ -90,6 +90,22 @@ class TestAutoRound(unittest.TestCase):
         self.model_infer(model,tokenizer)
 
         torch.cuda.empty_cache()
+
+    #
+    # def test_tritonv2_fp16(self):
+    #     model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
+    #     quantization_config = AutoRoundConfig(backend="tritonv2")
+    #     model = AutoModelForCausalLM.from_pretrained(
+    #         model_name,
+    #         torch_dtype=torch.float16,
+    #         device_map="auto",
+    #         quantization_config=quantization_config
+    #     )
+    #
+    #     tokenizer = AutoTokenizer.from_pretrained(model_name)
+    #     self.model_infer(model,tokenizer)
+    #
+    #     torch.cuda.empty_cache()
 
 
 

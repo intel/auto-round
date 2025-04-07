@@ -92,19 +92,59 @@ BackendInfos['gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              packing_format="triton_zp+-1",
                                              bits=[4], group_size=None,
                                              priority=5,
-                                             dtype=["float16"],
+                                             # dtype=["float16"],
                                              feature_checks=[feature_multiply_checker_32],
                                              alias=['gptq', 'auto_gptq'],
                                              requirements=["auto-gptq>=0.7.1"]
                                              )
+
 BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                             packing_format="triton_zp+-1",
                                             bits=[2, 4, 8], group_size=None,
+                                            # dtype=["float16"],
                                             priority=0, feature_checks=[feature_multiply_checker_32],
-                                            alias=["auto_gptq:tritonv2", "tritonv2"],
-                                            requirements=["auto-gptq>=0.7.1", "triton<3.0,>=2.0"]
+                                            alias=["auto_gptq:tritonv2"],
+                                            requirements=["auto-gptq>=0.7.1"]
                                             )
 
+BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
+                                        packing_format="triton_zp+-1",
+                                        bits=[2, 3, 4, 8], group_size=None,
+                                        priority=1, feature_checks=[feature_multiply_checker_32],
+                                        alias=["auto_gptq:cuda"],
+                                        convertable_format=["triton_zp+-1"],
+                                        requirements=["auto-gptq>=0.7.1"]
+                                        )
+
+# BackendInfos['gptqmodel:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False], ##triton
+#                                             packing_format="triton",
+#                                             bits=[2, 4, 8], group_size=None,
+#                                             # dtype=["float16","bfloat16"],
+#                                             priority=0, feature_checks=[feature_multiply_checker_32],
+#
+#                                             )
+
+
+BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
+                                                  packing_format="triton",
+                                                  # dtype=["float16","bfloat16"],
+                                                  bits=[2, 4, 8],
+                                                  priority=1, feature_checks=[feature_multiply_checker_32],
+                                                  alias=["auto_round:tritonv2", "tritonv2", "auto_round"],
+                                                  requirements=["auto-round>=0.2"]
+                                                  )
+
+BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda"], sym=[True],  ## asym has accuracy issue
+                                                     packing_format="triton_zp+-1",
+                                                     # dtype=["float16","bfloat16"],
+                                                     bits=[2, 4, 8],
+                                                     priority=1, feature_checks=[feature_multiply_checker_32],
+                                                     alias=["auto_round:tritonv2", "tritonv2", "auto_round:gptq",
+                                                            "auto_round:auto_gptq"],
+                                                     requirements=["auto-round>=0.5"]
+                                                     )
+
+#
 # BackendInfos['gptqmodel:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
 #                                                  packing_format="triton",
 #                                                  bits=[2, 4, 8], group_size=[-1, 16, 32, 64, 128],
@@ -121,8 +161,19 @@ BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
 
 BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
                                                packing_format="triton",
-                                               bits=[4, 8], group_size=[-1, 32, 64, 128],
-                                               dtype=["float16", "bfloat16"],
+                                               bits=[4, 8],
+                                               group_size=[-1, 32, 64, 128],
+                                               ##dtype=["float16", "bfloat16"],
+                                               priority=6, feature_checks=[in_output_feature_multiply_checker_32],
+                                               alias=["marlin", "gptqmodel"],
+                                               requirements=["gptqmodel>=2.0"]
+                                               )
+
+BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
+                                               packing_format="triton_zp",
+                                               bits=[4, 8],
+                                               group_size=[-1, 32, 64, 128],
+                                               ##dtype=["float16", "bfloat16"],
                                                priority=6, feature_checks=[in_output_feature_multiply_checker_32],
                                                alias=["marlin", "gptqmodel"],
                                                requirements=["gptqmodel>=2.0"]
@@ -145,14 +196,6 @@ BackendInfos['gptqmodel:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, Fa
 #                                                      requirements=["gptqmodel>=2.0"]
 #                                                      )
 
-BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
-                                        packing_format="triton_zp+-1",
-                                        bits=[2, 3, 4, 8], group_size=None,
-                                        priority=1, feature_checks=[feature_multiply_checker_32],
-                                        alias=["auto_gptq:cuda"],
-                                        convertable_format=["triton_zp+-1"],
-                                        requirements=["auto-gptq>=0.7.1"]
-                                        )
 
 BackendInfos['awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##actrally is gemm
                                        packing_format="awq",
@@ -274,9 +317,7 @@ def check_compatible(backend_name, device, bits, group_size, sym, packing_format
         return False
 
     # Check if the format is convertible when packing formats differ
-    if (packing_format == backend.packing_format or packing_format in backend.convertable_format or
-            (sym == True and (packing_format == backend.packing_format + "_zp+-1" or
-                              packing_format + "_zp+-1" == backend.packing_format))):
+    if packing_format == backend.packing_format or packing_format in backend.convertable_format:
         pass
     else:
         return False
@@ -375,8 +416,15 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
                 "autoawq is required. Please install it by 'pip install autoawq' to support auto_awq format.")
         return WQLinear_GEMM
 
-    import auto_round_extension.cuda.qlinear_tritonv2
-    return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
+    if backend == "auto_round:tritonv2":
+        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
+        return QuantLinear
+
+    if backend == "auto_round:tritonv2_zp":
+        from auto_round_extension.cuda.qlinear_tritonv2_zp import QuantLinear
+        return QuantLinear
+
+    raise ValueError(f"unsupported backend {backend}, please set it to `auto` and retry")
 
 
 def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
@@ -385,8 +433,8 @@ def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
         return gptqmodel.nn_modules.qlinear.marlin.MarlinQuantLinear
     elif "exllamav2" in backend:
         return gptqmodel.nn_modules.qlinear.exllamav2.ExllamaV2QuantLinear
-    # elif "tritonv2" in backend:
-    #     return gptqmodel.nn_modules.qlinear.tritonv2.TritonV2QuantLinear
+    elif "tritonv2" in backend:
+        return gptqmodel.nn_modules.qlinear.tritonv2.TritonV2QuantLinear
     else:
         raise ValueError(f"Unsupported {backend}")
 
@@ -478,7 +526,7 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     return QuantLinear
 
 
-def find_backend(target_backend: str):
+def find_backend(target_backend: str, orig_backend: str = None):
     """Finds the matching backend key based on the target backend or its alias.
 
     This function checks if the provided `target_backend` is directly present in `BackendInfos`.
@@ -497,10 +545,19 @@ def find_backend(target_backend: str):
         return target_backend
 
     # Search through BackendInfos to check if target_backend matches any backend alias
+    ress = []
     for key in BackendInfos.keys():
         backendInfo = BackendInfos[key]
         if backendInfo.alias is not None and target_backend in backendInfo.alias:
-            return key
+            ress.append(key)
+    if len(ress) == 1:
+        return ress[0]
+    elif len(ress) > 1 and orig_backend is not None:
+        backendInfo = BackendInfos[orig_backend]
+        for res in ress:
+            if backendInfo.packing_format == BackendInfos[res].packing_format or backendInfo.packing_format in \
+                    BackendInfos[res].convertable_format:
+                return res
 
     # Return None if no matching backend or alias is found
     return None
