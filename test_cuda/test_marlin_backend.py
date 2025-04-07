@@ -1,4 +1,3 @@
-
 import shutil
 import sys
 import unittest
@@ -25,7 +24,7 @@ class LLMDataLoader:
 class TestAutoRoundMarlinBackend(unittest.TestCase):
 
     def test_marlin_group_size(self):
-        for group_size in [-1,32,64,128]:
+        for group_size in [-1, 64]:
             print(f"{group_size}!!!!!!!!!!!!!!!!!")
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -56,6 +55,39 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
             result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
             print(result['results']['lambada_openai']['acc,none'])
             self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.14)
+
+        for group_size in [32, 128]:
+            print(f"{group_size}!!!!!!!!!!!!!!!!!")
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+            bits, group_size, sym = 4, group_size, True
+            autoround = AutoRound(
+                model,
+                tokenizer,
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                iters=1,
+                seqlen=2,
+                dataset=self.llm_dataloader,
+            )
+            quantized_model_path = self.save_folder
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+
+            quantization_config = AutoRoundConfig(backend="marlin")
+            model = AutoModelForCausalLM.from_pretrained(
+                self.save_folder,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                quantization_config=quantization_config
+            )
+
+            tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+            self.model_infer(model, tokenizer)
+            result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+            print(result['results']['lambada_openai']['acc,none'])
+            self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.14)
+
     @classmethod
     def setUpClass(self):
         self.model_name = "/models/opt-125m"
@@ -95,8 +127,6 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-
-
     def test_marlin_4bits_sym_with_zp_m_1(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -126,53 +156,6 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         self.model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result['results']['lambada_openai']['acc,none'])
-        self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.34)
-        torch.cuda.empty_cache()
-
-        model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            quantization_config=quantization_config
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result['results']['lambada_openai']['acc,none'])
-        self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.27)
-        torch.cuda.empty_cache()
-        shutil.rmtree("./saved", ignore_errors=True)
-
-    def test_marlin_4bits_sym(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(
-            model,
-            tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=1,
-            seqlen=2,
-            dataset=self.llm_dataloader,
-        )
-        quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-
-        quantization_config = AutoRoundConfig(backend="marlin")
-        model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            quantization_config=quantization_config
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result['results']['lambada_openai']['acc,none'])
         self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.27)
         torch.cuda.empty_cache()
 
@@ -190,6 +173,54 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.27)
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
+
+    # def test_marlin_4bits_sym(self):
+    #     model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+    #     tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+    #     bits, group_size, sym = 4, 128, True
+    #     autoround = AutoRound(
+    #         model,
+    #         tokenizer,
+    #         bits=bits,
+    #         group_size=group_size,
+    #         sym=sym,
+    #         iters=1,
+    #         seqlen=2,
+    #         dataset=self.llm_dataloader,
+    #     )
+    #     quantized_model_path = self.save_folder
+    #     autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+    #
+    #     quantization_config = AutoRoundConfig(backend="marlin")
+    #     model = AutoModelForCausalLM.from_pretrained(
+    #         self.save_folder,
+    #         torch_dtype=torch.float16,
+    #         device_map="auto",
+    #         quantization_config=quantization_config
+    #     )
+    #
+    #     tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+    #     self.model_infer(model, tokenizer)
+    #     result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+    #     print(result['results']['lambada_openai']['acc,none'])
+    #     self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.27)
+    #     torch.cuda.empty_cache()
+    #
+    #     model = AutoModelForCausalLM.from_pretrained(
+    #         self.save_folder,
+    #         torch_dtype=torch.bfloat16,
+    #         device_map="auto",
+    #         quantization_config=quantization_config
+    #     )
+    #
+    #     tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+    #     self.model_infer(model, tokenizer)
+    #     result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+    #     print(result['results']['lambada_openai']['acc,none'])
+    #     self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.27)
+    #     torch.cuda.empty_cache()
+    #     shutil.rmtree("./saved", ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

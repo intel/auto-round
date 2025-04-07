@@ -88,76 +88,55 @@ feature_multiply_checker_marlin = functools.partial(feature_multiply_checker, in
                                                     out_feature_multiplier=256)
 
 feature_num_greater_checker_1024 = functools.partial(feature_num_greater_checker, num=1024)
-BackendInfos['gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
-                                             packing_format="triton_zp+-1",
-                                             bits=[4], group_size=None,
-                                             priority=5,
-                                             # dtype=["float16"],
-                                             feature_checks=[feature_multiply_checker_32],
-                                             alias=['gptq', 'auto_gptq'],
+BackendInfos['auto_gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
+                                                  packing_format="triton_zp",
+                                                  bits=[4], group_size=None,
+                                                  priority=5,
+                                                  # dtype=["float16"],
+                                                  feature_checks=[feature_multiply_checker_32],
+                                                  alias=['gptq', 'auto_gptq', 'exllamav2',"gptq:exllamav2"],
+                                                  requirements=["auto-gptq>=0.7.1"]
+                                                  )
+
+BackendInfos['auto_gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
+                                                 packing_format="triton_zp",
+                                                 bits=[2, 4, 8], group_size=None,
+                                                 # dtype=["float16"],
+                                                 priority=0, feature_checks=[feature_multiply_checker_32],
+                                                 alias=["auto_gptq:tritonv2"],
+                                                 requirements=["auto-gptq>=0.7.1"]
+                                                 )
+
+BackendInfos['auto_gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
+                                             packing_format="triton_zp",
+                                             bits=[2, 3, 4, 8], group_size=None,
+                                             priority=1, feature_checks=[feature_multiply_checker_32],
+                                             alias=["auto_gptq:cuda"],
+                                             convertable_format=["triton_zp"],
                                              requirements=["auto-gptq>=0.7.1"]
                                              )
 
-BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
-                                            packing_format="triton_zp+-1",
-                                            bits=[2, 4, 8], group_size=None,
-                                            # dtype=["float16"],
-                                            priority=0, feature_checks=[feature_multiply_checker_32],
-                                            alias=["auto_gptq:tritonv2"],
-                                            requirements=["auto-gptq>=0.7.1"]
-                                            )
-
-BackendInfos['gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
-                                        packing_format="triton_zp+-1",
-                                        bits=[2, 3, 4, 8], group_size=None,
-                                        priority=1, feature_checks=[feature_multiply_checker_32],
-                                        alias=["auto_gptq:cuda"],
-                                        convertable_format=["triton_zp+-1"],
-                                        requirements=["auto-gptq>=0.7.1"]
-                                        )
-
-# BackendInfos['gptqmodel:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False], ##triton
-#                                             packing_format="triton",
-#                                             bits=[2, 4, 8], group_size=None,
-#                                             # dtype=["float16","bfloat16"],
-#                                             priority=0, feature_checks=[feature_multiply_checker_32],
-#
-#                                             )
-
 
 BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
-                                                  packing_format="triton",
-                                                  # dtype=["float16","bfloat16"],
-                                                  bits=[2, 4, 8],
-                                                  priority=1, feature_checks=[feature_multiply_checker_32],
-                                                  alias=["auto_round:tritonv2", "tritonv2", "auto_round"],
-                                                  requirements=["auto-round>=0.2"]
-                                                  )
+                                       packing_format="triton",
+                                       # dtype=["float16","bfloat16"],
+                                       bits=[2, 4, 8],
+                                       priority=1, feature_checks=[feature_multiply_checker_32],
+                                       alias=["auto_round","tritonv2"],
+                                       requirements=["auto-round>=0.2"]
+                                       )
 
 BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda"], sym=[True],  ## asym has accuracy issue
-                                                     packing_format="triton_zp+-1",
-                                                     # dtype=["float16","bfloat16"],
-                                                     bits=[2, 4, 8],
-                                                     priority=1, feature_checks=[feature_multiply_checker_32],
-                                                     alias=["auto_round:tritonv2", "tritonv2", "auto_round:gptq",
-                                                            "auto_round:auto_gptq"],
-                                                     requirements=["auto-round>=0.5"]
-                                                     )
+                                          packing_format="triton_zp",
+                                          # dtype=["float16","bfloat16"],
+                                          bits=[2, 4, 8],
+                                          priority=1, feature_checks=[feature_multiply_checker_32],
+                                          alias=["tritonv2","tritonv2_zp"],
+                                          requirements=["auto-round>=0.5"]
+                                          )
 
-#
-# BackendInfos['gptqmodel:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
-#                                                  packing_format="triton",
-#                                                  bits=[2, 4, 8], group_size=[-1, 16, 32, 64, 128],
-#                                                  priority=2, feature_checks=[in_output_feature_multiply_checker_32],
-#                                                  requirements=["triton<3.0,>=2.0"]
-#                                                  )
 
-# BackendInfos['gptqmodel:tritonv2_zp'] = BackendInfo(device=["cuda"], sym=[False],
-#                                                     packing_format="triton_zp+-1",
-#                                                     bits=[2, 4, 8], group_size=[-1, 16, 32, 64, 128],
-#                                                     priority=2, feature_checks=[in_output_feature_multiply_checker_32],
-#                                                     requirements=["triton<3.0,>=2.0"]
-#                                                     )
+
 
 BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
                                                packing_format="triton",
@@ -169,42 +148,34 @@ BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
                                                requirements=["gptqmodel>=2.0"]
                                                )
 
-BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
-                                               packing_format="triton_zp",
-                                               bits=[4, 8],
-                                               group_size=[-1, 32, 64, 128],
-                                               ##dtype=["float16", "bfloat16"],
-                                               priority=6, feature_checks=[in_output_feature_multiply_checker_32],
-                                               alias=["marlin", "gptqmodel"],
-                                               requirements=["gptqmodel>=2.0"]
-                                               )
+BackendInfos['gptqmodel:marlin_zp'] = BackendInfo(device=["cuda"], sym=[True],
+                                                  packing_format="triton_zp",
+                                                  bits=[4, 8],
+                                                  group_size=[-1, 32, 64, 128],
+                                                  ##dtype=["float16", "bfloat16"],
+                                                  priority=6, feature_checks=[in_output_feature_multiply_checker_32],
+                                                  alias=["marlin", "gptqmodel"],
+                                                  requirements=["gptqmodel>=2.0"]
+                                                  )
 
 BackendInfos['gptqmodel:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                                   packing_format="triton",
                                                   bits=[4], group_size=[-1, 16, 32, 64, 128],
-                                                  dtype=["float16", "bfloat16"],
+                                                  ##dtype=["float16", "bfloat16"],
                                                   priority=5, feature_checks=[in_output_feature_multiply_checker_32],
                                                   alias=["exllamav2"],
                                                   requirements=["gptqmodel>=2.0"]
                                                   )
 
-# BackendInfos['gptqmodel:marlin_zp+-1'] = BackendInfo(device=["cuda"], sym=[True],
-#                                                      packing_format="triton_zp+-1",
-#                                                      bits=[4, 8], group_size=[-1, 32, 64, 128],
-#                                                      priority=6, feature_checks=[in_output_feature_multiply_checker_32],
-#                                                      alias=["marlin"],
-#                                                      requirements=["gptqmodel>=2.0"]
-#                                                      )
 
-
-BackendInfos['awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##actrally is gemm
-                                       packing_format="awq",
-                                       bits=[4], group_size=None,
-                                       priority=4,
-                                       alias=["auto_awq:gemm", "awq",
-                                              "auto_awq"],
-                                       requirements=["autoawq"]
-                                       )
+BackendInfos['auto_awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##actrally is gemm
+                                            packing_format="awq",
+                                            bits=[4], group_size=None,
+                                            priority=4,
+                                            alias=["auto_awq:gemm", "awq",
+                                                   "auto_awq"],
+                                            requirements=["autoawq"]
+                                            )
 
 BackendInfos['qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
                                     packing_format="qbits",
@@ -216,12 +187,12 @@ BackendInfos['qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
                                     requirements=["intel-extension-for-transformers"])
 
 BackendInfos['qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
-                                       packing_format="qbits_zp+-1",
+                                       packing_format="qbits_zp",
                                        bits=[2, 4, 8], group_size=None,
                                        priority=0 if "intel" in get_cpu_manufacturer() else 5,
                                        feature_checks=[],
                                        alias=["itrex"],
-                                       convertable_format=["triton_zp+-1"],
+                                       convertable_format=["triton_zp"],
                                        requirements=["intel-extension-for-transformers"]
                                        )
 
@@ -238,7 +209,7 @@ BackendInfos['ipex_gptq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False]
                                         bits=[4], group_size=None,
                                         priority=5 if "intel" in get_cpu_manufacturer() else 5,
                                         feature_checks=[],
-                                        convertable_format=["triton_zp+-1"],
+                                        convertable_format=["triton_zp"],
                                         alias=["ipex"],
                                         requirements=["intel-extension-for-pytorch>=2.5"]
                                         )
@@ -261,11 +232,11 @@ BackendInfos['hpu'] = BackendInfo(device=["hpu"], sym=[True, False],
                                   )
 
 BackendInfos['hpu_zp'] = BackendInfo(device=["hpu"], sym=[True, False],
-                                     packing_format="hpu_zp+-1",
+                                     packing_format="hpu_zp",
                                      bits=[4],
                                      alias=["hpu"],
                                      priority=0,
-                                     convertable_format=["triton_zp+-1"])
+                                     convertable_format=["triton_zp"])
 
 
 def check_compatible(backend_name, device, bits, group_size, sym, packing_format, in_features, out_features,
@@ -526,41 +497,41 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     return QuantLinear
 
 
-def find_backend(target_backend: str, orig_backend: str = None):
-    """Finds the matching backend key based on the target backend or its alias.
-
-    This function checks if the provided `target_backend` is directly present in `BackendInfos`.
-    If not, it iterates through the backends to see if the `target_backend` matches any backend's alias.
+def find_backend(target_backend: str, orig_backend: str = None) -> str | None:
+    """
+    Finds the matching backend key based on the target backend name or its aliases.
 
     Args:
-        target_backend (str):
-            The name of the backend or alias to find.
+        target_backend (str): Name or alias of the target backend.
+        orig_backend (str, optional): Original backend name to check compatibility. Defaults to None.
 
     Returns:
-        str or None:
-            The backend key if a match is found, otherwise `None`.
+        str or None: Matching backend key if found and compatible; otherwise, None.
     """
-    # Directly return if target_backend exists in BackendInfos
-    if target_backend in BackendInfos:
-        return target_backend
+    matched_keys = [
+        key for key, info in BackendInfos.items()
+        if key==target_backend or (info.alias and target_backend in info.alias)
+    ]
 
-    # Search through BackendInfos to check if target_backend matches any backend alias
-    ress = []
-    for key in BackendInfos.keys():
-        backendInfo = BackendInfos[key]
-        if backendInfo.alias is not None and target_backend in backendInfo.alias:
-            ress.append(key)
-    if len(ress) == 1:
-        return ress[0]
-    elif len(ress) > 1 and orig_backend is not None:
-        backendInfo = BackendInfos[orig_backend]
-        for res in ress:
-            if backendInfo.packing_format == BackendInfos[res].packing_format or backendInfo.packing_format in \
-                    BackendInfos[res].convertable_format:
-                return res
+    if not matched_keys:
+        return None
 
-    # Return None if no matching backend or alias is found
-    return None
+    if orig_backend is None:
+        return matched_keys[0] if len(matched_keys) >= 1 else None
+
+    orig_info = BackendInfos[orig_backend]
+
+    for key in matched_keys:
+        target_info = BackendInfos[key]
+        if (target_info.packing_format == orig_info.packing_format or
+                orig_info.packing_format in target_info.convertable_format):
+            return key
+
+
+    raise ValueError(
+        f"{target_backend} is not compatible with {orig_backend}. "
+        f"Please set `backend` to `auto` and retry."
+    )
 
 
 def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_features, out_features):

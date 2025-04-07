@@ -31,14 +31,25 @@ supported_devices = ("cpu", "hpu", "xpu", "cuda")
 
 
 def get_available_devices():
+    """
+    Returns a list of available devices in the current environment.
+
+    Returns:
+        List[str]: A list of device identifiers like "cuda", "hpu", "xpu", "cpu".
+    """
     devices = []
+
     if torch.cuda.is_available():
         devices.append("cuda")
+
     if is_hpu_supported():
         devices.append("hpu")
-    if torch.xpu.is_available():
+
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
         devices.append("xpu")
-    devices.append("cpu")
+
+    devices.append("cpu")  # Always available
+
     return devices
 
 
@@ -209,7 +220,10 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
             layer_backend = backend_cache[key]
         elif must_use_target_backend:
             layer_backend = target_backend
-            layer_backend = find_backend(layer_backend,orig_backend)
+            layer_backend = find_backend(layer_backend, orig_backend)
+            if layer_backend is None:
+                raise ValueError(
+                    f"{target_backend} is not compatible, please change backend to `auto` and retry")
             devices = BackendInfos[layer_backend].device
             if target_device not in devices:
                 raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
@@ -358,19 +372,19 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     if hasattr(quantization_config, "backend"):  # pragma: no cover
         backend = quantization_config.backend
     elif 'gptq' in quantization_config.quant_method:  # pragma: no cover
-        backend = "gptq"
+        backend = "auto_gptq"
     elif "awq" in quantization_config.quant_method:
-        backend = "awq"
+        backend = "auto_awq"
     else:  # pragma: no cover
-        backend = "gptq"
-        logger.warning("Quantization backend must be specified. Set it to 'gptq' by default.")
+        backend = "auto_gptq"
+        logger.warning("Quantization backend must be specified. Set it to 'auto_gptq' by default.")
 
     layer_configs = get_layer_config(model, quantization_config)
-    if backend.startswith("auto_round:"):
+    if backend.startswith("auto_round:") and ("gptq" in backend or "awq" in backend):
         backend = backend[len("auto_round:"):]
     backend = find_backend(backend)
 
-    if target_backend.startswith("auto_round:"):
+    if target_backend.startswith("auto_round:") and ("gptq" in backend or "awq" in backend):
         target_backend = target_backend[len("auto_round:"):]
     used_backend_info = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
     return model, used_backend_info
