@@ -228,8 +228,7 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
             _import_exllamav2_kernels(layer_backend)
             import_exllama_reminder_cnt += 1
 
-
-        logger.info(f"{layer_name}: {layer_backend} backend is used") ##TODO delete
+        logger.info(f"{layer_name}: {layer_backend} backend is used")  ##TODO delete
 
         # Create and replace layer
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
@@ -295,8 +294,9 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
                                        has_zero_points=not config["sym"])
     elif "awq" in layer_backend:
         return QuantLinear.from_linear(layer, config["bits"], config["group_size"], init_only=True)
-    elif "gptqmodel:marlin" in layer_backend:
-        return QuantLinear(config["bits"], config["group_size"], False, config["sym"], in_features, out_features, bias)
+    elif "gptqmodel" in layer_backend:
+        return QuantLinear(bits=config["bits"], group_size=config["group_size"], desc_act=False, sym=config["sym"],
+                           in_features=in_features, out_features=out_features, bias=bias)
     # Default quantized layer creation
     try:
         return QuantLinear(config["bits"], config["group_size"], in_features, out_features, bias,

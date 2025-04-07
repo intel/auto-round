@@ -141,14 +141,14 @@ BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
                                                requirements=["gptqmodel>=2.0"]
                                                )
 
-BackendInfos['gptqmodel:exllamav2'] = BackendInfo(device=["cuda"], sym=[True],
-                                               packing_format="triton",
-                                               bits=[4, 8], group_size=[-1, 32, 64, 128],
-                                               dtype=["float16", "bfloat16"],
-                                               priority=6, feature_checks=[in_output_feature_multiply_checker_32],
-                                               alias=["exllamav2"],
-                                               requirements=["gptqmodel>=2.0"]
-                                               )
+BackendInfos['gptqmodel:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
+                                                  packing_format="triton",
+                                                  bits=[4], group_size=[-1, 16, 32, 64, 128],
+                                                  dtype=["float16", "bfloat16"],
+                                                  priority=5, feature_checks=[in_output_feature_multiply_checker_32],
+                                                  alias=["exllamav2"],
+                                                  requirements=["gptqmodel>=2.0"]
+                                                  )
 
 # BackendInfos['gptqmodel:marlin_zp+-1'] = BackendInfo(device=["cuda"], sym=[True],
 #                                                      packing_format="triton_zp+-1",
@@ -400,8 +400,10 @@ def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
     import gptqmodel  # pylint: disable=E0401
     if "marlin" in backend:
         return gptqmodel.nn_modules.qlinear.marlin.MarlinQuantLinear
-    elif "tritonv2" in backend:
-        return gptqmodel.nn_modules.qlinear.tritonv2.TritonV2QuantLinear
+    elif "exllamav2" in backend:
+        return gptqmodel.nn_modules.qlinear.exllamav2.ExllamaV2QuantLinear
+    # elif "tritonv2" in backend:
+    #     return gptqmodel.nn_modules.qlinear.tritonv2.TritonV2QuantLinear
     else:
         raise ValueError(f"Unsupported {backend}")
 

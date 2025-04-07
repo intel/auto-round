@@ -78,10 +78,10 @@ class TestAutoRound(unittest.TestCase):
 
     def test_marlin(self):
         model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
-        quantization_config = AutoRoundConfig(backend="marlin")
+        quantization_config = AutoRoundConfig(backend="exllamav2")
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16,
+            torch_dtype=torch.bfloat16,
             device_map="auto",
             quantization_config=quantization_config
         )
