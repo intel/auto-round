@@ -139,7 +139,7 @@ W4G128 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted 
 
 <details>
   <summary>W2G64 results</summary>
-W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version of PyTorch 2.6.0 with enable_torch_compile). We recommend using higher precision for the head, tail, and non-expert modules to alleviate the significant accuracy drop:
+W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version of PyTorch 2.6.0 with enable_torch_compile). We recommend using higher precision for the head, tail, and non-expert modules to alleviate the significant accuracy drop.
 
 | Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct  | Falcon3-10B          | Qwen2.5-72B-Instruct  |
   |---------|-----------------------|----------------------|---------------------|----------------------|-----------------------|
