@@ -330,7 +330,7 @@ class AutoRoundQuantizer(HfQuantizer):
             from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init  # pylint: disable=E0401
             model = gptq_post_init(model, use_act_order=False)
         elif hasattr(self, "used_backend_info") and self.used_backend_info["used_gptqmodel"]:
-            from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init # pylint: disable=E0401
+            from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
             model = gptq_post_init(model, use_act_order=False)
         elif hasattr(self, "used_backend_info") and (self.used_backend_info["used_ipex"] or self.used_backend_info[
             "used_qbits"]):
@@ -341,7 +341,7 @@ class AutoRoundQuantizer(HfQuantizer):
                     layers.append(m)
 
             for layer in tqdm(layers, desc=message, total=len(layers),
-                                 leave=True):
+                              leave=True):
                 layer.post_init()
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):

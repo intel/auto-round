@@ -228,6 +228,9 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
             _import_exllamav2_kernels(layer_backend)
             import_exllama_reminder_cnt += 1
 
+
+        logger.info(f"{layer_name}: {layer_backend} backend is used") ##TODO delete
+
         # Create and replace layer
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
         set_module(module, layer_name, new_layer)
