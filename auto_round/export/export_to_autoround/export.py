@@ -157,7 +157,7 @@ def pack_layer(layer_name, model, backend):
     if int(layer.act_bits) <= 8:
         return pack_qact_layer(layer_name, model)
 
-    if int(layer.bits) > 8:
+    if int(layer.bits) > 8 or not hasattr(layer, "scale"):
         return
 
     device = layer.weight.device

@@ -528,8 +528,6 @@ class AutoRound(object):
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
-            if not isinstance(inputs, dict):
-                continue
             keys = inputs.keys()
             input_id_str = [key for key in keys if key.startswith('hidden_state')]
             if len(input_id_str) != 1:

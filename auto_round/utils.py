@@ -423,7 +423,8 @@ def get_multimodal_block_names(model, quant_vision=False):
         # if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
         if hasattr(type(m), "__name__") and any(key in type(m).__name__ for key in module_list_type):
             if quant_vision or all(key not in n.lower() for key in vison_blocks_tuple):
-                if last_module_list is None or last_module_list not in n:
+                # visual.merger.mlp, visual.blocks
+                if last_module_list is None or last_module_list.split(".")[0] not in n: 
                     last_module_list = n
                     target_modules.append((n, m))
     validate_modules(target_modules, quant_vision, vison_blocks_tuple)
@@ -508,7 +509,7 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
         input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
     if amp:
         with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
-            output = block(input_ids, *input_tuple, **input_others)
+                output = block(input_ids, *input_tuple, **input_others)
     else:
         output = block(input_ids, *input_tuple, **input_others)
     if isinstance(output, list) or isinstance(output, tuple):
