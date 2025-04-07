@@ -81,16 +81,6 @@ def feature_num_greater_checker(in_feature, out_feature, num):
     return in_feature * out_feature > num
 
 
-@functools.lru_cache(None)
-def check_auto_round_exllamav2_installed():
-    try:
-        from autoround_exllamav2_kernels import gemm_half_q_half, make_q_matrix
-    except ImportError:
-        return False, ("please install from source to enable auto-round exllamav2 kernel."
-                       "`git clone https://github.com/intel/auto-round && cd auto-round &&"
-                       " pip install -vvv --no-build-isolation -e .`")
-    return True, ""
-
 
 feature_multiply_checker_32 = functools.partial(feature_multiply_checker, in_feature_multiplier=32)
 in_output_feature_multiply_checker_32 = functools.partial(feature_multiply_checker, in_feature_multiplier=32,
@@ -99,16 +89,6 @@ feature_multiply_checker_marlin = functools.partial(feature_multiply_checker, in
                                                     out_feature_multiplier=256)
 
 feature_num_greater_checker_1024 = functools.partial(feature_num_greater_checker, num=1024)
-
-BackendInfos['gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, False],
-                                             packing_format="triton_zp+-1",
-                                             bits=[4], group_size=None,
-                                             priority=5,
-                                             dtype=["float16"],
-                                             feature_checks=[feature_multiply_checker_32],
-                                             alias=['gptq', 'auto_gptq'],
-                                             requirements=["auto-gptq>=0.7.1"]
-                                             )
 
 BackendInfos['gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                             packing_format="triton_zp+-1",
@@ -388,12 +368,9 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
                 "autoawq is required. Please install it by 'pip install autoawq' to support auto_awq format.")
         return WQLinear_GEMM
 
-    if "exllamav2" in backend:
-        import auto_round_extension.cuda.qlinear_exllamav2
-        return auto_round_extension.cuda.qlinear_exllamav2.QuantLinear
-    else:
-        import auto_round_extension.cuda.qlinear_tritonv2
-        return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
+
+    import auto_round_extension.cuda.qlinear_tritonv2
+    return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
 
 
 def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):

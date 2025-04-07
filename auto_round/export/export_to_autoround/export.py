@@ -243,7 +243,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
         backend = backend.replace('auto_round', 'auto_round:gptq')
 
-    if not ("triton" in backend or "exllamav2" in backend or "awq" in backend or "gptq" in backend):
+    if not ("triton" in backend or "marlin" in backend or "exllamav2" in backend or "awq" in backend or "gptq" in backend):
         logger.info(f"AutoRound format does not support {backend}, try to pack each layer with AutoGPTQ")
         backend = backend.replace("auto_round", "auto_gptq")
 
