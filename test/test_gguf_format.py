@@ -72,7 +72,7 @@ class TestGGUF(unittest.TestCase):
         python_path = sys.executable
         res = os.system(
             f"cd .. && {python_path} -m auto_round --model {self.model_name} --eval_task_by_task"
-            f" --tasks piqa,openbookqa --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_k_s"
+            f" --tasks piqa,openbookqa --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
