@@ -294,7 +294,7 @@ def check_compatible(backend_name, device, bits, group_size, sym, packing_format
     else:
         return False
 
-    for check in backend.feature_checks:  ## convertable
+    for check in backend.feature_checks:  ## convertible
         if not check(in_features, out_features):
             return False
 
