@@ -17,6 +17,7 @@ import random
 
 import torch
 from datasets import IterableDataset, Dataset
+from datasets import Features, Sequence, Value
 from torch.utils.data import DataLoader
 import sys
 from .utils import is_local_path, logger
@@ -608,14 +609,24 @@ def get_dataloader(
             apply_chat_template=apply_chat_template,
             system_prompt=system_prompt
         )
-        if not isinstance(dataset, IterableDataset):
-            dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
         if do_concat:
             dataset = concat_dataset_element(dataset)
         dataset = dataset.filter(filter_func)
         if name in data_lens:
             dataset = select_dataset(dataset, range(data_lens[name]))
+        dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+        new_features = {}
+        for k, v in dataset.features.items():
+            if k == "input_ids":
+                new_features[k] = Sequence(Value('int64'))
+            elif k == "attention_mask":
+                new_features[k] = Sequence(Value('int8'))
+            else:
+                new_features[k] = v
+            
+        dataset = dataset.cast(Features(new_features))
         datasets.append(dataset)
+
     if len(datasets) == 1:
         dataset_final = datasets[0]
     else:
@@ -644,7 +655,7 @@ def get_dataloader(
                 cnt += target_cnt
             else:
                 target_cnt = data_lens[name]
-            datasets[i] = select_dataset(dataset, range(target_cnt))
+            datasets[i] = select_dataset(datasets[i], range(target_cnt))
             dataset_cnt_info[name] = target_cnt
         if len(datasets) > 1:
             from datasets import concatenate_datasets
