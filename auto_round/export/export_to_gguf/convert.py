@@ -42,7 +42,7 @@ import json
 import os
 import re
 import sys
-from enum import IntEnum
+from enum import IntEnum, auto
 from pathlib import Path
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Callable, ContextManager, Iterable, Iterator, Literal, Sequence, TypeVar, cast
@@ -59,6 +59,71 @@ from auto_round.utils import logger, LazyImport
 from .quant import ggml_quant
 
 gguf = LazyImport("gguf")
+
+class MODEL_ARCH(IntEnum):
+    LLAMA            = auto()
+    LLAMA4           = auto()
+    DECI             = auto()
+    FALCON           = auto()
+    BAICHUAN         = auto()
+    GROK             = auto()
+    GPT2             = auto()
+    GPTJ             = auto()
+    GPTNEOX          = auto()
+    MPT              = auto()
+    STARCODER        = auto()
+    REFACT           = auto()
+    BERT             = auto()
+    NOMIC_BERT       = auto()
+    JINA_BERT_V2     = auto()
+    BLOOM            = auto()
+    STABLELM         = auto()
+    QWEN             = auto()
+    QWEN2            = auto()
+    QWEN2MOE         = auto()
+    QWEN2VL          = auto()
+    PHI2             = auto()
+    PHI3             = auto()
+    PHIMOE           = auto()
+    PLAMO            = auto()
+    CODESHELL        = auto()
+    ORION            = auto()
+    INTERNLM2        = auto()
+    MINICPM          = auto()
+    MINICPM3         = auto()
+    GEMMA            = auto()
+    GEMMA2           = auto()
+    GEMMA3           = auto()
+    STARCODER2       = auto()
+    RWKV6            = auto()
+    RWKV6QWEN2       = auto()
+    RWKV7            = auto()
+    ARWKV7           = auto()
+    MAMBA            = auto()
+    XVERSE           = auto()
+    COMMAND_R        = auto()
+    COHERE2          = auto()
+    DBRX             = auto()
+    OLMO             = auto()
+    OLMO2            = auto()
+    OLMOE            = auto()
+    OPENELM          = auto()
+    ARCTIC           = auto()
+    DEEPSEEK         = auto()
+    DEEPSEEK2        = auto()
+    CHATGLM          = auto()
+    BITNET           = auto()
+    T5               = auto()
+    T5ENCODER        = auto()
+    JAIS             = auto()
+    NEMOTRON         = auto()
+    EXAONE           = auto()
+    GRANITE          = auto()
+    GRANITE_MOE      = auto()
+    CHAMELEON        = auto()
+    WAVTOKENIZER_DEC = auto()
+    PLM              = auto()
+    BAILINGMOE       = auto()
 
 ###### MODEL DEFINITIONS ######
 
@@ -97,7 +162,7 @@ class OriModel:
     dir_model_card: Path
 
     # subclasses should define this!
-    model_arch: gguf.MODEL_ARCH
+    model_arch: MODEL_ARCH
 
     def __init__(
             self,
@@ -1219,7 +1284,7 @@ class Model(OriModel):
 
 @Model.register("GPTNeoXForCausalLM")
 class GPTNeoXModel(Model):
-    model_arch = gguf.MODEL_ARCH.GPTNEOX
+    model_arch = MODEL_ARCH.GPTNEOX
 
     def set_gguf_parameters(self):
         block_count = self.hparams["num_hidden_layers"]
@@ -1272,7 +1337,7 @@ class GPTNeoXModel(Model):
 
 @Model.register("BloomForCausalLM", "BloomModel")
 class BloomModel(Model):
-    model_arch = gguf.MODEL_ARCH.BLOOM
+    model_arch = MODEL_ARCH.BLOOM
 
     def set_gguf_parameters(self):
         n_embed = self.hparams.get("hidden_size", self.hparams.get("n_embed"))
@@ -1333,7 +1398,7 @@ class BloomModel(Model):
 
 @Model.register("MPTForCausalLM")
 class MPTModel(Model):
-    model_arch = gguf.MODEL_ARCH.MPT
+    model_arch = MODEL_ARCH.MPT
 
     def set_vocab(self):
         try:
@@ -1377,7 +1442,7 @@ class MPTModel(Model):
 
 @Model.register("OrionForCausalLM")
 class OrionModel(Model):
-    model_arch = gguf.MODEL_ARCH.ORION
+    model_arch = MODEL_ARCH.ORION
 
     def set_vocab(self):
         self._set_vocab_sentencepiece()
@@ -1410,7 +1475,7 @@ class OrionModel(Model):
 
 @Model.register("BaichuanForCausalLM", "BaiChuanForCausalLM")
 class BaichuanModel(Model):
-    model_arch = gguf.MODEL_ARCH.BAICHUAN
+    model_arch = MODEL_ARCH.BAICHUAN
 
     def set_vocab(self):
         self._set_vocab_sentencepiece()
@@ -1493,7 +1558,7 @@ class BaichuanModel(Model):
 
 @Model.register("XverseForCausalLM")
 class XverseModel(Model):
-    model_arch = gguf.MODEL_ARCH.XVERSE
+    model_arch = MODEL_ARCH.XVERSE
 
     def set_vocab(self):
         assert (self.dir_model / "tokenizer.json").is_file()
@@ -1598,7 +1663,8 @@ class XverseModel(Model):
 
 @Model.register("FalconForCausalLM", "RWForCausalLM")
 class FalconModel(Model):
-    model_arch = gguf.MODEL_ARCH.FALCON
+    import gguf
+    model_arch = MODEL_ARCH.FALCON
 
     def set_gguf_parameters(self):
         block_count = self.hparams.get("num_hidden_layers")
@@ -1652,7 +1718,7 @@ class FalconModel(Model):
 
 @Model.register("GPTBigCodeForCausalLM")
 class StarCoderModel(Model):
-    model_arch = gguf.MODEL_ARCH.STARCODER
+    model_arch = MODEL_ARCH.STARCODER
 
     def set_gguf_parameters(self):
         block_count = self.hparams["n_layer"]
@@ -1669,7 +1735,7 @@ class StarCoderModel(Model):
 
 @Model.register("GPTRefactForCausalLM")
 class RefactModel(Model):
-    model_arch = gguf.MODEL_ARCH.REFACT
+    model_arch = MODEL_ARCH.REFACT
 
     def set_vocab(self):
         super().set_vocab()
@@ -1735,7 +1801,7 @@ class RefactModel(Model):
 
 @Model.register("StableLmForCausalLM", "StableLMEpochForCausalLM", "LlavaStableLMEpochForCausalLM")
 class StableLMModel(Model):
-    model_arch = gguf.MODEL_ARCH.STABLELM
+    model_arch = MODEL_ARCH.STABLELM
 
     def set_vocab(self):
         if (self.dir_model / "tokenizer.json").is_file():
@@ -1824,7 +1890,7 @@ class StableLMModel(Model):
 
 @Model.register("LLaMAForCausalLM", "LlamaForCausalLM", "MistralForCausalLM", "MixtralForCausalLM")
 class LlamaModel(Model):
-    model_arch = gguf.MODEL_ARCH.LLAMA
+    model_arch = MODEL_ARCH.LLAMA
 
     def set_vocab(self):
         try:
@@ -1971,7 +2037,7 @@ class LlamaModel(Model):
 
 @Model.register("DeciLMForCausalLM")
 class DeciModel(Model):
-    model_arch = gguf.MODEL_ARCH.DECI
+    model_arch = MODEL_ARCH.DECI
 
     @staticmethod
     def _ffn_mult_to_intermediate_size(ffn_mult: float, n_embd: int) -> int:
@@ -2146,7 +2212,7 @@ class DeciModel(Model):
 
 @Model.register("BitnetForCausalLM")
 class BitnetModel(Model):
-    model_arch = gguf.MODEL_ARCH.BITNET
+    model_arch = MODEL_ARCH.BITNET
 
     def set_vocab(self):
         self._set_vocab_sentencepiece()
@@ -2184,7 +2250,7 @@ class BitnetModel(Model):
 
 @Model.register("GrokForCausalLM")
 class GrokModel(Model):
-    model_arch = gguf.MODEL_ARCH.GROK
+    model_arch = MODEL_ARCH.GROK
 
     def set_vocab(self):
         self._set_vocab_sentencepiece()
@@ -2237,7 +2303,7 @@ class GrokModel(Model):
 
 @Model.register("DbrxForCausalLM")
 class DbrxModel(Model):
-    model_arch = gguf.MODEL_ARCH.DBRX
+    model_arch = MODEL_ARCH.DBRX
 
     def set_gguf_parameters(self):
         ffn_config = self.hparams["ffn_config"]
@@ -2309,7 +2375,7 @@ class DbrxModel(Model):
 
 @Model.register("MiniCPMForCausalLM")
 class MiniCPMModel(Model):
-    model_arch = gguf.MODEL_ARCH.MINICPM
+    model_arch = MODEL_ARCH.MINICPM
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
@@ -2368,7 +2434,7 @@ class MiniCPMModel(Model):
 
 @Model.register("MiniCPM3ForCausalLM")
 class MiniCPM3Model(Model):
-    model_arch = gguf.MODEL_ARCH.MINICPM3
+    model_arch = MODEL_ARCH.MINICPM3
 
     def set_gguf_parameters(self):
         hparams = self.hparams
@@ -2423,7 +2489,7 @@ class MiniCPM3Model(Model):
 
 @Model.register("QWenLMHeadModel")
 class QwenModel(Model):
-    model_arch = gguf.MODEL_ARCH.QWEN
+    model_arch = MODEL_ARCH.QWEN
 
     @staticmethod
     def token_bytes_to_string(b):
@@ -2465,7 +2531,7 @@ class QwenModel(Model):
 
 @Model.register("Qwen2ForCausalLM")
 class Qwen2Model(Model):
-    model_arch = gguf.MODEL_ARCH.QWEN2
+    model_arch = MODEL_ARCH.QWEN2
 
     def set_vocab(self):
         try:
@@ -2485,7 +2551,7 @@ class Qwen2Model(Model):
 
 @Model.register("Qwen2VLForConditionalGeneration")
 class Qwen2VLModel(Model):
-    model_arch = gguf.MODEL_ARCH.QWEN2VL
+    model_arch = MODEL_ARCH.QWEN2VL
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
@@ -2508,7 +2574,7 @@ class Qwen2VLModel(Model):
 
 @Model.register("WavTokenizerDec")
 class WavTokenizerDecModel(Model):
-    model_arch = gguf.MODEL_ARCH.WAVTOKENIZER_DEC
+    model_arch = MODEL_ARCH.WAVTOKENIZER_DEC
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
@@ -2546,7 +2612,7 @@ class WavTokenizerDecModel(Model):
 
 @Model.register("Qwen2MoeForCausalLM")
 class Qwen2MoeModel(Model):
-    model_arch = gguf.MODEL_ARCH.QWEN2MOE
+    model_arch = MODEL_ARCH.QWEN2MOE
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
@@ -2609,7 +2675,7 @@ class Qwen2MoeModel(Model):
 
 @Model.register("GPT2LMHeadModel")
 class GPT2Model(Model):
-    model_arch = gguf.MODEL_ARCH.GPT2
+    model_arch = MODEL_ARCH.GPT2
 
     def set_gguf_parameters(self):
         self.gguf_writer.add_block_count(self.hparams["n_layer"])
@@ -2645,7 +2711,7 @@ class GPT2Model(Model):
 
 @Model.register("PhiForCausalLM")
 class Phi2Model(Model):
-    model_arch = gguf.MODEL_ARCH.PHI2
+    model_arch = MODEL_ARCH.PHI2
 
     def set_gguf_parameters(self):
         block_count = self.find_hparam(["num_hidden_layers", "n_layer"])
@@ -2669,7 +2735,7 @@ class Phi2Model(Model):
 
 @Model.register("Phi3ForCausalLM")
 class Phi3MiniModel(Model):
-    model_arch = gguf.MODEL_ARCH.PHI3
+    model_arch = MODEL_ARCH.PHI3
 
     def set_vocab(self):
         # Phi-4 model uses GPT2Tokenizer
@@ -2860,7 +2926,7 @@ class Phi3MiniModel(Model):
 
 @Model.register("PhiMoEForCausalLM")
 class PhiMoeModel(Phi3MiniModel):
-    model_arch = gguf.MODEL_ARCH.PHIMOE
+    model_arch = MODEL_ARCH.PHIMOE
 
     _experts: list[dict[str, Tensor]] | None = None
 
@@ -2917,7 +2983,7 @@ class PhiMoeModel(Phi3MiniModel):
 
 @Model.register("PlamoForCausalLM")
 class PlamoModel(Model):
-    model_arch = gguf.MODEL_ARCH.PLAMO
+    model_arch = MODEL_ARCH.PLAMO
 
     def set_vocab(self):
         self._set_vocab_sentencepiece()
@@ -2965,7 +3031,7 @@ class PlamoModel(Model):
 
 @Model.register("CodeShellForCausalLM")
 class CodeShellModel(Model):
-    model_arch = gguf.MODEL_ARCH.CODESHELL
+    model_arch = MODEL_ARCH.CODESHELL
 
     def set_gguf_parameters(self):
         block_count = self.hparams["n_layer"]
@@ -3001,7 +3067,7 @@ class CodeShellModel(Model):
 
 @Model.register("InternLM2ForCausalLM")
 class InternLM2Model(Model):
-    model_arch = gguf.MODEL_ARCH.INTERNLM2
+    model_arch = MODEL_ARCH.INTERNLM2
 
     def set_vocab(self):
         # (TODO): Is there a better way?
@@ -3180,7 +3246,7 @@ class InternLM2Model(Model):
 
 @Model.register("InternLM3ForCausalLM")
 class InternLM3Model(Model):
-    model_arch = gguf.MODEL_ARCH.LLAMA
+    model_arch = MODEL_ARCH.LLAMA
 
     def set_vocab(self):
         tokens, scores, toktypes = self._create_vocab_sentencepiece()
@@ -3241,7 +3307,7 @@ class InternLM3Model(Model):
 
 @Model.register("BertModel", "BertForMaskedLM", "CamembertModel")
 class BertModel(Model):
-    model_arch = gguf.MODEL_ARCH.BERT
+    model_arch = MODEL_ARCH.BERT
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -3330,7 +3396,7 @@ class BertModel(Model):
 
 @Model.register("RobertaModel")
 class RobertaModel(BertModel):
-    model_arch = gguf.MODEL_ARCH.BERT
+    model_arch = MODEL_ARCH.BERT
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -3375,7 +3441,7 @@ class RobertaModel(BertModel):
 
 @Model.register("NomicBertModel")
 class NomicBertModel(BertModel):
-    model_arch = gguf.MODEL_ARCH.NOMIC_BERT
+    model_arch = MODEL_ARCH.NOMIC_BERT
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -3405,7 +3471,7 @@ class NomicBertModel(BertModel):
 
 @Model.register("XLMRobertaModel", "XLMRobertaForSequenceClassification")
 class XLMRobertaModel(BertModel):
-    model_arch = gguf.MODEL_ARCH.BERT
+    model_arch = MODEL_ARCH.BERT
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -3516,7 +3582,7 @@ class XLMRobertaModel(BertModel):
 
 @Model.register("GemmaForCausalLM")
 class GemmaModel(Model):
-    model_arch = gguf.MODEL_ARCH.GEMMA
+    model_arch = MODEL_ARCH.GEMMA
 
     def set_vocab(self):
         self._set_vocab_sentencepiece()
@@ -3567,7 +3633,7 @@ class GemmaModel(Model):
 
 @Model.register("Gemma2ForCausalLM")
 class Gemma2Model(Model):
-    model_arch = gguf.MODEL_ARCH.GEMMA2
+    model_arch = MODEL_ARCH.GEMMA2
 
     def set_vocab(self):
         self._set_vocab_sentencepiece()
@@ -3610,7 +3676,7 @@ class Gemma2Model(Model):
 
 @Model.register("Gemma3ForCausalLM", "Gemma3ForConditionalGeneration")
 class Gemma3Model(Model):
-    model_arch = gguf.MODEL_ARCH.GEMMA3
+    model_arch = MODEL_ARCH.GEMMA3
     has_vision: bool = False
 
     # we need to merge the text_config into the root level of hparams
@@ -3687,12 +3753,12 @@ class Gemma3Model(Model):
 
 @Model.register("Starcoder2ForCausalLM")
 class StarCoder2Model(Model):
-    model_arch = gguf.MODEL_ARCH.STARCODER2
+    model_arch = MODEL_ARCH.STARCODER2
 
 
 @Model.register("Rwkv6ForCausalLM")
 class Rwkv6Model(Model):
-    model_arch = gguf.MODEL_ARCH.RWKV6
+    model_arch = MODEL_ARCH.RWKV6
 
     def set_vocab(self):
         assert (self.dir_model / "rwkv_vocab_v20230424.txt").is_file()
@@ -3803,7 +3869,7 @@ class Rwkv6Model(Model):
 
 @Model.register("RWKV6Qwen2ForCausalLM")
 class RWKV6Qwen2Model(Rwkv6Model):
-    model_arch = gguf.MODEL_ARCH.RWKV6QWEN2
+    model_arch = MODEL_ARCH.RWKV6QWEN2
 
     def set_vocab(self):
         try:
@@ -3857,7 +3923,7 @@ class RWKV6Qwen2Model(Rwkv6Model):
 
 @Model.register("MambaForCausalLM", "MambaLMHeadModel", "FalconMambaForCausalLM")
 class MambaModel(Model):
-    model_arch = gguf.MODEL_ARCH.MAMBA
+    model_arch = MODEL_ARCH.MAMBA
 
     def set_vocab(self):
         vocab_size = self.hparams["vocab_size"]
@@ -3933,7 +3999,7 @@ class MambaModel(Model):
 
 @Model.register("CohereForCausalLM")
 class CommandR2Model(Model):
-    model_arch = gguf.MODEL_ARCH.COMMAND_R
+    model_arch = MODEL_ARCH.COMMAND_R
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -3951,7 +4017,7 @@ class CommandR2Model(Model):
 
 @Model.register("Cohere2ForCausalLM")
 class Cohere2Model(Model):
-    model_arch = gguf.MODEL_ARCH.COHERE2
+    model_arch = MODEL_ARCH.COHERE2
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
@@ -3970,7 +4036,7 @@ class Cohere2Model(Model):
 @Model.register("OlmoForCausalLM")
 @Model.register("OLMoForCausalLM")
 class OlmoModel(Model):
-    model_arch = gguf.MODEL_ARCH.OLMO
+    model_arch = MODEL_ARCH.OLMO
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
@@ -3997,12 +4063,12 @@ class OlmoModel(Model):
 
 @Model.register("Olmo2ForCausalLM")
 class Olmo2Model(Model):
-    model_arch = gguf.MODEL_ARCH.OLMO2
+    model_arch = MODEL_ARCH.OLMO2
 
 
 @Model.register("OlmoeForCausalLM")
 class OlmoeModel(Model):
-    model_arch = gguf.MODEL_ARCH.OLMOE
+    model_arch = MODEL_ARCH.OLMOE
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
@@ -4062,7 +4128,7 @@ class OlmoeModel(Model):
 
 @Model.register("JinaBertModel", "JinaBertForMaskedLM")
 class JinaBertV2Model(BertModel):
-    model_arch = gguf.MODEL_ARCH.JINA_BERT_V2
+    model_arch = MODEL_ARCH.JINA_BERT_V2
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -4109,7 +4175,7 @@ class JinaBertV2Model(BertModel):
 
 @Model.register("OpenELMForCausalLM")
 class OpenELMModel(Model):
-    model_arch = gguf.MODEL_ARCH.OPENELM
+    model_arch = MODEL_ARCH.OPENELM
 
     @staticmethod
     def _make_divisible(v: float | int, divisor: int) -> int:
@@ -4182,7 +4248,7 @@ class OpenELMModel(Model):
 
 @Model.register("ArcticForCausalLM")
 class ArcticModel(Model):
-    model_arch = gguf.MODEL_ARCH.ARCTIC
+    model_arch = MODEL_ARCH.ARCTIC
 
     def set_vocab(self):
         # The reason for using a custom implementation here is that the
@@ -4336,7 +4402,7 @@ class ArcticModel(Model):
 
 @Model.register("DeepseekForCausalLM")
 class DeepseekModel(Model):
-    model_arch = gguf.MODEL_ARCH.DEEPSEEK
+    model_arch = MODEL_ARCH.DEEPSEEK
 
     def set_vocab(self):
         try:
@@ -4428,7 +4494,7 @@ class DeepseekModel(Model):
 @Model.register("DeepseekV2ForCausalLM")
 @Model.register("DeepseekV3ForCausalLM")
 class DeepseekV2Model(Model):
-    model_arch = gguf.MODEL_ARCH.DEEPSEEK2
+    model_arch = MODEL_ARCH.DEEPSEEK2
 
     def set_vocab(self):
         self._set_vocab_gpt2()
@@ -4530,7 +4596,7 @@ class DeepseekV2Model(Model):
 @Model.register("MT5ForConditionalGeneration")
 @Model.register("UMT5ForConditionalGeneration")
 class T5Model(Model):
-    model_arch = gguf.MODEL_ARCH.T5
+    model_arch = MODEL_ARCH.T5
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -4666,7 +4732,7 @@ class T5Model(Model):
 
 @Model.register("T5EncoderModel")
 class T5EncoderModel(Model):
-    model_arch = gguf.MODEL_ARCH.T5ENCODER
+    model_arch = MODEL_ARCH.T5ENCODER
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -4801,7 +4867,7 @@ class T5EncoderModel(Model):
 
 @Model.register("JAISLMHeadModel")
 class JaisModel(Model):
-    model_arch = gguf.MODEL_ARCH.JAIS
+    model_arch = MODEL_ARCH.JAIS
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -4884,7 +4950,7 @@ class JaisModel(Model):
 
 @Model.register("GlmForCausalLM", "ChatGLMModel", "ChatGLMForConditionalGeneration")
 class ChatGLMModel(Model):
-    model_arch = gguf.MODEL_ARCH.CHATGLM
+    model_arch = MODEL_ARCH.CHATGLM
 
     def set_vocab_chatglm3(self):
         dir_model = self.dir_model
@@ -5038,7 +5104,7 @@ class ChatGLMModel(Model):
 
 @Model.register("NemotronForCausalLM")
 class NemotronModel(Model):
-    model_arch = gguf.MODEL_ARCH.NEMOTRON
+    model_arch = MODEL_ARCH.NEMOTRON
 
     def set_vocab(self):
         self._set_vocab_sentencepiece()
@@ -5079,7 +5145,7 @@ class NemotronModel(Model):
 
 @Model.register("ExaoneForCausalLM")
 class ExaoneModel(Model):
-    model_arch = gguf.MODEL_ARCH.EXAONE
+    model_arch = MODEL_ARCH.EXAONE
 
     def set_gguf_parameters(self):
         hparams = self.hparams
@@ -5152,7 +5218,7 @@ class ExaoneModel(Model):
 @Model.register("GraniteForCausalLM")
 class GraniteModel(LlamaModel):
     """Conversion for IBM's GraniteForCausalLM"""
-    model_arch = gguf.MODEL_ARCH.GRANITE
+    model_arch = MODEL_ARCH.GRANITE
 
     def set_gguf_parameters(self):
         """Granite uses standard llama parameters with the following differences:
@@ -5186,7 +5252,7 @@ class GraniteModel(LlamaModel):
 @Model.register("GraniteMoeForCausalLM")
 class GraniteMoeModel(GraniteModel):
     """Conversion for IBM's GraniteMoeForCausalLM"""
-    model_arch = gguf.MODEL_ARCH.GRANITE_MOE
+    model_arch = MODEL_ARCH.GRANITE_MOE
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         """In modeling_granitemoe, the JetMoe implementation of parallel experts
@@ -5210,7 +5276,7 @@ class GraniteMoeModel(GraniteModel):
 @Model.register("ChameleonForConditionalGeneration")
 @Model.register("ChameleonForCausalLM")  # obsolete
 class ChameleonModel(Model):
-    model_arch = gguf.MODEL_ARCH.CHAMELEON
+    model_arch = MODEL_ARCH.CHAMELEON
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
