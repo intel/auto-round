@@ -40,7 +40,7 @@ from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 from auto_round.utils import (is_hpu_supported)
-from auto_round.inference.convert_model import convert_hf_model, infer_target_device,post_init
+from auto_round.inference.convert_model import convert_hf_model, infer_target_device, post_init
 from enum import Enum
 
 logger = getLogger(__name__)
@@ -326,7 +326,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
         model.quantize_config = StoreAttr()
 
-        post_init(model,self.used_backends)
+        post_init(model, self.used_backends)
 
     def update_unexpected_keys(self, model, unexpected_keys: List[str], prefix: str) -> List[str]:
         """
@@ -337,6 +337,7 @@ class AutoRoundQuantizer(HfQuantizer):
                 The list of unexpected keys in the checkpoint compared to the state dict of the model
         """
         return unexpected_keys
+
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if self.pre_quantized:
             target_device = self.target_device if hasattr(self, self.target_device) else infer_target_device(

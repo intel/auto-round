@@ -32,10 +32,10 @@ import transformers
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
 supported_formats = (
-    "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq","auto_round:gptqmodel","auto_round:auto_awq", "auto_gptq:marlin",
+    "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel", "auto_round:auto_awq",
+    "auto_gptq:marlin",
     "itrex", "itrex_xpu", "fake"
 )
-
 
 supported_formats = supported_formats + tuple(GGUF_CONFIG.keys())
 
@@ -523,11 +523,11 @@ def check_to_quantized(config):
             False otherwise.
     """
     if isinstance(config, dict):
-        bits = int(config.get("bits",4))
+        bits = int(config.get("bits", 4))
         act_bits = int(config.get("act_bits", 16))
     else:
-        bits = int(config.bits) if hasattr(config,"bits") else 4
-        act_bits = int(config.act_bits) if hasattr(config,"act_bits") else 16
+        bits = int(config.bits) if hasattr(config, "bits") else 4
+        act_bits = int(config.act_bits) if hasattr(config, "act_bits") else 16
 
     return bits <= 8 or act_bits <= 8
 
@@ -1203,6 +1203,7 @@ def is_debug_mode():
         bool: True if debugging is enabled, False otherwise.
     """
     return sys.gettrace() is not None or sys.flags.debug == 1
+
 
 def get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""

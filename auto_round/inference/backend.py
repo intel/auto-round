@@ -605,7 +605,8 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
 
     # Raise an error if no compatible backends are found
     if len(supported_backends) == 0:
-        supported_backends_need_package = get_all_compatible_backend(backend, orig_backend, bits, group_size, sym,
+        supported_backends_need_package = get_all_compatible_backend(device, backend, orig_backend, bits, group_size,
+                                                                     sym,
                                                                      in_features, out_features)
 
         if len(supported_backends_need_package) > 0:

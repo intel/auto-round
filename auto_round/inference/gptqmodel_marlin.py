@@ -14,21 +14,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Adapted from vllm at https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/gptq_marlin.py
+# Adapted from vllm
+# at https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/gptq_marlin.py
 
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 
-def get_marlin_layer():##use an ugly wrapper to  import gptqmodel on demand
-    from gptqmodel.models._const import DEVICE, PLATFORM
-    from gptqmodel.nn_modules.qlinear import BaseQuantLinear
-    from gptqmodel.utils.backend import BACKEND
+
+def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
+    from gptqmodel.models._const import DEVICE, PLATFORM # pylint: disable=E0401
+    from gptqmodel.nn_modules.qlinear import BaseQuantLinear # pylint: disable=E0401
+    from gptqmodel.utils.backend import BACKEND # pylint: disable=E0401
 
     marlin_import_exception = None
     try:
-        import gptqmodel_marlin_kernels
+        import gptqmodel_marlin_kernels # pylint: disable=E0401
     except ImportError as e:
         marlin_import_exception = e
 
@@ -40,8 +42,8 @@ def get_marlin_layer():##use an ugly wrapper to  import gptqmodel on demand
     GPTQ_MARLIN_MAX_PARALLEL = 16
 
     def set_weight_attrs(
-        weight: torch.Tensor,
-        weight_attrs: Optional[Dict[str, Any]],
+            weight: torch.Tensor,
+            weight_attrs: Optional[Dict[str, Any]],
     ):
         """Set attributes on a weight tensor.
 
@@ -137,7 +139,7 @@ def get_marlin_layer():##use an ugly wrapper to  import gptqmodel on demand
     ) -> torch.Tensor:
 
         reshaped_x = input.reshape(-1, input.shape[-1])
-        out_shape = input.shape[:-1] + (output_size_per_partition, )
+        out_shape = input.shape[:-1] + (output_size_per_partition,)
 
         output = gptqmodel_marlin_kernels.gptq_marlin_gemm(
             reshaped_x,
@@ -153,7 +155,7 @@ def get_marlin_layer():##use an ugly wrapper to  import gptqmodel on demand
             input_size_per_partition,
             is_k_full,
             False,
-            fp32, # <- True: enable fp32 reduce for higher accuracy, False: fp16
+            fp32,  # <- True: enable fp32 reduce for higher accuracy, False: fp16
         )
 
         if bias is not None:
@@ -182,18 +184,19 @@ def get_marlin_layer():##use an ugly wrapper to  import gptqmodel on demand
         QUANT_TYPE = "marlin"
 
         def __init__(
-            self, bits: int,
-            group_size: int,
-            desc_act: bool,
-            sym: bool,
-            in_features: int,
-            out_features: int,
-            bias: bool = False,
-            pack_dtype: torch.dtype = torch.int32,
-            **kwargs):
+                self, bits: int,
+                group_size: int,
+                desc_act: bool,
+                sym: bool,
+                in_features: int,
+                out_features: int,
+                bias: bool = False,
+                pack_dtype: torch.dtype = torch.int32,
+                **kwargs):
             if marlin_import_exception is not None:
                 raise ValueError(
-                    f"Trying to use the marlin backend, but could not import the C++/CUDA dependencies with the following error: {marlin_import_exception}"
+                    f"Trying to use the marlin backend, but could not "
+                    f"import the C++/CUDA dependencies with the following error: {marlin_import_exception}"
                 )
 
             # self.original_in_features = in_features
@@ -222,7 +225,9 @@ def get_marlin_layer():##use an ugly wrapper to  import gptqmodel on demand
             self.fp32 = True if self.backend in [BACKEND.MARLIN, BACKEND.AUTO] else False
 
             if not self.fp32:
-                logger.warning_once("Kernel: Marlin FP16 mode is activated with reduced accuracy. Use default Marlin model for improved inference quality.")
+                logger.warning_once(
+                    "Kernel: Marlin FP16 mode is activated with reduced accuracy. "
+                    "Use default Marlin model for improved inference quality.")
 
             # Determine sharding
             if marlin_repeat_scales_on_all_ranks(desc_act,
@@ -352,7 +357,6 @@ def get_marlin_layer():##use an ugly wrapper to  import gptqmodel on demand
         def verify_supports_params(cls):
             return
 
-
         def post_init(self):
             device = self.qweight.device
             # Allocate marlin workspace
@@ -457,7 +461,6 @@ def get_marlin_layer():##use an ugly wrapper to  import gptqmodel on demand
             scale_perm_single.extend([2 * i + j for j in [0, 1, 8, 9, 16, 17, 24, 25]])
         return perm, scale_perm, scale_perm_single
 
-
     def unpack_qzeros(qzeros):
         unpacked_zeros = torch.zeros(
             (qzeros.shape[0], qzeros.shape[1] * 8),
@@ -472,7 +475,6 @@ def get_marlin_layer():##use an ugly wrapper to  import gptqmodel on demand
 
         return unpacked_zeros
 
-
     def dequantize_qzeros(layer):
         qzeros = layer.qzeros
         unpacked_qzeros = unpack_qzeros(qzeros)
@@ -482,4 +484,3 @@ def get_marlin_layer():##use an ugly wrapper to  import gptqmodel on demand
         return unpacked_qzeros
 
     return MarlinQuantLinear
-

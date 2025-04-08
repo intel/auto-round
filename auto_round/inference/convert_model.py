@@ -323,7 +323,6 @@ def post_init(model, used_backends):
     need_gptqmodel_init = False
     need_ipex_itrex_init = False
     used_gptq_exllamav2 = False
-    # model.to(torch.float16)
     for used_backend in used_backends:
         if used_backend.startswith("auto_gptq"):
             need_autogptq_init = True
@@ -332,9 +331,9 @@ def post_init(model, used_backends):
         elif used_backend.startswith("gptqmodel"):
             need_gptqmodel_init = True
         elif used_backend.startswith("ipex"):
-            need_ipex_itrex_init = False
+            need_ipex_itrex_init = True
         elif used_backend.startswith("qbit"):
-            need_ipex_itrex_init = False
+            need_ipex_itrex_init = True
     if need_autogptq_init:
         from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init  # pylint: disable=E0401
         model = gptq_post_init(model, use_act_order=False)
