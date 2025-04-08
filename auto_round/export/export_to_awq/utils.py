@@ -221,8 +221,11 @@ class WQLinear_GEMM(nn.Module):
             repeat_zeros = zeros.to(device).t().repeat_interleave(group_size, 1)
         else:
             repeat_zeros = zeros
-        intweight = torch.round(linear.weight.to(device) / repeat_scales + repeat_zeros).to(
+        intweight = torch.round(linear.weight.to(device) / repeat_scales[:, :linear.weight.shape[1]] + repeat_zeros[:, :
+                                                                                                                       linear.weight.shape[
+                                                                                                                           1]]).to(
             torch.int).t().contiguous()
+
         intweight = intweight.to(dtype=torch.int32)
         del repeat_scales
 

@@ -59,7 +59,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
     @classmethod
     def tearDownClass(self):
-        shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_gptqmodel_exllmav2_4bits_asym(self):
@@ -124,9 +124,9 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")##will convert to gptq model
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")  ##will convert to gptq model
 
-        quantization_config = AutoRoundConfig(backend="gptq:exllamav2") ## or exllamav2
+        quantization_config = AutoRoundConfig(backend="gptq:exllamav2")  ## or exllamav2
         model = AutoModelForCausalLM.from_pretrained(
             self.save_folder,
             torch_dtype=torch.float16,
@@ -140,10 +140,10 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         print(result['results']['lambada_openai']['acc,none'])
         self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.27)
         torch.cuda.empty_cache()
-
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_gptq_exllamav2_4bits_sym_group_size(self):
-        for group_size in [32,512,1024]:
+        for group_size in [32, 512, 1024]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = 4, group_size, True
@@ -157,9 +157,10 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
                 sym=sym,
             )
             quantized_model_path = self.save_folder
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")##will convert to gptq model
+            autoround.quantize_and_save(output_dir=quantized_model_path,
+                                        format="auto_round")  ##will convert to gptq model
 
-            quantization_config = AutoRoundConfig(backend="gptq:exllamav2") ## or exllamav2
+            quantization_config = AutoRoundConfig(backend="gptq:exllamav2")  ## or exllamav2
             model = AutoModelForCausalLM.from_pretrained(
                 self.save_folder,
                 torch_dtype=torch.float16,
@@ -174,7 +175,6 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
             self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.15)
             torch.cuda.empty_cache()
             shutil.rmtree(self.save_folder, ignore_errors=True)
-
 
 
 if __name__ == "__main__":

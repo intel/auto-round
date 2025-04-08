@@ -99,7 +99,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         else:
             repeat_zeros = zeros
 
-        intweight = torch.round(W.to(device) / repeat_scales + repeat_zeros).to(
+        intweight = torch.round(W.to(device) / repeat_scales[:,:W.shape[1]] + repeat_zeros[:,:W.shape[1]]).to(
             torch.int32)
 
         del repeat_scales
