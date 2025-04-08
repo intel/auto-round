@@ -120,7 +120,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
         return compressed_model
 
     if os.path.exists(output_dir):
-        logger.warning("f{save_dir} already exists, this may causes model conflict")
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
     layer_config = kwargs["layer_config"]
     for key in layer_config.keys():
         if not check_to_quantized(layer_config[key]) and \
