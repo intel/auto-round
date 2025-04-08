@@ -157,13 +157,13 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
                 sym=sym,
             )
             quantized_model_path = self.save_folder
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:triton")##will convert to gptq model
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")##will convert to gptq model
 
-            quantization_config = AutoRoundConfig(backend="ipex") ## or exllamav2
+            quantization_config = AutoRoundConfig(backend="gptq:exllamav2") ## or exllamav2
             model = AutoModelForCausalLM.from_pretrained(
                 self.save_folder,
                 torch_dtype=torch.float16,
-                device_map="cpu",
+                device_map="auto",
                 quantization_config=quantization_config
             )
 
