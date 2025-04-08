@@ -22,6 +22,7 @@ import torch.nn as nn
 import transformers
 
 import auto_round.export.export_to_autoround.qlinear_triton_act
+import auto_round_extension.cuda.qlinear_tritonv2
 from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module, supported_layer_types
 import threadpoolctl as tctl
 import inspect
@@ -77,7 +78,9 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     elif "awq" in backend:
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
-    elif "gptq" in backend:
+    elif "gptqmodel" in backend:
+        return  auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
+    elif "gptq" in backend and not "gptqmodel" in backend:
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
         assert False, f"only support auto_gptq, auto_awq and auto_round backend"
@@ -332,6 +335,8 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
         safe_serialization (`bool`, defaults to `True`):
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
+    if os.path.exists(save_dir):
+        logger.warning("f{save_dir} already exists, this may causes model conflict")
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_path = os.path.join(save_dir, "config.json")

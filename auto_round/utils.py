@@ -32,7 +32,7 @@ import transformers
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
 supported_formats = (
-    "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
+    "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq","auto_round:gptqmodel","auto_round:auto_awq", "auto_gptq:marlin",
     "itrex", "itrex_xpu", "fake"
 )
 
@@ -1203,3 +1203,11 @@ def is_debug_mode():
         bool: True if debugging is enabled, False otherwise.
     """
     return sys.gettrace() is not None or sys.flags.debug == 1
+
+def get_layer_features(layer):
+    """Extracts input and output feature dimensions for supported layers."""
+    if isinstance(layer, torch.nn.Linear):
+        return layer.in_features, layer.out_features
+    elif isinstance(layer, transformers.pytorch_utils.Conv1D):  # TODO: Verify correctness
+        return layer.weight.shape[0], layer.weight.shape[1]
+    return None, None  # Unsupported layer type

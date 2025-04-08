@@ -161,6 +161,8 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
         safe_serialization (`bool`, defaults to `True`):
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
+    if os.path.exists(save_dir):
+        logger.warning("f{save_dir} already exists, this may causes model conflict")
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_path = os.path.join(save_dir, "config.json")

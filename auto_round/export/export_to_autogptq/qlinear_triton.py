@@ -18,30 +18,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-import numba
-
-
-##TODO different bits
-# @numba.jit(nopython=True, parallel=True)
-# def pack_array_with_numba_b4_c32(
-#         raw_array: np.ndarray, packed_array: np.ndarray
-# ) -> np.ndarray:
-#     """Pack the array with numba when bits=4 and compress_bits=32."""
-#     bits = 4
-#     n_pack = 32 // bits
-#
-#     for row in range(packed_array.shape[0]):
-#         packed_array[row] = ((((raw_array[row * n_pack + 7]) << 28)
-#                               | ((raw_array[row * n_pack + 6]) << 24)
-#                               | ((raw_array[row * n_pack + 5]) << 20)
-#                               | ((raw_array[row * n_pack + 4]) << 16)
-#                               | ((raw_array[row * n_pack + 3]) << 12)
-#                               | (raw_array[row * n_pack + 2]) << 8)
-#                              | ((raw_array[row * n_pack + 1]) << 4)
-#                              | ((raw_array[row * n_pack]) << 0))
-#
-#     return packed_array
-
 
 class TritonModuleMixin:
     @classmethod

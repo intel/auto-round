@@ -255,7 +255,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.dataset = dataset
         self.group_size = group_size
         self.sym = sym
-        self.target_backend = kwargs.get("target_backend", "auto")
+        self.target_backend = "auto"
         self.backend = backend
         self.layer_config = layer_config
         if kwargs is not None:
@@ -326,6 +326,7 @@ class AutoRoundQuantizer(HfQuantizer):
             pass
 
         model.quantize_config = StoreAttr()
+
         if hasattr(self, "used_backend_info") and self.used_backend_info["used_autogptq"]:
             from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init  # pylint: disable=E0401
             model = gptq_post_init(model, use_act_order=False)

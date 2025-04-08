@@ -142,6 +142,39 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         torch.cuda.empty_cache()
 
 
+    def test_gptq_exllamav2_4bits_sym_group_size(self):
+        for group_size in [32,512,1024]:
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+            bits, group_size, sym = 4, group_size, True
+            autoround = AutoRound(
+                model,
+                tokenizer,
+                bits=bits,
+                iters=1,
+                nsamples=1,
+                group_size=group_size,
+                sym=sym,
+            )
+            quantized_model_path = self.save_folder
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:triton")##will convert to gptq model
+
+            quantization_config = AutoRoundConfig(backend="ipex") ## or exllamav2
+            model = AutoModelForCausalLM.from_pretrained(
+                self.save_folder,
+                torch_dtype=torch.float16,
+                device_map="cpu",
+                quantization_config=quantization_config
+            )
+
+            tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+            self.model_infer(model, tokenizer)
+            result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+            print(result['results']['lambada_openai']['acc,none'])
+            self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.15)
+            torch.cuda.empty_cache()
+
+
 
 if __name__ == "__main__":
     unittest.main()

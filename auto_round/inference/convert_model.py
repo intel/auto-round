@@ -198,6 +198,15 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
     must_use_target_backend = False
     if target_backend:
         must_use_target_backend = True
+        layer_backend = target_backend
+        layer_backend_must = find_backend(layer_backend, orig_backend)
+        _update_backend_flags(layer_backend_must, backend_flags)
+        if layer_backend_must is None:
+            raise ValueError(
+                f"{target_backend} is not compatible, please change backend to `auto` and retry")
+        devices = BackendInfos[layer_backend_must].device
+        if target_device not in devices:
+            raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
 
     target_backend = target_backend or orig_backend  # Default to original backend if not specified
 
@@ -214,27 +223,22 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         if in_features is None:
             continue  # Skip unsupported layer types
 
-        key = (f"{target_device}_{target_backend}_{orig_backend}_"
-               f"{config['bits']}_{config['group_size']}_{config['sym']}_{in_features}_{out_features}")
-        if key in backend_cache:
-            layer_backend = backend_cache[key]
-        elif must_use_target_backend:
-            layer_backend = target_backend
-            layer_backend = find_backend(layer_backend, orig_backend)
-            if layer_backend is None:
-                raise ValueError(
-                    f"{target_backend} is not compatible, please change backend to `auto` and retry")
-            devices = BackendInfos[layer_backend].device
-            if target_device not in devices:
-                raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
+        if must_use_target_backend:
+            layer_backend = layer_backend_must
         else:
-            # Determine backend
-            layer_backend = _get_layer_backend(target_device, target_backend, orig_backend, config,
-                                               in_features, out_features)
+            key = f"{config['bits']}_{config['group_size']}_{config['sym']}_{in_features}_{out_features}"
+            if key in backend_cache:
+                layer_backend = backend_cache[key]
+            else:
+                # Determine backend
+                layer_backend = _get_layer_backend(target_device, target_backend, orig_backend, config,
+                                                   in_features, out_features)
+                backend_cache[key] = layer_backend
+
         if not layer_backend:
             raise ValueError(f"No compatible backend found for layer {layer_name} with config {config}")
 
-        # Update backend usage flags
+            # Update backend usage flags
         _update_backend_flags(layer_backend, backend_flags)
 
         # Check ExLlamaV2 kernel
@@ -242,7 +246,7 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
             _import_exllamav2_kernels(layer_backend)
             import_exllama_reminder_cnt += 1
 
-        logger.info(f"{layer_name}: {layer_backend} backend is used")  ##TODO delete
+        ##logger.info(f"{layer_name}: {layer_backend} backend is used")  ##TODO delete
 
         # Create and replace layer
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
@@ -357,6 +361,8 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         ValueError:
             If the quantization backend is not specified in the configuration.
     """
+    import time
+    start_time = time.time()
 
     quantization_config = model.config.quantization_config
     if not hasattr(quantization_config, "target_backend"):
@@ -366,7 +372,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     _, target_backend = parse_target_device_and_backend(quantization_config.target_backend)
 
     if ("hpu" == target_device or "cpu" == target_device) and model.dtype != torch.bfloat16:
-        logger.info(f"Change the dtype to `bfloat16`")
+        logger.info(f"Change the dtype to `bfloat16`")  ##TODO have a check
         model = model.to(torch.bfloat16)
 
     if hasattr(quantization_config, "backend"):  # pragma: no cover
@@ -378,6 +384,8 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     else:  # pragma: no cover
         backend = "auto_gptq"
         logger.warning("Quantization backend must be specified. Set it to 'auto_gptq' by default.")
+    if backend == "auto":
+        backend = "auto_gptq"
 
     layer_configs = get_layer_config(model, quantization_config)
     if backend.startswith("auto_round:") and ("gptq" in backend or "awq" in backend):
@@ -386,5 +394,9 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
 
     if target_backend.startswith("auto_round:") and ("gptq" in backend or "awq" in backend):
         target_backend = target_backend[len("auto_round:"):]
+
     used_backend_info = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
+    end_time = time.time()
+    logger.info(f"convert_time, {end_time - start_time:.2f}s")
+
     return model, used_backend_info

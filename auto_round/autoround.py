@@ -52,7 +52,8 @@ from .utils import (
     compile_func,
     find_matching_blocks, is_debug_mode,
     TORCH_VERSION_AT_LEAST_2_6,
-    supported_layer_types
+    supported_layer_types,
+    get_layer_features,
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -436,7 +437,7 @@ class AutoRound(object):
                         f"Currently only support to export auto_round format quantized model"
                         " with fp8 dtype activation for activation quantization."
                         " Change format to fake and save."
-                        )
+                    )
                     formats = ["fake"]
             else:
                 if len(formats) > 1 or "auto_round" not in formats:
@@ -489,6 +490,7 @@ class AutoRound(object):
             folders.append(save_folder)
 
         return model, folders
+
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
         the entry of AutoRound.
@@ -673,6 +675,10 @@ class AutoRound(object):
             # If the layer is outside a block and requires quantization, mark it as a quantized layer outside the block
             if n not in layers_in_blocks and check_to_quantized(layer_config[n]):
                 has_qlayer_outside_block = True
+
+            in_features, out_features = get_layer_features(m)
+            if in_features <= layer_config[n]["group_size"]:
+                layer_config[n]["group_size"] = -1
 
             # Apply the configuration to the corresponding layer in the model
             for key in keys:
@@ -1459,7 +1465,7 @@ class AutoRound(object):
                 m.name = n
 
         for i in range(0, len(block_names), nblocks):
-            if i!=0:
+            if i != 0:
                 pbar.update(1)
             if nblocks == 1:
                 n = block_names[i]
@@ -1523,7 +1529,7 @@ class AutoRound(object):
                         f"Currently only support to export auto_round format quantized model"
                         " with fp8 dtype activation for activation quantization."
                         " Change format to fake and save."
-                        )
+                    )
                     format = "fake"
             else:
                 if format != "auto_round":
