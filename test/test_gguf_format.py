@@ -36,6 +36,7 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("llama.cpp", ignore_errors=True)
     
     def test_q2_k_export(self):
+        os.system("git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .")
         bits, group_size, sym = 2, 16, False
         model_name = "Qwen/Qwen2.5-1.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
@@ -69,6 +70,7 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_basic_usage(self):
+        os.system("git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .")
         python_path = sys.executable
         res = os.system(
             f"cd .. && {python_path} -m auto_round --model {self.model_name} --eval_task_by_task"
@@ -79,6 +81,7 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_q4_0(self):
+        os.system("git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .")
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
             self.model,
@@ -105,6 +108,7 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
     
     def test_q4_1(self):
+        os.system("git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .")
         bits, group_size, sym = 4, 32, False
         autoround = AutoRound(
             self.model,
