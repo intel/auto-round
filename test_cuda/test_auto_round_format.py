@@ -78,47 +78,142 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    def test_device_map(self):
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
 
-    def test_awq_backend(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(
-            model,
-            tokenizer,
-            bits=bits,
-            group_size=group_size,
-            iters=1,
-            nsamples=1,
-            sym=sym,
-        )
-        quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path,format="auto_round:auto_awq")
+        device_map = {}
+        for i in range(0, 32):
+            key = f"model.layers.{str(i)}"
+            device_map[key] = "cuda"
+        device_map["model.layers.1"] = "cpu"
+        device_map["model.layers.2"] = "cpu"
+        device_map["model.layers.3"] = "cpu"
+        device_map["model.layers.4"] = "cpu"
+        device_map["model.layers.5"] = "cpu"
+        device_map["model.layers.6"] = "cpu"
+        device_map["model.layers.27"] = "cpu"
+        device_map["model.layers.28"] = "cpu"
+        device_map["model.layers.30"] = "cpu"
+        device_map["model.layers.31"] = "cpu"
+        device_map["lm_head"] = "cuda"
+        device_map["model.norm"] = "cuda"
+        device_map["model.rotary_emb"] = "cuda"
+        device_map["model.embed_tokens"] = "cuda"
 
-        quantization_config = AutoRoundConfig(backend="auto")
-        # model = AutoModelForCausalLM.from_pretrained(
-        #     self.save_folder,
-        #     torch_dtype=torch.float16,
-        #     device_map="auto",
-        #     quantization_config=quantization_config
-        # )
-        #
-        # tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        # self.model_infer(model, tokenizer)
-        # result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        # print(result['results']['lambada_openai']['acc,none'])
-        # self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.18)
-        torch.cuda.empty_cache()
+        device_map1 = {}
+        for i in range(0, 32):
+            key = f"model.layers.{str(i)}"
+            device_map1[key] = "cuda"
+        device_map1["model.layers.1"] = "cuda:1"
+        device_map1["model.layers.2"] = "cuda:1"
+        device_map1["model.layers.3"] = "cuda:1"
+        device_map1["model.layers.4"] = "cuda:1"
+        device_map1["model.layers.5"] = "cuda:1"
+        device_map1["model.layers.6"] = "cuda:1"
+        device_map1["model.layers.27"] = "cuda:1"
+        device_map1["model.layers.28"] = "cuda:1"
+        device_map1["model.layers.30"] = "cuda:1"
+        device_map1["model.layers.31"] = "cuda:1"
+        device_map1["lm_head"] = "cuda:1"
+        device_map1["model.norm"] = "cuda"
+        device_map1["model.rotary_emb"] = "cuda"
+        device_map1["model.embed_tokens"] = "cuda"
 
-        model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            quantization_config=quantization_config
-        )
+        # for tmp_device_map in [device_map1,device_map,None, 0, "balanced", "balanced_low_0", "sequential", "cpu", "cuda:0", "cuda", "auto",
+        #                        ]:
+        for tmp_device_map in [device_map]:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype="auto",
+                device_map=tmp_device_map
+                # max_memory={0: "5GB", "cpu": "32GB"},
+            )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+            prompts = [
+                "Hello,my name is",
+                # "The president of the United States is",
+                # "The capital of France is",
+                # "The future of AI is",
+            ]
+
+            texts = []
+            for prompt in prompts:
+                messages = [
+                    {"role": "user", "content": prompt}
+                ]
+                text = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
+                texts.append(text)
+
+            inputs = tokenizer(texts, return_tensors="pt", padding=False, truncation=True)
+
+            outputs = model.generate(
+                input_ids=inputs["input_ids"].to(model.device),
+                attention_mask=inputs["attention_mask"].to(model.device),
+                do_sample=False,  ## change this to follow official usage
+                max_new_tokens=5
+            )
+            generated_ids = [
+                output_ids[len(input_ids):] for input_ids, output_ids in zip(inputs["input_ids"], outputs)
+            ]
+
+            decoded_outputs = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+
+            for i, prompt in enumerate(prompts):
+                print(f"Prompt: {prompt}")
+                print(f"Generated: {decoded_outputs[i]}")
+                print("-" * 50)
+            model = None
+            del model
+            torch.cuda.empty_cache()
+
+    #
+    # def test_awq_backend(self):
+    #     model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+    #     tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+    #     bits, group_size, sym = 4, 128, True
+    #     autoround = AutoRound(
+    #         model,
+    #         tokenizer,
+    #         bits=bits,
+    #         group_size=group_size,
+    #         iters=1,
+    #         nsamples=1,
+    #         sym=sym,
+    #     )
+    #     quantized_model_path = self.save_folder
+    #     autoround.quantize_and_save(output_dir=quantized_model_path,format="auto_round:auto_awq")
+    #
+    #     quantization_config = AutoRoundConfig(backend="auto")
+    #     # model = AutoModelForCausalLM.from_pretrained(
+    #     #     self.save_folder,
+    #     #     torch_dtype=torch.float16,
+    #     #     device_map="auto",
+    #     #     quantization_config=quantization_config
+    #     # )
+    #     #
+    #     # tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+    #     # self.model_infer(model, tokenizer)
+    #     # result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+    #     # print(result['results']['lambada_openai']['acc,none'])
+    #     # self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.18)
+    #     torch.cuda.empty_cache()
+    #
+    #     model = AutoModelForCausalLM.from_pretrained(
+    #         self.save_folder,
+    #         torch_dtype=torch.bfloat16,
+    #         device_map="auto",
+    #         quantization_config=quantization_config
+    #     )
+    #
+    #     tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+    #     self.model_infer(model, tokenizer)
 
 
     # def test_tritonv2_bf16(self):

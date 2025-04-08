@@ -241,6 +241,9 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
 
         # Create and replace layer
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
+        # if hasattr(new_layer,"QUANT_TYPE") and new_layer.QUANT_TYPE=="marlin":
+        #     new_layer.g_idx =  torch.nn.Parameter(torch.empty(0, dtype=torch.int),
+        #                       requires_grad=False)
         set_module(module, layer_name, new_layer)
 
     return used_backends

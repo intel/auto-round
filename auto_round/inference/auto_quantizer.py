@@ -30,7 +30,7 @@ import importlib.util
 import warnings
 from dataclasses import dataclass
 from logging import getLogger
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union, List
 
 import torch
 import torch.nn as nn
@@ -328,8 +328,15 @@ class AutoRoundQuantizer(HfQuantizer):
 
         post_init(model,self.used_backends)
 
+    def update_unexpected_keys(self, model, unexpected_keys: List[str], prefix: str) -> List[str]:
+        """
+        Override this method if you want to adjust the `unexpected_keys`.
 
-
+        Args:
+            unexpected_keys (`List[str]`, *optional*):
+                The list of unexpected keys in the checkpoint compared to the state dict of the model
+        """
+        return unexpected_keys
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
         # if model.__class__.main_input_name != "input_ids":
         #     logger.warning("We can only quantize pure text models and " \
