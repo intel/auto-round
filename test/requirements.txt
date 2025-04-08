@@ -1,2 +1,3 @@
 addict
 modelscope
+git+https://github.com/deepseek-ai/DeepSeek-VL2.git
