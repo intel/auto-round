@@ -14,7 +14,7 @@
 
 from logging import getLogger
 from typing import Union
-
+from tqdm import tqdm
 import torch
 import torch.nn as nn
 
@@ -193,14 +193,13 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         dict: Flags indicating which backends were used.
     """
 
-    backend_flags = {"used_autogptq": False, "used_gptqmodel": False, "used_autoawq": False, "used_qbits": False,
-                     "used_ipex": False}
+    used_backends = []
     must_use_target_backend = False
     if target_backend:
         must_use_target_backend = True
         layer_backend = target_backend
         layer_backend_must = find_backend(layer_backend, orig_backend)
-        _update_backend_flags(layer_backend_must, backend_flags)
+        used_backends.append(layer_backend_must)
         if layer_backend_must is None:
             raise ValueError(
                 f"{target_backend} is not compatible, please change backend to `auto` and retry")
@@ -209,8 +208,6 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
             raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
 
     target_backend = target_backend or orig_backend  # Default to original backend if not specified
-
-    import_exllama_reminder_cnt = 0
 
     backend_cache = {}
 
@@ -229,6 +226,8 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
             key = f"{config['bits']}_{config['group_size']}_{config['sym']}_{in_features}_{out_features}"
             if key in backend_cache:
                 layer_backend = backend_cache[key]
+                if layer_backend not in used_backends:
+                    used_backends.append(layer_backend)
             else:
                 # Determine backend
                 layer_backend = _get_layer_backend(target_device, target_backend, orig_backend, config,
@@ -238,21 +237,13 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         if not layer_backend:
             raise ValueError(f"No compatible backend found for layer {layer_name} with config {config}")
 
-            # Update backend usage flags
-        _update_backend_flags(layer_backend, backend_flags)
-
-        # Check ExLlamaV2 kernel
-        if import_exllama_reminder_cnt <= 0:
-            _import_exllamav2_kernels(layer_backend)
-            import_exllama_reminder_cnt += 1
-
-        ##logger.info(f"{layer_name}: {layer_backend} backend is used")  ##TODO delete
+        logger.info(f"{layer_name}: {layer_backend} backend is used")  ##TODO delete
 
         # Create and replace layer
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
         set_module(module, layer_name, new_layer)
 
-    return backend_flags
+    return used_backends
 
 
 def _get_layer_features(layer):
@@ -274,30 +265,15 @@ def _get_layer_backend(target_device, target_backend, orig_backend, config, in_f
     return backend
 
 
-def _update_backend_flags(layer_backend, flags):
-    """Updates backend flags based on detected backend type."""
-    if "qbits" in layer_backend:
-        flags["used_qbits"] = True
-    elif "ipex" in layer_backend:
-        flags["used_ipex"] = True
-    elif "gptqmodel" in layer_backend:
-        flags["used_gptqmodel"] = True
-    elif "gptq" in layer_backend and "gptqmodel" not in layer_backend:
-        flags["used_autogptq"] = True
-    elif "awq" in layer_backend:
-        flags["used_autoawq"] = True
-
-
-def _import_exllamav2_kernels(layer_backend):
+def _import_exllamav2_kernels():
     """Attempts to import ExLlamaV2 kernels for performance optimization."""
-    if "gptq" in layer_backend and "gptqmodel" not in layer_backend and "exllamav2" in layer_backend:
-        try:
-            from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
-        except ImportError:
-            logger.warning_once(
-                "For better inference performance, install ExLlamaV2 kernel via: "
-                "`pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`"
-            )
+    try:
+        from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
+    except ImportError:
+        logger.warning_once(
+            "For better inference performance, install ExLlamaV2 kernel via: "
+            "`pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`"
+        )
 
 
 def _create_quant_layer(layer, layer_backend, config, in_features, out_features):
@@ -340,6 +316,61 @@ def infer_target_device(device_map=None):
         target_device = get_available_devices()[0]
     assert isinstance(target_device, str)
     return target_device
+
+
+def post_init(model, used_backends):
+    need_autogptq_init = False
+    need_gptqmodel_init = False
+    need_ipex_itrex_init = False
+    used_gptq_exllamav2 = False
+    # model.to(torch.float16)
+    for used_backend in used_backends:
+        if used_backend.startswith("auto_gptq"):
+            need_autogptq_init = True
+            if used_backend == "auto_gptq:exllamav2":
+                used_gptq_exllamav2 = True
+        elif used_backend.startswith("gptqmodel"):
+            need_gptqmodel_init = True
+        elif used_backend.startswith("ipex"):
+            need_ipex_itrex_init = False
+        elif used_backend.startswith("qbit"):
+            need_ipex_itrex_init = False
+    if need_autogptq_init:
+        from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init  # pylint: disable=E0401
+        model = gptq_post_init(model, use_act_order=False)
+    elif need_gptqmodel_init:
+        from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
+        model = gptq_post_init(model, use_act_order=False)
+    elif need_ipex_itrex_init:
+        message = "repacking to CPU/XPU format"
+        layers = []  ## ipex post_init  will add one more layer
+        for n, m in model.named_modules():
+            if hasattr(m, "QUANT_TYPE") and ("qbits" in m.QUANT_TYPE or "ipex" in m.QUANT_TYPE):
+                layers.append(m)
+
+        for layer in tqdm(layers, desc=message, total=len(layers),
+                          leave=True):
+            layer.post_init()
+
+        if used_gptq_exllamav2:
+            _import_exllamav2_kernels()
+
+    ## convert datatype
+    data_types=[]
+    for used_backend in used_backends:
+        backend = BackendInfos[used_backend]
+        data_types.append(backend.dtype)
+    common = set(data_types[0])
+    for l in data_types[1:]:
+        common &= set(l)
+    common = list(common)
+    if str(model.dtype).split('.')[-1] not in common:
+        if common[0]=="float16":
+            model = model.to(torch.float16)
+            logger.warning("force model to float16")
+        elif common[0]=="bfloat16":
+            model = model.to(torch.bfloat16)
+            logger.warning("force model to bfloat16")
 
 
 def convert_hf_model(model: nn.Module, target_device="cpu"):
@@ -395,8 +426,8 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     if target_backend.startswith("auto_round:") and ("gptq" in backend or "awq" in backend):
         target_backend = target_backend[len("auto_round:"):]
 
-    used_backend_info = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
+    used_backends = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
     end_time = time.time()
     logger.info(f"convert_time, {end_time - start_time:.2f}s")
 
-    return model, used_backend_info
+    return model, used_backends

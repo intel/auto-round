@@ -126,6 +126,8 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
+    if os.path.exists(output_dir):
+        logger.warning("f{save_dir} already exists, this may causes model conflict")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     if processor is not None:
@@ -222,8 +224,6 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
     ##max_shard_size = "10000GB"  ## API of auto-gptq with marlin does not support shard size
-    if os.path.exists(save_dir):
-        logger.warning("f{save_dir} already exists, this may causes model conflict")
     os.makedirs(save_dir, exist_ok=True)
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_path = os.path.join(save_dir, "config.json")

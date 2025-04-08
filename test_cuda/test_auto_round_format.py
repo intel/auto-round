@@ -3,6 +3,8 @@ import shutil
 import sys
 import unittest
 
+from auto_round.eval.evaluation import simple_evaluate_user_model
+
 sys.path.insert(0, "..")
 import torch
 import transformers
@@ -25,9 +27,10 @@ class TestAutoRound(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         self.model_name = "/models/opt-125m"
-        self.model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
+        ##self.model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
 
         self.llm_dataloader = LLMDataLoader()
+        self.save_folder = "./saved"
 
     def model_infer(self,model,tokenizer):
         prompts = [
@@ -37,19 +40,19 @@ class TestAutoRound(unittest.TestCase):
             # "The future of AI is",
         ]
 
-        texts = []
-        for prompt in prompts:
-            messages = [
-                {"role": "user", "content": prompt}
-            ]
-            text = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-            texts.append(text)
+        ##texts = []
+        # for prompt in prompts:
+        #     messages = [
+        #         {"role": "user", "content": prompt}
+        #     ]
+        #     text = tokenizer.apply_chat_template(
+        #         messages,
+        #         tokenize=False,
+        #         add_generation_prompt=True
+        #     )
+        #     texts.append(text)
 
-        inputs = tokenizer(texts, return_tensors="pt", padding=False, truncation=True)
+        inputs = tokenizer(prompts, return_tensors="pt", padding=False, truncation=True)
 
         outputs = model.generate(
             input_ids=inputs["input_ids"].to(model.device),
@@ -72,24 +75,66 @@ class TestAutoRound(unittest.TestCase):
     @classmethod
     def tearDownClass(self):
         return
-        shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
 
-    def test_tritonv2_bf16(self):
-        model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
-        quantization_config = AutoRoundConfig(backend="gptq:tritonv2")
+    def test_awq_backend(self):
+        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        bits, group_size, sym = 4, 128, True
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            iters=1,
+            nsamples=1,
+            sym=sym,
+        )
+        quantized_model_path = self.save_folder
+        autoround.quantize_and_save(output_dir=quantized_model_path,format="auto_round:auto_awq")
+
+        quantization_config = AutoRoundConfig(backend="auto")
+        # model = AutoModelForCausalLM.from_pretrained(
+        #     self.save_folder,
+        #     torch_dtype=torch.float16,
+        #     device_map="auto",
+        #     quantization_config=quantization_config
+        # )
+        #
+        # tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        # self.model_infer(model, tokenizer)
+        # result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+        # print(result['results']['lambada_openai']['acc,none'])
+        # self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.18)
+        torch.cuda.empty_cache()
+
         model = AutoModelForCausalLM.from_pretrained(
-            model_name,
+            self.save_folder,
             torch_dtype=torch.bfloat16,
             device_map="auto",
             quantization_config=quantization_config
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model_infer(model,tokenizer)
+        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        self.model_infer(model, tokenizer)
 
-        torch.cuda.empty_cache()
+
+    # def test_tritonv2_bf16(self):
+    #     model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
+    #     quantization_config = AutoRoundConfig(backend="gptq:tritonv2")
+    #     model = AutoModelForCausalLM.from_pretrained(
+    #         model_name,
+    #         torch_dtype=torch.bfloat16,
+    #         device_map="auto",
+    #         quantization_config=quantization_config
+    #     )
+    #
+    #     tokenizer = AutoTokenizer.from_pretrained(model_name)
+    #     self.model_infer(model,tokenizer)
+    #
+    #     torch.cuda.empty_cache()
 
     #
     # def test_tritonv2_fp16(self):

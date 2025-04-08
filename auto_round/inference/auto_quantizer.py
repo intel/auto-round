@@ -40,8 +40,7 @@ from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 from auto_round.utils import (is_hpu_supported)
-from auto_round.inference.convert_model import convert_hf_model, infer_target_device
-from tqdm import tqdm
+from auto_round.inference.convert_model import convert_hf_model, infer_target_device,post_init
 from enum import Enum
 
 logger = getLogger(__name__)
@@ -327,23 +326,9 @@ class AutoRoundQuantizer(HfQuantizer):
 
         model.quantize_config = StoreAttr()
 
-        if hasattr(self, "used_backend_info") and self.used_backend_info["used_autogptq"]:
-            from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init  # pylint: disable=E0401
-            model = gptq_post_init(model, use_act_order=False)
-        elif hasattr(self, "used_backend_info") and self.used_backend_info["used_gptqmodel"]:
-            from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
-            model = gptq_post_init(model, use_act_order=False)
-        elif hasattr(self, "used_backend_info") and (self.used_backend_info["used_ipex"] or self.used_backend_info[
-            "used_qbits"]):
-            message = "repacking to CPU/XPU format"
-            layers = []  ## ipex post_init  will add one more layer
-            for n, m in model.named_modules():
-                if hasattr(m, "QUANT_TYPE") and ("qbits" in m.QUANT_TYPE or "ipex" in m.QUANT_TYPE):
-                    layers.append(m)
+        post_init(model,self.used_backends)
 
-            for layer in tqdm(layers, desc=message, total=len(layers),
-                              leave=True):
-                layer.post_init()
+
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
         # if model.__class__.main_input_name != "input_ids":
@@ -353,8 +338,8 @@ class AutoRoundQuantizer(HfQuantizer):
         if self.pre_quantized:
             target_device = self.target_device if hasattr(self, self.target_device) else infer_target_device(
                 self.device_map)
-            model, used_backend_info = convert_hf_model(model, target_device)
-            self.used_backend_info = used_backend_info
+            model, used_backends = convert_hf_model(model, target_device)
+            self.used_backends = used_backends
 
     def _process_model_after_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if self.pre_quantized:
