@@ -139,25 +139,28 @@ class HFProcessor(BasicProcessor):
             **kwargs):
 
         messages = []
-        for content in text:
-            if content["role"] == "user":
-                messages.append({
-                    "role": content['role'],
-                    "content": [
-                        {"text": content["content"].replace(self.IMAGE_TOKEN, ""), "type": "text"}
-                    ]
-                })
-                if self.IMAGE_TOKEN in content['content']:
-                    # messages[-1]["content"].append({"text": None, "type": "image"})
-                    messages[-1]["content"].append({"type": "image"})
-            else:
-                messages.append({
-                    "role": content['role'],
-                    "content": content["content"]
-                })
+        if isinstance(text, list):
+            for content in text:
+                if content["role"] == "user":
+                    messages.append({
+                        "role": content['role'],
+                        "content": [
+                            {"text": content["content"].replace(self.IMAGE_TOKEN, ""), "type": "text"}
+                        ]
+                    })
+                    if self.IMAGE_TOKEN in content['content']:
+                        # messages[-1]["content"].append({"text": None, "type": "image"})
+                        messages[-1]["content"].append({"type": "image"})
+                else:
+                    messages.append({
+                        "role": content['role'],
+                        "content": content["content"]
+                    })
 
-        text = self.processor.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=False, return_dict=False)
+            text = self.processor.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=False, return_dict=False)
+        else:
+            text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
         if images is not None:
             images = self.image_processor(images)
         ret = self.processor(
