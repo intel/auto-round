@@ -127,7 +127,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     if os.path.exists(output_dir):
-        logger.warning("f{save_dir} already exists, this may causes model conflict")
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     if processor is not None:
