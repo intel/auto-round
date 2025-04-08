@@ -408,6 +408,9 @@ def tune(args):
             elif "mistral3" in model_type:
                 from transformers import Mistral3ForConditionalGeneration 
                 cls = Mistral3ForConditionalGeneration
+            elif "llama4" in model_type:
+                from transformers import Llama4ForConditionalGeneration
+                cls = Llama4ForConditionalGeneration
             else:
                 cls = AutoModelForCausalLM
 
@@ -659,3 +662,4 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+
