@@ -328,16 +328,6 @@ class AutoRoundQuantizer(HfQuantizer):
 
         post_init(model, self.used_backends)
 
-    def update_unexpected_keys(self, model, unexpected_keys: List[str], prefix: str) -> List[str]:
-        """
-        Override this method if you want to adjust the `unexpected_keys`.
-
-        Args:
-            unexpected_keys (`List[str]`, *optional*):
-                The list of unexpected keys in the checkpoint compared to the state dict of the model
-        """
-        return unexpected_keys
-
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if self.pre_quantized:
             target_device = self.target_device if hasattr(self, self.target_device) else infer_target_device(

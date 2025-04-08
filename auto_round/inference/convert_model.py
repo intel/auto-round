@@ -237,7 +237,7 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         if not layer_backend:
             raise ValueError(f"No compatible backend found for layer {layer_name} with config {config}")
 
-        logger.info(f"{layer_name}: {layer_backend} backend is used")  ##TODO delete
+        logger.debug(f"{layer_name}: {layer_backend} backend is used")  ##TODO delete
 
         # Create and replace layer
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
@@ -391,8 +391,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         ValueError:
             If the quantization backend is not specified in the configuration.
     """
-    import time
-    start_time = time.time()
+
 
     quantization_config = model.config.quantization_config
     if not hasattr(quantization_config, "target_backend"):
@@ -422,7 +421,5 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         target_backend = target_backend[len("auto_round:"):]
 
     used_backends = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
-    end_time = time.time()
-    logger.info(f"convert_time, {end_time - start_time:.2f}s")
 
     return model, used_backends

@@ -153,9 +153,11 @@ def quant_matmul_248(
 ):
     input_dtype = input.dtype
     W = dequant248(qweight, scales, qzeros, g_idx, bits, maxq=maxq, input_dtype=input_dtype)
+    orig_device = input.device
     if transpose:
-        return input @ W.t()
-    return input @ W
+        return (input.to(W.device) @ W.t()).to(orig_device)
+
+    return (input.to(W.device) @ W).to(orig_device)
 
 
 class QuantLinearFunction(torch.autograd.Function):
