@@ -173,6 +173,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
             print(result['results']['lambada_openai']['acc,none'])
             self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.15)
             torch.cuda.empty_cache()
+            shutil.rmtree(self.save_folder, ignore_errors=True)
 
 
 
