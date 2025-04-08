@@ -98,8 +98,6 @@ def dequantize_gemm(qweight, qzeros, scales, bits, group_size):
     return iweight
 
 
-
-
 class WQLinearMMFunction(Function):
     @staticmethod
     # ctx is the first argument to forward

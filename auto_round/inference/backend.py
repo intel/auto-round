@@ -18,7 +18,7 @@ from typing import List, Any, Optional
 
 from transformers.utils.versions import require_version
 
-import auto_round_extension.cuda.gptqmodel_marlin
+import auto_round.inference.gptqmodel_marlin
 from auto_round.utils import get_library_version, logger
 
 BackendInfos = {}
@@ -122,7 +122,7 @@ BackendInfos['auto_gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
 
 BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                                   packing_format="triton",
-                                                  dtype=["float16","bfloat16"],
+                                                  dtype=["float16", "bfloat16"],
                                                   bits=[2, 4, 8],
                                                   priority=1, feature_checks=[feature_multiply_checker_32],
                                                   alias=["auto_round", "tritonv2"],
@@ -131,7 +131,7 @@ BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, Fa
 
 BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda"], sym=[True],  ## asym has accuracy issue
                                                      packing_format="triton_zp",
-                                                     dtype=["float16","bfloat16"],
+                                                     dtype=["float16", "bfloat16"],
                                                      bits=[2, 4, 8],
                                                      priority=1, feature_checks=[feature_multiply_checker_32],
                                                      alias=["tritonv2", "tritonv2_zp"],
@@ -183,14 +183,14 @@ BackendInfos['qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
                                     priority=0 if "intel" in get_cpu_manufacturer() else 5,
                                     feature_checks=[],
                                     alias=["itrex"],
-                                    dtype=["float16","bfloat16"],
+                                    dtype=["float16", "bfloat16"],
                                     convertable_format=["triton"],
                                     requirements=["intel-extension-for-transformers"])
 
 BackendInfos['qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
                                        packing_format="qbits_zp",
                                        bits=[2, 4, 8], group_size=None,
-                                       dtype=["float16","bfloat16"],
+                                       dtype=["float16", "bfloat16"],
                                        priority=0 if "intel" in get_cpu_manufacturer() else 5,
                                        feature_checks=[],
                                        alias=["itrex"],
@@ -211,7 +211,7 @@ BackendInfos['ipex_gptq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False]
                                         bits=[4], group_size=None,
                                         priority=5 if "intel" in get_cpu_manufacturer() else 5,
                                         feature_checks=[],
-                                        dtype=["float16","bfloat16"],
+                                        dtype=["float16", "bfloat16"],
                                         convertable_format=["triton_zp"],
                                         alias=["ipex"],
                                         requirements=["intel-extension-for-pytorch>=2.5"]
@@ -221,7 +221,7 @@ BackendInfos['ipex_awq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
                                        packing_format="ipex_awq",
                                        bits=[4], group_size=None,
                                        priority=1,
-                                       dtype=["float16","bfloat16"],
+                                       dtype=["float16", "bfloat16"],
                                        feature_checks=[],
                                        alias=["ipex"],
                                        convertable_format=["awq"],
@@ -407,8 +407,8 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
 def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
     import gptqmodel  # pylint: disable=E0401
     if "marlin" in backend:
-        return auto_round_extension.cuda.gptqmodel_marlin.MarlinQuantLinear
-        return gptqmodel.nn_modules.qlinear.marlin.MarlinQuantLinear
+        return auto_round.inference.gptqmodel_marlin.get_marlin_layer()
+        # return gptqmodel.nn_modules.qlinear.marlin.MarlinQuantLinear
     elif "exllamav2" in backend:
         return gptqmodel.nn_modules.qlinear.exllamav2.ExllamaV2QuantLinear
     elif "tritonv2" in backend:
@@ -540,6 +540,21 @@ def find_backend(target_backend: str, orig_backend: str = None) -> str | None:
     )
 
 
+def get_all_compatible_backend(device, backend, orig_backend, bits, group_size, sym, in_features, out_features):
+    # Get packing format from the original backend
+    packing_format = BackendInfos[orig_backend].packing_format
+
+    # Find compatible backends
+    compatible_backends = [
+        key for key in BackendInfos.keys()
+        if check_compatible(key, device, bits, group_size, sym, packing_format, in_features, out_features,
+                            check_requirements=False)
+    ]
+
+    # Return the first compatible backend or an empty list if none found
+    return compatible_backends
+
+
 def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_features, out_features):
     """Selects the most suitable backend for the layer based on compatibility and priority.
 
@@ -590,11 +605,8 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
 
     # Raise an error if no compatible backends are found
     if len(supported_backends) == 0:
-        supported_backends_need_package = []
-        for key in BackendInfos.keys():
-            if check_compatible(key, device, bits, group_size, sym, packing_format, in_features, out_features,
-                                check_requirements=False):
-                supported_backends_need_package.append(key)
+        supported_backends_need_package = get_all_compatible_backend(backend, orig_backend, bits, group_size, sym,
+                                                                     in_features, out_features)
 
         if len(supported_backends_need_package) > 0:
             supported_backends_need_package = sorted(supported_backends_need_package,

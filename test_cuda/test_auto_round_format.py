@@ -120,14 +120,12 @@ class TestAutoRound(unittest.TestCase):
         device_map1["model.rotary_emb"] = "cuda"
         device_map1["model.embed_tokens"] = "cuda"
 
-        # for tmp_device_map in [device_map1,device_map,None, 0, "balanced", "balanced_low_0", "sequential", "cpu", "cuda:0", "cuda", "auto",
-        #                        ]:
-        for tmp_device_map in [device_map]:
+        for tmp_device_map in [device_map1,device_map,None, 0, "balanced", "balanced_low_0", "sequential", "cpu", "cuda:0", "cuda", "auto",
+                               ]:
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype="auto",
                 device_map=tmp_device_map
-                # max_memory={0: "5GB", "cpu": "32GB"},
             )
 
             tokenizer = AutoTokenizer.from_pretrained(model_name)

@@ -338,10 +338,6 @@ class AutoRoundQuantizer(HfQuantizer):
         """
         return unexpected_keys
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
-        # if model.__class__.main_input_name != "input_ids":
-        #     logger.warning("We can only quantize pure text models and " \
-        #                    "certain types(Llava/Qwen-VL/Phi-3-vision) of multimodal models.")
-
         if self.pre_quantized:
             target_device = self.target_device if hasattr(self, self.target_device) else infer_target_device(
                 self.device_map)

@@ -241,9 +241,6 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
 
         # Create and replace layer
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
-        # if hasattr(new_layer,"QUANT_TYPE") and new_layer.QUANT_TYPE=="marlin":
-        #     new_layer.g_idx =  torch.nn.Parameter(torch.empty(0, dtype=torch.int),
-        #                       requires_grad=False)
         set_module(module, layer_name, new_layer)
 
     return used_backends
@@ -404,10 +401,6 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
 
     ##target_backend could be None
     _, target_backend = parse_target_device_and_backend(quantization_config.target_backend)
-
-    if ("hpu" == target_device or "cpu" == target_device) and model.dtype != torch.bfloat16:
-        logger.info(f"Change the dtype to `bfloat16`")  ##TODO have a check
-        model = model.to(torch.bfloat16)
 
     if hasattr(quantization_config, "backend"):  # pragma: no cover
         backend = quantization_config.backend
