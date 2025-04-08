@@ -177,10 +177,13 @@ class AutoRoundMLLM(AutoRound):
             self.template = get_template(
                 self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
             dataset = self.template.default_dataset if dataset is None else dataset
-        
+
         if model.config.model_type == "deepseek_vl_v2":
-           model.forward = model.language.forward
-        
+            from auto_round.special_model_handler import _deepseek_vl2_forward
+            from functools import partial
+            # model.forward = model.language.forward
+            model.forward = partial(_deepseek_vl2_forward, model)
+
         from ..calib_dataset import CALIB_DATASETS
         from .mllm_dataset import MLLM_DATASET
         if isinstance(dataset, str):
@@ -417,4 +420,3 @@ class AutoRoundMLLM(AutoRound):
         compressed_model = super().save_quantized(
             output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs)
         return compressed_model
-

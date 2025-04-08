@@ -145,7 +145,7 @@ class HFProcessor(BasicProcessor):
                     messages.append({
                         "role": content['role'],
                         "content": [
-                            {"text": content["content"].replace(self.IMAGE_TOKEN, ""), "type": "text"}
+                            {"text": content["content"], "type": "text"}
                         ]
                     })
                     if self.IMAGE_TOKEN in content['content']:
@@ -318,7 +318,7 @@ class DeepSeekV2Processor(BasicProcessor):
             if content["role"] == "user":
                 messages.append({
                     "role": content['role'],
-                    "content": content["content"].replace(self.IMAGE_TOKEN, "")
+                    "content": content["content"]
                 })
                 if self.IMAGE_TOKEN in content['content']:
                     messages[-1]["images"] = [images]
@@ -340,6 +340,8 @@ class DeepSeekV2Processor(BasicProcessor):
             system_prompt=""
         ).to(self.model.device)
         prepare_inputs = prepare_inputs.to(self.model.device)
+        prepare_inputs = self.squeeze_result(dict(prepare_inputs))
+        return prepare_inputs
 
         # run image encoder to get the image embeddings
         ret = self.model.prepare_inputs_embeds(**prepare_inputs)
