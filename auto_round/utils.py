@@ -33,7 +33,6 @@ from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
 supported_formats = (
     "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel", "auto_round:auto_awq",
-    "auto_gptq:marlin",
     "itrex", "itrex_xpu", "fake"
 )
 
