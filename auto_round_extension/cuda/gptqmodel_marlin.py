@@ -349,7 +349,7 @@ class MarlinQuantLinear(BaseQuantLinear):
     #     super().optimize()
 
     @classmethod
-    # internal method and should not be overriden
+    # internal method and should not be overridden
     def verify_supports_params(cls):
         return
 
