@@ -342,11 +342,3 @@ class DeepSeekV2Processor(BasicProcessor):
         prepare_inputs = prepare_inputs.to(self.model.device)
         prepare_inputs = self.squeeze_result(dict(prepare_inputs))
         return prepare_inputs
-
-        # run image encoder to get the image embeddings
-        ret = self.model.prepare_inputs_embeds(**prepare_inputs)
-        ret = {
-            "inputs_embeds": ret[0],
-            "attention_mask": prepare_inputs.attention_mask[0],
-        }
-        return ret
