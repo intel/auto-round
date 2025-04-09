@@ -265,8 +265,8 @@ class AutoRoundConfig(QuantizationConfigMixin):
 
     def post_init(self):
         r"""Safety checker that arguments are correct."""
-        if self.bits not in [2, 4, 8]:
-            raise ValueError(f"Only support quantization to [2,4,8] bits but found {self.bits}")
+        if self.bits not in [2, 3, 4, 8]:
+            raise ValueError(f"Only support quantization to [2,3,4,8] bits but found {self.bits}")
         if self.group_size != -1 and self.group_size <= 0:
             raise ValueError("group_size must be greater than 0 or equal to -1")
 
