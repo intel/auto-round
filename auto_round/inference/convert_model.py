@@ -23,8 +23,8 @@ from transformers.pytorch_utils import Conv1D
 from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
                               find_matching_blocks, get_layer_names_in_block, check_to_quantized)
 
-from auto_round.inference.backend import get_layer_backend, dynamic_import_inference_linear, find_backend, BackendInfos, \
-    get_highest_priority_backend, process_requirement
+from auto_round.inference.backend import (get_layer_backend, dynamic_import_inference_linear,
+                                          find_backend, BackendInfos,get_highest_priority_backend, process_requirement)
 
 logger = getLogger(__name__)
 
@@ -432,7 +432,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
             requirements = BackendInfos[best_backend].requirements
             requirements_info = process_requirement(requirements)
             for req in requirements_info:
-                extra_info += (f"`{req}`")+" "
+                extra_info += (f"`{req}`") + " "
             logger.warning(extra_info)
 
     return model, used_backends
