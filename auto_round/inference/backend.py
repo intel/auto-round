@@ -688,6 +688,7 @@ def process_requirement(requirements: list):
 
     if gptqmodel_requirements is not None:
         infos.append(f"pip install -v '{gptqmodel_requirements}' --no-build-isolation")
+        infos.append(f"pip install 'numpy<2.0'")
 
     other_info = f"pip install"
     if len(other_requirements) > 0:
