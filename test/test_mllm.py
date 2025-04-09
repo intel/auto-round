@@ -102,22 +102,6 @@ class TestAutoRoundMLLM(unittest.TestCase):
             nsamples=2,
             batch_size=1, iters=2, dataset=dataset, seqlen=1)
         autoround.quantize()
-    
-    def test_mm_block_name(self):
-        from auto_round.utils import get_multimodal_block_names
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            self.model_name, trust_remote_code=True, device_map="auto")
-        block_name = get_multimodal_block_names(model, quant_vision=True)
-        self.assertTrue(len(block_name) == 2)
-        self.assertTrue(all(["visual.merger.mlp" not in n for n in block_name]))
-
-        model_name = "deepseek-ai/deepseek-vl2-tiny"
-        from deepseek_vl2.models import  DeepseekVLV2ForCausalLM
-        model = DeepseekVLV2ForCausalLM.from_pretrained(
-            model_name, trust_remote_code=True, device_map="auto")
-        block_name = get_multimodal_block_names(model, quant_vision=True)
-        self.assertTrue(len(block_name) == 3)
-        self.assertTrue(any(["projector.layers.1" not in n for n in block_name]))
 
 
 if __name__ == "__main__":

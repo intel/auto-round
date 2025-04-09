@@ -193,6 +193,35 @@ class TestAutoRound(unittest.TestCase):
             f"--quant_nontext_module --iters 1 --nsamples 1 --output_dir {absolute_path}")
         self.phi3_infernece(absolute_path)
         shutil.rmtree(absolute_path, ignore_errors=True)
+    
+    def test_mm_block_name(self):
+        from auto_round.utils import get_multimodal_block_names
+        from auto_round.utils import get_block_names
+
+        model_name = "/models/deepseek-vl2-tiny"
+        from deepseek_vl2.models import  DeepseekVLV2ForCausalLM
+        model = DeepseekVLV2ForCausalLM.from_pretrained(
+            model_name, trust_remote_code=True, device_map="auto")
+        block_name = get_multimodal_block_names(model, quant_vision=True)
+        self.assertTrue(len(block_name) == 3)
+        self.assertTrue(any(["projector.layers.1" not in n for n in block_name]))
+        block_name = get_multimodal_block_names(model, quant_vision=False)
+        self.assertTrue(len(block_name) == 1)
+        self.assertTrue(get_block_names(model) == block_name)
+
+        model_name = "/models/Llama-3.2-11B-Vision-Instruct/"
+        from transformers import MllamaForConditionalGeneration
+        model = MllamaForConditionalGeneration.from_pretrained(
+            model_name, trust_remote_code=True, device_map="auto")
+        block_name = get_multimodal_block_names(model, quant_vision=True)
+        self.assertTrue(len(block_name) == 3)
+        self.assertTrue(any(["vision_model.global_transformer.layers.0" not in n for n in block_name]))
+        self.assertTrue(any(["vision_model.transformer.layers.0" not in n for n in block_name]))
+        block_name = get_multimodal_block_names(model, quant_vision=False)
+        self.assertTrue(len(block_name) == 1)
+        self.assertTrue(get_block_names(model) == block_name)
+        
+
 
 
 
