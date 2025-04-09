@@ -75,12 +75,15 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
 
         from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
         return QuantLinear
+    elif "auto_round" in backend and "gptq" in backend:
+        from auto_round.export.export_to_autoround.qlinear_triton import QuantLinear ##no g_idx
+        return  QuantLinear
     elif "awq" in backend:
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
     elif "gptqmodel" in backend:
         return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
-    elif "gptq" in backend and not "gptqmodel" in backend:
+    elif "gptq" in backend and not "gptqmodel" in backend: ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
         assert False, f"only support auto_gptq, auto_awq and auto_round backend"
