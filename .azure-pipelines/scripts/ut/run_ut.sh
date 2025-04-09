@@ -6,6 +6,8 @@ echo "set up UT env..."
 pip install pytest-cov pytest-html
 pip install -r /auto-round/test/requirements.txt
 pip list
+# install latest gguf for ut test
+git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .
 
 cd /auto-round/test || exit 1
 find . -type f -exec sed -i '/sys\.path\.insert(0, "\.\.")/d' {} +

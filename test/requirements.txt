@@ -1,2 +1,3 @@
 addict
 modelscope
+gguf

@@ -14,6 +14,7 @@
 
 import os
 import re
+import sys
 
 import torch
 import copy
@@ -350,7 +351,17 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
+    def _dq_check(self):
+        """Reset the default value of super_bits and super_group_size"""
+        from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+        if self.data_type.endswith("_dq"):
+            gguf_config = GGUF_CONFIG[f"gguf:q{self.bits}_k_s"]
+            self.super_bits = gguf_config["super_bits"] if self.super_bits is None else self.super_bits
+            self.super_group_size = gguf_config["super_group_size"] \
+                if self.super_group_size is None else self.super_group_size
+            
     def check_configs(self):
+
         """Checks if the configurations are valid.
 
         Raises:
@@ -392,6 +403,7 @@ class AutoRound(object):
                     f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
                     f" than gradient_accumulate_steps * batch_size")
+        self._dq_check()
 
     # def _check_format_compatibility(self, format):  ##TODO
     #     ##check lm_head, mixed_bits, bits, each layer supporting, etc
@@ -491,9 +503,11 @@ class AutoRound(object):
             save_format_ = format.replace(":", "-").replace("_", "-")
             save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
             self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
+            
             folders.append(save_folder)
 
         return model, folders
+
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
         the entry of AutoRound.
@@ -1537,6 +1551,13 @@ class AutoRound(object):
                         " change format to auto_round"
                     )
                     format = "auto_round"
+
+        if re.search("q\d_k", format) and not self.data_type.endswith("_dq"):
+            logger.error(
+                f"datatype<{self.data_type}> not support to export {format} format."
+                " Please change export format or data_type."
+            )
+            sys.exit(-1)
 
         if self.low_cpu_mem_usage:
             self.model = self.model.to('cpu')
