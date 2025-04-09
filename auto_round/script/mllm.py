@@ -464,7 +464,7 @@ def tune(args):
     for format_ in format_list:
         eval_folder = f'{export_dir}-{format_}'
         safe_serialization = True
-        if "phi3_v" in model_type:
+        if "phi3_v" in autoround.model.config.model_type:
             safe_serialization = False
         autoround.save_quantized(eval_folder, format=format_, inplace=inplace, safe_serialization=safe_serialization)
 

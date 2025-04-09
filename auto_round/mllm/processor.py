@@ -126,6 +126,39 @@ class HFProcessor(BasicProcessor):
             self.image_processor = image_processor
         else:
             self.image_processor = self.default_image_processor
+    
+    def build_conversation_v1(self, messages, image):
+        conversation = []
+        for content in messages:
+            if content["role"] == "user":
+                conversation.append({
+                    "role": content['role'],
+                    "content": [
+                        {"text": content["content"], "type": "text"}
+                    ]
+                })
+                if self.IMAGE_TOKEN in content['content']:
+                    conversation[-1]["content"].append({"image": image, "type": "image", "url": image})
+            else:
+                conversation.append({
+                    "role": content['role'],
+                    "content": content["content"]
+                })
+        return conversation
+    
+    def build_conversation_v2(self, messages, image):
+        conversation = []
+        for content in messages:
+            conversation.append({
+                "role": content['role'],
+                "content": [
+                    {"text": content["content"].replace(self.IMAGE_TOKEN, ""), "type": "text"}
+                ]
+            })
+            if self.IMAGE_TOKEN in content['content']:
+                conversation[-1]["content"].append({"image": image, "type": "image", "url": image})
+        return conversation
+    
 
     def get_input(
             self,
@@ -138,33 +171,27 @@ class HFProcessor(BasicProcessor):
             truncation_strategy="text",
             **kwargs):
 
-        messages = []
         if isinstance(text, list):
-            for content in text:
-                if content["role"] == "user":
-                    messages.append({
-                        "role": content['role'],
-                        "content": [
-                            {"text": content["content"], "type": "text"}
-                        ]
-                    })
-                    if self.IMAGE_TOKEN in content['content']:
-                        # messages[-1]["content"].append({"text": None, "type": "image"})
-                        messages[-1]["content"].append({"type": "image"})
-                else:
-                    messages.append({
-                        "role": content['role'],
-                        "content": content["content"]
-                    })
-
-            text = self.processor.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=False, return_dict=False)
+            try:
+                conversation = self.build_conversation_v2(text, images)
+                ret = self.processor.apply_chat_template(
+                    conversation, add_generation_prompt=True, tokenize=True, return_dict=True)
+            except:
+                conversation = self.build_conversation_v1(text, images)
+                text = self.processor.apply_chat_template(
+                    conversation, add_generation_prompt=True, tokenize=False, return_dict=False)
+                if images is not None:
+                    images = self.image_processor(images)
+                ret = self.processor(
+                    text=text, images=images, return_tensors="pt", add_special_tokens=False)
         else:
             text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
-        if images is not None:
-            images = self.image_processor(images)
-        ret = self.processor(
-            text=text, images=images, return_tensors="pt", add_special_tokens=False)
+
+            if images is not None:
+                images = self.image_processor(images)
+            ret = self.processor(
+                text=text, images=images, return_tensors="pt", add_special_tokens=False)
+
         if squeeze:
             ret = self.squeeze_result(ret)
         return ret
