@@ -1,11 +1,9 @@
-import copy
 import shutil
 import sys
 import unittest
 
 sys.path.insert(0, "..")
 import torch
-import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
@@ -112,7 +110,6 @@ class TestAutoRound(unittest.TestCase):
         except:
             return
 
-        from auto_round.auto_quantizer import AutoHfQuantizer
         device = "auto"  ##cpu, hpu, cuda
         from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig(

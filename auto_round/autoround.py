@@ -14,6 +14,7 @@
 
 import os
 import re
+import sys
 
 import torch
 import copy
@@ -52,7 +53,8 @@ from .utils import (
     compile_func,
     find_matching_blocks, is_debug_mode,
     TORCH_VERSION_AT_LEAST_2_6,
-    supported_layer_types
+    supported_layer_types,
+    get_layer_features,
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -350,7 +352,17 @@ class AutoRound(object):
         else:
             module.tuning_device = device
 
+    def _dq_check(self):
+        """Reset the default value of super_bits and super_group_size"""
+        from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+        if self.data_type.endswith("_dq"):
+            gguf_config = GGUF_CONFIG[f"gguf:q{self.bits}_k_s"]
+            self.super_bits = gguf_config["super_bits"] if self.super_bits is None else self.super_bits
+            self.super_group_size = gguf_config["super_group_size"] \
+                if self.super_group_size is None else self.super_group_size
+            
     def check_configs(self):
+
         """Checks if the configurations are valid.
 
         Raises:
@@ -392,6 +404,7 @@ class AutoRound(object):
                     f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
                     f" than gradient_accumulate_steps * batch_size")
+        self._dq_check()
 
     # def _check_format_compatibility(self, format):  ##TODO
     #     ##check lm_head, mixed_bits, bits, each layer supporting, etc
@@ -436,7 +449,7 @@ class AutoRound(object):
                         f"Currently only support to export auto_round format quantized model"
                         " with fp8 dtype activation for activation quantization."
                         " Change format to fake and save."
-                        )
+                    )
                     formats = ["fake"]
             else:
                 if len(formats) > 1 or "auto_round" not in formats:
@@ -466,11 +479,6 @@ class AutoRound(object):
                     format = format.replace('auto_round', 'auto_round:gptq')
                     formats[index] = format
 
-                if not any(f in format for f in ["triton", "exllamav2", "awq", "gptq"]):
-                    logger.info(f"AutoRound format does not support {format}, attempting to use AutoGPTQ")
-                    format = format.replace("auto_round", "auto_gptq")
-                    formats[index] = format
-
         # Remove duplicates from formats list
         def remove_duplicates(lst):
             seen = set()
@@ -491,9 +499,11 @@ class AutoRound(object):
             save_format_ = format.replace(":", "-").replace("_", "-")
             save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
             self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
+            
             folders.append(save_folder)
 
         return model, folders
+
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
         the entry of AutoRound.
@@ -678,6 +688,10 @@ class AutoRound(object):
             # If the layer is outside a block and requires quantization, mark it as a quantized layer outside the block
             if n not in layers_in_blocks and check_to_quantized(layer_config[n]):
                 has_qlayer_outside_block = True
+
+            in_features, out_features = get_layer_features(m)
+            if in_features <= layer_config[n]["group_size"]:
+                layer_config[n]["group_size"] = -1
 
             # Apply the configuration to the corresponding layer in the model
             for key in keys:
@@ -1464,7 +1478,7 @@ class AutoRound(object):
                 m.name = n
 
         for i in range(0, len(block_names), nblocks):
-            if i!=0:
+            if i != 0:
                 pbar.update(1)
             if nblocks == 1:
                 n = block_names[i]
@@ -1528,7 +1542,7 @@ class AutoRound(object):
                         f"Currently only support to export auto_round format quantized model"
                         " with fp8 dtype activation for activation quantization."
                         " Change format to fake and save."
-                        )
+                    )
                     format = "fake"
             else:
                 if format != "auto_round":
@@ -1537,6 +1551,13 @@ class AutoRound(object):
                         " change format to auto_round"
                     )
                     format = "auto_round"
+
+        if re.search("q\d_k", format) and not self.data_type.endswith("_dq"):
+            logger.error(
+                f"datatype<{self.data_type}> not support to export {format} format."
+                " Please change export format or data_type."
+            )
+            sys.exit(-1)
 
         if self.low_cpu_mem_usage:
             self.model = self.model.to('cpu')

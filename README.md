@@ -6,7 +6,7 @@ AutoRound
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.4.7-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.4.6-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/OPEA">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
@@ -114,8 +114,8 @@ auto-round-light \
   ```
 
   <!-- ```bash
-## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
 auto-round-fast \
+## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
@@ -133,12 +133,21 @@ W4G128 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted 
 |---------|-----------------------|----------------------|---------------------|----------------------|----------------------|-----------------------|
 | 16bits  | 0.4192                | 0.5203               | 0.6470              | 0.6212               | 0.6151               | 0.7229                |
 | Best    | **0.4137**(7m)   | **0.5142**(23m) | 0.6426(58m)    | **0.6116**(81m) | **0.6092**(81m) | 0.7242(575m)     |
-| Default | 0.4129(2m)       | 0.5133(6m)      | 0.6441(13m)    | 0.6106(18m)     | 0.6080(18m)     | **0.7252**(118m) |
+| Default | 0.4129(2m)       | 0.5133(6m)      | 0.6441(13m)    | 0.6106(13m)     | 0.6080(18m)     | **0.7252**(118m) |
 | Light   | 0.4052(2m)       | 0.5108(3m)      | **0.6453**(5m) | 0.6104(6m)      | 0.6063(6m)      | 0.7243(37m)      |
 
 
+<details>
+  <summary>W2G64 results</summary>
+W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version of PyTorch 2.6.0 with enable_torch_compile). We recommend using higher precision for the head, tail, and non-expert modules to alleviate the significant accuracy drop.
 
-
+| Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct  | Falcon3-10B          | Qwen2.5-72B-Instruct  |
+  |---------|-----------------------|----------------------|---------------------|----------------------|-----------------------|
+  | 16bits  | 0.4192                |  0.5203        | 0.6470              | 0.6151               | 0.7229                |
+  | Best    | **0.2989**(6m)   | **0.4267**(24m) | **0.5343**(56m)| **0.5207**(79m)     | **0.6715**(564m)     |
+  | Default | 0.2878(2m)       | 0.4219(6m)      | 0.5209(13m)    | 0.5133(18m)     | 0.6713(122m) |
+  | Light   | 0.2760(2m)       | 0.4063(3m)      | 0.4764(5m)     | 0.4810(7m)      | 0.6581(38m)      |
+</details>
 
 ### API Usage (Gaudi2/CPU/GPU)
 
@@ -444,6 +453,7 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 

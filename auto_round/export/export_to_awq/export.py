@@ -57,7 +57,7 @@ def pack_layer(name, model, backend):
     scale = scale.t().contiguous()
     zp = zp.t().contiguous().to(torch.float32)
     if sym:
-        zp = 2 ** (bits - 1)
+        zp = int(zp.flatten()[0])
     q_linear = WQLinear_GEMM.from_linear(
         linear=linear_layer,
         w_bit=bits,
@@ -119,6 +119,8 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     if output_dir is None:
         return compressed_model
 
+    if os.path.exists(output_dir):
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
     layer_config = kwargs["layer_config"]
     for key in layer_config.keys():
         if not check_to_quantized(layer_config[key]) and \

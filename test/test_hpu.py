@@ -1,11 +1,9 @@
-import copy
 import shutil
 import sys
 import unittest
 
 sys.path.insert(0, "..")
 import torch
-import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
@@ -63,9 +61,6 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
-        from auto_round.auto_quantizer import AutoHfQuantizer
-        import habana_frameworks.torch.core as htcore
-        import habana_frameworks.torch.hpu as hthpu
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", \
             trust_remote_code=True).to('hpu').to(torch.float32)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -94,9 +89,6 @@ class TestAutoRound(unittest.TestCase):
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
-        from auto_round.auto_quantizer import AutoHfQuantizer
-        import habana_frameworks.torch.core as htcore
-        import habana_frameworks.torch.hpu as hthpu
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, \
             device_map="auto").to('hpu').to(torch.float32)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)

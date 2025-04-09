@@ -105,7 +105,7 @@ def pack_layer(name, model, backend):
     ##force to float32 to be compatible with torch 2.0
     if sym and isinstance(new_layer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
         layer, scale = layer.to("cpu"), scale.to("cpu")
-        zero = 2 ** (bits - 1)
+        zero = int(zero.flatten()[0])
     else:
         layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
     sig = inspect.signature(qlayer.pack)
@@ -126,6 +126,8 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
+    if os.path.exists(output_dir):
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     if processor is not None:

@@ -98,15 +98,6 @@ def dequantize_gemm(qweight, qzeros, scales, bits, group_size):
     return iweight
 
 
-def get_best_device():
-    if torch.backends.mps.is_available():
-        return "mps"
-    elif torch.cuda.is_available():
-        return "cuda:0"
-    else:
-        return "cpu"
-
-
 class WQLinearMMFunction(Function):
     @staticmethod
     # ctx is the first argument to forward
@@ -222,14 +213,22 @@ class WQLinear_GEMM(nn.Module):
         device = "cpu"
         if torch.cuda.is_available():
             device = "cuda:0"
+        elif torch.xpu.is_available():
+            device = "xpu:0"
 
         repeat_scales = scales.to(device).t().repeat_interleave(group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).t().repeat_interleave(group_size, 1)
+            intweight = torch.round(
+                linear.weight.to(device) / repeat_scales[:, :linear.weight.shape[1]] +
+                repeat_zeros[:, :linear.weight.shape[1]]).to(torch.int).t().contiguous()
+
         else:
             repeat_zeros = zeros
-        intweight = torch.round(linear.weight.to(device) / repeat_scales + repeat_zeros).to(
-            torch.int).t().contiguous()
+            intweight = torch.round(
+                linear.weight.to(device) / repeat_scales[:, :linear.weight.shape[1]] + repeat_zeros).to(
+                torch.int).t().contiguous()
+
         intweight = intweight.to(dtype=torch.int32)
         del repeat_scales
 

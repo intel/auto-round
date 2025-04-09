@@ -103,7 +103,7 @@ def mllm_eval(
     try:
         from auto_round import AutoRoundConfig
     except:
-        from auto_round.auto_quantizer import AutoHfQuantizer
+        from auto_round.inference.auto_quantizer import AutoHfQuantizer
 
     model = None
     if data_store_dir is not None:
@@ -350,7 +350,6 @@ def lmms_eval(
         use_cache=None,
         apply_chat_template=False
 ):
-    from auto_round import AutoRoundConfig
     from transformers.utils.versions import require_version
     require_version("lmms_eval", "lmms_eval need to be installed, `pip install lmms_eval`")
     if isinstance(tasks, str):

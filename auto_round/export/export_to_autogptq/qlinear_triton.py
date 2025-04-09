@@ -18,30 +18,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-import numba
-
-
-##TODO different bits
-# @numba.jit(nopython=True, parallel=True)
-# def pack_array_with_numba_b4_c32(
-#         raw_array: np.ndarray, packed_array: np.ndarray
-# ) -> np.ndarray:
-#     """Pack the array with numba when bits=4 and compress_bits=32."""
-#     bits = 4
-#     n_pack = 32 // bits
-#
-#     for row in range(packed_array.shape[0]):
-#         packed_array[row] = ((((raw_array[row * n_pack + 7]) << 28)
-#                               | ((raw_array[row * n_pack + 6]) << 24)
-#                               | ((raw_array[row * n_pack + 5]) << 20)
-#                               | ((raw_array[row * n_pack + 4]) << 16)
-#                               | ((raw_array[row * n_pack + 3]) << 12)
-#                               | (raw_array[row * n_pack + 2]) << 8)
-#                              | ((raw_array[row * n_pack + 1]) << 4)
-#                              | ((raw_array[row * n_pack]) << 0))
-#
-#     return packed_array
-
 
 class TritonModuleMixin:
     @classmethod
@@ -89,6 +65,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             "g_idx",
             torch.tensor([i // self.group_size for i in range(infeatures)], dtype=torch.int32),
         )
+
         if bias:
             self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
         else:
@@ -108,6 +85,8 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         device = "cpu"
         if torch.cuda.is_available():
             device = "cuda:0"
+        elif torch.xpu.is_available():
+            device = "xpu:0"
 
         W = linear.weight.data.to(device).clone()
         if isinstance(linear, nn.Conv2d):
@@ -118,11 +97,12 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).repeat_interleave(self.group_size, 1)
+            intweight = torch.round(W.to(device) / repeat_scales[:, :W.shape[1]] + repeat_zeros[:, :W.shape[1]]).to(
+                torch.int32)
         else:
             repeat_zeros = zeros
-
-        intweight = torch.round(W.to(device) / repeat_scales + repeat_zeros).to(
-            torch.int32)
+            intweight = torch.round(W.to(device) / repeat_scales[:, :W.shape[1]] + repeat_zeros).to(
+                torch.int32)
 
         del repeat_scales
         intweight = intweight.reshape(-1, intweight.shape[1] // 32 * self.bits, 32 // self.bits)

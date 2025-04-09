@@ -311,61 +311,13 @@ def setup_eval_parser():
     return args
 
 
-def _gguf_args_check(args):
-    from auto_round.utils import logger
-    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
-
-    formats = args.format.lower().replace(' ', '').split(",")
-    for format in GGUF_CONFIG:
-        if format in formats:
-            from pathlib import Path
-            from auto_round.export.export_to_gguf.convert import Model
-            hparams = Model.load_hparams(Path(args.model))
-            model_architecture = hparams["architectures"][0]
-            try:
-                model_class = Model.from_model_architecture(model_architecture)
-            except NotImplementedError:
-                logger.error(f"Model {model_architecture} is not supported to export GGUF format")
-                sys.exit(1)
-
-            if format.endswith("_k") and ("hidden_size" in hparams and hparams["hidden_size"] % 256 != 0):
-                model_name = args.model.split('/')
-                model_name = model_name[-1] if model_name[-1] else model_name[-2]
-                hidden_size = hparams["hidden_size"]
-                logger.error(
-                    f"Currently only support pure mode for format: {format}. "
-                    f"{model_name} is not supported, cause hidden_size({hidden_size}) % 256 !=0")
-                sys.exit(-1)
-
-            unsupport_list, reset_list = [], []
-            gguf_config = GGUF_CONFIG[format]
-            for k, v in gguf_config.items():
-                if getattr(args, k) != v:
-                    unsupport_list.append(f"{k}={getattr(args, k)}")
-                    reset_list.append(f"{k}={v}")
-                    setattr(args, k, v)
-            if len(unsupport_list) > 0:
-                if len(formats) > 1:
-                    logger.error(
-                        f"format {format} not support for {', '.join(unsupport_list)},"
-                        f" please reset to {', '.join(reset_list)}, and retry")
-                    exit(-1)
-                else:
-                    logger.error(
-                        f"format {format} not support for {', '.join(unsupport_list)},"
-                        f" reset to {', '.join(reset_list)}.")
-            logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
-
-    return args
-
-
 def tune(args):
     import transformers
 
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig
 
     from auto_round.utils import detect_device, get_library_version
-    from auto_round.utils import logger
+    from auto_round.utils import logger, _gguf_args_check
 
     tasks = args.tasks
     if args.format is None:
@@ -602,9 +554,12 @@ def tune(args):
 
         if args.act_bits <= 8 or eval_gguf_model:
             if eval_gguf_model:
+                # gguf floder only contains one file
                 for file in os.listdir(eval_folder):
                     gguf_file = file
-                user_model = AutoModelForCausalLM.from_pretrained(eval_folder, gguf_file=gguf_file, device_map="auto")
+                model = AutoModelForCausalLM.from_pretrained(
+                    eval_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
+                tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
             else:
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     from accelerate.big_modeling import dispatch_model
@@ -616,7 +571,8 @@ def tune(args):
                     user_model = model.to(device_str)
 
             if args.eval_task_by_task:
-                eval_task_by_task(user_model, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+                eval_task_by_task(
+                    user_model, tokenizer=tokenizer, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
             else:
                 if args.eval_bs is None or args.eval_bs == "auto":
                     logger.warning("This API does not support auto currently, reset eval_bs to 16")
@@ -660,7 +616,8 @@ def eval(args):
     print(make_table(res))
 
 
-def eval_task_by_task(model, device, tasks, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True):
+def eval_task_by_task(
+        model, device=None, tasks=None, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
