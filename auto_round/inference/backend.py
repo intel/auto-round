@@ -126,7 +126,7 @@ BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, Fa
                                                   bits=[2, 4, 8],
                                                   priority=1, feature_checks=[feature_multiply_checker_32],
                                                   alias=["auto_round", "tritonv2"],
-                                                  requirements=["auto-round>=0.2"]
+                                                  requirements=["auto-round>=0.5"]
                                                   )
 
 BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda"], sym=[True],  ## asym has accuracy issue
@@ -145,7 +145,7 @@ BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
                                                dtype=["float16", "bfloat16"],
                                                priority=6, feature_checks=[in_output_feature_multiply_checker_32],
                                                alias=["marlin", "gptqmodel"],
-                                               requirements=["gptqmodel>=2.0"]
+                                               requirements=["gptqmodel>=2.0"],
                                                )
 
 BackendInfos['gptqmodel:marlin_zp'] = BackendInfo(device=["cuda"], sym=[True],
@@ -504,7 +504,7 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     return QuantLinear
 
 
-def find_backend(target_backend: str, orig_backend: str = None) -> str | None:
+def find_backend(target_backend: str, orig_backend: str = None):
     """
     Finds the matching backend key based on the target backend name or its aliases.
 
@@ -620,7 +620,10 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
                     try:
                         require_version(requirement)
                     except ImportError:
-                        logger.error(f"pip install '{requirement}' ")
+                        if "gptqmodel" in requirement:
+                            logger.error(f"pip install -v '{requirement}' --no-build-isolation")
+                        else:
+                            logger.error(f"pip install '{requirement}' ")
                 else:
                     str_info = requirement()[1]
                     logger.error(str_info)
@@ -633,3 +636,62 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
                                 reverse=True)
 
     return supported_backends[0]
+
+
+def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
+    supported_backends = []
+    for key in BackendInfos.keys():
+        backend = BackendInfos[key]
+        # Check if device is supported by the backend
+        if device not in backend.device:
+            continue
+
+        # Check if bit-width is supported
+        if bits not in backend.bits:
+            continue
+
+        # Check if group_size is valid (if required by backend)
+        if backend.group_size is not None and group_size not in backend.group_size:
+            continue
+
+        # Check if symmetric/asymmetric quantization is supported
+        if sym not in backend.sym:
+            continue
+
+        # Check if the format is convertible when packing formats differ
+        if packing_format == backend.packing_format or packing_format in backend.convertable_format:
+            pass
+        else:
+            continue
+        supported_backends.append(key)
+
+    if len(supported_backends) > 0:
+
+        supported_backends = sorted(supported_backends,
+                                    key=lambda support_backend: BackendInfos[support_backend].priority,
+                                    reverse=True)
+        return supported_backends[0]
+    else:
+        return None
+
+
+def process_requirement(requirements: list):
+    gptqmodel_requirements = None
+    other_requirements = []
+    for requirement in requirements:
+        if "gptqmodel" in requirement:
+            gptqmodel_requirements = requirement
+        else:
+            other_requirements.append(requirement)
+
+    infos = []
+
+    if gptqmodel_requirements is not None:
+        infos.append(f"pip install -v '{gptqmodel_requirements}' --no-build-isolation")
+
+    other_info = f"pip install"
+    if len(other_requirements) > 0:
+        for requirement in other_requirements:
+            other_info += f" {requirement}"
+        infos.append(other_info)
+    return infos

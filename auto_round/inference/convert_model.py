@@ -23,7 +23,8 @@ from transformers.pytorch_utils import Conv1D
 from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
                               find_matching_blocks, get_layer_names_in_block, check_to_quantized)
 
-from auto_round.inference.backend import get_layer_backend, dynamic_import_inference_linear, find_backend, BackendInfos
+from auto_round.inference.backend import get_layer_backend, dynamic_import_inference_linear, find_backend, BackendInfos, \
+    get_highest_priority_backend, process_requirement
 
 logger = getLogger(__name__)
 
@@ -355,7 +356,7 @@ def post_init(model, used_backends):
             _import_exllamav2_kernels()
 
     ## convert datatype
-    data_types=[]
+    data_types = []
     for used_backend in used_backends:
         backend = BackendInfos[used_backend]
         data_types.append(backend.dtype)
@@ -364,10 +365,10 @@ def post_init(model, used_backends):
         common &= set(l)
     common = list(common)
     if str(model.dtype).split('.')[-1] not in common:
-        if common[0]=="float16":
+        if common[0] == "float16":
             model = model.to(torch.float16)
             logger.warning("force model to float16")
-        elif common[0]=="bfloat16":
+        elif common[0] == "bfloat16":
             model = model.to(torch.bfloat16)
             logger.warning("force model to bfloat16")
 
@@ -391,7 +392,6 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         ValueError:
             If the quantization backend is not specified in the configuration.
     """
-
 
     quantization_config = model.config.quantization_config
     if not hasattr(quantization_config, "target_backend"):
@@ -421,5 +421,18 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         target_backend = target_backend[len("auto_round:"):]
 
     used_backends = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
+
+    if target_backend == "auto" or target_backend == "":
+        best_backend = get_highest_priority_backend(quantization_config.bits, quantization_config.sym,
+                                                    quantization_config.group_size, target_device,
+                                                    BackendInfos[backend].packing_format)
+        if best_backend is not None and best_backend not in used_backends:
+            info = f"better backend is found, please install all the following requirements to enable it,"
+            extra_info = info
+            requirements = BackendInfos[best_backend].requirements
+            requirements_info = process_requirement(requirements)
+            for req in requirements_info:
+                extra_info += (f"`{req}`")+" "
+            logger.warning(extra_info)
 
     return model, used_backends
