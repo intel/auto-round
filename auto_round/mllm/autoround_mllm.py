@@ -26,7 +26,8 @@ from ..utils import (
     get_multimodal_block_names,
     find_matching_blocks,
     extract_block_names_to_str,
-    clear_memory
+    clear_memory,
+    mllm_load_model
 )
 from ..autoround import AutoRound
 from .template import get_template, Template
@@ -121,7 +122,7 @@ class AutoRoundMLLM(AutoRound):
     def __init__(
             self,
             model,
-            tokenizer,
+            tokenizer = None,
             processor = None,
             image_processor = None,
             bits: int = 4,
@@ -161,8 +162,12 @@ class AutoRoundMLLM(AutoRound):
             enable_norm_bias_tuning: bool = False,
             truncation: bool = None,
             enable_torch_compile: bool = False,
+            model_kwargs: dict = None,
             **kwargs,
     ):
+        if isinstance(model, str):
+            model, processor, tokenizer, image_processor = mllm_load_model(model, **model_kwargs)
+
         all_blocks = get_multimodal_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:

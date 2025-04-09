@@ -24,7 +24,7 @@ import transformers
 import auto_round.export.export_to_autoround.qlinear_triton_act
 
 import auto_round_extension.cuda.qlinear_tritonv2
-from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module, supported_layer_types,check_to_quantized
+from auto_round.utils import get_module, logger, set_module, supported_layer_types,check_to_quantized
 
 import threadpoolctl as tctl
 import inspect

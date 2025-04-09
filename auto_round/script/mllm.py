@@ -322,69 +322,16 @@ def tune(args):
         torch_dtype = torch.bfloat16
 
     # load_model
-    processor, image_processor = None, None
-    if "deepseek-vl2" in model_name.lower():
-        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM  # pylint: disable=E0401
-        processor = DeepseekVLV2Processor.from_pretrained(model_name)
-        tokenizer = processor.tokenizer
-        model: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            trust_remote_code=not args.disable_trust_remote_code,
-            torch_dtype=torch_dtype,
-            device_map="auto" if use_auto_mapping else None)
-        model_type = "deepseek_vl_v2"
-    else:
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-        if "llava" in model_name and config.architectures[0] != "LlavaForConditionalGeneration":
-            from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
-            tokenizer, model, image_processor, _ = load_pretrained_model(
-                model_name, model_base=None, model_name=model_name, torch_dtype=torch_dtype)
-            model_type = "llava"
-        else:
-            tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-            processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-            model_type = config.model_type
-            if "llava" in model_type:
-                from transformers import LlavaForConditionalGeneration
-                cls = LlavaForConditionalGeneration
-            elif "qwen2_vl" in model_type:
-                from transformers import Qwen2VLForConditionalGeneration
-                cls = Qwen2VLForConditionalGeneration
-            elif "mllama" in model_type:
-                from transformers import MllamaForConditionalGeneration
-                cls = MllamaForConditionalGeneration
-            elif "gemma3" in model_type:
-                from transformers import Gemma3ForConditionalGeneration
-                cls = Gemma3ForConditionalGeneration
-            elif "mistral3" in model_type:
-                from transformers import Mistral3ForConditionalGeneration 
-                cls = Mistral3ForConditionalGeneration
-            else:
-                cls = AutoModelForCausalLM
-
-            model = cls.from_pretrained(
-                model_name,
-                trust_remote_code=not args.disable_trust_remote_code,
-                torch_dtype=torch_dtype,
-                device_map="auto" if use_auto_mapping else None)
-    if "cogvlm2" in model_name:
-        model.config.model_type = "cogvlm2"
+    from auto_round.utils import mllm_load_model
+    model, processor, tokenizer, image_processor = mllm_load_model(
+        model_name,
+        torch_dtype=torch_dtype,
+        use_auto_mapping=use_auto_mapping,
+        trust_remote_code=not args.disable_trust_remote_code)
 
     from auto_round import AutoRoundMLLM
 
     model = model.eval()
-
-    if args.model_dtype != None:
-        try:
-            if args.model_dtype == "float16" or args.model_dtype == "fp16":
-                model = model.to(torch.float16)
-            elif args.model_dtype == "bfloat16" or args.model_dtype == "bfp16" or args.model_dtype == "bf16":
-                model = model.to(torch.bfloat16)
-            elif args.model_dtype == "float32" or args.model_dtype == "fp32":
-                model = model.to(torch.float32)
-        except:
-            logger.error("please use more device to fit the device or just use one device")
-            exit()
 
     round = AutoRoundMLLM
 
@@ -399,7 +346,6 @@ def tune(args):
                 ##TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
 
-    layer_config = {}
     if args.fp_layers != "":
         fp_layers = args.fp_layers.replace(" ", "").split(",")
         for n, m in model.named_modules():
@@ -461,6 +407,12 @@ def tune(args):
 
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
 
+    model_kwargs = {
+        "torch_dtype": torch_dtype,
+        "use_auto_mapping": use_auto_mapping,
+        "trust_remote_code": not args.disable_trust_remote_code,
+        "model_dtype": args.model_dtype
+    }
     autoround = round(
         model,
         tokenizer,
@@ -494,7 +446,9 @@ def tune(args):
         not_use_best_mse=args.not_use_best_mse,
         to_quant_block_names=args.to_quant_block_names,
         enable_torch_compile=enable_torch_compile,
-        device_map=args.device_map)
+        device_map=args.device_map,
+        model_kwargs=model_kwargs
+        )
     model, _ = autoround.quantize()
 
     model.eval()

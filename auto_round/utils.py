@@ -1229,7 +1229,7 @@ def _gguf_args_check(args):
                     sys.exit(-1)
                 else:
                     pre_dq_format = format
-            
+
             if os.path.isdir(args.model):
                 from pathlib import Path
                 from auto_round.export.export_to_gguf.convert import Model
@@ -1265,3 +1265,71 @@ def _gguf_args_check(args):
 
     return args
 
+
+def mllm_load_model(
+        pretrained_model_name_or_path,
+        torch_dtype="auto",
+        use_auto_mapping=True,
+        trust_remote_code=True,
+        model_dtype=None,
+        **kwargs):
+    import json
+    import transformers
+    from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
+    from huggingface_hub import HfApi, HfFileSystem
+
+    if os.path.isdir(pretrained_model_name_or_path):
+        config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
+    else:
+        hf_file = HfFileSystem()
+        config = json.load(hf_file.open(pretrained_model_name_or_path + "/config.json"))
+
+    if "model_type" in config:
+        model_type = config["model_type"]
+    else:
+        model_type = None
+
+    processor, image_processor = None, None
+    if "deepseek_vl_v2" == model_type:
+        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM  # pylint: disable=E0401
+        processor = DeepseekVLV2Processor.from_pretrained(pretrained_model_name_or_path)
+        tokenizer = processor.tokenizer
+        model: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path,
+            trust_remote_code=trust_remote_code,
+            torch_dtype=torch_dtype,
+            device_map="auto" if use_auto_mapping else None)
+    else:
+        architectures = config["architectures"][0]
+        if architectures == "LlavaLlamaForCausalLM":
+            from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
+            tokenizer, model, image_processor, _ = load_pretrained_model(
+                pretrained_model_name_or_path, model_base=None, model_name=pretrained_model_name_or_path, torch_dtype=torch_dtype)
+        else:
+            if architectures == "CogVLMForCausalLM":
+                cls = AutoModelForCausalLM
+                model.config.model_type = "cogvlm2"
+            else:
+                cls = getattr(transformers, architectures)
+            model = cls.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=trust_remote_code,
+                torch_dtype=torch_dtype,
+                device_map="auto" if use_auto_mapping else None)
+            tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+
+    model = model.eval()
+
+    if model_dtype != None:
+        try:
+            if model_dtype == "float16" or model_dtype == "fp16":
+                model = model.to(torch.float16)
+            elif model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16":
+                model = model.to(torch.bfloat16)
+            elif model_dtype == "float32" or model_dtype == "fp32":
+                model = model.to(torch.float32)
+        except:
+            logger.error("please use more device to fit the device or just use one device")
+            exit()
+    return model, processor, tokenizer, image_processor
