@@ -475,7 +475,7 @@ class AutoRound(object):
         for index in range(len(formats)):
             format = formats[index]
             if "auto_round" in format:
-                if self.sym and ("gptq" not in format and "awq" not in format) or self.bits==3:
+                if (self.sym and ("gptq" not in format and "awq" not in format)) or self.bits==3:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
 
