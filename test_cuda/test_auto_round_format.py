@@ -464,6 +464,7 @@ class TestAutoRound(unittest.TestCase):
             res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
             print(res)
             assert ("!!!" not in res)
+
     def test_load_gptq_model_3bits(self):
         model_name = "LucasSantiago257/gemma-2b-2bits-gptq"
         quantization_config = AutoRoundConfig()
@@ -472,7 +473,6 @@ class TestAutoRound(unittest.TestCase):
                                                      quantization_config=quantization_config)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model_infer(model, tokenizer)
-
 
 
 if __name__ == "__main__":
