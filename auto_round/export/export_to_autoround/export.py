@@ -191,7 +191,7 @@ def pack_layer(layer_name, model, backend):
         set_module(model, layer_name, new_layer)
         qlayer = new_layer
         if sym:
-            zp = float(zp.flatten()[0])
+            zp = int(zp.flatten()[0])
 
         qlayer.to("cpu")
         ##force to float32 to be compatible with torch 2.0
@@ -206,6 +206,9 @@ def pack_layer(layer_name, model, backend):
         scale, zp = scale.to(torch.float32), zp.to(torch.float32)
         scale = scale.t().contiguous()
         zp = zp.t().contiguous()
+        if sym:
+            zp = int(zp.flatten()[0])
+
         if bits != 4:
             logger.error("AutoAWQ format only supports 4-bits quantization.")
         qlayer = QuantLinear.from_linear(

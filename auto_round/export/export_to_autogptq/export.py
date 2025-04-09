@@ -105,7 +105,7 @@ def pack_layer(name, model, backend):
     ##force to float32 to be compatible with torch 2.0
     if sym and isinstance(new_layer, auto_round.export.export_to_autogptq.qlinear_triton.QuantLinear):
         layer, scale = layer.to("cpu"), scale.to("cpu")
-        zero = float(zero.flatten()[0])
+        zero = int(zero.flatten()[0])
     else:
         layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
     sig = inspect.signature(qlayer.pack)

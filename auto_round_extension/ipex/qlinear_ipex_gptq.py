@@ -78,10 +78,10 @@ class QuantLinear(nn.Module):
                 dtype=weight_dtype,
             ),
         )
-        self.register_buffer(
-            "g_idx",
-            torch.tensor([i // self.group_size for i in range(infeatures)], dtype=torch.int32),
-        )
+        # self.register_buffer(
+        #     "g_idx",
+        #     torch.tensor([i // self.group_size for i in range(infeatures)], dtype=torch.int32),
+        # )
         if bias:
             self.register_buffer("bias", torch.zeros((outfeatures), dtype=weight_dtype))
         else:
@@ -172,7 +172,7 @@ class QuantLinear(nn.Module):
         if isinstance(linear, transformers.pytorch_utils.Conv1D):
             W = W.t()
 
-        self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx
+        # self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx
 
         scales = scales.t().contiguous()
         zeros = zeros.t().contiguous()
