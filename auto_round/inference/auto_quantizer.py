@@ -158,22 +158,6 @@ class AutoHfQuantizer:
             if "auto-round" in quantization_config[
                 "quant_method"] or quantization_config_from_args.__class__.__name__ == "AutoRoundConfig":
                 quantization_config = AutoRoundConfig.from_dict(quantization_config)
-            # else:
-            #     if quantization_config_from_args.__class__.__name__ == "AutoRoundConfig":
-            #         logger.info(f"Loading quantized model in auto_round format.")
-            #         tmp_backend = quantization_config["quant_method"]
-            #         if "auto-round" not in tmp_backend and "gptq" not in tmp_backend and "awq" not in tmp_backend:
-            #             logger.error("could not convert to auto_round format, currently only supports `gptq`,`awq` or "
-            #                          "`auto-round` format")
-            #             raise NotImplementedError
-            #         target_backend = quantization_config["backend"] if "backend" in quantization_config else "auto"
-            #         if loading_attr_dict is not None and "backend" in loading_attr_dict:
-            #             target_backend = loading_attr_dict["backend"]
-            #             loading_attr_dict.pop("backend")
-            #         if "auto_round" not in target_backend:
-            #             target_backend = f"auto_round:{tmp_backend}"  #
-            #         quantization_config = AutoRoundConfig.from_dict(quantization_config)
-            #         setattr(quantization_config, "backend", target_backend)
             else:
                 quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
 
