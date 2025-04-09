@@ -164,7 +164,7 @@ class AutoHfQuantizer:
                     if "auto-round" not in tmp_backend and "gptq" not in tmp_backend and "awq" not in tmp_backend:
                         logger.error("could not convert to auto_round format, currently only supports `gptq`,`awq` or "
                                      "`auto-round` format")
-                        exit(-1)
+                        raise NotImplementedError
                     target_backend = quantization_config["backend"] if "backend" in quantization_config else "auto"
                     if loading_attr_dict is not None and "backend" in loading_attr_dict:
                         target_backend = loading_attr_dict["backend"]
@@ -306,7 +306,6 @@ class AutoRoundQuantizer(HfQuantizer):
                                   "auto-round` or install from source")
 
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
-        self.target_device = infer_target_device(self.device_map)
         if torch_dtype is None:
             torch_dtype = torch.float16
         elif torch_dtype != torch.float16:
@@ -330,8 +329,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if self.pre_quantized:
-            target_device = self.target_device if hasattr(self, self.target_device) else infer_target_device(
-                self.device_map)
+            target_device = infer_target_device(self.device_map)
             model, used_backends = convert_hf_model(model, target_device)
             self.used_backends = used_backends
 
