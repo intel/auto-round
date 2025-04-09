@@ -475,8 +475,8 @@ class AutoRound(object):
         for index in range(len(formats)):
             format = formats[index]
             if "auto_round" in format:
-                if self.sym and ("gptq" not in format and "awq" not in format):
-                    format = format.replace('auto_round', 'auto_round:gptq')
+                if self.sym and ("gptq" not in format and "awq" not in format) or self.bits==3:
+                    format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
 
         # Remove duplicates from formats list
@@ -496,6 +496,13 @@ class AutoRound(object):
         # Save the quantized model in the specified formats
         folders = []
         for format in formats:
+            if "gptq" in format and not self.sym:
+                logger.warning(
+                    "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
+                    " particularly for 2-bit quantization and smaller models."
+                    " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
+                    "the AutoRound format(2/3/8 bits)."
+                )
             save_format_ = format.replace(":", "-").replace("_", "-")
             save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
             self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
@@ -1598,8 +1605,8 @@ class AutoRound(object):
             logger.warning(
                 "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
                 " particularly for 2-bit quantization and smaller models."
-                " We recommend exporting to either the AutoAWQ format (4 bits) or "
-                "the AutoRound format (2 bits) to enhance performance."
+                " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
+                "the AutoRound format(2/3/8 bits)."
             )
         if "awq" in format and not self.bits == 4:
             raise ValueError("The AWQ format only supports W4 quantization ")

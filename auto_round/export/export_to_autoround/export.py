@@ -250,7 +250,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
     if (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
-        backend = backend.replace('auto_round', 'auto_round:gptq')
+        backend = backend.replace('auto_round', 'auto_round:auto_gptq')
 
     model = kwargs["model"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
@@ -262,6 +262,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     quantization_config["quant_method"] = "intel/auto-round"
 
     quantization_config["backend"] = backend
+    if quantization_config["bits"]==3:
+        backend = "auto_round:auto_gptq"
+
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     extra_config = {}
