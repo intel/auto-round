@@ -501,7 +501,7 @@ class AutoRound(object):
                     "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
                     " particularly for 2-bit quantization and smaller models."
                     " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
-                    "the AutoRound format(2/3/8 bits)."
+                    "the AutoRound format(2/4/8 bits)."
                 )
             save_format_ = format.replace(":", "-").replace("_", "-")
             save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
@@ -1606,7 +1606,7 @@ class AutoRound(object):
                 "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
                 " particularly for 2-bit quantization and smaller models."
                 " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
-                "the AutoRound format(2/3/8 bits)."
+                "the AutoRound format(2/4/8 bits)."
             )
         if "awq" in format and not self.bits == 4:
             raise ValueError("The AWQ format only supports W4 quantization ")
