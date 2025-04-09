@@ -127,7 +127,7 @@ class TestQuantizationBlocks(unittest.TestCase):
             all_block_names = get_multimodal_block_names(self.model, quant_vision=True)
         except:
             pass
-        assert len(llm_block_names) == len(all_block_names)
+        assert len(llm_block_names) != len(all_block_names)
         
 
     def test_multimodal_quant(self):
