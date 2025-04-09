@@ -23,9 +23,9 @@ class LLMDataLoader:
 class TestAutoRoundFormatGeneration(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        model_name = "facebook/opt-125m"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.model_name = "facebook/opt-125m"
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
         self.save_folder = "./saved"
 
@@ -66,6 +66,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         print(res)
         assert ("!!!" not in res)
 
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_4bits_sym(self):
         bits = 4
@@ -131,3 +132,63 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
         assert ("!!!" not in res)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
+
+    def test_autoround_asym(self):
+        for bits in [2, 4, 8]:
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+            bits, group_size, sym = bits, 128, False
+            autoround = AutoRound(
+                model,
+                tokenizer,
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                iters=2,
+                seqlen=2,
+                dataset=self.llm_dataloader,
+            )
+            quantized_model_path = "./saved"
+
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+
+            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
+                                                         trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+            text = "There is a girl who likes adventure,"
+            inputs = tokenizer(text, return_tensors="pt").to(model.device)
+            res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
+            print(res)
+            assert ("!!!" not in res)
+            shutil.rmtree(self.save_folder, ignore_errors=True)
+
+    def test_autoround_sym(self):
+        for bits in [2, 4, 8]:
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+            bits, group_size, sym = bits, 128, True
+            autoround = AutoRound(
+                model,
+                tokenizer,
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                iters=2,
+                seqlen=2,
+                dataset=self.llm_dataloader,
+            )
+            quantized_model_path = "./saved"
+
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+
+            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
+                                                         trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+            text = "There is a girl who likes adventure,"
+            inputs = tokenizer(text, return_tensors="pt").to(model.device)
+            res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
+            print(res)
+            assert ("!!!" not in res)
+            shutil.rmtree(self.save_folder, ignore_errors=True)
+

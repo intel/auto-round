@@ -23,7 +23,7 @@ import transformers
 
 import auto_round.export.export_to_autoround.qlinear_triton_act
 import auto_round_extension.cuda.qlinear_tritonv2
-from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module, supported_layer_types
+from auto_round.utils import get_module, logger, set_module, supported_layer_types
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
@@ -75,15 +75,15 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
 
         from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
         return QuantLinear
-    elif "auto_round" in backend and "gptq" in backend:
-        from auto_round.export.export_to_autoround.qlinear_triton import QuantLinear ##no g_idx
-        return  QuantLinear
+    elif "auto_round" in backend and "gptq" in backend and bits in (2, 4, 8):
+        from auto_round.export.export_to_autoround.qlinear_triton import QuantLinear  ##no g_idx
+        return QuantLinear
     elif "awq" in backend:
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
     elif "gptqmodel" in backend:
         return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
-    elif "gptq" in backend and not "gptqmodel" in backend: ## have g_idx
+    elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
         assert False, f"only support auto_gptq, auto_awq and auto_round backend"
@@ -190,7 +190,9 @@ def pack_layer(layer_name, model, backend):
         new_layer.device = device
         set_module(model, layer_name, new_layer)
         qlayer = new_layer
-        if sym:
+        import auto_round.export.export_to_autoround.qlinear_triton
+        if sym and isinstance(QuantLinear, (auto_round.export.export_to_autoround.qlinear_triton.QuantLinear,
+                                            auto_round_extension.cuda.qlinear_tritonv2.QuantLinear)):
             zp = int(zp.flatten()[0])
 
         qlayer.to("cpu")
@@ -248,7 +250,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
     if (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
-        backend = backend.replace('auto_round', 'auto_round:gptq')
+        backend = backend.replace('auto_round', 'auto_round:auto_gptq')
 
     model = kwargs["model"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
@@ -260,6 +262,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     quantization_config["quant_method"] = "intel/auto-round"
 
     quantization_config["backend"] = backend
+    if quantization_config["bits"]==3:
+        backend = "auto_round:auto_gptq"
+
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     extra_config = {}

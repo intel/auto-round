@@ -73,7 +73,6 @@ class TestAutoRound(unittest.TestCase):
 
     @classmethod
     def tearDownClass(self):
-        return
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
@@ -212,7 +211,7 @@ class TestAutoRound(unittest.TestCase):
         device_map1["model.norm"] = "cuda"
         device_map1["model.rotary_emb"] = "cuda"
         device_map1["model.embed_tokens"] = "cuda"
-        from auto_round import  AutoRoundConfig
+        from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig(backend="tritonv2")
 
         for tmp_device_map in [device_map1, 0, "balanced", "balanced_low_0", "sequential",
@@ -222,7 +221,7 @@ class TestAutoRound(unittest.TestCase):
                 model_name,
                 torch_dtype="auto",
                 device_map=tmp_device_map,
-                quantization_config = quantization_config
+                quantization_config=quantization_config
             )
 
             tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -324,8 +323,6 @@ class TestAutoRound(unittest.TestCase):
 
         torch.cuda.empty_cache()
 
-
-
     def test_autoround_gptq_sym_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -401,7 +398,6 @@ class TestAutoRound(unittest.TestCase):
         print(res)
         assert ("!!!" not in res)
 
-
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu", trust_remote_code=True,
                                                      torch_dtype=torch.bfloat16)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -412,6 +408,71 @@ class TestAutoRound(unittest.TestCase):
         assert ("!!!" not in res)
 
         shutil.rmtree("./saved", ignore_errors=True)
+
+    def test_autoround_asym(self):
+        for bits in [2, 3, 4, 8]:
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+            bits, group_size, sym = bits, 128, False
+            autoround = AutoRound(
+                model,
+                tokenizer,
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                iters=2,
+                seqlen=2,
+                dataset=self.llm_dataloader,
+            )
+            quantized_model_path = "./saved"
+
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+
+            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
+                                                         trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+            text = "There is a girl who likes adventure,"
+            inputs = tokenizer(text, return_tensors="pt").to(model.device)
+            res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
+            print(res)
+            assert ("!!!" not in res)
+
+    def test_autoround_sym(self):
+        for bits in [2, 3, 4, 8]:
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+            bits, group_size, sym = bits, 128, True
+            autoround = AutoRound(
+                model,
+                tokenizer,
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                iters=2,
+                seqlen=2,
+                dataset=self.llm_dataloader,
+            )
+            quantized_model_path = "./saved"
+
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+
+            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
+                                                         trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+            text = "There is a girl who likes adventure,"
+            inputs = tokenizer(text, return_tensors="pt").to(model.device)
+            res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
+            print(res)
+            assert ("!!!" not in res)
+
+    def test_load_gptq_model_3bits(self):
+        model_name = "LucasSantiago257/gemma-2b-2bits-gptq"
+        quantization_config = AutoRoundConfig()
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True,
+                                                     device_map="auto",
+                                                     quantization_config=quantization_config)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.model_infer(model, tokenizer)
 
 
 if __name__ == "__main__":

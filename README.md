@@ -73,7 +73,7 @@ pip install auto-round-lib
 
 ## Model Quantization
 
-### Basic Usage (Gaudi2/CPU/GPU)
+### Basic Usage (Gaudi2/CPU/XPU/GPU)
 
 A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
 Set the format you want in `format` and
@@ -268,7 +268,7 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 ### Export Formats
 **AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
-inference. **[2,4] bits are supported**. However, it has not yet gained widespread community adoption.
+inference. **[2,3,4,8] bits are supported**. However, it has not yet gained widespread community adoption.
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
 community, **[2,3,4,8] bits are supported**. However, **the
@@ -324,14 +324,9 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRoundConfig
 
-backend = "auto"  ##cpu, hpu, cuda
-quantization_config = AutoRoundConfig(
-    backend=backend
-)
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map=backend.split(':')[0],
-                                             quantization_config=quantization_config)
+                                             device_map="auto")
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
