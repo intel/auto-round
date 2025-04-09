@@ -24,7 +24,7 @@ from auto_round.utils import (get_module, set_module, is_hpu_supported, get_bloc
                               find_matching_blocks, get_layer_names_in_block, check_to_quantized)
 
 from auto_round.inference.backend import (get_layer_backend, dynamic_import_inference_linear,
-                                          find_backend, BackendInfos,get_highest_priority_backend, process_requirement)
+                                          find_backend, BackendInfos, get_highest_priority_backend, process_requirement)
 
 logger = getLogger(__name__)
 
@@ -394,6 +394,14 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     """
 
     quantization_config = model.config.quantization_config
+
+    if hasattr(quantization_config, "desc_act") and quantization_config.desc_act == True:
+        ##check static_group
+        if (hasattr(quantization_config, "static_groups") and not quantization_config.static_groups) or (
+        not hasattr(quantization_config, "static_groups")):
+            raise NotImplementedError(
+                "This GPTQ model may contain a non-dummy g_idx, which is not yet supported by AutoRound")
+
     if not hasattr(quantization_config, "target_backend"):
         quantization_config.target_backend = quantization_config.backend
 
