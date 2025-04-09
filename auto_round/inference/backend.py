@@ -18,7 +18,7 @@ from typing import List, Any, Optional
 
 from transformers.utils.versions import require_version
 
-import auto_round.inference.gptqmodel_marlin
+import auto_round_extension.cuda.gptqmodel_marlin
 from auto_round.utils import get_library_version, logger
 
 BackendInfos = {}
@@ -407,7 +407,7 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
 def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
     import gptqmodel  # pylint: disable=E0401
     if "marlin" in backend:
-        return auto_round.inference.gptqmodel_marlin.get_marlin_layer()
+        return auto_round_extension.cuda.gptqmodel_marlin.get_marlin_layer()
         # return gptqmodel.nn_modules.qlinear.marlin.MarlinQuantLinear
     elif "exllamav2" in backend:
         return gptqmodel.nn_modules.qlinear.exllamav2.ExllamaV2QuantLinear

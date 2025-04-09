@@ -81,12 +81,6 @@ class QuantLinear(nn.Module, TritonModuleMixin):
                 dtype=torch.float16,
             ),
         )
-        self.register_buffer(
-            "g_idx",
-            torch.tensor(
-                [i // self.group_size for i in range(infeatures)], dtype=torch.int32
-            ),
-        )
         if bias:
             self.register_buffer(
                 "bias", torch.zeros((outfeatures), dtype=torch.float16)
@@ -101,7 +95,6 @@ class QuantLinear(nn.Module, TritonModuleMixin):
 
     def pack(self, linear, scales, zeros, g_idx=None):
         scales_t = scales.t().contiguous()
-        self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         self.scales = scales_t.clone().half()
@@ -120,14 +113,17 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).repeat_interleave(self.group_size, 1)
+            intweight = torch.round(W.to(device) / repeat_scales[:, :W.shape[1]] + repeat_zeros[:, :W.shape[1]]).to(
+                torch.int32)
         else:
             repeat_zeros = zeros
-
-        intweight = torch.round(W.to(device) / repeat_scales[:, :W.shape[1]] + repeat_zeros[:, :W.shape[1]])
+            intweight = torch.round(W.to(device) / repeat_scales[:, :W.shape[1]] + repeat_zeros).to(
+                torch.int32)
 
         del repeat_scales
         intweight = intweight.reshape(-1, intweight.shape[1] // 32 * self.bits, 32 // self.bits)
         order_map = torch.arange(0, 32 // self.bits, device=device) * self.bits
+        intweight = intweight.to(torch.int32)
         intweight = intweight << order_map
         intweight = torch.sum(intweight, dim=-1)
 

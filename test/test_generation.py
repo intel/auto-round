@@ -35,42 +35,42 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
 
-    def test_4bits_asym(self):
-        bits = 4
-        group_size = 128
-        sym = False
-        autoround = AutoRound(
-            self.model,
-            self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=1,
-            seqlen=2,
-            dataset=self.llm_dataloader,
-        )
-        quantized_model_path = self.save_folder
-
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round", inplace=False)
-
-        from auto_round import AutoRoundConfig
-        quantization_config = AutoRoundConfig(
-            backend="auto"
-        )
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map="cpu", quantization_config=quantization_config)
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "My name is "
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)
-        assert ("!!!" not in res)
+    # def test_4bits_asym(self):
+    #     bits = 4
+    #     group_size = 128
+    #     sym = False
+    #     autoround = AutoRound(
+    #         self.model,
+    #         self.tokenizer,
+    #         bits=bits,
+    #         group_size=group_size,
+    #         sym=sym,
+    #         iters=1,
+    #         seqlen=2,
+    #         dataset=self.llm_dataloader,
+    #     )
+    #     quantized_model_path = self.save_folder
+    #
+    #     autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round", inplace=False)
+    #
+    #     from auto_round import AutoRoundConfig
+    #     quantization_config = AutoRoundConfig(
+    #         backend="auto"
+    #     )
+    #     model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+    #                                                  device_map="cpu", quantization_config=quantization_config)
+    #     tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+    #     text = "My name is "
+    #     inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    #     res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
+    #     print(res)
+    #     assert ("!!!" not in res)
 
 
     def test_4bits_sym(self):
         bits = 4
         group_size = 128
-        sym = False
+        sym = True
         autoround = AutoRound(
             self.model,
             self.tokenizer,

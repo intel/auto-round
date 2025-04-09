@@ -97,10 +97,7 @@ class QuantLinear(nn.Module):
             ),
         )
 
-        self.register_buffer(
-            "g_idx",
-            torch.tensor([i // self.group_size for i in range(infeatures)], dtype=torch.int32),
-        )
+
         if bias:
             self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
         else:
@@ -122,7 +119,7 @@ class QuantLinear(nn.Module):
 
     def pack(self, linear, scales, zeros, act_scales, w_bf16_to_fp8_scale, g_idx=None):
         scales_t = scales.t().contiguous()
-        self.g_idx = g_idx.clone() if g_idx is not None else self.g_idx
+
         self.act_scales.data.copy_(act_scales.squeeze().clone())
         self.w_bf16_to_fp8_scale.data.copy_(w_bf16_to_fp8_scale.squeeze().clone())
         if linear.bias is not None:

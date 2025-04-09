@@ -79,7 +79,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
     elif "gptqmodel" in backend:
-        return  auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
+        return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
     elif "gptq" in backend and not "gptqmodel" in backend:
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
@@ -187,6 +187,8 @@ def pack_layer(layer_name, model, backend):
         new_layer.device = device
         set_module(model, layer_name, new_layer)
         qlayer = new_layer
+        if sym:
+            zp = float(zp.flatten()[0])
 
         qlayer.to("cpu")
         ##force to float32 to be compatible with torch 2.0
