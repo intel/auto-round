@@ -32,10 +32,9 @@ import transformers
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
 supported_formats = (
-    "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_gptq:marlin",
+    "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel", "auto_round:auto_awq",
     "itrex", "itrex_xpu", "fake"
 )
-
 
 supported_formats = supported_formats + tuple(GGUF_CONFIG.keys())
 
@@ -523,14 +522,13 @@ def check_to_quantized(config):
             False otherwise.
     """
     if isinstance(config, dict):
-
-        if int(config["bits"]) > 8 and int(config["act_bits"] > 8):
-            return False
-        return True
+        bits = int(config.get("bits", 4))
+        act_bits = int(config.get("act_bits", 16))
     else:
-        if int(config.bits) > 8 and int(config.act_bits) > 8:
-            return False
-        return True
+        bits = int(config.bits) if hasattr(config, "bits") else 4
+        act_bits = int(config.act_bits) if hasattr(config, "act_bits") else 16
+
+    return bits <= 8 or act_bits <= 8
 
 
 def detect_device_count():
@@ -1206,6 +1204,15 @@ def is_debug_mode():
     return sys.gettrace() is not None or sys.flags.debug == 1
 
 
+
+def get_layer_features(layer):
+    """Extracts input and output feature dimensions for supported layers."""
+    if isinstance(layer, torch.nn.Linear):
+        return layer.in_features, layer.out_features
+    elif isinstance(layer, transformers.pytorch_utils.Conv1D):  # TODO: Verify correctness
+        return layer.weight.shape[0], layer.weight.shape[1]
+    return None, None  # Unsupported layer type
+
 def _gguf_args_check(args):
     from auto_round.utils import logger
     from auto_round.export.export_to_gguf.config import GGUF_CONFIG
@@ -1257,3 +1264,4 @@ def _gguf_args_check(args):
             logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
 
     return args
+

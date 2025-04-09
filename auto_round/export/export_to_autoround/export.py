@@ -22,6 +22,7 @@ import torch.nn as nn
 import transformers
 
 import auto_round.export.export_to_autoround.qlinear_triton_act
+import auto_round_extension.cuda.qlinear_tritonv2
 from auto_round.utils import get_layer_names_in_block, get_module, logger, set_module, supported_layer_types
 import threadpoolctl as tctl
 import inspect
@@ -71,17 +72,18 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     if "auto_round" in backend and "awq" not in backend and "gptq" not in backend:
         if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
             return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
-        ##only support triton and exllamav2
-        if not ("triton" in backend or "exllamav2" in backend):
-            logger.warning_once(f"auto_round format does not support {backend}, try to pack each layer with auto_gptq")
-            return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
 
-        from auto_round_extension.cuda.qlinear_triton import QuantLinear
+        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
         return QuantLinear
+    elif "auto_round" in backend and "gptq" in backend:
+        from auto_round.export.export_to_autoround.qlinear_triton import QuantLinear ##no g_idx
+        return  QuantLinear
     elif "awq" in backend:
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
-    elif "gptq" in backend:
+    elif "gptqmodel" in backend:
+        return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
+    elif "gptq" in backend and not "gptqmodel" in backend: ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
         assert False, f"only support auto_gptq, auto_awq and auto_round backend"
@@ -188,6 +190,8 @@ def pack_layer(layer_name, model, backend):
         new_layer.device = device
         set_module(model, layer_name, new_layer)
         qlayer = new_layer
+        if sym:
+            zp = int(zp.flatten()[0])
 
         qlayer.to("cpu")
         ##force to float32 to be compatible with torch 2.0
@@ -202,6 +206,9 @@ def pack_layer(layer_name, model, backend):
         scale, zp = scale.to(torch.float32), zp.to(torch.float32)
         scale = scale.t().contiguous()
         zp = zp.t().contiguous()
+        if sym:
+            zp = int(zp.flatten()[0])
+
         if bits != 4:
             logger.error("AutoAWQ format only supports 4-bits quantization.")
         qlayer = QuantLinear.from_linear(
@@ -242,10 +249,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
     if (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
         backend = backend.replace('auto_round', 'auto_round:gptq')
-
-    if not ("triton" in backend or "exllamav2" in backend or "awq" in backend or "gptq" in backend):
-        logger.info(f"AutoRound format does not support {backend}, try to pack each layer with AutoGPTQ")
-        backend = backend.replace("auto_round", "auto_gptq")
 
     model = kwargs["model"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
@@ -306,6 +309,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if output_dir is None:
         model.tokenizer = tokenizer
         return model
+    if os.path.exists(output_dir):
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
 
