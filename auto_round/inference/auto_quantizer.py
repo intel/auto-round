@@ -155,26 +155,27 @@ class AutoHfQuantizer:
         loading_attr_dict = quantization_config_from_args.get_loading_attributes() \
             if quantization_config_from_args is not None else None
         if isinstance(quantization_config, dict):
-            if "auto-round" in quantization_config["quant_method"]:
+            if "auto-round" in quantization_config[
+                "quant_method"] or quantization_config_from_args.__class__.__name__ == "AutoRoundConfig":
                 quantization_config = AutoRoundConfig.from_dict(quantization_config)
+            # else:
+            #     if quantization_config_from_args.__class__.__name__ == "AutoRoundConfig":
+            #         logger.info(f"Loading quantized model in auto_round format.")
+            #         tmp_backend = quantization_config["quant_method"]
+            #         if "auto-round" not in tmp_backend and "gptq" not in tmp_backend and "awq" not in tmp_backend:
+            #             logger.error("could not convert to auto_round format, currently only supports `gptq`,`awq` or "
+            #                          "`auto-round` format")
+            #             raise NotImplementedError
+            #         target_backend = quantization_config["backend"] if "backend" in quantization_config else "auto"
+            #         if loading_attr_dict is not None and "backend" in loading_attr_dict:
+            #             target_backend = loading_attr_dict["backend"]
+            #             loading_attr_dict.pop("backend")
+            #         if "auto_round" not in target_backend:
+            #             target_backend = f"auto_round:{tmp_backend}"  #
+            #         quantization_config = AutoRoundConfig.from_dict(quantization_config)
+            #         setattr(quantization_config, "backend", target_backend)
             else:
-                if isinstance(quantization_config_from_args, (AutoRoundConfig)):
-                    logger.info(f"Loading quantized model in auto_round format.")
-                    tmp_backend = quantization_config["quant_method"]
-                    if "auto-round" not in tmp_backend and "gptq" not in tmp_backend and "awq" not in tmp_backend:
-                        logger.error("could not convert to auto_round format, currently only supports `gptq`,`awq` or "
-                                     "`auto-round` format")
-                        raise NotImplementedError
-                    target_backend = quantization_config["backend"] if "backend" in quantization_config else "auto"
-                    if loading_attr_dict is not None and "backend" in loading_attr_dict:
-                        target_backend = loading_attr_dict["backend"]
-                        loading_attr_dict.pop("backend")
-                    if "auto_round" not in target_backend:
-                        target_backend = f"auto_round:{tmp_backend}"  #
-                    quantization_config = AutoRoundConfig.from_dict(quantization_config)
-                    setattr(quantization_config, "backend", target_backend)
-                else:
-                    quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
+                quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
 
         if isinstance(quantization_config,
                       (GPTQConfig, AwqConfig, AutoRoundConfig)) and quantization_config_from_args is not None:
@@ -277,6 +278,26 @@ class AutoRoundConfig(QuantizationConfigMixin):
     def to_dict(self):
         config_dict = super().to_dict()
         return config_dict
+
+    @classmethod
+    def from_dict(cls, config_dict, return_unused_kwargs=False, **kwargs):
+        quant_method = config_dict["quant_method"]
+        if "auto-round" not in quant_method and "gptq" not in quant_method and "awq" not in quant_method:
+            raise NotImplementedError(
+                "Failed to convert to auto_round format. Only `gptqv1`, `awq`, and `auto-round` formats are supported."
+            )
+
+        if "gptq" in quant_method and "meta" in config_dict:
+            raise NotImplementedError(
+                "Failed to convert gptq format to auto_round format. Only supports `gptqv1`")
+
+        if "awq" in quant_method and config_dict.get("version", "gemm") != "gemm":
+            raise NotImplementedError(
+                "Failed to convert awq format to auto_round format. Only supports  awq format with gemm version")
+
+        if "auto-round" not in quant_method:
+            config_dict["backend"] = f"auto_round:{quant_method}"
+        return super().from_dict(config_dict, return_unused_kwargs=return_unused_kwargs, **kwargs)
 
 
 class AutoRoundQuantizer(HfQuantizer):

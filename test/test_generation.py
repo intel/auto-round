@@ -66,6 +66,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         print(res)
         assert ("!!!" not in res)
 
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_4bits_sym(self):
         bits = 4
@@ -131,6 +132,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
         assert ("!!!" not in res)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_autoround_asym(self):
         for bits in [2, 4, 8]:
@@ -159,6 +161,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
             res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
             print(res)
             assert ("!!!" not in res)
+            shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_autoround_sym(self):
         for bits in [2, 4, 8]:
@@ -187,4 +190,5 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
             res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
             print(res)
             assert ("!!!" not in res)
+            shutil.rmtree(self.save_folder, ignore_errors=True)
 

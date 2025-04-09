@@ -126,7 +126,7 @@ BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, Fa
                                                   bits=[2, 4, 8],
                                                   priority=1, feature_checks=[feature_multiply_checker_32],
                                                   alias=["auto_round", "tritonv2"],
-                                                  requirements=["auto-round>=0.5"]
+                                                  requirements=["auto-round>=0.5.0"]
                                                   )
 
 BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda"], sym=[True],  ## asym has accuracy issue
@@ -135,7 +135,7 @@ BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda"], sym=[True]
                                                      bits=[2, 4, 8],
                                                      priority=1, feature_checks=[feature_multiply_checker_32],
                                                      alias=["tritonv2", "tritonv2_zp"],
-                                                     requirements=["auto-round>=0.5"]
+                                                     requirements=["auto-round>=0.5.0"]
                                                      )
 
 BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
