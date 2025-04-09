@@ -1265,6 +1265,80 @@ def _gguf_args_check(args):
 
     return args
 
+def _to_model_dtype(model, model_dtype):
+    if model_dtype != None:
+        try:
+            if model_dtype == "float16" or model_dtype == "fp16":
+                model = model.to(torch.float16)
+            elif model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16":
+                model = model.to(torch.bfloat16)
+            elif model_dtype == "float32" or model_dtype == "fp32":
+                model = model.to(torch.float32)
+        except:
+            logger.error("please use more device to fit the device or just use one device")
+            exit()
+    return model
+
+def llm_load_model(
+        pretrained_model_name_or_path,
+        torch_dtype="auto",
+        use_auto_mapping=True,
+        trust_remote_code=True,
+        model_dtype=None,
+        device="cpu",
+        low_cpu_mem_mode=0,
+        low_cpu_mem_tmp_dir = None,
+        **kwargs):
+    from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
+
+    is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
+    low_cpu_mem_usage = False
+
+    tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+
+    model_cls = AutoModel if is_glm else AutoModelForCausalLM
+
+    if low_cpu_mem_tmp_dir is None:
+        low_cpu_mem_tmp_dir = "low_cpu_mem_tmp"
+    if low_cpu_mem_mode == 2:
+        from auto_round.low_cpu_mem.utils import load_model_with_hooks
+        model = load_model_with_hooks(
+            pretrained_model_name_or_path,
+            model_cls,
+            device=device,
+            clean_weight=True,
+            saved_path=low_cpu_mem_tmp_dir,
+            torch_dtype=torch_dtype,
+            trust_remote_code=trust_remote_code)
+    elif low_cpu_mem_mode == 1:
+        from auto_round.low_cpu_mem.utils import load_empty_model
+        low_cpu_mem_usage = True
+        model = load_empty_model(
+            pretrained_model_name_or_path,
+            model_cls,
+            device=device,
+            saved_path=low_cpu_mem_tmp_dir,
+            torch_dtype=torch_dtype,
+            trust_remote_code=trust_remote_code)
+    else:
+        from auto_round.utils import _use_hpu_compile_mode
+        if _use_hpu_compile_mode():
+            model = model_cls.from_pretrained(
+                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                attn_implementation="eager",
+                trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
+            )
+        else:
+            model = model_cls.from_pretrained(
+                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
+            )
+    
+    model = model.eval()
+    model = _to_model_dtype(model, model_dtype)
+    
+    return model, tokenizer, low_cpu_mem_usage
+
 
 def mllm_load_model(
         pretrained_model_name_or_path,
@@ -1320,16 +1394,6 @@ def mllm_load_model(
             processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
 
     model = model.eval()
+    model = _to_model_dtype(model, model_dtype)
 
-    if model_dtype != None:
-        try:
-            if model_dtype == "float16" or model_dtype == "fp16":
-                model = model.to(torch.float16)
-            elif model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16":
-                model = model.to(torch.bfloat16)
-            elif model_dtype == "float32" or model_dtype == "fp32":
-                model = model.to(torch.float32)
-        except:
-            logger.error("please use more device to fit the device or just use one device")
-            exit()
     return model, processor, tokenizer, image_processor
