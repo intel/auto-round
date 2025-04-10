@@ -32,7 +32,7 @@ supported_devices = ("cpu", "hpu", "xpu", "cuda")
 
 def skip_not_convert_modules(model, quantization_config, layer_names, layer_configs):
     modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
-    try: # transfomers new api
+    try: # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
     except:
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert)
