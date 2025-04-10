@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 from logging import getLogger
 from typing import Union
 from tqdm import tqdm
@@ -30,17 +31,25 @@ logger = getLogger(__name__)
 
 supported_devices = ("cpu", "hpu", "xpu", "cuda")
 
+def flatten_list(nested_list):
+    flattened = []
+    for item in nested_list:
+        if isinstance(item, list):
+            flattened.extend(flatten_list(item))
+        else:
+            flattened.append(item)
+    return flattened
+
 def skip_not_convert_modules(model, quantization_config, layer_names, layer_configs):
     modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
-    try: # transfomers new api
+    try: # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
-    except:
+    except Exception:
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert)
     if modules_to_not_convert:
         for layer_name in layer_names:
-            if any([n in layer_name for n in modules_to_not_convert]):
+            if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
                 layer_configs[layer_name] = {"bits": 16}
-        # extra_config[layer_name] = {"bits": 16}
     return layer_configs
     
 
@@ -233,9 +242,9 @@ def get_layer_config(model, quantization_config):
 
     # Process GPTQ format: identify modules that should be quantized
     if getattr(quantization_config, "modules_in_block_to_quantize", None):
-        modules_in_block_to_quantize = sum(quantization_config.modules_in_block_to_quantize, [])  # Flatten the list
+        modules_in_block_to_quantize = flatten_list(quantization_config.modules_in_block_to_quantize)  # Flatten the list
         for layer_name in layer_names:
-            if not any(qname in layer_name for qname in modules_in_block_to_quantize):
+            if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
 
     # Process AWQ format: exclude specified modules from quantization
