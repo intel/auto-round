@@ -20,7 +20,7 @@ import torch.nn as nn
 
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
+from auto_round.utils import (get_module, set_module, is_hpu_supported, get_multimodal_block_names,
                               find_matching_blocks, get_layer_names_in_block, check_to_quantized)
 
 from auto_round.inference.backend import (get_layer_backend, dynamic_import_inference_linear,
@@ -30,6 +30,96 @@ logger = getLogger(__name__)
 
 supported_devices = ("cpu", "hpu", "xpu", "cuda")
 
+def skip_not_convert_modules(model, quantization_config, layer_names, layer_configs):
+    modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
+    try: # transfomers new api
+        modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
+    except:
+        modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert)
+    if modules_to_not_convert:
+        for layer_name in layer_names:
+            if any([n in layer_name for n in modules_to_not_convert]):
+                layer_configs[layer_name] = {"bits": 16}
+        # extra_config[layer_name] = {"bits": 16}
+    return layer_configs
+    
+
+def get_keys_to_not_convert(model):
+    r"""
+    An utility function to get the key of the module to keep in full precision if any For example for CausalLM modules
+    we may want to keep the lm_head in full precision for numerical stability reasons. For other architectures, we want
+    to keep the tied weights of the model. The function will return a list of the keys of the modules to not convert in
+    int8.
+
+    Parameters:
+    model (`torch.nn.Module`):
+        Input model
+    """
+    from copy import deepcopy
+    from accelerate.utils import find_tied_parameters
+    # Create a copy of the model and tie the weights, then
+    # check if it contains tied weights
+    tied_model = deepcopy(model)  # this has 0 cost since it is done inside `init_empty_weights` context manager`
+    tied_model.tie_weights()
+
+    tied_params = find_tied_parameters(tied_model)
+    # For compatibility with Accelerate < 0.18
+    if isinstance(tied_params, dict):
+        tied_keys = sum(list(tied_params.values()), []) + list(tied_params.keys())
+    else:
+        tied_keys = sum(tied_params, [])
+    has_tied_params = len(tied_keys) > 0
+
+    # If there is not tied weights, we want to keep the lm_head（output_embedding) in full precision
+    if not has_tied_params:
+        output_emb = model.get_output_embeddings()
+        if output_emb is not None:
+            list_last_module = [name for name, module in model.named_modules() if id(module) == id(output_emb)]
+            return list_last_module
+
+    # otherwise, no tied weights, no output embedding defined, simply keep the last module in full precision
+    list_modules = list(model.named_parameters())
+    list_last_module = [list_modules[-1][0]]
+    # add last module together with tied weights
+    intersection = set(list_last_module) - set(tied_keys)
+    list_untouched = list(set(tied_keys)) + list(intersection)
+
+    # remove ".weight" from the keys
+    names_to_remove = [".weight", ".bias"]
+    filtered_module_names = []
+    for name in list_untouched:
+        for name_to_remove in names_to_remove:
+            if name_to_remove in name:
+                name = name.replace(name_to_remove, "")
+        filtered_module_names.append(name)
+
+    return filtered_module_names
+
+def _get_modules_to_not_convert(
+        model,
+        skip_modules = None,
+        keep_in_fp32_modules = None,
+        add_default_skips: bool = False,
+    ):
+
+        if skip_modules is None or add_default_skips:
+            modules_to_not_convert = get_keys_to_not_convert(model)
+        else:
+            modules_to_not_convert = []
+
+        if skip_modules is not None:
+            modules_to_not_convert.extend(skip_modules)
+
+        if keep_in_fp32_modules is not None:
+            modules_to_not_convert.extend(keep_in_fp32_modules)
+
+        return modules_to_not_convert
+
+try:
+    from transformers.quantizers.base import HfQuantizer
+    get_modules_to_not_convert = HfQuantizer.get_modules_to_not_convert
+except:
+    get_modules_to_not_convert = _get_modules_to_not_convert
 
 def get_available_devices():
     """
@@ -132,7 +222,7 @@ def get_layer_config(model, quantization_config):
             ]
         else:
             # Find matching blocks if no explicit names are provided
-            all_blocks = get_block_names(model)
+            all_blocks = get_multimodal_block_names(model, quant_vision=True)
             quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
 
     # Get layer names that will be quantized
@@ -149,11 +239,7 @@ def get_layer_config(model, quantization_config):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
 
     # Process AWQ format: exclude specified modules from quantization
-    modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
-    if modules_to_not_convert is None:
-        modules_to_not_convert = []
-    for layer_name in modules_to_not_convert:
-        extra_config[layer_name] = {"bits": 16}
+    extra_config = skip_not_convert_modules(model, quantization_config, layer_names, extra_config)
 
     # Merge and deduplicate layer names
     layer_names = list(set(layer_names).union(extra_config.keys()))
