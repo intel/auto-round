@@ -51,7 +51,7 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
             if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
                 layer_configs[layer_name] = {"bits": 16}
     return layer_configs
-    
+
 
 def get_keys_to_not_convert(model):
     r"""
@@ -111,18 +111,18 @@ def _get_modules_to_not_convert(
         add_default_skips: bool = False,
     ):
 
-        if skip_modules is None or add_default_skips:
-            modules_to_not_convert = get_keys_to_not_convert(model)
-        else:
-            modules_to_not_convert = []
+    if skip_modules is None or add_default_skips:
+        modules_to_not_convert = get_keys_to_not_convert(model)
+    else:
+        modules_to_not_convert = []
 
-        if skip_modules is not None:
-            modules_to_not_convert.extend(skip_modules)
+    if skip_modules is not None:
+        modules_to_not_convert.extend(skip_modules)
 
-        if keep_in_fp32_modules is not None:
-            modules_to_not_convert.extend(keep_in_fp32_modules)
+    if keep_in_fp32_modules is not None:
+        modules_to_not_convert.extend(keep_in_fp32_modules)
 
-        return modules_to_not_convert
+    return modules_to_not_convert
 
 try:
     from transformers.quantizers.base import HfQuantizer
@@ -242,7 +242,8 @@ def get_layer_config(model, quantization_config):
 
     # Process GPTQ format: identify modules that should be quantized
     if getattr(quantization_config, "modules_in_block_to_quantize", None):
-        modules_in_block_to_quantize = flatten_list(quantization_config.modules_in_block_to_quantize)  # Flatten the list
+        modules_in_block_to_quantize = flatten_list(
+            quantization_config.modules_in_block_to_quantize)  # Flatten the list
         for layer_name in layer_names:
             if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
