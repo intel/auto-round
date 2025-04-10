@@ -207,6 +207,16 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         devices = BackendInfos[layer_backend_must].device
         if target_device not in devices:
             raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
+        ##check requirements
+        requirements = BackendInfos[layer_backend_must].requirements
+        requirements_info = process_requirement(requirements)
+        if len(requirements_info) > 0:
+            extra_info = ""
+            for index,req in enumerate(requirements_info):
+                extra_info += (f"`{req}`")
+                if index != len(requirements_info)-1:
+                    extra_info += " and "
+            raise ImportError(f"{target_backend} requires the follow libraries. Please install them via {extra_info}")
 
     target_backend = target_backend or orig_backend  # Default to original backend if not specified
 
@@ -398,7 +408,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     if hasattr(quantization_config, "desc_act") and quantization_config.desc_act == True:
         ##check static_group
         if (hasattr(quantization_config, "static_groups") and not quantization_config.static_groups) or (
-        not hasattr(quantization_config, "static_groups")):
+                not hasattr(quantization_config, "static_groups")):
             raise NotImplementedError(
                 "This GPTQ model may contain a non-dummy g_idx, which is not yet supported by AutoRound")
 
@@ -439,8 +449,12 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
             extra_info = info
             requirements = BackendInfos[best_backend].requirements
             requirements_info = process_requirement(requirements)
-            for req in requirements_info:
-                extra_info += (f"`{req}`") + " "
+            for index,req in enumerate(requirements_info):
+                extra_info += (f"`{req}`")
+                if index != len(requirements_info) - 1:
+                    extra_info += " and "
+
+
             logger.warning(extra_info)
 
     return model, used_backends
