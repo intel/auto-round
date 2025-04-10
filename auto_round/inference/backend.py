@@ -679,10 +679,13 @@ def process_requirement(requirements: list):
     gptqmodel_requirements = None
     other_requirements = []
     for requirement in requirements:
-        if "gptqmodel" in requirement:
-            gptqmodel_requirements = requirement
-        else:
-            other_requirements.append(requirement)
+        try:
+            require_version(requirement)
+        except:
+            if "gptqmodel" in requirement:
+                gptqmodel_requirements = requirement
+            else:
+                other_requirements.append(requirement)
 
     infos = []
 

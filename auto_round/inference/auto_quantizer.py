@@ -180,8 +180,8 @@ class AutoHfQuantizer:
     @staticmethod
     def supports_quant_method(quantization_config_dict):
         from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
-        AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto-round'] = AutoRoundConfig
-        AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto_round'] = AutoRoundConfig
+        AUTO_QUANTIZATION_CONFIG_MAPPING['auto-round'] = AutoRoundConfig
+        AUTO_QUANTIZATION_CONFIG_MAPPING['auto_round'] = AutoRoundConfig
         quant_method = quantization_config_dict.get("quant_method", None)
         if quantization_config_dict.get("load_in_8bit", False) or quantization_config_dict.get("load_in_4bit", False):
             suffix = "_4bit" if quantization_config_dict.get("load_in_4bit", False) else "_8bit"
@@ -203,7 +203,7 @@ class AutoHfQuantizer:
 
 
 class AutoRoundQuantizationMethod(str, Enum):
-    AutoRound = "intel/auto-round"
+    AutoRound = "auto-round"
 
 
 @dataclass
