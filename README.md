@@ -73,7 +73,7 @@ pip install auto-round-lib
 
 ## Model Quantization
 
-### Basic Usage (Gaudi2/CPU/XPU/GPU)
+### Basic Usage (Gaudi/CPU/XPU/GPU)
 
 A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
 Set the format you want in `format` and
@@ -86,7 +86,6 @@ auto-round \
     --bits 4 \
     --group_size 128 \
     --format "auto_gptq,auto_awq,auto_round" \
-    --disable_eval \
     --output_dir ./tmp_autoround
 ```
 
@@ -100,8 +99,7 @@ auto-round-best \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --low_gpu_mem_usage \
-    --disable_eval 
+    --low_gpu_mem_usage 
   ```
 
   ```bash
@@ -110,7 +108,7 @@ auto-round-light \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --disable_eval 
+
   ```
 
   <!-- ```bash
@@ -119,7 +117,6 @@ auto-round-fast \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --disable_eval 
   ``` -->
 
 </details>
@@ -149,7 +146,7 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
   | Light   | 0.2760(2m)       | 0.4063(3m)      | 0.4764(5m)     | 0.4810(7m)      | 0.6581(38m)      |
 </details>
 
-### API Usage (Gaudi2/CPU/GPU)
+### API Usage (Gaudi/CPU/XPU/GPU)
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -318,7 +315,7 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
 **CUDA**: no extra operations for sym quantization, for asym quantization, need to install auto-round from source
 
-#### CPU/HPU/CUDA
+#### Gaudi/CPU/XPU/CUDA
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
