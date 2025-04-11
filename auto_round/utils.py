@@ -1380,11 +1380,10 @@ def mllm_load_model(
             tokenizer, model, image_processor, _ = load_pretrained_model(
                 pretrained_model_name_or_path, model_base=None, model_name=pretrained_model_name_or_path, torch_dtype=torch_dtype)
         else:
-            if architectures == "CogVLMForCausalLM":
-                cls = AutoModelForCausalLM
-                model.config.model_type = "cogvlm2"
-            else:
+            if hasattr(transformers, architectures):
                 cls = getattr(transformers, architectures)
+            else:
+                cls = AutoModelForCausalLM
             model = cls.from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=trust_remote_code,
