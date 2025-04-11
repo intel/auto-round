@@ -585,7 +585,7 @@ class AutoRound(object):
                     quantized_layers.append(n)
                 else:
                     unquantized_layers.append(n)
-            elif hasattr(m, "scales") or hasattr(m, "scale"): ##packing_immedialty
+            elif hasattr(m, "scales") or hasattr(m, "scale"): ##packing_immediately
                 quantized_layers.append(n)
         summary_info = (
             f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
