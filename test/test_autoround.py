@@ -372,12 +372,12 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
 
     def test_not_convert_modules(self):
+        import requests
+        from PIL import Image
         from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
         from auto_round import AutoRoundConfig
         from auto_round_extension.ipex.qlinear_ipex_awq import QuantLinear
-        import requests
-        from PIL import Image
-        model_name = "Qwen/Qwen2.5-VL-3B-Instruct-AWQ"
+        model_name = "Qwen/Qwen2-VL-2B-Instruct-AWQ"
         quantization_config = AutoRoundConfig()
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_name, quantization_config=quantization_config, torch_dtype=torch.float16)
