@@ -113,7 +113,7 @@ BackendInfos['auto_gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, Fal
 BackendInfos['auto_gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              packing_format="triton_zp",
                                              bits=[2, 3, 4, 8], group_size=None,
-                                             priority=1, feature_checks=[feature_multiply_checker_32],
+                                             priority=0, feature_checks=[feature_multiply_checker_32],
                                              alias=["auto_gptq:cuda"],
                                              dtype=["float16"],
                                              convertable_format=["triton_zp"],

@@ -58,7 +58,8 @@ class WrapperLinear(torch.nn.Module):
         device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
     """
 
-    def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu', **kwargs):
+    def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu',
+                 enable_round_tuning=True, **kwargs):
         """Initializes the WrapperLinear module.
 
         Args:
@@ -72,6 +73,7 @@ class WrapperLinear(torch.nn.Module):
         self.output_device = device
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.enable_minmax_tuning = enable_minmax_tuning
+        self.enable_round_tuning = enable_round_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8 or self._check_act_quantization(
             self.orig_layer.act_data_type)
@@ -108,7 +110,7 @@ class WrapperLinear(torch.nn.Module):
         weight_reshape = reshape_and_pad_tensor(orig_weight.data, orig_layer.group_size)
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
         self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
-        self._init_params("value", p_dtype, weight_reshape.shape, 0, True)
+        self._init_params("value", p_dtype, weight_reshape.shape, 0, self.enable_round_tuning)
         # Min-max scale initialization
         shape = get_scale_shape(orig_weight, orig_layer.group_size)
         self._init_params("min_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
@@ -166,7 +168,7 @@ class WrapperLinear(torch.nn.Module):
             weight = self.orig_layer.get_weight().to(self.device)
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             weight = weight.t()
-        
+
         quant_kwargs = {}
         if hasattr(self.orig_layer, "super_bits"):
             quant_kwargs["super_bits"] = self.orig_layer.super_bits
@@ -185,7 +187,7 @@ class WrapperLinear(torch.nn.Module):
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
             **quant_kwargs
-            )
+        )
         weight_q = weight_q.to(weight.dtype)
         if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
             weight_q = weight_q.t()
@@ -257,12 +259,12 @@ class WrapperLinear(torch.nn.Module):
                 else:
                     name = "w_" + key
                     setattr(self.orig_layer, name, attr_dict[key].to("cpu"))
-                    
+
         if isinstance(scale, dict):
             _set_dict_attr(scale, "scale")
         else:
             self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
-        
+
         if zp is not None:
             if isinstance(zp, dict):
                 _set_dict_attr(zp, "zp")
