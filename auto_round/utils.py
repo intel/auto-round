@@ -402,7 +402,7 @@ def get_block_names(model):
     return block_names
 
 
-def get_multimodal_block_names(model, quant_vision=False):
+def get_multimodal_block_names(model, quant_vision=False, validate=True):
     """Get the multimodal model block names for transformers-like networks.
 
     Args:
@@ -424,7 +424,8 @@ def get_multimodal_block_names(model, quant_vision=False):
                     continue
                 target_modules.append((n, m))
                 last_block_name = n
-    validate_modules(target_modules, quant_vision, vison_blocks_tuple)
+    if validate:
+        validate_modules(target_modules, quant_vision, vison_blocks_tuple)
     for i, target_m in enumerate(target_modules):
         block_names.append([])
         for n, m in target_m[1].named_children():

@@ -22,8 +22,8 @@ import torch.nn as nn
 from transformers.pytorch_utils import Conv1D
 
 from auto_round.utils import (
-    get_module, set_module, is_hpu_supported, get_multimodal_block_names, get_block_names, find_matching_blocks,
-    get_layer_names_in_block, check_to_quantized, is_pure_text_model)
+    get_module, set_module, is_hpu_supported, get_multimodal_block_names, find_matching_blocks,
+    get_layer_names_in_block, check_to_quantized)
 
 from auto_round.inference.backend import (
     get_layer_backend, dynamic_import_inference_linear, find_backend, BackendInfos, get_highest_priority_backend,
@@ -233,10 +233,7 @@ def get_layer_config(model, quantization_config):
             ]
         else:
             # Find matching blocks if no explicit names are provided
-            if is_pure_text_model(model):
-                all_blocks = get_block_names(model)
-            else:
-                all_blocks = get_multimodal_block_names(model, quant_vision=True)
+            all_blocks = get_multimodal_block_names(model, quant_vision=True, validate=False)
             quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
 
     # Get layer names that will be quantized

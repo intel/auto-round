@@ -122,11 +122,8 @@ class TestQuantizationBlocks(unittest.TestCase):
         from auto_round.utils import get_multimodal_block_names, get_block_names
         llm_block_names = get_block_names(self.model)
         all_block_names = []
-        try:
-            all_block_names = get_multimodal_block_names(self.model, quant_vision=True)
-        except:
-            pass
-        assert len(llm_block_names) != len(all_block_names)
+        all_block_names = get_multimodal_block_names(self.model, quant_vision=True)
+        assert len(llm_block_names) == len(all_block_names)
         
 
     def test_multimodal_quant(self):
@@ -181,6 +178,16 @@ class TestQuantizationBlocks(unittest.TestCase):
         quant_config = model.config.quantization_config
         assert quant_config.to_quant_block_names is not None
         
+    def test_moe(self):
+        from auto_round.utils import get_block_names, get_multimodal_block_names
+        model_name = "Qwen/Qwen1.5-MoE-A2.7B"
+        model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
+
+        block_name = get_block_names(model)
+        block_name_2 = get_multimodal_block_names(model, quant_vision=True)
+        self.assertTrue(block_name == block_name_2)
+        self.assertTrue(len(block_name_2) == 1)
+        self.assertTrue('model.layers.23' == block_name_2[0][-1])
         
         
 
