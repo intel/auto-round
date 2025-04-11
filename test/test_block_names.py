@@ -182,7 +182,6 @@ class TestQuantizationBlocks(unittest.TestCase):
     def test_moe(self):
         from auto_round.utils import get_block_names
         model_name = "Qwen/Qwen1.5-MoE-A2.7B"
-        model_name = "/models/Qwen1.5-MoE-A2.7B"
         model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
