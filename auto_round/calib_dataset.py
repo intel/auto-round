@@ -16,7 +16,7 @@ import json
 import random
 
 import torch
-from datasets import IterableDataset, Dataset
+from datasets import Dataset
 from datasets import Features, Sequence, Value
 from torch.utils.data import DataLoader
 import sys
@@ -623,7 +623,7 @@ def get_dataloader(
                 new_features[k] = Sequence(Value('int8'))
             else:
                 new_features[k] = v
-            
+
         dataset = dataset.cast(Features(new_features))
         datasets.append(dataset)
 

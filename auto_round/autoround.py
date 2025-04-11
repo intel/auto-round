@@ -581,10 +581,12 @@ class AutoRound(object):
         unquantized_layers = []
         for n, m in self.model.named_modules():
             if isinstance(m, tuple(self.supported_types)):
-                if int(m.bits) > 8:
-                    unquantized_layers.append(n)
-                else:
+                if check_to_quantized(m):
                     quantized_layers.append(n)
+                else:
+                    unquantized_layers.append(n)
+            elif hasattr(m, "scales") or hasattr(m, "scale"): ##packing_immediately
+                quantized_layers.append(n)
         summary_info = (
             f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
         )
