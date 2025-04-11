@@ -164,12 +164,11 @@ autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sy
 # autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
 
 ## 2-3X speedup, slight accuracy drop at W4G128
-# autoround = AutoRound(model, tokenizer, nsamples=128, iters=50, lr=5e-3, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym )
+# autoround = AutoRound(model, tokenizer, nsamples=128, iters=50, lr=5e-3, bits=bits, group_size=group_size, sym=sym )
 
-autoround.quantize()
 output_dir = "./tmp_autoround"
-## format= 'auto_round'(default in version>0.3.0), 'auto_gptq', 'auto_awq'
-autoround.save_quantized(output_dir, format='auto_round', inplace=True) 
+## format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
+autoround.quantize_and_save(output_dir, format='auto_round') 
 ```
 
 <details>
