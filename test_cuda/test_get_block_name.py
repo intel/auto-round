@@ -94,7 +94,17 @@ class TestAutoRound(unittest.TestCase):
         self.check_block_names(block_names, ["visual.blocks","model.layers"], [32,28])
 
 
-    def test_Qwen2VL(self):
+    def test_Llama32(self):
+        model_name = "/models/Llama-3.2-11B-Vision-Instruct"
+        model = AutoModelForVision2Seq.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        block_names = get_block_names(model)
+        self.check_block_names(block_names,["language_model.model.layers"], [40])
+
+        block_names = get_block_names(model,quant_vision=True)
+        self.check_block_names(block_names, ["vision_model.transformer.layers","vision_model.global_transformer.layers","language_model.model.layers"], [32,8,40])
+
+
+    def test_SmolVLM(self):
         model_name = "/models/SmolVLM-Instruct"
         model = AutoModelForVision2Seq.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
