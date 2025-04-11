@@ -557,7 +557,7 @@ def tune(args):
                 # gguf floder only contains one file
                 for file in os.listdir(eval_folder):
                     gguf_file = file
-                model = AutoModelForCausalLM.from_pretrained(
+                user_model = AutoModelForCausalLM.from_pretrained(
                     eval_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
                 tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
             else:
