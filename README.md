@@ -30,8 +30,6 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 <div align="left">
 
-
-
 ## What's New
 
 * [2024/03] The INT2-mixed R1 model (~200GB) retains 97.9% accuracy. Check
@@ -39,8 +37,8 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 * [2024/01] We provide experimental support for GGUF q4_0 and q4_1 formats.
 * [2024/11] We provide experimental support for VLM quantization, please check out
   the [README](./auto_round/mllm/README.md)
-## Installation
 
+## Installation
 
 ### Install from pypi
 
@@ -73,7 +71,7 @@ pip install auto-round-lib
 
 ## Model Quantization
 
-### Basic Usage (Gaudi2/CPU/GPU)
+### Basic Usage (Gaudi/CPU/XPU/GPU)
 
 A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
 Set the format you want in `format` and
@@ -86,11 +84,11 @@ auto-round \
     --bits 4 \
     --group_size 128 \
     --format "auto_gptq,auto_awq,auto_round" \
-    --disable_eval \
     --output_dir ./tmp_autoround
 ```
 
-We offer two configurations, `auto-round-best` and `auto-round-light`, designed for optimal accuracy and improved speed, respectively. Details are as follows.
+We offer two configurations, `auto-round-best` and `auto-round-light`, designed for optimal accuracy and improved speed,
+respectively. Details are as follows.
 <details>
   <summary>Other Recipes</summary>
 
@@ -100,8 +98,7 @@ auto-round-best \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --low_gpu_mem_usage \
-    --disable_eval 
+    --low_gpu_mem_usage 
   ```
 
   ```bash
@@ -110,7 +107,7 @@ auto-round-light \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --disable_eval 
+
   ```
 
   <!-- ```bash
@@ -119,37 +116,37 @@ auto-round-fast \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
-    --disable_eval 
   ``` -->
 
 </details>
 
-In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the configuration to suit your specific requirements and available resources. 
+In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the
+configuration to suit your specific requirements and available resources.
 
-W4G128 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version of PyTorch 2.6.0 with enable_torch_compile):
+W4G128 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version
+of PyTorch 2.6.0 with enable_torch_compile):
 
-
-| Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct |  Meta-Llama-3.1-8B-Instruct |  Falcon3-10B          | Qwen2.5-72B-Instruct  |
-|---------|-----------------------|----------------------|---------------------|----------------------|----------------------|-----------------------|
-| 16bits  | 0.4192                | 0.5203               | 0.6470              | 0.6212               | 0.6151               | 0.7229                |
-| Best    | **0.4137**(7m)   | **0.5142**(23m) | 0.6426(58m)    | **0.6116**(81m) | **0.6092**(81m) | 0.7242(575m)     |
-| Default | 0.4129(2m)       | 0.5133(6m)      | 0.6441(13m)    | 0.6106(13m)     | 0.6080(18m)     | **0.7252**(118m) |
-| Light   | 0.4052(2m)       | 0.5108(3m)      | **0.6453**(5m) | 0.6104(6m)      | 0.6063(6m)      | 0.7243(37m)      |
-
+| Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B      | Qwen2.5-7B-Instruct | Meta-Llama-3.1-8B-Instruct | Falcon3-10B     | Qwen2.5-72B-Instruct |
+|---------|-----------------------|-----------------|---------------------|----------------------------|-----------------|----------------------|
+| 16bits  | 0.4192                | 0.5203          | 0.6470              | 0.6212                     | 0.6151          | 0.7229               |
+| Best    | **0.4137**(7m)        | **0.5142**(23m) | 0.6426(58m)         | **0.6116**(81m)            | **0.6092**(81m) | 0.7242(575m)         |
+| Default | 0.4129(2m)            | 0.5133(6m)      | 0.6441(13m)         | 0.6106(13m)                | 0.6080(18m)     | **0.7252**(118m)     |
+| Light   | 0.4052(2m)            | 0.5108(3m)      | **0.6453**(5m)      | 0.6104(6m)                 | 0.6063(6m)      | 0.7243(37m)          |
 
 <details>
   <summary>W2G64 results</summary>
 W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version of PyTorch 2.6.0 with enable_torch_compile). We recommend using higher precision for the head, tail, and non-expert modules to alleviate the significant accuracy drop.
 
-| Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B           | Qwen2.5-7B-Instruct  | Falcon3-10B          | Qwen2.5-72B-Instruct  |
-  |---------|-----------------------|----------------------|---------------------|----------------------|-----------------------|
-  | 16bits  | 0.4192                |  0.5203        | 0.6470              | 0.6151               | 0.7229                |
-  | Best    | **0.2989**(6m)   | **0.4267**(24m) | **0.5343**(56m)| **0.5207**(79m)     | **0.6715**(564m)     |
-  | Default | 0.2878(2m)       | 0.4219(6m)      | 0.5209(13m)    | 0.5133(18m)     | 0.6713(122m) |
-  | Light   | 0.2760(2m)       | 0.4063(3m)      | 0.4764(5m)     | 0.4810(7m)      | 0.6581(38m)      |
+| Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B      | Qwen2.5-7B-Instruct | Falcon3-10B     | Qwen2.5-72B-Instruct |
+  |---------|-----------------------|-----------------|---------------------|-----------------|----------------------|
+| 16bits  | 0.4192                | 0.5203          | 0.6470              | 0.6151          | 0.7229               |
+| Best    | **0.2989**(6m)        | **0.4267**(24m) | **0.5343**(56m)     | **0.5207**(79m) | **0.6715**(564m)     |
+| Default | 0.2878(2m)            | 0.4219(6m)      | 0.5209(13m)         | 0.5133(18m)     | 0.6713(122m)         |
+| Light   | 0.2760(2m)            | 0.4063(3m)      | 0.4764(5m)          | 0.4810(7m)      | 0.6581(38m)          |
+
 </details>
 
-### API Usage (Gaudi2/CPU/GPU)
+### API Usage (Gaudi/CPU/XPU/GPU)
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -167,12 +164,11 @@ autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sy
 # autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
 
 ## 2-3X speedup, slight accuracy drop at W4G128
-# autoround = AutoRound(model, tokenizer, nsamples=128, iters=50, lr=5e-3, seqlen=512, batch_size=4, bits=bits, group_size=group_size, sym=sym )
+# autoround = AutoRound(model, tokenizer, nsamples=128, iters=50, lr=5e-3, bits=bits, group_size=group_size, sym=sym )
 
-autoround.quantize()
 output_dir = "./tmp_autoround"
-## format= 'auto_round'(default in version>0.3.0), 'auto_gptq', 'auto_awq'
-autoround.save_quantized(output_dir, format='auto_round', inplace=True) 
+## format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
+autoround.quantize_and_save(output_dir, format='auto_round') 
 ```
 
 <details>
@@ -227,9 +223,7 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 
 </details>
 
-
 ### API Usage for VLMs
-
 
 <details>
   <summary>Click to expand</summary>
@@ -262,13 +256,13 @@ autoround.quantize()
 output_dir = "./tmp_autoround"
 autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ```
+
 </details>
 
-
-
 ### Export Formats
+
 **AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
-inference. **[2,4] bits are supported**. However, it has not yet gained widespread community adoption.
+inference. **[2,3,4,8] bits are supported**. However, it has not yet gained widespread community adoption.
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
 community, **[2,3,4,8] bits are supported**. However, **the
@@ -276,12 +270,10 @@ asymmetric kernel has issues** that can cause considerable accuracy drops, parti
 models.
 
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
-adopted within the community, **only 4-bits quantization is supported**. 
+adopted within the community, **only 4-bits quantization is supported**.
 
 **GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and
 q4_1 (W4G32) is supported in our repo**.
-
-
 
 ### Quantization Costs
 
@@ -318,28 +310,23 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
 **CUDA**: no extra operations for sym quantization, for asym quantization, need to install auto-round from source
 
-#### CPU/HPU/CUDA
+#### Gaudi/CPU/XPU/CUDA
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRoundConfig
 
-backend = "auto"  ##cpu, hpu, cuda
-quantization_config = AutoRoundConfig(
-    backend=backend
-)
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map=backend.split(':')[0],
-                                             quantization_config=quantization_config)
+                                             device_map="auto")
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 ```
 
-
 #### Evaluation
+
 <details>
   <summary>Click to expand</summary>
 
@@ -351,7 +338,6 @@ auto-round --model saved_quantized_model \
 ```
 
 </details>
-
 
 ### AutoGPTQ/AutoAWQ format
 
@@ -377,8 +363,6 @@ AutoRound supports basically all the major large language models.
 Please note that an asterisk (*) indicates third-party quantized models, which may lack accuracy data and use a
 different recipe. We greatly appreciate their efforts and encourage more users to share their models, as we cannot
 release most of the models ourselves.
-
-
 
  Model                                     | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 |-------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -422,12 +406,9 @@ release most of the models ourselves.
 | 01-ai/Yi-6B-Chat                          | [outdated-recipe](./docs/Yi-6B-Chat-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |                                     
 | facebook/opt-2.7b                         | [outdated-recipe](./docs/opt-2.7b-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | bigscience/bloom-3b                       | [outdated-recipe](./docs/bloom-3B-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| EleutherAI/gpt-j-6b                       | [outdated-recipe](./docs/gpt-j-6B-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | 
+| EleutherAI/gpt-j-6b                       | [outdated-recipe](./docs/gpt-j-6B-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | 
 
 </details> 
- 
-
-
 
 ## Integration
 
@@ -438,8 +419,6 @@ AutoRound has been integrated into multiple repositories.
 [ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel)
 
 [pytorch/ao](https://github.com/pytorch/ao)
-
-
 
 ## Reference
 

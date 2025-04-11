@@ -155,26 +155,11 @@ class AutoHfQuantizer:
         loading_attr_dict = quantization_config_from_args.get_loading_attributes() \
             if quantization_config_from_args is not None else None
         if isinstance(quantization_config, dict):
-            if "auto-round" in quantization_config["quant_method"]:
+            if "auto-round" in quantization_config[
+                "quant_method"] or quantization_config_from_args.__class__.__name__ == "AutoRoundConfig":
                 quantization_config = AutoRoundConfig.from_dict(quantization_config)
             else:
-                if isinstance(quantization_config_from_args, (AutoRoundConfig)):
-                    logger.info(f"Loading quantized model in auto_round format.")
-                    tmp_backend = quantization_config["quant_method"]
-                    if "auto-round" not in tmp_backend and "gptq" not in tmp_backend and "awq" not in tmp_backend:
-                        logger.error("could not convert to auto_round format, currently only supports `gptq`,`awq` or "
-                                     "`auto-round` format")
-                        exit(-1)
-                    target_backend = quantization_config["backend"] if "backend" in quantization_config else "auto"
-                    if loading_attr_dict is not None and "backend" in loading_attr_dict:
-                        target_backend = loading_attr_dict["backend"]
-                        loading_attr_dict.pop("backend")
-                    if "auto_round" not in target_backend:
-                        target_backend = f"auto_round:{tmp_backend}"  #
-                    quantization_config = AutoRoundConfig.from_dict(quantization_config)
-                    setattr(quantization_config, "backend", target_backend)
-                else:
-                    quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
+                quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
 
         if isinstance(quantization_config,
                       (GPTQConfig, AwqConfig, AutoRoundConfig)) and quantization_config_from_args is not None:
@@ -195,8 +180,8 @@ class AutoHfQuantizer:
     @staticmethod
     def supports_quant_method(quantization_config_dict):
         from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
-        AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto-round'] = AutoRoundConfig
-        AUTO_QUANTIZATION_CONFIG_MAPPING['intel/auto_round'] = AutoRoundConfig
+        AUTO_QUANTIZATION_CONFIG_MAPPING['auto-round'] = AutoRoundConfig
+        AUTO_QUANTIZATION_CONFIG_MAPPING['auto_round'] = AutoRoundConfig
         quant_method = quantization_config_dict.get("quant_method", None)
         if quantization_config_dict.get("load_in_8bit", False) or quantization_config_dict.get("load_in_4bit", False):
             suffix = "_4bit" if quantization_config_dict.get("load_in_4bit", False) else "_8bit"
@@ -218,7 +203,7 @@ class AutoHfQuantizer:
 
 
 class AutoRoundQuantizationMethod(str, Enum):
-    AutoRound = "intel/auto-round"
+    AutoRound = "auto-round"
 
 
 @dataclass
@@ -265,8 +250,8 @@ class AutoRoundConfig(QuantizationConfigMixin):
 
     def post_init(self):
         r"""Safety checker that arguments are correct."""
-        if self.bits not in [2, 4, 8]:
-            raise ValueError(f"Only support quantization to [2,4,8] bits but found {self.bits}")
+        if self.bits not in [2, 3, 4, 8]:
+            raise ValueError(f"Only support quantization to [2,3,4,8] bits but found {self.bits}")
         if self.group_size != -1 and self.group_size <= 0:
             raise ValueError("group_size must be greater than 0 or equal to -1")
 
@@ -277,6 +262,26 @@ class AutoRoundConfig(QuantizationConfigMixin):
     def to_dict(self):
         config_dict = super().to_dict()
         return config_dict
+
+    @classmethod
+    def from_dict(cls, config_dict, return_unused_kwargs=False, **kwargs):
+        quant_method = config_dict["quant_method"]
+        if "auto-round" not in quant_method and "gptq" not in quant_method and "awq" not in quant_method:
+            raise NotImplementedError(
+                "Failed to convert to auto_round format. Only `gptqv1`, `awq`, and `auto-round` formats are supported."
+            )
+
+        if "gptq" in quant_method and "meta" in config_dict:
+            raise NotImplementedError(
+                "Failed to convert gptq format to auto_round format. Only supports `gptqv1`")
+
+        if "awq" in quant_method and config_dict.get("version", "gemm") != "gemm":
+            raise NotImplementedError(
+                "Failed to convert awq format to auto_round format. Only supports  awq format with gemm version")
+
+        if "auto-round" not in quant_method:
+            config_dict["backend"] = f"auto_round:{quant_method}"
+        return super().from_dict(config_dict, return_unused_kwargs=return_unused_kwargs, **kwargs)
 
 
 class AutoRoundQuantizer(HfQuantizer):
@@ -306,7 +311,6 @@ class AutoRoundQuantizer(HfQuantizer):
                                   "auto-round` or install from source")
 
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
-        self.target_device = infer_target_device(self.device_map)
         if torch_dtype is None:
             torch_dtype = torch.float16
         elif torch_dtype != torch.float16:
@@ -330,8 +334,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def _process_model_before_weight_loading(self, model: "PreTrainedModel", **kwargs):
         if self.pre_quantized:
-            target_device = self.target_device if hasattr(self, self.target_device) else infer_target_device(
-                self.device_map)
+            target_device = infer_target_device(self.device_map)
             model, used_backends = convert_hf_model(model, target_device)
             self.used_backends = used_backends
 

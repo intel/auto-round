@@ -34,7 +34,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_remove_whole_block(self):
-        layer_config={"model.decoder.layers.0.self_attn.k_proj":{"bits":32},
+        layer_config={"model.decoder.layers.0.self_attn.k_proj": {"bits": 32},
                        "model.decoder.layers.0.self_attn.v_proj": {"bits": 32},
                        "model.decoder.layers.0.self_attn.q_proj": {"bits": 32},
                        "model.decoder.layers.0.self_attn.out_proj": {"bits": 32},
@@ -101,18 +101,18 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize()
 
     def test_nsample(self):
-       autoround= AutoRound(
-           self.model,
-           self.tokenizer,
-           bits=4,
-           group_size=128,
-           seqlen=2,
-           nsamples=3,
-           batch_size=3,
-           iters=2,
-           dataset=self.llm_dataloader,
-           gradient_accumulate_steps=4)
-       autoround.quantize()
+        autoround= AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=4,
+            group_size=128,
+            seqlen=2,
+            nsamples=3,
+            batch_size=3,
+            iters=2,
+            dataset=self.llm_dataloader,
+            gradient_accumulate_steps=4)
+        autoround.quantize()
 
     def test_default(self):
         bits, group_size, sym = 4, 128, False
@@ -371,8 +371,57 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
+    def test_not_convert_modules(self):
+        import requests
+        from PIL import Image
+        from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+        from auto_round import AutoRoundConfig
+        from auto_round_extension.ipex.qlinear_ipex_awq import QuantLinear
+        model_name = "Qwen/Qwen2-VL-2B-Instruct-AWQ"
+        quantization_config = AutoRoundConfig()
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            model_name, quantization_config=quantization_config, torch_dtype=torch.float16)
+        self.assertTrue(isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear))
+        self.assertFalse(isinstance(model.visual.merger.mlp[0], QuantLinear))
+        self.assertTrue(isinstance(model.model.layers[0].self_attn.v_proj, QuantLinear))
+
+        processor = AutoProcessor.from_pretrained(model_name, size=None)
+        image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": image_url,
+                    },
+                    {"type": "text", "text": "Describe this image."},
+                ],
+            }
+        ]
+
+        # Preparation for inference
+        text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        image_inputs = Image.open(requests.get(image_url, stream=True).raw)
+        inputs = processor(
+            text=[text],
+            images=image_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+
+        # Inference: Generation of the output
+        generated_ids = model.generate(**inputs, max_new_tokens=1)
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output_text = processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+        print(output_text)
+
 
 if __name__ == "__main__":
     unittest.main()
-
-

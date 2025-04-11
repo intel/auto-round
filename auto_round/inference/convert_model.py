@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 from logging import getLogger
 from typing import Union
 from tqdm import tqdm
@@ -20,15 +21,114 @@ import torch.nn as nn
 
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
+from auto_round.utils import (get_module, set_module, is_hpu_supported, get_multimodal_block_names,
                               find_matching_blocks, get_layer_names_in_block, check_to_quantized)
 
-from auto_round.inference.backend import get_layer_backend, dynamic_import_inference_linear, find_backend, BackendInfos
+from auto_round.inference.backend import (get_layer_backend, dynamic_import_inference_linear,
+                                          find_backend, BackendInfos, get_highest_priority_backend, process_requirement)
 
 logger = getLogger(__name__)
 
 supported_devices = ("cpu", "hpu", "xpu", "cuda")
 
+def flatten_list(nested_list):
+    flattened = []
+    for item in nested_list:
+        if isinstance(item, list):
+            flattened.extend(flatten_list(item))
+        else:
+            flattened.append(item)
+    return flattened
+
+def skip_not_convert_modules(model, quantization_config, layer_names, layer_configs):
+    modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
+    try: # transformers new api
+        modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
+    except Exception:
+        modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert)
+    if modules_to_not_convert:
+        for layer_name in layer_names:
+            if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
+                layer_configs[layer_name] = {"bits": 16}
+    return layer_configs
+
+
+def get_keys_to_not_convert(model):
+    r"""
+    An utility function to get the key of the module to keep in full precision if any For example for CausalLM modules
+    we may want to keep the lm_head in full precision for numerical stability reasons. For other architectures, we want
+    to keep the tied weights of the model. The function will return a list of the keys of the modules to not convert in
+    int8.
+
+    Parameters:
+    model (`torch.nn.Module`):
+        Input model
+    """
+    from copy import deepcopy
+    from accelerate.utils import find_tied_parameters
+    # Create a copy of the model and tie the weights, then
+    # check if it contains tied weights
+    tied_model = deepcopy(model)  # this has 0 cost since it is done inside `init_empty_weights` context manager`
+    tied_model.tie_weights()
+
+    tied_params = find_tied_parameters(tied_model)
+    # For compatibility with Accelerate < 0.18
+    if isinstance(tied_params, dict):
+        tied_keys = sum(list(tied_params.values()), []) + list(tied_params.keys())
+    else:
+        tied_keys = sum(tied_params, [])
+    has_tied_params = len(tied_keys) > 0
+
+    # If there is not tied weights, we want to keep the lm_head（output_embedding) in full precision
+    if not has_tied_params:
+        output_emb = model.get_output_embeddings()
+        if output_emb is not None:
+            list_last_module = [name for name, module in model.named_modules() if id(module) == id(output_emb)]
+            return list_last_module
+
+    # otherwise, no tied weights, no output embedding defined, simply keep the last module in full precision
+    list_modules = list(model.named_parameters())
+    list_last_module = [list_modules[-1][0]]
+    # add last module together with tied weights
+    intersection = set(list_last_module) - set(tied_keys)
+    list_untouched = list(set(tied_keys)) + list(intersection)
+
+    # remove ".weight" from the keys
+    names_to_remove = [".weight", ".bias"]
+    filtered_module_names = []
+    for name in list_untouched:
+        for name_to_remove in names_to_remove:
+            if name_to_remove in name:
+                name = name.replace(name_to_remove, "")
+        filtered_module_names.append(name)
+
+    return filtered_module_names
+
+def _get_modules_to_not_convert(
+        model,
+        skip_modules = None,
+        keep_in_fp32_modules = None,
+        add_default_skips: bool = False,
+    ):
+
+    if skip_modules is None or add_default_skips:
+        modules_to_not_convert = get_keys_to_not_convert(model)
+    else:
+        modules_to_not_convert = []
+
+    if skip_modules is not None:
+        modules_to_not_convert.extend(skip_modules)
+
+    if keep_in_fp32_modules is not None:
+        modules_to_not_convert.extend(keep_in_fp32_modules)
+
+    return modules_to_not_convert
+
+try:
+    from transformers.quantizers.base import HfQuantizer
+    get_modules_to_not_convert = HfQuantizer.get_modules_to_not_convert
+except:
+    get_modules_to_not_convert = _get_modules_to_not_convert
 
 def get_available_devices():
     """
@@ -131,7 +231,7 @@ def get_layer_config(model, quantization_config):
             ]
         else:
             # Find matching blocks if no explicit names are provided
-            all_blocks = get_block_names(model)
+            all_blocks = get_multimodal_block_names(model, quant_vision=True)
             quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
 
     # Get layer names that will be quantized
@@ -142,17 +242,14 @@ def get_layer_config(model, quantization_config):
 
     # Process GPTQ format: identify modules that should be quantized
     if getattr(quantization_config, "modules_in_block_to_quantize", None):
-        modules_in_block_to_quantize = sum(quantization_config.modules_in_block_to_quantize, [])  # Flatten the list
+        modules_in_block_to_quantize = flatten_list(
+            quantization_config.modules_in_block_to_quantize)  # Flatten the list
         for layer_name in layer_names:
-            if not any(qname in layer_name for qname in modules_in_block_to_quantize):
+            if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
 
     # Process AWQ format: exclude specified modules from quantization
-    modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
-    if modules_to_not_convert is None:
-        modules_to_not_convert = []
-    for layer_name in modules_to_not_convert:
-        extra_config[layer_name] = {"bits": 16}
+    extra_config = skip_not_convert_modules(model, quantization_config, layer_names, extra_config)
 
     # Merge and deduplicate layer names
     layer_names = list(set(layer_names).union(extra_config.keys()))
@@ -206,6 +303,16 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         devices = BackendInfos[layer_backend_must].device
         if target_device not in devices:
             raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
+        ##check requirements
+        requirements = BackendInfos[layer_backend_must].requirements
+        requirements_info = process_requirement(requirements)
+        if len(requirements_info) > 0:
+            extra_info = ""
+            for index,req in enumerate(requirements_info):
+                extra_info += (f"`{req}`")
+                if index != len(requirements_info)-1:
+                    extra_info += " and "
+            raise ImportError(f"{target_backend} requires the follow libraries. Please install them via {extra_info}")
 
     target_backend = target_backend or orig_backend  # Default to original backend if not specified
 
@@ -355,7 +462,7 @@ def post_init(model, used_backends):
             _import_exllamav2_kernels()
 
     ## convert datatype
-    data_types=[]
+    data_types = []
     for used_backend in used_backends:
         backend = BackendInfos[used_backend]
         data_types.append(backend.dtype)
@@ -364,10 +471,10 @@ def post_init(model, used_backends):
         common &= set(l)
     common = list(common)
     if str(model.dtype).split('.')[-1] not in common:
-        if common[0]=="float16":
+        if common[0] == "float16":
             model = model.to(torch.float16)
             logger.warning("force model to float16")
-        elif common[0]=="bfloat16":
+        elif common[0] == "bfloat16":
             model = model.to(torch.bfloat16)
             logger.warning("force model to bfloat16")
 
@@ -392,8 +499,15 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
             If the quantization backend is not specified in the configuration.
     """
 
-
     quantization_config = model.config.quantization_config
+
+    if hasattr(quantization_config, "desc_act") and quantization_config.desc_act == True:
+        ##check static_group
+        if (hasattr(quantization_config, "static_groups") and not quantization_config.static_groups) or (
+                not hasattr(quantization_config, "static_groups")):
+            raise NotImplementedError(
+                "This GPTQ model may contain a non-dummy g_idx, which is not yet supported by AutoRound")
+
     if not hasattr(quantization_config, "target_backend"):
         quantization_config.target_backend = quantization_config.backend
 
@@ -421,5 +535,22 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         target_backend = target_backend[len("auto_round:"):]
 
     used_backends = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
+
+    if target_backend == "auto" or target_backend == "":
+        best_backend = get_highest_priority_backend(quantization_config.bits, quantization_config.sym,
+                                                    quantization_config.group_size, target_device,
+                                                    BackendInfos[backend].packing_format)
+        if best_backend is not None and best_backend not in used_backends:
+            info = f"better backend is found, please install all the following requirements to enable it,"
+            extra_info = info
+            requirements = BackendInfos[best_backend].requirements
+            requirements_info = process_requirement(requirements)
+            for index,req in enumerate(requirements_info):
+                extra_info += (f"`{req}`")
+                if index != len(requirements_info) - 1:
+                    extra_info += " and "
+
+
+            logger.warning(extra_info)
 
     return model, used_backends
