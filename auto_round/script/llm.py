@@ -29,7 +29,7 @@ import os
 import re
 import argparse
 import sys
-
+import logging
 from auto_round.utils import (
     get_fp_layer_names,
     clear_memory,
@@ -94,15 +94,20 @@ class BasicArgumentParser(argparse.ArgumentParser):
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
             help="scale data type to use for quantization")
 
-        self.add_argument("--tasks",
-                          default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
-                                  "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
-                          help="lm-eval tasks")
+        self.add_argument(
+            "--tasks",
+            "--task",
+            nargs='?',
+            const="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
+                  "openbookqa,boolq,arc_easy,arc_challenge",
+            default=None,
+            help="lm-eval tasks")
 
         self.add_argument(
             "--output_dir", default="./tmp_autoround", type=str, help="the directory to save quantized model")
 
-        self.add_argument("--disable_eval", action='store_true', help="whether to do lm-eval evaluation after tuning")
+        self.add_argument("--disable_eval", action='store_true',
+                          help="whether to disable lm-eval evaluation after tuning")
 
         self.add_argument(
             "--eval_task_by_task",
@@ -204,12 +209,11 @@ class EvalArgumentParser(argparse.ArgumentParser):
                  "The default is set to cuda:0,"
                  "allowing for automatic detection and switch to HPU or CPU."
                  "set --device 0,1,2 to use multiple cards.")
-        self.add_argument(
-            "--tasks",
-            "--task",
-            default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
-                    "openbookqa,boolq,arc_easy,arc_challenge",
-            help="lm-eval tasks")
+
+        self.add_argument("--tasks", "--task",
+                          default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1," \
+                                  "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
+                          help="lm-eval tasks")
         self.add_argument(
             "--disable_trust_remote_code", action='store_true', help="whether to disable trust_remote_code")
         self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int, help="batch size in evaluation")
@@ -229,9 +233,9 @@ def setup_parser():
         "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples")
 
     parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
-    
+
     parser.add_argument(
-            "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
+        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
     return args
@@ -250,9 +254,9 @@ def setup_best_parser():
         "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples")
 
     parser.add_argument("--nsamples", "--nsample", default=512, type=int, help="number of samples")
-    
+
     parser.add_argument(
-            "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
+        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
     args.low_gpu_mem_usage = True
@@ -296,9 +300,9 @@ def setup_fast_parser():
         "--seqlen", "--seq_len", default=512, type=int, help="sequence length of the calibration samples")
 
     parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
-    
+
     parser.add_argument(
-            "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
+        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
 
@@ -312,6 +316,9 @@ def setup_eval_parser():
 
 
 def tune(args):
+    if args.disable_eval:
+        logging.warning("`disable_eval` is deprecated and is now set by default.")
+
     import transformers
 
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig
@@ -319,7 +326,6 @@ def tune(args):
     from auto_round.utils import detect_device, get_library_version
     from auto_round.utils import logger, _gguf_args_check
 
-    tasks = args.tasks
     if args.format is None:
         args.format = "auto_round"
 
@@ -332,7 +338,7 @@ def tune(args):
     args = _gguf_args_check(args)
 
     if "auto_gptq" in args.format and args.asym is True:
-        logger.warning("The auto_gptq kernel has issues with asymmetric quantization. "
+        logger.warning("the auto_gptq kernel has issues with asymmetric quantization. "
                        "It is recommended to use sym quantization or --format='auto_round'")
 
     if "marlin" in args.format and args.asym is True:
@@ -539,58 +545,62 @@ def tune(args):
 
     lm_eval_version = get_library_version("lm-eval")
 
+    eval_folder = folders[-1]
+    if args.tasks is None or args.tasks == "" or eval_folder is None:
+        return
+
+    tasks = args.tasks
     if isinstance(tasks, str):
         tasks = tasks.split(',')
-    eval_folder = folders[-1]
-    if not args.disable_eval and eval_folder is not None:
-        from lm_eval.utils import make_table  # pylint: disable=E0401
 
-        logger.info(f"Using lm-eval version {lm_eval_version}")
-        eval_gguf_model = False
-        for file in os.listdir(eval_folder):
-            if file.endswith("guff"):
-                eval_gguf_model = True
-                break
+    from lm_eval.utils import make_table  # pylint: disable=E0401
 
-        if args.act_bits <= 8 or eval_gguf_model:
-            if eval_gguf_model:
-                # gguf floder only contains one file
-                for file in os.listdir(eval_folder):
-                    gguf_file = file
-                model = AutoModelForCausalLM.from_pretrained(
-                    eval_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
-                tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
-            else:
-                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                    from accelerate.big_modeling import dispatch_model
+    logger.info(f"Using lm-eval version {lm_eval_version}")
+    eval_gguf_model = False
+    for file in os.listdir(eval_folder):
+        if file.endswith("guff"):
+            eval_gguf_model = True
+            break
 
-                    dispatch_model(model, model.hf_device_map)
-                    user_model = model
-                else:
-                    device_str = detect_device(device_str)
-                    user_model = model.to(device_str)
-
-            if args.eval_task_by_task:
-                eval_task_by_task(
-                    user_model, tokenizer=tokenizer, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
-            else:
-                if args.eval_bs is None or args.eval_bs == "auto":
-                    logger.warning("This API does not support auto currently, reset eval_bs to 16")
-                    args.eval_bs = 16
-                from auto_round.eval.evaluation import simple_evaluate_user_model
-                res = simple_evaluate_user_model(
-                    user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
-                print(make_table(res))
+    if args.act_bits <= 8 or eval_gguf_model:
+        if eval_gguf_model:
+            # gguf floder only contains one file
+            for file in os.listdir(eval_folder):
+                gguf_file = file
+            user_model = AutoModelForCausalLM.from_pretrained(
+                eval_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
+            tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
         else:
-            if args.eval_task_by_task:
-                eval_task_by_task(eval_folder, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                from accelerate.big_modeling import dispatch_model
+
+                dispatch_model(model, model.hf_device_map)
+                user_model = model
             else:
-                from auto_round.eval.evaluation import simple_evaluate
-                tasks, model_args, device_str = _eval_init(
-                    args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
-                res = simple_evaluate(
-                    model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
-                print(make_table(res))
+                device_str = detect_device(device_str)
+                user_model = model.to(device_str)
+
+        if args.eval_task_by_task:
+            eval_task_by_task(
+                user_model, tokenizer=tokenizer, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+        else:
+            if args.eval_bs is None or args.eval_bs == "auto":
+                logger.warning("This API does not support auto currently, reset eval_bs to 16")
+                args.eval_bs = 16
+            from auto_round.eval.evaluation import simple_evaluate_user_model
+            res = simple_evaluate_user_model(
+                user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
+            print(make_table(res))
+    else:
+        if args.eval_task_by_task:
+            eval_task_by_task(eval_folder, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+        else:
+            from auto_round.eval.evaluation import simple_evaluate
+            tasks, model_args, device_str = _eval_init(
+                args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
+            res = simple_evaluate(
+                model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+            print(make_table(res))
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
@@ -686,4 +696,3 @@ def eval_task_by_task(
             for key in res_keys:
                 res_all[key].update(res[key])
         print(make_table(res_all))
-
