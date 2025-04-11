@@ -145,7 +145,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
             help="force to convert the dtype, some backends supports fp16 dtype better")
 
-        self.add_argument("--act_bits", default=32, type=int, help="activation bits")
+        self.add_argument("--act_bits", default=16, type=int, help="activation bits")
 
         self.add_argument("--fp_layers", default="", type=str, help="layers to maintain original data type")
 
