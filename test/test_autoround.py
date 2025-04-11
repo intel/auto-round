@@ -11,7 +11,7 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-
+from _test_helpers import model_infer
 
 class LLMDataLoader:
     def __init__(self):
@@ -440,11 +440,13 @@ class TestAutoRound(unittest.TestCase):
             bits=bits,
             group_size=group_size,
             sym=sym,
+            iters=1,
+            nsamples=1
 
         )
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-
+        from auto_round import AutoRoundConfig
         model = AutoModelForCausalLM.from_pretrained(
             self.save_folder,
             torch_dtype=torch.float16,
@@ -452,7 +454,8 @@ class TestAutoRound(unittest.TestCase):
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
+        model_infer(model, tokenizer)
+        shutil.rmtree(self.save_folder)
 
 
 if __name__ == "__main__":
