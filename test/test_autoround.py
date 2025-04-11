@@ -29,11 +29,11 @@ class TestAutoRound(unittest.TestCase):
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
-        self.saved_folder = "./saved"
+        self.save_folder = "./saved"
 
     @classmethod
     def tearDownClass(self):
-        shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_remove_whole_block(self):
@@ -343,7 +343,7 @@ class TestAutoRound(unittest.TestCase):
             layer_config=layer_config
         )
         autoround.quantize()
-        quantized_model_path = self.saved_folder
+        quantized_model_path = self.save_folder
 
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
         from auto_round import AutoRoundConfig
