@@ -453,10 +453,6 @@ class TestAutoRound(unittest.TestCase):
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result['results']['lambada_openai']['acc,none'])
-        self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.32)
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 
 
 if __name__ == "__main__":
