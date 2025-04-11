@@ -102,6 +102,16 @@ class TestAutoRoundMLLM(unittest.TestCase):
             nsamples=2,
             batch_size=1, iters=2, dataset=dataset, seqlen=1)
         autoround.quantize()
+    
+    def test_pure_text_model_check(self):
+        from transformers import AutoModelForCausalLM
+        from auto_round.utils import is_pure_text_model
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            self.model_name, trust_remote_code=True, device_map="auto")
+        self.assertFalse(is_pure_text_model(model))
+        model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m", trust_remote_code=True)
+        self.assertTrue(is_pure_text_model(model))
+
 
 if __name__ == "__main__":
     unittest.main()

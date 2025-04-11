@@ -416,10 +416,14 @@ def get_multimodal_block_names(model, quant_vision=False):
     block_names = []
     target_modules = []
     vison_blocks_tuple = ("vision", "visual",)
+    last_block_name = ""
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
             if quant_vision or all(key not in n.lower() for key in (vison_blocks_tuple)):
+                if last_block_name and last_block_name in n:
+                    continue
                 target_modules.append((n, m))
+                last_block_name = n
     validate_modules(target_modules, quant_vision, vison_blocks_tuple)
     for i, target_m in enumerate(target_modules):
         block_names.append([])
@@ -1265,3 +1269,15 @@ def _gguf_args_check(args):
 
     return args
 
+def is_pure_text_model(model):
+    """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl, """
+    if hasattr(model.config, "vision_config"):
+        return False
+    if hasattr(model.__class__, "main_input_name") and model.__class__.main_input_name != "input_ids":
+        return False
+    for module in model.modules():
+        if hasattr(module.__class__, "main_input_name") and module.__class__.main_input_name != "input_ids":
+            return False
+        if "vision" in str(module.__class__).lower():
+            return True
+    return True 
