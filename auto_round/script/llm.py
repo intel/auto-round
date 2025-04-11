@@ -552,6 +552,7 @@ def tune(args):
     tasks = args.tasks
     if isinstance(tasks, str):
         tasks = tasks.split(',')
+
     from lm_eval.utils import make_table  # pylint: disable=E0401
 
     logger.info(f"Using lm-eval version {lm_eval_version}")
@@ -566,7 +567,7 @@ def tune(args):
             # gguf floder only contains one file
             for file in os.listdir(eval_folder):
                 gguf_file = file
-            model = AutoModelForCausalLM.from_pretrained(
+            user_model = AutoModelForCausalLM.from_pretrained(
                 eval_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
             tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
         else:
