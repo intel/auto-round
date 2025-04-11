@@ -470,7 +470,7 @@ def post_init(model, used_backends):
     for l in data_types[1:]:
         common &= set(l)
     common = list(common)
-    if str(model.dtype).split('.')[-1] not in common:
+    if len(common)>0 and  str(model.dtype).split('.')[-1] not in common:
         if common[0] == "float16":
             model = model.to(torch.float16)
             logger.warning("force model to float16")
