@@ -407,11 +407,11 @@ def get_block_names(model, quant_vision=False):
             return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
-        vison_blocks_tuple = ("vision", "visual",)
+        vision_blocks_tuple = ("vision", "visual", "image", "img")
         last_block_name = ""
         for n, m in model.named_modules():
             if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-                if quant_vision or all(key not in n.lower() for key in (vison_blocks_tuple)):
+                if quant_vision or all(key not in n.lower() for key in (vision_blocks_tuple)):
                     if last_block_name and last_block_name in n:
                         continue
                     target_modules.append((n, m))
