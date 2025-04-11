@@ -27,7 +27,7 @@ import torch.nn as nn
 from auto_round.utils import (logger, get_module,
                               set_module,
                               check_to_quantized,
-                              get_multimodal_block_names,
+                              get_block_names,
                               extract_block_names_to_str, supported_layer_types)
 import copy
 import json
@@ -84,7 +84,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     if processor is not None:
         processor.save_pretrained(output_dir)
         # mllm models
-        all_blocks = get_multimodal_block_names(model, quant_vision=True)
+        all_blocks = get_block_names(model, quant_vision=True)
         all_block_names = extract_block_names_to_str(all_blocks)
         all_block_names = all_block_names.split(',')
         to_quant_block_names = to_quant_block_names.split(',')

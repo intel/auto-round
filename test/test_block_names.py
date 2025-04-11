@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 import unittest
@@ -119,10 +120,10 @@ class TestQuantizationBlocks(unittest.TestCase):
         experts_per_group = 2
         self.llm_dataloader = LLMDataLoader(input_size)
         self.model = NestedMoEModel(input_size, hidden_size, num_groups, experts_per_group)
-        from auto_round.utils import get_multimodal_block_names, get_block_names
+        from auto_round.utils import get_block_names
         llm_block_names = get_block_names(self.model)
         all_block_names = []
-        all_block_names = get_multimodal_block_names(self.model, quant_vision=True)
+        all_block_names = get_block_names(self.model, quant_vision=True)
         assert len(llm_block_names) == len(all_block_names)
         
 
@@ -133,10 +134,10 @@ class TestQuantizationBlocks(unittest.TestCase):
         text_input_size = 10
         hidden_size = 10
         self.model = SimpleMultimodalModel(text_input_size, image_input_size, hidden_size, num_text_encoders, num_image_encoders)
-        from auto_round.utils import get_multimodal_block_names, get_block_names
+        from auto_round.utils import get_block_names
         llm_block_names = get_block_names(self.model)
-        block_names_wo_vision = get_multimodal_block_names(self.model, quant_vision=False)
-        block_names_with_vision = get_multimodal_block_names(self.model, quant_vision=True)
+        block_names_wo_vision = get_block_names(self.model, quant_vision=False)
+        block_names_with_vision = get_block_names(self.model, quant_vision=True)
         assert block_names_wo_vision == llm_block_names
         assert len(block_names_wo_vision) != (block_names_with_vision)
         
@@ -179,16 +180,35 @@ class TestQuantizationBlocks(unittest.TestCase):
         assert quant_config.to_quant_block_names is not None
         
     def test_moe(self):
-        from auto_round.utils import get_block_names, get_multimodal_block_names
+        from auto_round.utils import get_block_names
         model_name = "Qwen/Qwen1.5-MoE-A2.7B"
+        model_name = "/models/Qwen1.5-MoE-A2.7B"
         model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         block_name = get_block_names(model)
-        block_name_2 = get_multimodal_block_names(model, quant_vision=True)
+        block_name_2 = get_block_names(model, quant_vision=True)
         self.assertTrue(block_name == block_name_2)
         self.assertTrue(len(block_name_2) == 1)
         self.assertTrue('model.layers.23' == block_name_2[0][-1])
-        
+
+        python_path = sys.executable
+        res = os.system(
+            f"cd .. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {model_name} --iter 1 --nsamples 1 --format auto_round --output_dir test/saved --disable_eval")
+        if res > 0 or res == -1:
+            assert False, "cmd line test fail, please have a check"
+
+        quantized_model_path = "../saved"
+
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+        shutil.rmtree("./saved", ignore_errors=True)
+        quant_config = model.config.quantization_config
+        assert quant_config.to_quant_block_names is not None
+
         
 
 if __name__ == "__main__":
