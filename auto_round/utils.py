@@ -522,10 +522,10 @@ def check_to_quantized(config):
             False otherwise.
     """
     if isinstance(config, dict):
-        bits = int(config.get("bits", 4))
+        bits = int(config.get("bits", 16))
         act_bits = int(config.get("act_bits", 16))
     else:
-        bits = int(config.bits) if hasattr(config, "bits") else 4
+        bits = int(config.bits) if hasattr(config, "bits") else 16
         act_bits = int(config.act_bits) if hasattr(config, "act_bits") else 16
 
     return bits <= 8 or act_bits <= 8
