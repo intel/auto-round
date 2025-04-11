@@ -22,8 +22,9 @@ import torch.nn as nn
 import transformers
 
 import auto_round.export.export_to_autoround.qlinear_triton_act
+
 import auto_round_extension.cuda.qlinear_tritonv2
-from auto_round.utils import get_module, logger, set_module, supported_layer_types
+from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
@@ -159,7 +160,7 @@ def pack_layer(layer_name, model, backend):
     if int(layer.act_bits) <= 8:
         return pack_qact_layer(layer_name, model)
 
-    if int(layer.bits) > 8:
+    if not check_to_quantized(layer):
         return
 
     device = layer.weight.device

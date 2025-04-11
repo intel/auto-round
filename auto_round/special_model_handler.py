@@ -41,6 +41,10 @@ SPECIAL_MULTIMODAL_BLOCK = {
     "deepseek_vl_v2": _get_deepseek_vl2_multimodal_block
 }
 
+def _deepseek_vl2_forward(model, *args, **kwargs):
+    ret = model.prepare_inputs_embeds(*args, **kwargs)
+    return model.language(inputs_embeds=ret, attention_mask=kwargs["attention_mask"])
+
 
 def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.

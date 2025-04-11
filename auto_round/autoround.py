@@ -55,6 +55,7 @@ from .utils import (
     TORCH_VERSION_AT_LEAST_2_6,
     supported_layer_types,
     get_layer_features,
+    llm_load_model
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -165,8 +166,11 @@ class AutoRound(object):
             device_map: Union[str, dict] = None,
             super_bits: int = None,
             super_group_size: int = None,
+            model_kwargs: dict = None,
             **kwargs,
     ):
+        if isinstance(model, str):
+            model, tokenizer, low_cpu_mem_usage = llm_load_model(model, **model_kwargs)
         self.quantized = False
         self.model_orig_dtype = model.dtype
         self.seed = seed

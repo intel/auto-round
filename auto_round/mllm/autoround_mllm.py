@@ -26,7 +26,8 @@ from ..utils import (
     get_multimodal_block_names,
     find_matching_blocks,
     extract_block_names_to_str,
-    clear_memory
+    clear_memory,
+    mllm_load_model
 )
 from ..autoround import AutoRound
 from .template import get_template, Template
@@ -121,7 +122,7 @@ class AutoRoundMLLM(AutoRound):
     def __init__(
             self,
             model,
-            tokenizer,
+            tokenizer = None,
             processor = None,
             image_processor = None,
             bits: int = 4,
@@ -161,8 +162,12 @@ class AutoRoundMLLM(AutoRound):
             enable_norm_bias_tuning: bool = False,
             truncation: bool = None,
             enable_torch_compile: bool = False,
+            model_kwargs: dict = None,
             **kwargs,
     ):
+        if isinstance(model, str):
+            model, processor, tokenizer, image_processor = mllm_load_model(model, **model_kwargs)
+
         all_blocks = get_multimodal_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
@@ -177,7 +182,13 @@ class AutoRoundMLLM(AutoRound):
             self.template = get_template(
                 self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
             dataset = self.template.default_dataset if dataset is None else dataset
-        
+
+        if model.config.model_type == "deepseek_vl_v2":
+            from auto_round.special_model_handler import _deepseek_vl2_forward
+            from functools import partial
+            # model.forward = model.language.forward
+            model.forward = partial(_deepseek_vl2_forward, model)
+
         from ..calib_dataset import CALIB_DATASETS
         from .mllm_dataset import MLLM_DATASET
         if isinstance(dataset, str):
@@ -276,6 +287,7 @@ class AutoRoundMLLM(AutoRound):
                 template=self.template,
                 model=self.model,
                 tokenizer=self.tokenizer,
+                processor=self.processor,
                 image_processor=self.image_processor,
                 dataset=dataset,
                 extra_data_dir=self.extra_data_dir,
@@ -344,9 +356,12 @@ class AutoRoundMLLM(AutoRound):
                     data_new = {}
                     for key in data.keys():
                         data_new[key] = to_device(data[key], self.model.device)
-                        if key == 'images':
+                        if key in ['images', 'pixel_values']:
                             data_new[key] = to_dtype(data_new[key], self.model.dtype)
-                    input_ids = data_new["input_ids"]
+                    if "input_ids" in data_new:
+                        input_ids = data_new["input_ids"]
+                    else:
+                        input_ids = data_new["inputs_embeds"]
 
                 if input_ids.shape[-1] < self.seqlen:
                     pbar.update(1)
@@ -410,4 +425,3 @@ class AutoRoundMLLM(AutoRound):
         compressed_model = super().save_quantized(
             output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs)
         return compressed_model
-
