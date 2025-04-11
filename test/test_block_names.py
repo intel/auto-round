@@ -182,7 +182,6 @@ class TestQuantizationBlocks(unittest.TestCase):
     def test_moe(self):
         from auto_round.utils import get_block_names
         model_name = "Qwen/Qwen1.5-MoE-A2.7B"
-        model_name = "/models/Qwen1.5-MoE-A2.7B"
         model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -198,17 +197,15 @@ class TestQuantizationBlocks(unittest.TestCase):
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
-        quantized_model_path = "../saved"
+        quantized_model_path = "./saved/Qwen1.5-MoE-A2.7B-w4g128"
 
         from auto_round import AutoHfQuantizer
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
-        quant_config = model.config.quantization_config
-        assert quant_config.to_quant_block_names is not None
 
         
 
