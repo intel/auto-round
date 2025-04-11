@@ -755,6 +755,8 @@ class OriModel:
         if chkhsh == "877081d19cf6996e2c4ff0e1236341e9b7bde288f5311a56a937f0afbbb3aeb5":
             # ref: https://huggingface.co/deepseek-ai/DeepSeek-V3
             res = "deepseek-v3"
+        if chkhsh == "ccc2ef013c104be7bae2965776d611e1d7a8a2a9c547dd93a682c9a9fc80352e":
+            res = "gpt2"
 
         if res is None:
             logger.warning("\n")
@@ -1073,7 +1075,10 @@ class Model(OriModel):
                     break
 
             for new_name, data_torch in (self.modify_tensors(data_torch, name, bid)):
-                data = data_torch.squeeze().cpu().numpy()
+                if type(data_torch) in [torch.Tensor, torch.nn.Parameter]:
+                    data = data_torch.squeeze().cpu().numpy()
+                else:
+                    data = data_torch
 
                 # if data ends up empty, it means data_torch was a scalar tensor -> restore
                 if len(data.shape) == 0:
@@ -1154,6 +1159,8 @@ class Model(OriModel):
                                 bs = module.scale.shape[0]
                                 for attr in ["scale", "zp", "w_d_scale", "w_d_wmin_m", "w_wmin_m"]:
                                     if hasattr(module, attr) and getattr(module, attr) is not None:
+                                        print("quant data")
+                                        breakpoint()
                                         attr_tensor = getattr(module, attr)
                                         ori_shape = attr_tensor.shape
                                         attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), name, bid)[0][1]
@@ -1161,7 +1168,7 @@ class Model(OriModel):
                                         setattr(module, attr, attr_tensor)
 
                             scale = module.scale
-                            
+
                             if isinstance(scale, torch.Tensor):
                                 scale = scale.numpy()
                             zp = module.zp if hasattr(module, "zp") else None
@@ -1187,6 +1194,40 @@ class Model(OriModel):
                         data_qtype = gguf.GGMLQuantizationType.F32
                     return data, data_qtype
 
+                def _torchao_quant_data(data):
+                    data_qtype = gguf.GGMLQuantizationType.Q4_K
+                    from auto_round.utils import get_module
+                    suffix = '.weight'
+                    if suffix in name:
+                        layer_name = name[:-len(suffix)]
+                        module = get_module(self.model, layer_name)
+                        d_scale = data.qparams_dict["d_scale"].cpu().numpy()
+                        d_wmin_m = data.qparams_dict["d_wmin_m"].cpu().numpy()
+                        scale = data.qparams_dict["scale"].cpu().numpy()
+                        wmin_m = data.qparams_dict["wmin_m"].cpu().numpy()
+                        # attr_to_tensor = {
+                        #     "scale": quantized_block_scale,
+                        #     "w_wmin_m": quantized_block_min,
+                        #     "w_d_scale": super_block_scale_scale,
+                        #     "w_d_wmin_m": super_block_min_scale,
+                        # }
+                        # for attr_name, attr_tensor in attr_to_tensor.items():
+                        #     ori_shape = attr_tensor.shape
+                        #     attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), name, bid)[0][1]
+                        #     attr_tensor = attr_tensor.reshape(ori_shape)
+                        #     setattr(module, attr_name, attr_tensor)
+                        # int_data = data.int_data.cpu().numpy()
+                        float_data = data.qparams_dict["orig_tensor"].cpu().numpy()
+                        data = ggml_quant(
+                            float_data,
+                            data_qtype.name.lower(),
+                            scale,
+                            None,
+                            wmin_m=wmin_m,
+                            d_scale=d_scale,
+                            d_wmin_m=d_wmin_m)
+                    return data, data_qtype
+
                 # for MOE model
                 if len(data.shape) == 3:
                     new_data = []
@@ -1201,7 +1242,10 @@ class Model(OriModel):
                     data = np.array(new_data)
                     del new_data
                 else:
-                    data, data_qtype = _quant_data(data, data_qtype)
+                    if type(data) == np.ndarray:
+                        data, data_qtype = _quant_data(data, data_qtype)
+                    else:
+                        data, data_qtype = _torchao_quant_data(data)
 
                 shape = gguf.quant_shape_from_byte_shape(
                     data.shape, data_qtype) if data.dtype == np.uint8 else data.shape
@@ -2858,61 +2902,61 @@ class Phi3MiniModel(Model):
             torch.tensor(short_factors, dtype=torch.float32))
 
 
-@Model.register("PhiMoEForCausalLM")
-class PhiMoeModel(Phi3MiniModel):
-    model_arch = gguf.MODEL_ARCH.PHIMOE
+# @Model.register("PhiMoEForCausalLM")
+# class PhiMoeModel(Phi3MiniModel):
+#     model_arch = gguf.MODEL_ARCH.PHIMOE
 
-    _experts: list[dict[str, Tensor]] | None = None
+#     _experts: list[dict[str, Tensor]] | None = None
 
-    def set_gguf_parameters(self):
-        super().set_gguf_parameters()
-        self.gguf_writer.add_expert_used_count(self.hparams["num_experts_per_tok"])
-        self.gguf_writer.add_expert_count(self.hparams["num_local_experts"])
+#     def set_gguf_parameters(self):
+#         super().set_gguf_parameters()
+#         self.gguf_writer.add_expert_used_count(self.hparams["num_experts_per_tok"])
+#         self.gguf_writer.add_expert_count(self.hparams["num_local_experts"])
 
-    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        # process the experts separately
-        if name.find("block_sparse_moe.experts") != -1:
-            n_experts = self.hparams["num_local_experts"]
-            assert bid is not None
+#     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+#         # process the experts separately
+#         if name.find("block_sparse_moe.experts") != -1:
+#             n_experts = self.hparams["num_local_experts"]
+#             assert bid is not None
 
-            if self._experts is None:
-                self._experts = [{} for _ in range(self.block_count)]
+#             if self._experts is None:
+#                 self._experts = [{} for _ in range(self.block_count)]
 
-            self._experts[bid][name] = data_torch
+#             self._experts[bid][name] = data_torch
 
-            if len(self._experts[bid]) >= n_experts * 3:
-                tensors: list[tuple[str, Tensor]] = []
+#             if len(self._experts[bid]) >= n_experts * 3:
+#                 tensors: list[tuple[str, Tensor]] = []
 
-                # merge the experts into a single 3d tensor
-                for w_name in ["w1", "w2", "w3"]:
-                    data: list[Tensor] = []
+#                 # merge the experts into a single 3d tensor
+#                 for w_name in ["w1", "w2", "w3"]:
+#                     data: list[Tensor] = []
 
-                    for xid in range(n_experts):
-                        ename = f"model.layers.{bid}.block_sparse_moe.experts.{xid}.{w_name}.weight"
-                        data.append(self._experts[bid][ename])
-                        del self._experts[bid][ename]
+#                     for xid in range(n_experts):
+#                         ename = f"model.layers.{bid}.block_sparse_moe.experts.{xid}.{w_name}.weight"
+#                         data.append(self._experts[bid][ename])
+#                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(data, dim=0)
+#                     data_torch = torch.stack(data, dim=0)
 
-                    merged_name = f"model.layers.{bid}.block_sparse_moe.experts.{w_name}.weight"
+#                     merged_name = f"model.layers.{bid}.block_sparse_moe.experts.{w_name}.weight"
 
-                    new_name = self.map_tensor_name(merged_name)
+#                     new_name = self.map_tensor_name(merged_name)
 
-                    tensors.append((new_name, data_torch))
-                return tensors
-            else:
-                return []
+#                     tensors.append((new_name, data_torch))
+#                 return tensors
+#             else:
+#                 return []
 
-        return [(self.map_tensor_name(name), data_torch)]
+#         return [(self.map_tensor_name(name), data_torch)]
 
-    def prepare_tensors(self):
-        super().prepare_tensors()
+#     def prepare_tensors(self):
+#         super().prepare_tensors()
 
-        if self._experts is not None:
-            # flatten `list[dict[str, Tensor]]` into `list[str]`
-            experts = [k for d in self._experts for k in d.keys()]
-            if len(experts) > 0:
-                raise ValueError(f"Unprocessed experts: {experts}")
+#         if self._experts is not None:
+#             # flatten `list[dict[str, Tensor]]` into `list[str]`
+#             experts = [k for d in self._experts for k in d.keys()]
+#             if len(experts) > 0:
+#                 raise ValueError(f"Unprocessed experts: {experts}")
 
 
 @Model.register("PlamoForCausalLM")
@@ -3667,7 +3711,7 @@ class Gemma3Model(Model):
         if name.startswith("language_model."):
             name = name.replace("language_model.", "")
         elif name.startswith("multi_modal_projector.") or name.startswith("vision_tower.") \
-                or name.startswith("multimodal_projector.") or name.startswith("vision_model."): 
+                or name.startswith("multimodal_projector.") or name.startswith("vision_model."):
             # ignore vision tensors
             return []
 
