@@ -59,7 +59,7 @@ class WrapperLinear(torch.nn.Module):
     """
 
     def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu',
-                 enable_round_tuning=False, **kwargs):
+                 enable_round_tuning=True, **kwargs):
         """Initializes the WrapperLinear module.
 
         Args:
