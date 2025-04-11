@@ -141,7 +141,6 @@ if __name__ == "__main__":
         license="Apache 2.0",
         url="https://github.com/intel/auto-round",
         packages=include_packages,
-        include_dirs=include_dirs,
         install_requires=install_requires,
         extras_require=extras_require,
         python_requires=">=3.7.0",
@@ -153,5 +152,4 @@ if __name__ == "__main__":
         ],
         include_package_data=True,
         package_data={"": ["mllm/templates/*.json"]},
-        **additional_setup_kwargs,
     )
