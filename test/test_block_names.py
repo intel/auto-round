@@ -6,7 +6,7 @@ sys.path.insert(0, ".")
 sys.path.insert(0, "..")
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from auto_round import AutoRound
 
 class LLMDataLoader:
@@ -161,36 +161,32 @@ class TestQuantizationBlocks(unittest.TestCase):
             to_quant_block_names=llm_block_names
         )
         autoround.quantize()
-        try:
-            import auto_gptq
-        except:
-            return
-        if not torch.cuda.is_available():
-            return
+
         quantized_model_path = "./saved"
         autoround.save_quantized(quantized_model_path, inplace=False, safe_serialization=False, format="auto_round")
-
+        from auto_round import AutoRoundConfig
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-        shutil.rmtree("./saved", ignore_errors=True)
         quant_config = model.config.quantization_config
         assert quant_config.to_quant_block_names is not None
+        shutil.rmtree("./saved", ignore_errors=True)
         
     def test_moe(self):
         from auto_round.utils import get_block_names
         model_name = "Qwen/Qwen1.5-MoE-A2.7B"
-        model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # config = AutoConfig.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name)
+
 
         block_name = get_block_names(model)
         block_name_2 = get_block_names(model, quant_vision=True)
         self.assertTrue(block_name == block_name_2)
         self.assertTrue(len(block_name_2) == 1)
         self.assertTrue('model.layers.23' == block_name_2[0][-1])
-
+        ##tokenizer = AutoTokenizer.from_pretrained(model_name)
         # python_path = sys.executable
         # res = os.system(
         #     f"cd .. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {model_name} --iter 1 --nsamples 1 --format auto_round --output_dir test/saved --disable_eval")

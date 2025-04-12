@@ -1267,7 +1267,7 @@ def _gguf_args_check(args):
 
 def is_pure_text_model(model):
     """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl, """
-    if hasattr(model.config, "vision_config"):
+    if hasattr(model,"config") and hasattr(model.config, "vision_config"):
         return False
     if hasattr(model.__class__, "main_input_name") and model.__class__.main_input_name != "input_ids":
         return False
