@@ -224,7 +224,7 @@ autoround.quantize_and_save(output_dir, format='auto_round')
 </details>
 
 ### API Usage for VLMs
-If you meet some issues at quantization, you could try `iters=0`(enable rtn) and better set group_size to 32 and retry
+If you encounter issues during quantization, try setting iters=0 (to enable RTN) and use group_size=32 for better results.
 <details>
   <summary>Click to expand</summary>
 
