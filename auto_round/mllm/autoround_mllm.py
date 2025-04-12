@@ -23,7 +23,7 @@ from ..utils import (
     detect_device,
     to_device,
     to_dtype,
-    get_multimodal_block_names,
+    get_block_names,
     find_matching_blocks,
     extract_block_names_to_str,
     clear_memory
@@ -163,7 +163,7 @@ class AutoRoundMLLM(AutoRound):
             enable_torch_compile: bool = False,
             **kwargs,
     ):
-        all_blocks = get_multimodal_block_names(model, quant_nontext_module)
+        all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
             to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
