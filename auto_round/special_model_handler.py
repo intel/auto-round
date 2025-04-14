@@ -15,7 +15,7 @@
 import torch
 from collections import UserDict
 shareable_keywords = ("position_ids", "cache_position", "position_embeddings",
-                        "position_embeddings_global", "position_embeddings_local")
+                        "position_embeddings_global", "position_embeddings_local", "slope_rate")
 mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama") # Limitations on batch_size
 skippable_cache_keys = ("past_key_value",)
 
