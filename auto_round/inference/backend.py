@@ -306,8 +306,9 @@ def check_compatible(backend_name, device, bits, group_size, sym, packing_format
     else:
         return False
 
-    if not backend.feature_checks(in_features, out_features, group_size):
-        return False
+    for check in backend.feature_checks:
+        if not check(in_features, out_features, group_size):
+            return False
 
     if check_requirements and backend.requirements is not None:
         for requirement in backend.requirements:
