@@ -345,7 +345,8 @@ class AutoRoundMLLM(AutoRound):
                     )
                     data_new = {}
                     for key in data.keys():
-                        data_new[key] = to_device(data[key], self.model.device)
+                        data_new[key] = torch.tensor(data[key])
+                        data_new[key] = to_device(data_new[key], self.model.device)
                         if key == 'images':
                             data_new[key] = to_dtype(data_new[key], self.model.dtype)
                     input_ids = data_new["input_ids"]
