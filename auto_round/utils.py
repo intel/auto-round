@@ -421,7 +421,7 @@ def get_block_names(model, quant_vision=False):
             for n, m in target_m[1].named_children():
                 block_names[i].append(target_m[0] + "." + n)
         return block_names
-    
+
     if quant_vision or not is_pure_text_model(model):
         return _get_vlm_block_names(model, quant_vision=quant_vision)
     else:
@@ -1334,10 +1334,10 @@ def llm_load_model(
                 pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
                 trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
             )
-    
+
     model = model.eval()
     model = _to_model_dtype(model, model_dtype)
-    
+
     return model, tokenizer, low_cpu_mem_usage
 
 
@@ -1379,7 +1379,10 @@ def mllm_load_model(
         if architectures == "LlavaLlamaForCausalLM":
             from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
             tokenizer, model, image_processor, _ = load_pretrained_model(
-                pretrained_model_name_or_path, model_base=None, model_name=pretrained_model_name_or_path, torch_dtype=torch_dtype)
+                pretrained_model_name_or_path,
+                model_base=None,
+                model_name=pretrained_model_name_or_path,
+                torch_dtype=torch_dtype)
         else:
             if hasattr(transformers, architectures):
                 cls = getattr(transformers, architectures)
@@ -1390,8 +1393,10 @@ def mllm_load_model(
                 trust_remote_code=trust_remote_code,
                 torch_dtype=torch_dtype,
                 device_map="auto" if use_auto_mapping else None)
-            tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
-            processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            tokenizer = AutoTokenizer.from_pretrained(
+                pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            processor = AutoProcessor.from_pretrained(
+                pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
 
     model = model.eval()
     model = _to_model_dtype(model, model_dtype)
@@ -1413,5 +1418,4 @@ def is_pure_text_model(model):
             return False
         if "img" in str(module.__class__).lower():
             return False
-    return True 
-
+    return True
