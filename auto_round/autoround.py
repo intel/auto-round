@@ -54,7 +54,8 @@ from .utils import (
     find_matching_blocks, is_debug_mode,
     TORCH_VERSION_AT_LEAST_2_6,
     supported_layer_types,
-    get_layer_features,
+    get_layer_features, 
+    set_module,
     llm_load_model
 )
 from .low_cpu_mem.utils import get_layers_before_block
@@ -196,10 +197,13 @@ class AutoRound(object):
         self.nblocks = nblocks
         self.dataset = dataset
         self.iters = iters
-        if self.iters <= 0:
-            logger.warning("iters must be positive, reset it to 200")
+        if self.iters < 0:
+            logger.warning("`iters` must be non-negative, reset it to 200")
             self.iters = 200
-        self.lr = lr or (1.0 / self.iters)  ##must after iter setting
+        if self.iters == 0:
+            self.lr = 5e-3
+        else:
+            self.lr = lr or (1.0 / self.iters)  ##must after iter setting
         self.minmax_lr = minmax_lr or self.lr
 
         self.data_type = data_type
@@ -364,7 +368,7 @@ class AutoRound(object):
             self.super_bits = gguf_config["super_bits"] if self.super_bits is None else self.super_bits
             self.super_group_size = gguf_config["super_group_size"] \
                 if self.super_group_size is None else self.super_group_size
-            
+
     def check_configs(self):
 
         """Checks if the configurations are valid.
@@ -379,7 +383,7 @@ class AutoRound(object):
         assert self.act_group_size == -1 or self.act_group_size >= 1, \
             "only supports positive group_size or -1(per channel)"
         assert self.batch_size > 0, "batch size must be positive"
-        assert self.iters > 0, "iters must be positive"
+        assert self.iters >= 0, "iters must be non-negative"
         assert self.seqlen > 0, "seqlen must be positive"
         assert self.nblocks > 0, "nblocks must be positive"
         assert self.gradient_accumulate_steps > 0, "gradient accumulate step must be positive"
@@ -479,7 +483,7 @@ class AutoRound(object):
         for index in range(len(formats)):
             format = formats[index]
             if "auto_round" in format:
-                if (self.sym and ("gptq" not in format and "awq" not in format)) or self.bits==3:
+                if (self.sym and ("gptq" not in format and "awq" not in format)) or self.bits == 3:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
 
@@ -510,10 +514,39 @@ class AutoRound(object):
             save_format_ = format.replace(":", "-").replace("_", "-")
             save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
             self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
-            
+
             folders.append(save_folder)
 
         return model, folders
+
+    @torch.inference_mode
+    def quantize_rtn(self):
+        if self.amp:
+            self.model.to(self.amp_dtype)
+        self.model.to("cpu")
+        all_to_quantized_module_names = []
+        for n, m in self.model.named_modules():
+            if check_to_quantized(m):
+                all_to_quantized_module_names.append(n)
+        pbar = tqdm(all_to_quantized_module_names)
+
+        for name in pbar:
+            pbar.set_description(f"Quantizing {name}")
+            m = get_module(self.model, name)
+
+            m.to(self.device)
+            m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False, enable_round_tuning=False)
+            m = m.unwrapper({})
+            m.to("cpu")
+            if self.is_packing_immediate:
+                from auto_round.export import PACKING_LAYER_WITH_FORMAT
+                if check_to_quantized(m):
+                    target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
+                    PACKING_LAYER_WITH_FORMAT[target_backend](n, self.model, self.formats[0])
+            else:
+                set_module(self.model, name, m)
+        self.quantized = True
+        return self.model, self.layer_config
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
@@ -522,6 +555,8 @@ class AutoRound(object):
         Returns:
         The quantized model and layer configurations.
         """
+        if self.iters == 0:
+            return self.quantize_rtn()
 
         if bool(self.quant_block_list):
             all_blocks = self.quant_block_list
@@ -589,7 +624,7 @@ class AutoRound(object):
                     quantized_layers.append(n)
                 else:
                     unquantized_layers.append(n)
-            elif hasattr(m, "scales") or hasattr(m, "scale"): ##packing_immediately
+            elif hasattr(m, "scales") or hasattr(m, "scale"):  ##packing_immediately
                 quantized_layers.append(n)
         summary_info = (
             f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"

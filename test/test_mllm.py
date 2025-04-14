@@ -73,14 +73,14 @@ class TestAutoRoundMLLM(unittest.TestCase):
         autoround.save_quantized("./saved/", format="auto_round", inplace=True)
 
     def test_quant_block_names(self):
-        from auto_round.utils import get_multimodal_block_names,find_matching_blocks
+        from auto_round.utils import get_block_names,find_matching_blocks
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             self.model_name, trust_remote_code=True, device_map="auto")
         to_quant_block_names = 'visual.*12,layers.0,model.layers.*9'
         target_blocks = [['visual.blocks.12'], ['model.layers.0', 'model.layers.9', 'model.layers.19']]
-        all_blocks = get_multimodal_block_names(model, quant_vision=True)
+        all_blocks = get_block_names(model, quant_vision=True)
         blocks = find_matching_blocks(model, all_blocks, to_quant_block_names)
         assert target_blocks == blocks
 
@@ -106,6 +106,16 @@ class TestAutoRoundMLLM(unittest.TestCase):
             nsamples=2,
             batch_size=1, iters=2, dataset=dataset, seqlen=1)
         autoround.quantize()
+    
+    def test_pure_text_model_check(self):
+        from transformers import AutoModelForCausalLM
+        from auto_round.utils import is_pure_text_model
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            self.model_name, trust_remote_code=True, device_map="auto")
+        self.assertFalse(is_pure_text_model(model))
+        model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m", trust_remote_code=True)
+        self.assertTrue(is_pure_text_model(model))
+
 
 
 if __name__ == "__main__":

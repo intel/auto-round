@@ -380,7 +380,7 @@ def find_matching_blocks(model, all_blocks, to_quant_block_names):
     return target_blocks
 
 
-def get_block_names(model):
+def get_block_names(model, quant_vision=False):
     """Get the block names for transformers-like networks.
 
     Args:
@@ -389,43 +389,43 @@ def get_block_names(model):
     Returns:
     block_names: A list whose elements are list of block's layer names
     """
-    block_names = []
-    target_modules = []
-    for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            target_modules.append((n, m))
-            break  ## only find the first modulelist, may be not robust
-    for i, target_m in enumerate(target_modules):
-        block_names.append([])
-        for n, m in target_m[1].named_children():
-            block_names[i].append(target_m[0] + "." + n)
-    return block_names
-
-
-def get_multimodal_block_names(model, quant_vision=False):
-    """Get the multimodal model block names for transformers-like networks.
-
-    Args:
-    model: The model.
-
-    Returns:
-    block_names: A list whose elements are list of block's layer names
-    """
-    if hasattr(model, "config") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
-        return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
-    block_names = []
-    target_modules = []
-    vison_blocks_tuple = ("vision", "visual",)
-    for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            if quant_vision or all(key not in n.lower() for key in (vison_blocks_tuple)):
+    def _get_llm_block_names(model):
+        block_names = []
+        target_modules = []
+        for n, m in model.named_modules():
+            if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
                 target_modules.append((n, m))
-    validate_modules(target_modules, quant_vision, vison_blocks_tuple)
-    for i, target_m in enumerate(target_modules):
-        block_names.append([])
-        for n, m in target_m[1].named_children():
-            block_names[i].append(target_m[0] + "." + n)
-    return block_names
+                break  ## only find the first modulelist, may be not robust
+        for i, target_m in enumerate(target_modules):
+            block_names.append([])
+            for n, m in target_m[1].named_children():
+                block_names[i].append(target_m[0] + "." + n)
+        return block_names
+
+    def _get_vlm_block_names(model, quant_vision=False):
+        if hasattr(model, "config") and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys():
+            return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
+        block_names = []
+        target_modules = []
+        vision_blocks_tuple = ("vision", "visual", "image", "img")
+        last_block_name = ""
+        for n, m in model.named_modules():
+            if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+                if quant_vision or all(key not in n.lower() for key in (vision_blocks_tuple)):
+                    if last_block_name and last_block_name in n:
+                        continue
+                    target_modules.append((n, m))
+                    last_block_name = n
+        for i, target_m in enumerate(target_modules):
+            block_names.append([])
+            for n, m in target_m[1].named_children():
+                block_names[i].append(target_m[0] + "." + n)
+        return block_names
+    
+    if quant_vision or not is_pure_text_model(model):
+        return _get_vlm_block_names(model, quant_vision=quant_vision)
+    else:
+        return _get_llm_block_names(model)
 
 
 def collect_best_params(block):
@@ -522,10 +522,10 @@ def check_to_quantized(config):
             False otherwise.
     """
     if isinstance(config, dict):
-        bits = int(config.get("bits", 4))
+        bits = int(config.get("bits", 16))
         act_bits = int(config.get("act_bits", 16))
     else:
-        bits = int(config.bits) if hasattr(config, "bits") else 4
+        bits = int(config.bits) if hasattr(config, "bits") else 16
         act_bits = int(config.act_bits) if hasattr(config, "act_bits") else 16
 
     return bits <= 8 or act_bits <= 8
@@ -1265,6 +1265,7 @@ def _gguf_args_check(args):
 
     return args
 
+
 def _to_model_dtype(model, model_dtype):
     if model_dtype != None:
         try:
@@ -1396,3 +1397,21 @@ def mllm_load_model(
     model = _to_model_dtype(model, model_dtype)
 
     return model, processor, tokenizer, image_processor
+
+def is_pure_text_model(model):
+    """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl, """
+    if hasattr(model,"config") and hasattr(model.config, "vision_config"):
+        return False
+    if hasattr(model.__class__, "main_input_name") and model.__class__.main_input_name != "input_ids":
+        return False
+    for module in model.modules():
+        if hasattr(module.__class__, "main_input_name") and module.__class__.main_input_name != "input_ids":
+            return False
+        if "vision" in str(module.__class__).lower():
+            return False
+        if "image" in str(module.__class__).lower():
+            return False
+        if "img" in str(module.__class__).lower():
+            return False
+    return True 
+

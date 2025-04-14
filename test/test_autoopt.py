@@ -51,8 +51,8 @@ class TestAutoRound(unittest.TestCase):
         
     def test_Adam(self):
         bits, group_size, sym = 4, 128, False
-        from auto_round.utils import get_multimodal_block_names
-        llm_block_names = get_multimodal_block_names(self.model, quant_vision=True)
+        from auto_round.utils import get_block_names
+        llm_block_names = get_block_names(self.model, quant_vision=True)
         bits, group_size, sym, batch_size = 4, 128, False, 20
         adamround = AutoRoundAdam(
             self.model,

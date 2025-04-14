@@ -21,11 +21,13 @@ import torch.nn as nn
 
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.utils import (get_module, set_module, is_hpu_supported, get_multimodal_block_names,
-                              find_matching_blocks, get_layer_names_in_block, check_to_quantized)
+from auto_round.utils import (
+    get_module, set_module, is_hpu_supported, get_block_names, find_matching_blocks,
+    get_layer_names_in_block, check_to_quantized)
 
-from auto_round.inference.backend import (get_layer_backend, dynamic_import_inference_linear,
-                                          find_backend, BackendInfos, get_highest_priority_backend, process_requirement)
+from auto_round.inference.backend import (
+    get_layer_backend, dynamic_import_inference_linear, find_backend, BackendInfos, get_highest_priority_backend,
+    process_requirement)
 
 logger = getLogger(__name__)
 
@@ -231,7 +233,7 @@ def get_layer_config(model, quantization_config):
             ]
         else:
             # Find matching blocks if no explicit names are provided
-            all_blocks = get_multimodal_block_names(model, quant_vision=True)
+            all_blocks = get_block_names(model, quant_vision=True)
             quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
 
     # Get layer names that will be quantized
@@ -470,7 +472,7 @@ def post_init(model, used_backends):
     for l in data_types[1:]:
         common &= set(l)
     common = list(common)
-    if str(model.dtype).split('.')[-1] not in common:
+    if len(common)>0 and  str(model.dtype).split('.')[-1] not in common:
         if common[0] == "float16":
             model = model.to(torch.float16)
             logger.warning("force model to float16")
