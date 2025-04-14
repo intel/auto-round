@@ -9,3 +9,4 @@ pillow
 numba
 tbb
 transformers
+threadpoolctl
