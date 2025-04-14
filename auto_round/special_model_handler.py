@@ -28,6 +28,14 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "idefics3"
 ]
 
+def _handle_special_model(model):
+    if model.config.model_type == "deepseek_vl_v2":
+        from auto_round.special_model_handler import _deepseek_vl2_forward
+        from functools import partial
+        model.forward = partial(_deepseek_vl2_forward, model)
+    return model
+
+
 def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
     model.forward = model.language.forward
     block_names = []
@@ -41,9 +49,45 @@ SPECIAL_MULTIMODAL_BLOCK = {
     "deepseek_vl_v2": _get_deepseek_vl2_multimodal_block
 }
 
-def _deepseek_vl2_forward(model, *args, **kwargs):
-    ret = model.prepare_inputs_embeds(*args, **kwargs)
-    return model.language(inputs_embeds=ret, attention_mask=kwargs["attention_mask"])
+def _deepseek_vl2_forward(
+    model,
+    input_ids = None,
+
+    position_ids = None,
+    attention_mask = None,
+    past_key_values = None,
+    inputs_embeds = None,
+
+    images = None,
+    images_seq_mask = None,
+    images_spatial_crop = None,
+
+    labels = None,
+    use_cache = None,
+    output_attentions = None,
+    output_hidden_states = None,
+    return_dict = None,
+    cache_position = None,
+    **kwargs 
+    ):
+    inputs_embeds = model.prepare_inputs_embeds(
+        input_ids=input_ids,
+        images=images,
+        images_seq_mask=images_seq_mask,
+        images_spatial_crop=images_spatial_crop,
+    )
+    return model.language(
+        input_ids=None,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        past_key_values=past_key_values,
+        inputs_embeds=inputs_embeds,
+        labels=labels,
+        use_cache=use_cache,
+        output_attentions=output_attentions,
+        output_hidden_states=output_hidden_states,
+        return_dict=return_dict,
+        cache_position=cache_position)
 
 
 def to_device(input, device=torch.device("cpu")):
@@ -107,7 +151,7 @@ def reset_params(inputs):
     """
     if "use_cache" in inputs.keys(): # Not storing kv cache
         inputs['use_cache'] = False
-        
+
 
 def check_skippable_keywords(key):
     """
@@ -117,7 +161,7 @@ def check_skippable_keywords(key):
         if cache_key not in key:
             return True
     return False
-            
+
 
 def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
     """
@@ -130,4 +174,3 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
                     f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}")
             return 1, accumulate_steps
     return batch_size, gradient_accumulate_steps
-

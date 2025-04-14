@@ -31,7 +31,7 @@ from ..utils import (
 )
 from ..autoround import AutoRound
 from .template import get_template, Template
-from auto_round.special_model_handler import  SUPPORT_ONLY_TEXT_MODELS
+from auto_round.special_model_handler import  SUPPORT_ONLY_TEXT_MODELS, _handle_special_model
 from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
 
@@ -166,8 +166,12 @@ class AutoRoundMLLM(AutoRound):
             **kwargs,
     ):
         if isinstance(model, str):
-            model, processor, tokenizer, image_processor = mllm_load_model(model, **model_kwargs)
+            torch_dtype = "auto"
+            if device is not None and "hpu" in device:
+                torch_dtype = torch.bfloat16
+            model, processor, tokenizer, image_processor = mllm_load_model(model, torch_dtype=torch_dtype, **model_kwargs)
 
+        assert tokenizer is not None, "tokenizer should not be None."
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
@@ -183,11 +187,7 @@ class AutoRoundMLLM(AutoRound):
                 self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
             dataset = self.template.default_dataset if dataset is None else dataset
 
-        if model.config.model_type == "deepseek_vl_v2":
-            from auto_round.special_model_handler import _deepseek_vl2_forward
-            from functools import partial
-            # model.forward = model.language.forward
-            model.forward = partial(_deepseek_vl2_forward, model)
+        model = _handle_special_model(model)
 
         from ..calib_dataset import CALIB_DATASETS
         from .mllm_dataset import MLLM_DATASET

@@ -171,7 +171,10 @@ class AutoRound(object):
             **kwargs,
     ):
         if isinstance(model, str):
-            model, tokenizer, low_cpu_mem_usage = llm_load_model(model, **model_kwargs)
+            torch_dtype = "auto"
+            if device is not None and "hpu" in device:
+                torch_dtype = torch.bfloat16
+            model, tokenizer, low_cpu_mem_usage = llm_load_model(model, torch_dtype=torch_dtype, **model_kwargs)
         self.quantized = False
         self.model_orig_dtype = model.dtype
         self.seed = seed

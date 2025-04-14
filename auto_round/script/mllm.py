@@ -408,7 +408,6 @@ def tune(args):
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
 
     model_kwargs = {
-        "torch_dtype": torch_dtype,
         "use_auto_mapping": use_auto_mapping,
         "trust_remote_code": not args.disable_trust_remote_code,
         "model_dtype": args.model_dtype
@@ -464,8 +463,9 @@ def tune(args):
     for format_ in format_list:
         eval_folder = f'{export_dir}-{format_}'
         safe_serialization = True
-        if "phi3_v" in autoround.model.config.model_type:
-            safe_serialization = False
+        if hasattr(autoround.model, "config") and hasattr(autoround.model.config, "model_type"):
+            if "phi3_v" in autoround.model.config.model_type:
+                safe_serialization = False
         autoround.save_quantized(eval_folder, format=format_, inplace=inplace, safe_serialization=safe_serialization)
 
 
