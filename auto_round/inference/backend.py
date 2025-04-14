@@ -82,7 +82,8 @@ def feature_multiply_checker_group_size(in_feature, out_feature, group_size, in_
                                         out_feature_multiplier=None):
     if out_feature_multiplier is None:
         out_feature_multiplier = in_feature_multiplier
-    return in_feature % in_feature_multiplier == 0 and out_feature % out_feature_multiplier == 0 and in_feature % group_size == 0
+    return (in_feature % in_feature_multiplier == 0 and out_feature % out_feature_multiplier == 0
+            and in_feature % group_size == 0)
 
 
 feature_multiply_checker_32 = functools.partial(feature_multiply_checker, in_feature_multiplier=32)
