@@ -176,14 +176,14 @@ class TestQuantizationBlocks(unittest.TestCase):
         
 
     def test_mm_block_name(self):
-        from auto_round.utils import get_multimodal_block_names, get_block_names
+        from auto_round.utils import get_block_names
         from transformers import Qwen2VLForConditionalGeneration
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             self.model_name, trust_remote_code=True, device_map="auto")
-        block_name = get_multimodal_block_names(model, quant_vision=True)
+        block_name = get_block_names(model, quant_vision=True)
         self.assertTrue(len(block_name) == 2)
         self.assertTrue(all(["visual.merger.mlp" not in n for n in block_name]))
-        block_name = get_multimodal_block_names(model, quant_vision=False)
+        block_name = get_block_names(model, quant_vision=False)
         self.assertTrue(len(block_name) == 1)
         self.assertTrue(block_name == get_block_names(model)) 
 
