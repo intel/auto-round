@@ -169,7 +169,8 @@ class AutoRoundMLLM(AutoRound):
             torch_dtype = "auto"
             if device is not None and "hpu" in device:
                 torch_dtype = torch.bfloat16
-            model, processor, tokenizer, image_processor = mllm_load_model(model, torch_dtype=torch_dtype, **model_kwargs)
+            model, processor, tokenizer, image_processor = mllm_load_model(
+                model, torch_dtype=torch_dtype, **model_kwargs)
 
         assert tokenizer is not None, "tokenizer should not be None."
         all_blocks = get_block_names(model, quant_nontext_module)
