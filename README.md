@@ -418,9 +418,7 @@ release most of the models ourselves.
 
 ### VLM Support Matrix
 
-For typical VLMs, we assume that the default quantization, which excludes quantizing the visual component, is
-supported. The design of vision components in MLLM model APIs is not standardized, and some models do not support the
-quantization of non-text modules.
+For most VLMs, we typically support the default quantization method, which involves quantizing only the language component while excluding the visual component. The design of visual components has not been standardized, so some models may not support quantization of non-text modules.
 
 | Model                               | calibration dataset | quant nontext module |
 |-------------------------------------|---------------------|----------------------|
