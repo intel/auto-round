@@ -25,12 +25,6 @@ from torch import autocast
 from tqdm import tqdm
 import accelerate
 from .wrapper import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
-from .special_model_handler import (
-    shareable_keywords,
-    init_cache_for_special_model,
-    reset_params,
-    check_skippable_keywords
-)
 from .utils import (
     CpuInfo,
     block_forward,
@@ -44,7 +38,6 @@ from .utils import (
     htcore,
     is_optimum_habana_available,
     logger,
-    sampling_inputs,
     to_device,
     to_dtype,
     get_layer_names_in_block,
@@ -54,9 +47,11 @@ from .utils import (
     find_matching_blocks, is_debug_mode,
     TORCH_VERSION_AT_LEAST_2_6,
     supported_layer_types,
-    get_layer_features, 
+    get_layer_features,
     set_module,
-    llm_load_model
+    llm_load_model,
+    reset_params,
+    init_cache, check_skippable_keywords, get_shared_keys,
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -311,6 +306,7 @@ class AutoRound(object):
         ]
 
         self.has_qlayer_outside_block = self.set_layerwise_config(self.layer_config)  ##better place in the end
+        self.shared_cache_keys = get_shared_keys(self.model)
 
     def set_device_map_in_blocks(self, device_map):
         """Sets the device map for specific blocks in the model.
@@ -773,12 +769,13 @@ class AutoRound(object):
         for i in range(0, nsamples, bs):
             end_index = min(nsamples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = sampling_inputs(
+            tmp_input_ids, tmp_input_others = AutoRound.sampling_inputs(
                 input_ids,
                 input_others,
                 indices,
                 self.seqlen,
-                self.batch_dim
+                self.batch_dim,
+                share_cache_keys=self.shared_cache_keys
             )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
@@ -1010,7 +1007,7 @@ class AutoRound(object):
             new_data = data
             if batch_size <= 1:
                 return new_data
-            if data_name in shareable_keywords:
+            if data_name in self.shared_cache_keys:
                 return None
             if "alibi" in data_name:
                 if isinstance(data, torch.Tensor):
@@ -1032,7 +1029,7 @@ class AutoRound(object):
             """
             if name not in self.inputs:
                 self.inputs[name] = {}
-                init_cache_for_special_model(self.model, positional_inputs, self.inputs[name])
+                init_cache(positional_inputs, self.inputs[name])
 
             if self.batch_dim is None:
                 self.batch_dim = 0
@@ -1055,7 +1052,7 @@ class AutoRound(object):
                         or isinstance(kwargs[key], tuple):
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
-                        if data is None or (self.batch_size > 1 and key in shareable_keywords):
+                        if data is None or (self.batch_size > 1 and key in self.shared_cache_keys):
                             self.inputs[name][key] = data
                             continue
                         if self.batch_size <= 1:
@@ -1174,7 +1171,7 @@ class AutoRound(object):
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
@@ -1357,7 +1354,7 @@ class AutoRound(object):
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
@@ -1389,12 +1386,13 @@ class AutoRound(object):
                     num_elm = sum(id.numel() for id in current_input_ids)
             for tmp_step in range(self.gradient_accumulate_steps):
                 indices = whole_indices[tmp_step * self.batch_size: (tmp_step + 1) * self.batch_size]
-                current_input_ids, current_input_others = sampling_inputs(
+                current_input_ids, current_input_others = AutoRound.sampling_inputs(
                     input_ids,
                     input_others,
                     indices,
                     seqlen=self.seqlen,
                     batch_dim=self.batch_dim,
+                    share_cache_keys=self.shared_cache_keys
                 )
 
                 current_output = [output[x] for x in indices]
@@ -1785,6 +1783,47 @@ class AutoRound(object):
             htcore.mark_step()
         optimizer.zero_grad()
         lr_schedule.step()
+
+    @classmethod
+    @torch.no_grad()
+    def sampling_inputs(cls, input_ids, input_others, indices, seqlen,
+                        batch_dim=0,share_cache_keys=()):
+        """Samples inputs based on the given indices and sequence length.
+
+        Args:
+        input_ids: The list of input tensor containing  input_ids.
+        input_others: A dictionary containing other input data.
+        indices: The indices to sample from the input.
+        seqlen: The sequence length.
+
+        Returns:
+        current_input_ids: The sampled input IDs.
+        current_input_others: The sampled other input data.
+        """
+        current_input_ids = [input_ids[i] for i in indices]
+
+        current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
+
+        current_input_others = {"positional_inputs": input_others["positional_inputs"]}
+        for key in input_others.keys():
+            if "positional_inputs" in key:
+                continue
+            if (key not in share_cache_keys or len(indices) == 1) \
+                    and not isinstance(input_others[key], (str, bool, type(None))):
+                current_input_others[key] = None
+                if input_others[key] is not None:
+                    current_input_others[key] = [input_others[key][i] for i in indices]
+                    if len(indices) == 1:
+                        current_input_others[key] = current_input_others[key][0]
+                    else:
+                        try:
+                            current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+                        except TypeError as err:
+                            logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
+            else:
+                current_input_others[key] = input_others[key]
+
+        return current_input_ids, current_input_others
 
 
 class AutoRoundOPT(AutoRound):

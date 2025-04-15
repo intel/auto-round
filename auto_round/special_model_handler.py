@@ -12,11 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-from collections import UserDict
-shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
-mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama") # Limitations on batch_size
-skippable_cache_keys = ("past_key_value",)
+
+mllms_with_limited_bs = ("llava", "qwen2_vl", "phi3_v", "mllama")  # Limitations on batch_size
 
 SUPPORT_ONLY_TEXT_MODELS = [
     "phi3_v",
@@ -28,9 +25,13 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "idefics3"
 ]
 
+SPECIAL_SHARED_CACHE_KEYS = {
+    "Gemma3ForConditionalGeneration": ("position_embeddings_global", "position_embeddings_local")}
+SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
+
+
 def _handle_special_model(model):
     if model.config.model_type == "deepseek_vl_v2":
-        from auto_round.special_model_handler import _deepseek_vl2_forward
         from functools import partial
         model.forward = partial(_deepseek_vl2_forward, model)
     return model
@@ -45,31 +46,33 @@ def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
     block_names.append([f"language.model.layers.{i}" for i in range(len(model.language.model.layers))])
     return block_names
 
+
 SPECIAL_MULTIMODAL_BLOCK = {
     "deepseek_vl_v2": _get_deepseek_vl2_multimodal_block
 }
 
+
 def _deepseek_vl2_forward(
-    model,
-    input_ids = None,
+        model,
+        input_ids=None,
 
-    position_ids = None,
-    attention_mask = None,
-    past_key_values = None,
-    inputs_embeds = None,
+        position_ids=None,
+        attention_mask=None,
+        past_key_values=None,
+        inputs_embeds=None,
 
-    images = None,
-    images_seq_mask = None,
-    images_spatial_crop = None,
+        images=None,
+        images_seq_mask=None,
+        images_spatial_crop=None,
 
-    labels = None,
-    use_cache = None,
-    output_attentions = None,
-    output_hidden_states = None,
-    return_dict = None,
-    cache_position = None,
-    **kwargs 
-    ):
+        labels=None,
+        use_cache=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+        cache_position=None,
+        **kwargs
+):
     inputs_embeds = model.prepare_inputs_embeds(
         input_ids=input_ids,
         images=images,
@@ -90,79 +93,6 @@ def _deepseek_vl2_forward(
         cache_position=cache_position)
 
 
-def to_device(input, device=torch.device("cpu")):
-    """Moves input data to the specified device.
-
-    Args:
-    input: The input data to be moved.
-    device: The target device.
-
-    Returns:
-    The input data on the specified device.
-    """
-    if input is None:
-        return None
-    if isinstance(input, torch.Tensor):
-        return input.to(device)
-    if isinstance(input, dict) or isinstance(input, UserDict):
-        for inp in input.keys():
-            input[inp] = to_device(input[inp], device)
-
-    elif isinstance(input, list) or isinstance(input, tuple):
-        if len(input) == 0:
-            return input
-        input_res = []
-        for inp in input:
-            input_res.append(to_device(inp, device))
-        if isinstance(input, tuple):
-            input_res = tuple(input_res)
-        input = input_res
-
-    return input
-
-
-def init_cache_for_special_model(model, positional_inputs, inputs):
-    """
-    Initializes special model inputs by adding positional inputs if missing.
-
-    Args:
-        model: The model instance being initialized.
-        positional_inputs (list): List of positional inputs to add to inputs.
-        inputs (dict): Dictionary of model inputs.
-    
-    Modifies:
-        inputs (dict): Adds "positional_inputs" key if not present.
-    """
-    if "positional_inputs" not in inputs: # for chatglm Series
-        inputs["positional_inputs"] = []
-    for idx, item in enumerate(positional_inputs):
-        inputs["positional_inputs"] = to_device(positional_inputs)
-
-
-def reset_params(inputs):
-    """
-    Resets specific input parameters to avoid saving the key-value cache during fine-tuning.
-    
-    Args:
-        inputs (dict): Dictionary of model inputs.
-    
-    Modifies:
-        inputs (dict): Sets "use_cache" to False if the key is present.
-    """
-    if "use_cache" in inputs.keys(): # Not storing kv cache
-        inputs['use_cache'] = False
-
-
-def check_skippable_keywords(key):
-    """
-    Prints a reminder if a key is not stored during quantization fine-tuning.
-    """
-    for cache_key in skippable_cache_keys:
-        if cache_key not in key:
-            return True
-    return False
-
-
 def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
     """
     Checks model configuration to determine if it's necessary to limit bs to avoid potential input shape mismatches.
@@ -171,6 +101,6 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
         if hasattr(model, "config") and key in model.config.model_type and batch_size != 1:
             accumulate_steps = batch_size * gradient_accumulate_steps
             print("To avoid the tensor concat mismatch problem, modified parameters to " \
-                    f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}")
+                  f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}")
             return 1, accumulate_steps
     return batch_size, gradient_accumulate_steps
