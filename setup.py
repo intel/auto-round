@@ -82,7 +82,6 @@ PKG_INSTALL_CFG = {
     ),
     "install_requires": fetch_requirements("requirements.txt"),
     "extras_require": {
-        "gpu": fetch_requirements("requirements-gpu.txt"),
         "cpu": fetch_requirements("requirements-cpu.txt"),
     },
 }

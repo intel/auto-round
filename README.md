@@ -44,7 +44,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ```bash
 # GPU
-pip install auto-round[gpu]
+pip install auto-round
 
 # CPU
 pip install auto-round[cpu]
@@ -58,7 +58,7 @@ pip install auto-round-lib
 
   ```bash
   # GPU
-  pip install .[gpu]
+  pip install .
 
   # CPU
   pip install .[cpu]

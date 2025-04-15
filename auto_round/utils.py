@@ -31,7 +31,7 @@ from .special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACH
 import transformers
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
-shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
+shared_cache_keys = ("position_ids", "cache_position", "position_embeddings")
 
 supported_formats = (
     "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel", "auto_round:auto_awq",
@@ -1436,8 +1436,6 @@ def get_shared_keys(model):
     Returns:
         tuple: tuple of shared keys.
     """
-    shared_keys = shareable_keywords
-
-    if model.__class__.__name__ in SPECIAL_SHARED_CACHE_KEYS:
-        shared_keys+=SPECIAL_SHARED_CACHE_KEYS[model.__class__.__name__]
+    shared_keys = shared_cache_keys
+    shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
