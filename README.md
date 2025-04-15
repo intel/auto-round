@@ -102,8 +102,8 @@ auto-round-best \
   ```
 
   ```bash
-auto-round-light \
 ## light accuracy, 2-3X speedup, slight accuracy drop at W4 and larger accuracy drop at W2
+auto-round-light \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \

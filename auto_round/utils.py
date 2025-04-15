@@ -27,9 +27,11 @@ from torch.amp import autocast
 from functools import lru_cache
 from packaging import version
 import gc
-from .special_model_handler import shareable_keywords, SPECIAL_MULTIMODAL_BLOCK
+from .special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 import transformers
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+
+shareable_keywords = ("position_ids", "cache_position", "position_embeddings")
 
 supported_formats = (
     "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel", "auto_round:auto_awq",
@@ -389,6 +391,7 @@ def get_block_names(model, quant_vision=False):
     Returns:
     block_names: A list whose elements are list of block's layer names
     """
+
     def _get_llm_block_names(model):
         block_names = []
         target_modules = []
@@ -436,47 +439,6 @@ def collect_best_params(block):
             for key in m.params.keys():
                 params[n][key] = copy.deepcopy(m.params[key].data)
     return params
-
-
-@torch.no_grad()
-def sampling_inputs(input_ids, input_others, indices, seqlen,
-                    batch_dim=0):
-    """Samples inputs based on the given indices and sequence length.
-
-    Args:
-    input_ids: The list of input tensor containing  input_ids.
-    input_others: A dictionary containing other input data.
-    indices: The indices to sample from the input.
-    seqlen: The sequence length.
-
-    Returns:
-    current_input_ids: The sampled input IDs.
-    current_input_others: The sampled other input data.
-    """
-    current_input_ids = [input_ids[i] for i in indices]
-
-    current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
-
-    current_input_others = {"positional_inputs": input_others["positional_inputs"]}
-    for key in input_others.keys():
-        if "positional_inputs" in key:
-            continue
-        if (key not in shareable_keywords or len(indices) == 1) \
-                and not isinstance(input_others[key], (str, bool, type(None))):
-            current_input_others[key] = None
-            if input_others[key] is not None:
-                current_input_others[key] = [input_others[key][i] for i in indices]
-                if len(indices) == 1:
-                    current_input_others[key] = current_input_others[key][0]
-                else:
-                    try:
-                        current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-                    except TypeError as err:
-                        logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
-        else:
-            current_input_others[key] = input_others[key]
-
-    return current_input_ids, current_input_others
 
 
 def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu")):
@@ -1204,7 +1166,6 @@ def is_debug_mode():
     return sys.gettrace() is not None or sys.flags.debug == 1
 
 
-
 def get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
     if isinstance(layer, torch.nn.Linear):
@@ -1213,12 +1174,13 @@ def get_layer_features(layer):
         return layer.weight.shape[0], layer.weight.shape[1]
     return None, None  # Unsupported layer type
 
+
 def _gguf_args_check(args):
     from auto_round.utils import logger
     from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
     formats = args.format.lower().replace(' ', '').split(",")
-    formats = sorted(formats, key=lambda x:len(x))
+    formats = sorted(formats, key=lambda x: len(x))
     pattern = re.compile("q\d_k")
     pre_dq_format = ""
     for format in GGUF_CONFIG:
@@ -1241,7 +1203,7 @@ def _gguf_args_check(args):
                     logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                     sys.exit(1)
 
-                if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 !=0):
+                if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 != 0):
                     model_name = args.model.split('/')
                     model_name = model_name[-1] if model_name[-1] else model_name[-2]
                     hidden_size = hparams["hidden_size"]
@@ -1267,7 +1229,7 @@ def _gguf_args_check(args):
 
 
 def _to_model_dtype(model, model_dtype):
-    if model_dtype != None:
+    if model_dtype is not None:
         try:
             if model_dtype == "float16" or model_dtype == "fp16":
                 model = model.to(torch.float16)
@@ -1280,6 +1242,7 @@ def _to_model_dtype(model, model_dtype):
             exit()
     return model
 
+
 def llm_load_model(
         pretrained_model_name_or_path,
         torch_dtype="auto",
@@ -1288,7 +1251,7 @@ def llm_load_model(
         model_dtype=None,
         device="cpu",
         low_cpu_mem_mode=0,
-        low_cpu_mem_tmp_dir = None,
+        low_cpu_mem_tmp_dir=None,
         **kwargs):
     from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
 
@@ -1322,7 +1285,6 @@ def llm_load_model(
             torch_dtype=torch_dtype,
             trust_remote_code=trust_remote_code)
     else:
-        from auto_round.utils import _use_hpu_compile_mode
         if _use_hpu_compile_mode():
             model = model_cls.from_pretrained(
                 pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
@@ -1403,9 +1365,10 @@ def mllm_load_model(
 
     return model, processor, tokenizer, image_processor
 
+
 def is_pure_text_model(model):
     """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl, """
-    if hasattr(model,"config") and hasattr(model.config, "vision_config"):
+    if hasattr(model, "config") and hasattr(model.config, "vision_config"):
         return False
     if hasattr(model.__class__, "main_input_name") and model.__class__.main_input_name != "input_ids":
         return False
@@ -1419,3 +1382,62 @@ def is_pure_text_model(model):
         if "img" in str(module.__class__).lower():
             return False
     return True
+
+
+def reset_params(inputs):
+    """
+    Resets specific input parameters to avoid saving the key-value cache during fine-tuning.
+
+    Args:
+        inputs (dict): Dictionary of model inputs.
+
+    Modifies:
+        inputs (dict): Sets "use_cache" to False if the key is present.
+    """
+    if "use_cache" in inputs.keys():  # Not storing kv cache
+        inputs['use_cache'] = False
+
+
+def check_skippable_keywords(key):
+    """
+    Prints a reminder if a key is not stored during quantization fine-tuning.
+    """
+    skippable_cache_keys = ("past_key_value",)
+    for cache_key in skippable_cache_keys:
+        if cache_key not in key:
+            return True
+    return False
+
+
+def init_cache(positional_inputs, inputs):
+    """
+    Initializes special model inputs by adding positional inputs if missing.
+
+    Args:
+        positional_inputs (list): List of positional inputs to add to inputs.
+        inputs (dict): Dictionary of model inputs.
+
+    Modifies:
+        inputs (dict): Adds "positional_inputs" key if not present.
+    """
+    if "positional_inputs" not in inputs:  # for chatglm Series
+        inputs["positional_inputs"] = []
+    for idx, item in enumerate(positional_inputs):
+        inputs["positional_inputs"] = to_device(positional_inputs)
+
+
+def get_shared_keys(model):
+    """
+    Retrieves shared keys from the model's state dictionary.
+
+    Args:
+        model (torch.nn.Module): The model to retrieve shared keys from.
+
+    Returns:
+        tuple: tuple of shared keys.
+    """
+    shared_keys = shareable_keywords
+
+    if model.__class__.__name__ in SPECIAL_SHARED_CACHE_KEYS:
+        shared_keys+=SPECIAL_SHARED_CACHE_KEYS[model.__class__.__name__]
+    return shared_keys
