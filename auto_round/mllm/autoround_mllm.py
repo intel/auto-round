@@ -121,7 +121,7 @@ class AutoRoundMLLM(AutoRound):
 
     def __init__(
             self,
-            model,
+            model: torch.nn.Module,
             tokenizer,
             processor = None,
             image_processor = None,

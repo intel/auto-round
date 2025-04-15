@@ -422,21 +422,21 @@ For typical VLMs, we assume that the default quantization, which excludes quanti
 supported. The design of vision components in MLLM model APIs is not standardized, and some models do not support the
 quantization of non-text modules.
 
-| Model                 | calibration dataset | quant nontext module |
-|-----------------------|---------------------|----------------------|
-| Qwen2-VL              | pile/llava          | -                    |
-| Llama-3.2-Vision      | llava               | ✔                    |
-| Phi3-Vision           | pile/llava          | ✔                    |
-| Llava-v1.5            | pile/llava          | X                    |
-| CogVLM2               | pile/llava          | ✔                    |
-| gemma-3               | pile/llava          | -                    |
-| granite-vision-3.2    | pile/llava          | -                    |
-| Mistral-Small-3.1     | pile/llava          | X                    |
-| Aria                  | pile/llava          | ✔                    |
-| deepseek-vl2          | pile/llava          | ✔                    |
-| glm-4v                | pile                | X                    |
-| Molmo                 | pile                | X                    |
-| SmolVLM               | pile/llava          | ✔                    |
+| Model                               | calibration dataset | quant nontext module |
+|-------------------------------------|---------------------|----------------------|
+| Qwen/Qwen2-VL                       | pile/llava          | -                    |
+| meta-llama/Llama-3.2-Vision         | llava               | ✔                    |
+| microsoft/Phi3-Vision               | pile/llava          | ✔                    |
+| liuhaotian/Llava-v1.5               | pile/llava          | X                    |
+| THUDM/CogVLM2                       | pile/llava          | ✔                    |
+| google/gemma-3                      | pile/llava          | -                    |
+| ibm-granite/granite-vision-3.2      | pile/llava          | -                    |
+| mistralai/Mistral-Small-3.1         | pile/llava          | X                    |
+| rhymes-ai/Aria                      | pile/llava          | ✔                    |
+| deepseek-ai/deepseek-vl2            | pile/llava          | ✔                    |
+| THUDM/glm-4v                        | pile                | X                    |
+| allenai/Molmo                       | pile                | X                    |
+| HuggingFaceTB/SmolVLM               | pile/llava          | ✔                    |
 
 ## Integration
 

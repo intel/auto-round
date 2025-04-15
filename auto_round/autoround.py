@@ -128,7 +128,7 @@ class AutoRound(object):
 
     def __init__(
             self,
-            model,
+            model: torch.nn.Module,
             tokenizer,
             bits: int = 4,
             group_size: int = 128,
