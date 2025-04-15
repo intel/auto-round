@@ -32,6 +32,39 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
     
+    def test_q2_k_export(self):
+        bits, group_size, sym = 2, 16, False
+        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=1,
+            seqlen=1,
+            dataset=self.llm_dataloader,
+            data_type="int_asym_dq"
+        )
+        autoround.quantize()
+        quantized_model_path = "./saved"
+
+        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q2_k_s")
+        gguf_file = "Qwen2.5-1.5B-Instruct-1.5B-Q2_K_S.gguf"
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
+        text = "There is a girl who likes adventure,"
+        inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
+        result = self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0])
+        print(result)
+
+        from auto_round.eval.evaluation import simple_evaluate_user_model
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="piqa")
+        self.assertGreater(result['results']['piqa']['acc,none'], 0.45)
+        
+        shutil.rmtree("./saved", ignore_errors=True)
+
     def test_basic_usage(self):
         python_path = sys.executable
         res = os.system(
@@ -64,9 +97,8 @@ class TestGGUF(unittest.TestCase):
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
 
         from auto_round.eval.evaluation import simple_evaluate_user_model
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa")
-        # 0.246
-        self.assertGreater(result['results']['openbookqa']['acc,none'], 0.24)
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="piqa")
+        self.assertGreater(result['results']['piqa']['acc,none'], 0.55)
         shutil.rmtree("./saved", ignore_errors=True)
     
     def test_q4_1(self):
@@ -91,9 +123,8 @@ class TestGGUF(unittest.TestCase):
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
 
         from auto_round.eval.evaluation import simple_evaluate_user_model
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa")
-        # 0.252
-        self.assertGreater(result['results']['openbookqa']['acc,none'], 0.25)
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="piqa")
+        self.assertGreater(result['results']['piqa']['acc,none'], 0.55)
         shutil.rmtree("./saved", ignore_errors=True)
 
 if __name__ == "__main__":
