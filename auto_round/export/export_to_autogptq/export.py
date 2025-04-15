@@ -60,7 +60,6 @@ BLOCK_PATTERNS = [  ## copy from transformers optimum
 
 
 def pack_layer(name, model, backend):
-
     if name == "lm_head":  ##dese not support lm-head
         return
     layer = get_module(model, name)
@@ -126,11 +125,11 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
-    if os.path.exists(output_dir):
+    if output_dir is not None and os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
-    if tokenizer is not None:
+    if output_dir is not None and tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
-    if processor is not None:
+    if output_dir is not None and processor is not None:
         processor.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
     quantization_config = kwargs["serialization_dict"]
@@ -144,8 +143,8 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
 
     ## as layers maybe already packed, we need to check in layer_config
     layer_config = kwargs["layer_config"]
-    for n,m in model.named_modules():
-        m.tmp_name=n
+    for n, m in model.named_modules():
+        m.tmp_name = n
 
     all_to_quantized = True
     modules_in_block_to_quantize = []
@@ -163,7 +162,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
         modules_in_block_to_quantize = None
 
     for n, m in model.named_modules():
-        delattr(m,"tmp_name")
+        delattr(m, "tmp_name")
 
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))

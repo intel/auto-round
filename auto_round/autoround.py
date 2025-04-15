@@ -54,7 +54,7 @@ from .utils import (
     find_matching_blocks, is_debug_mode,
     TORCH_VERSION_AT_LEAST_2_6,
     supported_layer_types,
-    get_layer_features, 
+    get_layer_features,
     set_module,
     llm_load_model
 )
@@ -695,18 +695,44 @@ class AutoRound(object):
         # Get the names of layers in quantization blocks
         layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
 
+        ##process regex in layer_config
+        all_supported_layer_names = []
         # List of configuration keys
         keys = self.serialization_keys
 
-        has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
-
-        # Iterate through all modules in the model
         for n, m in self.model.named_modules():
 
             # Delete previous configuration to avoid conflicts with prior tuning
             for key in keys:
                 if hasattr(m, key):
                     delattr(m, key)
+
+            # Skip unsupported types
+            if not isinstance(m, tuple(self.supported_types)):
+                continue
+            all_supported_layer_names.append(n)
+
+        names_in_layer_config = list(layer_config.keys())
+        for name in names_in_layer_config:
+            if name in all_supported_layer_names:
+                continue
+            matched_names=[]
+            for layer_name in all_supported_layer_names:
+                if re.search(re.compile(name), layer_name) is not None:
+                    matched_names.append(layer_name)
+            if len(matched_names) > 0:
+                val = layer_config[name]
+                layer_config.pop(name)
+                for match_name in matched_names:
+                    layer_config[match_name] = val
+
+            else:
+                raise ValueError(f"key {name} in layer_config is invalid, please have a double check")
+
+        has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
+
+        # Iterate through all modules in the model
+        for n, m in self.model.named_modules():
 
             # Skip unsupported types
             if not isinstance(m, tuple(self.supported_types)):
