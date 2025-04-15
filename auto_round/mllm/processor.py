@@ -23,6 +23,7 @@ Support Matrix
 | gemma-3               | pile/llava          | -                    |
 | granite-vision-3.2    | pile/llava          | -                    |
 | Mistral-Small-3.1     | pile/llava          | X                    |
+| Aria                  | pile/llava          | -                    |
 
 ✔ means support, - means support but cannot infer or not test infert yet, X means not support.
 """
@@ -96,7 +97,7 @@ class HFProcessor(BasicProcessor):
             self.image_processor = self.default_image_processor
     
     def _process_v1(self, messages, image):
-        """support models: Qwen2-VL, gemma-3, granite-vision-3.2"""
+        """support models: Qwen2-VL, gemma-3, granite-vision-3.2, Aria"""
         conversation = []
         for content in messages:
             conversation.append({
@@ -142,38 +143,6 @@ class HFProcessor(BasicProcessor):
         ret = self.processor(
             text=text, images=image, return_tensors="pt")
         return ret
-    
-    def build_conversation_v1(self, messages, image):
-        conversation = []
-        for content in messages:
-            if content["role"] == "user":
-                conversation.append({
-                    "role": content['role'],
-                    "content": [
-                        {"text": content["content"], "type": "text"}
-                    ]
-                })
-                if self.IMAGE_TOKEN in content['content']:
-                    conversation[-1]["content"].append({"image": image, "type": "image", "url": image})
-            else:
-                conversation.append({
-                    "role": content['role'],
-                    "content": content["content"]
-                })
-        return conversation
-    
-    def build_conversation_v2(self, messages, image):
-        conversation = []
-        for content in messages:
-            conversation.append({
-                "role": content['role'],
-                "content": [
-                    {"text": content["content"].replace(self.IMAGE_TOKEN, ""), "type": "text"}
-                ]
-            })
-            if self.IMAGE_TOKEN in content['content']:
-                conversation[-1]["content"].append({"image": image, "type": "image"})
-        return conversation
     
     def get_input(
             self,

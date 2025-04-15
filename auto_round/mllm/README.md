@@ -92,6 +92,7 @@ Support Matrix
 | gemma-3               | pile/llava          | -                    |
 | granite-vision-3.2    | pile/llava          | -                    |
 | Mistral-Small-3.1     | pile/llava          | X                    |
+| Aria                  | pile/llava          | -                    |
 
 ✔ means support, - means support but cannot infer or not test infert yet, X means not support.
 
