@@ -1171,7 +1171,7 @@ class AutoRound(object):
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
@@ -1354,7 +1354,7 @@ class AutoRound(object):
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
