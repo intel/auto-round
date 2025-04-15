@@ -65,7 +65,7 @@ For most VLMs, we typically support the default quantization method, which invol
 | microsoft/Phi3-Vision               | pile/llava          | ✔                    |
 | liuhaotian/Llava-v1.5               | pile/llava          | X                    |
 | THUDM/CogVLM2                       | pile/llava          | ✔                    |
-| google/gemma-3                      | pile/llava          | -                    |
+| google/gemma-3                      | pile/llava          | √                    |
 | ibm-granite/granite-vision-3.2      | pile/llava          | -                    |
 | mistralai/Mistral-Small-3.1         | pile/llava          | X                    |
 | rhymes-ai/Aria                      | pile/llava          | ✔                    |
@@ -73,6 +73,7 @@ For most VLMs, we typically support the default quantization method, which invol
 | THUDM/glm-4v                        | pile                | X                    |
 | allenai/Molmo                       | pile                | X                    |
 | HuggingFaceTB/SmolVLM               | pile/llava          | ✔                    |
+| moonshotai/Kimi-VL                  | pile/llava          | √                    |
 
 ✔ means support, - means support to export but cannot infer, X means not support.
 
