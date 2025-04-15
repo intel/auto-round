@@ -72,6 +72,10 @@ quantization of non-text modules.
 | granite-vision-3.2    | pile/llava          | -                    |
 | Mistral-Small-3.1     | pile/llava          | X                    |
 | Aria                  | pile/llava          | ✔                    |
+| deepseek-vl2          | pile/llava          | ✔                    |
+| glm-4v                | pile                | X                    |
+| Molmo                 | pile                | X                    |
+| SmolVLM               | pile/llava          | ✔                    |
 
 ✔ means support, - means support to export but cannot infer, X means not support.
 
