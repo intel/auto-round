@@ -115,6 +115,68 @@ class TestAutoRoundMLLM(unittest.TestCase):
         self.assertFalse(is_pure_text_model(model))
         model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m", trust_remote_code=True)
         self.assertTrue(is_pure_text_model(model))
+    
+    def test_str_input(self):
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            self.model_name, trust_remote_code=True, device_map="auto")
+        bits, group_size = 4, 128
+        dataset = ["test pure text", "input for mllm"]
+        autoround = AutoRoundMLLM(
+            model, tokenizer, processor=processor,
+            bits=bits, group_size=group_size,
+            nsamples=2,
+            batch_size=1, iters=2, dataset=dataset, seqlen=1)
+        autoround.quantize()
+        quantized_model_path = "./saved"
+        autoround.save_quantized(quantized_model_path, format="auto_round", inplace=False)
+
+        from auto_round import AutoRoundConfig
+        import requests
+        from PIL import Image
+
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            quantized_model_path,
+            torch_dtype="float16",
+            device_map="auto",
+        )
+        processor = AutoProcessor.from_pretrained(quantized_model_path)
+        image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": image_url,
+                    },
+                    {"type": "text", "text": "Describe this image."},
+                ],
+            }
+        ]
+
+        # Preparation for inference
+        text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        image_inputs = Image.open(requests.get(image_url, stream=True).raw)
+        inputs = processor(
+            text=[text],
+            images=image_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(model.device)
+
+        generated_ids = model.generate(**inputs, max_new_tokens=128)
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output_text = processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+        print(output_text[0])
 
 
 

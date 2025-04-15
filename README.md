@@ -225,6 +225,27 @@ autoround.quantize_and_save(output_dir, format='auto_round')
 
 ### API Usage for VLMs
 If you encounter issues during quantization, try setting iters=0 (to enable RTN) and use group_size=32 for better results.
+
+#### Support Matrix
+
+For typical VLMs, we assume that the default quantization, which excludes quantizing the visual component, is
+supported. The design of vision components in MLLM model APIs is not standardized, and some models do not support the
+quantization of non-text modules.
+
+| Model                 | calibration dataset | quant nontext module |
+|-----------------------|---------------------|----------------------|
+| Qwen2-VL              | pile/llava          | -                    |
+| Llama-3.2-Vision      | llava               | ✔                    |
+| Phi3-Vision           | pile/llava          | ✔                    |
+| Llava-v1.5            | pile/llava          | X                    |
+| CogVLM2               | pile/llava          | ✔                    |
+| gemma-3               | pile/llava          | -                    |
+| granite-vision-3.2    | pile/llava          | -                    |
+| Mistral-Small-3.1     | pile/llava          | X                    |
+| Aria                  | pile/llava          | ✔                    |
+
+✔ means support, - means support to export but cannot infer, X means not support.
+
 <details>
   <summary>Click to expand</summary>
 
