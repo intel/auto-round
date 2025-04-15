@@ -44,7 +44,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ```bash
 # GPU
-pip install auto-round[gpu]
+pip install auto-round
 
 # CPU
 pip install auto-round[cpu]
@@ -58,7 +58,7 @@ pip install auto-round-lib
 
   ```bash
   # GPU
-  pip install .[gpu]
+  pip install .
 
   # CPU
   pip install .[cpu]
@@ -102,8 +102,8 @@ auto-round-best \
   ```
 
   ```bash
-auto-round-light \
 ## light accuracy, 2-3X speedup, slight accuracy drop at W4 and larger accuracy drop at W2
+auto-round-light \
     --model facebook/opt-125m \
     --bits 4 \
     --group_size 128 \
