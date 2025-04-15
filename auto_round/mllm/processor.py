@@ -16,7 +16,7 @@ Support Matrix
 | Model                 | calibration dataset | quant nontext module |
 |-----------------------|---------------------|----------------------|
 | Qwen2-VL              | pile/llava          | -                    |
-| Llama-Vision          | llava               | ✔                    |
+| Llama-3.2-Vision      | llava               | ✔                    |
 | Phi3-Vision           | pile/llava          | ✔                    |
 | Llava-v1.5            | pile/llava          | X                    |
 | CogVLM2               | pile/llava          | ✔                    |
