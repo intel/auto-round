@@ -22,13 +22,6 @@ class FakeDataLoader:
                 'role': 'assistant',
                 'content': 'The bus in the image is white and red.'
             }],
-            "text": [{
-                'role': 'user',
-                'content': '<image>\nWhat are the colors of the bus in the image?'
-            }, {
-                'role': 'assistant',
-                'content': 'The bus in the image is white and red.'
-            }],
             "image": "http://images.cocodataset.org/train2017/000000033471.jpg"
         }
 
