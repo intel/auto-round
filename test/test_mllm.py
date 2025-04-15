@@ -22,6 +22,13 @@ class FakeDataLoader:
                 'role': 'assistant',
                 'content': 'The bus in the image is white and red.'
             }],
+            "text": [{
+                'role': 'user',
+                'content': '<image>\nWhat are the colors of the bus in the image?'
+            }, {
+                'role': 'assistant',
+                'content': 'The bus in the image is white and red.'
+            }],
             "image": "http://images.cocodataset.org/train2017/000000033471.jpg"
         }
 
@@ -115,7 +122,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
         self.assertFalse(is_pure_text_model(model))
         model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m", trust_remote_code=True)
         self.assertTrue(is_pure_text_model(model))
-    
+
     def test_str_input(self):
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
@@ -177,7 +184,6 @@ class TestAutoRoundMLLM(unittest.TestCase):
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
         print(output_text[0])
-
 
 
 if __name__ == "__main__":

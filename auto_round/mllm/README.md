@@ -92,6 +92,29 @@ liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path 
 <details>
 <summary style="font-size:17px;">Nontext Module Quantization</summary>
 
+### Support Matrix
+
+For typical VLLMs, we assume that the default quantization, which excludes quantizing the visual component, is
+supported. The design of vision components in MLLM model APIs is not standardized, and some models do not support the
+quantization of non-text modules.
+
+Currently, the quantization of vision components is supported for Llama-3.2-11B-Vision, Phi-3.5-Vision-Instruct, and
+Llava-v1.5-7B.
+
+Support Matrix
+| Model                 | calibration dataset | quant nontext module |
+|-----------------------|---------------------|----------------------|
+| Qwen2-VL              | pile/llava          | -                    |
+| Llama-3.2-Vision      | llava               | ✔                    |
+| Phi3-Vision           | pile/llava          | ✔                    |
+| Llava-v1.5            | pile/llava          | X                    |
+| CogVLM2               | pile/llava          | ✔                    |
+| gemma-3               | pile/llava          | -                    |
+| granite-vision-3.2    | pile/llava          | -                    |
+| Mistral-Small-3.1     | pile/llava          | X                    |
+| Aria                  | pile/llava          | -                    |
+
+✔ means support, - means support but cannot infer or not test infert yet, X means not support.
 
 ### New Models Support
 

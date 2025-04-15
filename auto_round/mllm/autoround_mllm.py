@@ -122,7 +122,7 @@ class AutoRoundMLLM(AutoRound):
     def __init__(
             self,
             model,
-            tokenizer,
+            tokenizer = None,
             processor = None,
             image_processor = None,
             bits: int = 4,
@@ -165,6 +165,14 @@ class AutoRoundMLLM(AutoRound):
             model_kwargs: dict = None,
             **kwargs,
     ):
+        if isinstance(model, str):
+            torch_dtype = "auto"
+            if device is not None and "hpu" in device:
+                torch_dtype = torch.bfloat16
+            model, processor, tokenizer, image_processor = mllm_load_model(
+                model, torch_dtype=torch_dtype, **model_kwargs)
+
+        assert tokenizer is not None, "tokenizer should not be None."
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
