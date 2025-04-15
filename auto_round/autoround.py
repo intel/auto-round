@@ -701,7 +701,6 @@ class AutoRound(object):
         keys = self.serialization_keys
 
         for n, m in self.model.named_modules():
-
             # Delete previous configuration to avoid conflicts with prior tuning
             for key in keys:
                 if hasattr(m, key):
@@ -716,7 +715,7 @@ class AutoRound(object):
         for name in names_in_layer_config:
             if name in all_supported_layer_names:
                 continue
-            matched_names=[]
+            matched_names = []
             for layer_name in all_supported_layer_names:
                 if re.search(re.compile(name), layer_name) is not None:
                     matched_names.append(layer_name)
@@ -725,7 +724,6 @@ class AutoRound(object):
                 layer_config.pop(name)
                 for match_name in matched_names:
                     layer_config[match_name] = val
-
             else:
                 raise ValueError(f"key {name} in layer_config is invalid, please have a double check")
 
