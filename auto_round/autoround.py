@@ -54,7 +54,9 @@ from .utils import (
     find_matching_blocks, is_debug_mode,
     TORCH_VERSION_AT_LEAST_2_6,
     supported_layer_types,
-    get_layer_features, set_module,
+    get_layer_features, 
+    set_module,
+    llm_load_model
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -165,8 +167,14 @@ class AutoRound(object):
             device_map: Union[str, dict] = None,
             super_bits: int = None,
             super_group_size: int = None,
+            model_kwargs: dict = None,
             **kwargs,
     ):
+        if isinstance(model, str):
+            torch_dtype = "auto"
+            if device is not None and "hpu" in device:
+                torch_dtype = torch.bfloat16
+            model, tokenizer, low_cpu_mem_usage = llm_load_model(model, torch_dtype=torch_dtype, **model_kwargs)
         self.quantized = False
         self.model_orig_dtype = model.dtype
         self.seed = seed

@@ -81,13 +81,20 @@ quantization of non-text modules.
 Currently, the quantization of vision components is supported for Llama-3.2-11B-Vision, Phi-3.5-Vision-Instruct, and
 Llava-v1.5-7B.
 
-| Model        | Eval Lib  | calibration dataset | quant nontext module |
-|--------------|-----------|---------------------|----------------------|
-| Qwen2-VL     | vlmeval   | pile/llava          | -                    |
-| Llama-Vision | lmms_eval | llava               | ✔                    |
-| Phi3-Vision  | vlmeval   | pile/llava          | ✔                    |
-| Llava-v1.5   | lmms_eval | pile/llava          | -                    |
-| CogVLM2      | lmms_eval | pile/llava          | ✔                    |
+Support Matrix
+| Model                 | calibration dataset | quant nontext module |
+|-----------------------|---------------------|----------------------|
+| Qwen2-VL              | pile/llava          | -                    |
+| Llama-3.2-Vision      | llava               | ✔                    |
+| Phi3-Vision           | pile/llava          | ✔                    |
+| Llava-v1.5            | pile/llava          | X                    |
+| CogVLM2               | pile/llava          | ✔                    |
+| gemma-3               | pile/llava          | -                    |
+| granite-vision-3.2    | pile/llava          | -                    |
+| Mistral-Small-3.1     | pile/llava          | X                    |
+| Aria                  | pile/llava          | -                    |
+
+✔ means support, - means support but cannot infer or not test infert yet, X means not support.
 
 ### New Models Support
 

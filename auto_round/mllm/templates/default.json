@@ -10,5 +10,5 @@
     "replace_tokens": null,
     "extra_encode" : false,
     "default_dataset": "NeelNanda/pile-10k",
-    "processor": "basic"
+    "processor": "hf"
 }

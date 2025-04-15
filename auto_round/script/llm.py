@@ -369,65 +369,19 @@ def tune(args):
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
-    is_glm = bool(re.search("chatglm", model_name.lower()))
-    low_cpu_mem_usage = False
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=not args.disable_trust_remote_code)
-
-    model_cls = AutoModel if is_glm else AutoModelForCausalLM
-
-    if args.low_cpu_mem_tmp_dir is None:
-        args.low_cpu_mem_tmp_dir = os.path.join(args.output_dir, "low_cpu_mem_tmp")
-    if args.low_cpu_mem_mode == 2:
-        from auto_round.low_cpu_mem.utils import load_model_with_hooks
-        model = load_model_with_hooks(
-            model_name,
-            model_cls,
-            device=device_str,
-            clean_weight=True,
-            saved_path=args.low_cpu_mem_tmp_dir,
-            torch_dtype=torch_dtype,
-            trust_remote_code=not args.disable_trust_remote_code)
-    elif args.low_cpu_mem_mode == 1:
-        from auto_round.low_cpu_mem.utils import load_empty_model
-        low_cpu_mem_usage = True
-        model = load_empty_model(
-            model_name,
-            model_cls,
-            device=device_str,
-            saved_path=args.low_cpu_mem_tmp_dir,
-            torch_dtype=torch_dtype,
-            trust_remote_code=not args.disable_trust_remote_code)
-    else:
-        from auto_round.utils import _use_hpu_compile_mode
-        if _use_hpu_compile_mode():
-            model = model_cls.from_pretrained(
-                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-                attn_implementation="eager",
-                trust_remote_code=not args.disable_trust_remote_code, device_map="auto" if use_auto_mapping else None
-            )
-        else:
-            model = model_cls.from_pretrained(
-                model_name, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-                trust_remote_code=not args.disable_trust_remote_code, device_map="auto" if use_auto_mapping else None
-            )
+    from auto_round.utils import llm_load_model
+    model, tokenizer, low_cpu_mem_usage = llm_load_model(
+        model_name,
+        torch_dtype=torch_dtype,
+        use_auto_mapping=use_auto_mapping,
+        trust_remote_code=not args.disable_trust_remote_code,
+        device=device_str,
+        low_cpu_mem_mode=args.low_cpu_mem_mode,
+        low_cpu_mem_tmp_dir=args.low_cpu_mem_tmp_dir)
 
     from auto_round import AutoRound, AutoRoundAdam
 
-    model = model.eval()
     seqlen = args.seqlen
-
-    if args.model_dtype != None:
-        try:
-            if args.model_dtype == "float16" or args.model_dtype == "fp16":
-                model = model.to(torch.float16)
-            elif args.model_dtype == "bfloat16" or args.model_dtype == "bfp16" or args.model_dtype == "bf16":
-                model = model.to(torch.bfloat16)
-            elif args.model_dtype == "float32" or args.model_dtype == "fp32":
-                model = model.to(torch.float32)
-        except:
-            logger.error("please use more device to fit the device or just use one device")
-            exit()
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:

@@ -11,7 +11,22 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""
+Support Matrix
+| Model                 | calibration dataset | quant nontext module |
+|-----------------------|---------------------|----------------------|
+| Qwen2-VL              | pile/llava          | -                    |
+| Llama-3.2-Vision      | llava               | ✔                    |
+| Phi3-Vision           | pile/llava          | ✔                    |
+| Llava-v1.5            | pile/llava          | X                    |
+| CogVLM2               | pile/llava          | ✔                    |
+| gemma-3               | pile/llava          | -                    |
+| granite-vision-3.2    | pile/llava          | -                    |
+| Mistral-Small-3.1     | pile/llava          | X                    |
+| Aria                  | pile/llava          | -                    |
 
+✔ means support, - means support but cannot infer or not test infert yet, X means not support.
+"""
 import torch
 from transformers.data.data_collator import default_data_collator
 
@@ -32,7 +47,7 @@ def register_processor(name):
 class BasicProcessor:
     def __init__(self):
         pass
-    
+
     def post_init(self, model, tokenizer, processor=None, image_processor=None, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
@@ -46,55 +61,9 @@ class BasicProcessor:
             self,
             text,
             images,
-            return_tensors="pt",
             squeeze=True,
-            max_length=None,
-            truncation=False,
-            truncation_strategy="text",
             **kwargs):
-
-        if isinstance(text, list):
-            for message in text:
-                if not ("role" in message and "content" in message):
-                    raise ValueError(
-                        "When passing chat dicts as input, each dict must have a 'role' and 'content' key.")
-            continue_final_message = text[-1]["role"] == "assistant"
-
-            # add_generation_prompt=True will add <|im_start|>assistant to the end
-            try:
-                text = self.tokenizer.apply_chat_template(
-                    text, tokenize=False, add_generation_prompt=not continue_final_message,
-                    continue_final_message=continue_final_message, )
-            except:
-                raise NotImplementedError("current not support for non-instructed model.")
-
-            if text == '':
-                raise NotImplementedError("current not support for non-instructed model.")
-
-        if images is not None:
-            images = self.image_processor(images)
-
-        if truncation is True and truncation_strategy == "text":
-            text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
-
-        ret = self.processor(
-            text=text,
-            images=images,
-            return_tensors=return_tensors,
-            # videos = None
-        )
-        if truncation is True and truncation_strategy == "token":
-            seqlen = ret['input_ids'].shape[-1]
-            for key in ret:
-                shape_ = ret[key].shape
-                if len(shape_) == 2 and shape_[-1] == seqlen:
-                    ret[key] = ret[key][:, :max_length]
-                elif len(shape_) == 4 and shape_[1] == seqlen:
-                    ret[key] = ret[key][:, :max_length]
-
-        if squeeze:
-            ret = self.squeeze_result(ret)
-        return ret
+            raise NotImplementedError
 
     @staticmethod
     def data_collator(batch):
@@ -111,8 +80,102 @@ class BasicProcessor:
         return ret
 
 
+@register_processor("hf")
+class HFProcessor(BasicProcessor):
+    # evaluation on: Qwen2-VL, mllama, Mistral-Small
+    IMAGE_TOKEN = '<image>'
+    def __init__(self):
+        self.process_func = self._process_v1
+
+    def post_init(self, model, tokenizer, processor=None, image_processor=None, **kwargs):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.processor = processor
+        if image_processor is not None:
+            self.image_processor = image_processor
+        else:
+            self.image_processor = self.default_image_processor
+    
+    def _process_v1(self, messages, image):
+        """support models: Qwen2-VL, gemma-3, granite-vision-3.2, Aria"""
+        conversation = []
+        for content in messages:
+            conversation.append({
+                "role": content['role'],
+                "content": [
+                    {"text": content["content"].replace(self.IMAGE_TOKEN, ""), "type": "text"}
+                ]
+            })
+            if self.IMAGE_TOKEN in content['content']:
+                conversation[-1]["content"].append({"image": image, "type": "image"})
+        ret = self.processor.apply_chat_template(
+                        conversation, add_generation_prompt=True, tokenize=True, return_dict=True)
+        return ret
+
+    def _process_v2(self, messages, image):
+        """support model: Mistral-Small-3.1, phi3_v"""
+        conversation = []
+        for content in messages:
+            if content["role"] == "user":
+                conversation.append({
+                    "role": content['role'],
+                    "content": [
+                        {"text": content["content"].replace(self.IMAGE_TOKEN, ""), "type": "text"}
+                    ]
+                })
+                if self.IMAGE_TOKEN in content['content']:
+                    conversation[-1]["content"].append({"image": image, "type": "image"})
+            else:
+                conversation.append({
+                    "role": content['role'],
+                    "content": content["content"]
+                })
+        if hasattr(self.processor, "chat_template"):
+            text = self.processor.apply_chat_template(
+                        conversation, add_generation_prompt=True, tokenize=False, return_dict=False)
+        else:
+            continue_final_message = messages[-1]["role"] == "assistant"
+            text = self.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=not continue_final_message,
+                    continue_final_message=continue_final_message, )
+        if image is not None:
+            image = self.image_processor(image)
+        ret = self.processor(
+            text=text, images=image, return_tensors="pt")
+        return ret
+    
+    def get_input(
+            self,
+            text,
+            images,
+            return_tensors="pt",
+            squeeze=True,
+            max_length=None,
+            truncation=False,
+            truncation_strategy="text",
+            **kwargs):
+
+        if isinstance(text, list):
+            try:
+                ret = self.process_func(text, images)
+            except Exception:
+                self.process_func = self._process_v2
+                ret = self.process_func(text, images)
+        else:
+            text = self.tokenizer.decode(self.tokenizer(text).input_ids[:max_length])
+
+            if images is not None:
+                images = self.image_processor(images)
+            ret = self.processor(
+                text=text, images=images, return_tensors="pt", add_special_tokens=False)
+
+        if squeeze:
+            ret = self.squeeze_result(ret)
+        return ret
+
+
 @register_processor("qwen2_vl")
-class Qwen2VLProcessor(BasicProcessor):
+class Qwen2VLProcessor(HFProcessor):
     @staticmethod
     def squeeze_result(ret):
         for key in ret:
@@ -130,7 +193,7 @@ class CogVLM2Processor(BasicProcessor):
 
         if images is not None:
             images = self.image_processor(images)
-        
+
         padding_len = 2303
         max_length = 0 if max_length is None else max_length
         max_length += padding_len
@@ -246,3 +309,40 @@ class LlavaProcessor(BasicProcessor):
     def data_collator(self, batch):
         return self.collator_func(batch)
 
+
+@register_processor("deepseek_v2")
+class DeepSeekV2Processor(BasicProcessor):
+    IMAGE_TOKEN = '<image>'
+    def get_input(
+            self, text, images, max_length=None,
+            squeeze=True, truncation=False, truncation_strategy="text", **kwargs):
+
+        messages = []
+        for content in text:
+            if content["role"] == "user":
+                messages.append({
+                    "role": content['role'],
+                    "content": content["content"]
+                })
+                if self.IMAGE_TOKEN in content['content']:
+                    messages[-1]["images"] = [images]
+            else:
+                messages.append({
+                    "role": content['role'],
+                    "content": content["content"]
+                })
+
+        if images is not None:
+            pil_image = [self.image_processor(images)]
+        else:
+            pil_image = None
+
+        prepare_inputs = self.processor(
+            conversations=messages,
+            images=pil_image,
+            force_batchify=True,
+            system_prompt=""
+        ).to(self.model.device)
+        prepare_inputs = prepare_inputs.to(self.model.device)
+        prepare_inputs = self.squeeze_result(dict(prepare_inputs))
+        return prepare_inputs

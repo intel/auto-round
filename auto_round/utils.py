@@ -421,7 +421,7 @@ def get_block_names(model, quant_vision=False):
             for n, m in target_m[1].named_children():
                 block_names[i].append(target_m[0] + "." + n)
         return block_names
-    
+
     if quant_vision or not is_pure_text_model(model):
         return _get_vlm_block_names(model, quant_vision=quant_vision)
     else:
@@ -1229,7 +1229,7 @@ def _gguf_args_check(args):
                     sys.exit(-1)
                 else:
                     pre_dq_format = format
-            
+
             if os.path.isdir(args.model):
                 from pathlib import Path
                 from auto_round.export.export_to_gguf.convert import Model
@@ -1265,6 +1265,144 @@ def _gguf_args_check(args):
 
     return args
 
+
+def _to_model_dtype(model, model_dtype):
+    if model_dtype != None:
+        try:
+            if model_dtype == "float16" or model_dtype == "fp16":
+                model = model.to(torch.float16)
+            elif model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16":
+                model = model.to(torch.bfloat16)
+            elif model_dtype == "float32" or model_dtype == "fp32":
+                model = model.to(torch.float32)
+        except:
+            logger.error("please use more device to fit the device or just use one device")
+            exit()
+    return model
+
+def llm_load_model(
+        pretrained_model_name_or_path,
+        torch_dtype="auto",
+        use_auto_mapping=True,
+        trust_remote_code=True,
+        model_dtype=None,
+        device="cpu",
+        low_cpu_mem_mode=0,
+        low_cpu_mem_tmp_dir = None,
+        **kwargs):
+    from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
+
+    is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
+    low_cpu_mem_usage = False
+
+    tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+
+    model_cls = AutoModel if is_glm else AutoModelForCausalLM
+
+    if low_cpu_mem_tmp_dir is None:
+        low_cpu_mem_tmp_dir = "low_cpu_mem_tmp"
+    if low_cpu_mem_mode == 2:
+        from auto_round.low_cpu_mem.utils import load_model_with_hooks
+        model = load_model_with_hooks(
+            pretrained_model_name_or_path,
+            model_cls,
+            device=device,
+            clean_weight=True,
+            saved_path=low_cpu_mem_tmp_dir,
+            torch_dtype=torch_dtype,
+            trust_remote_code=trust_remote_code)
+    elif low_cpu_mem_mode == 1:
+        from auto_round.low_cpu_mem.utils import load_empty_model
+        low_cpu_mem_usage = True
+        model = load_empty_model(
+            pretrained_model_name_or_path,
+            model_cls,
+            device=device,
+            saved_path=low_cpu_mem_tmp_dir,
+            torch_dtype=torch_dtype,
+            trust_remote_code=trust_remote_code)
+    else:
+        from auto_round.utils import _use_hpu_compile_mode
+        if _use_hpu_compile_mode():
+            model = model_cls.from_pretrained(
+                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                attn_implementation="eager",
+                trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
+            )
+        else:
+            model = model_cls.from_pretrained(
+                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
+            )
+
+    model = model.eval()
+    model = _to_model_dtype(model, model_dtype)
+
+    return model, tokenizer, low_cpu_mem_usage
+
+
+def mllm_load_model(
+        pretrained_model_name_or_path,
+        torch_dtype="auto",
+        use_auto_mapping=True,
+        trust_remote_code=True,
+        model_dtype=None,
+        **kwargs):
+    import json
+    import transformers
+    from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
+    from huggingface_hub import HfApi, HfFileSystem
+
+    if os.path.isdir(pretrained_model_name_or_path):
+        config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
+    else:
+        hf_file = HfFileSystem()
+        config = json.load(hf_file.open(pretrained_model_name_or_path + "/config.json"))
+
+    if "model_type" in config:
+        model_type = config["model_type"]
+    else:
+        model_type = None
+
+    processor, image_processor = None, None
+    if "deepseek_vl_v2" == model_type:
+        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM  # pylint: disable=E0401
+        processor = DeepseekVLV2Processor.from_pretrained(pretrained_model_name_or_path)
+        tokenizer = processor.tokenizer
+        model: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path,
+            trust_remote_code=trust_remote_code,
+            torch_dtype=torch_dtype,
+            device_map="auto" if use_auto_mapping else None)
+    else:
+        architectures = config["architectures"][0]
+        if architectures == "LlavaLlamaForCausalLM":
+            from llava.model.builder import load_pretrained_model  # pylint: disable=E0401
+            tokenizer, model, image_processor, _ = load_pretrained_model(
+                pretrained_model_name_or_path,
+                model_base=None,
+                model_name=pretrained_model_name_or_path,
+                torch_dtype=torch_dtype)
+        else:
+            if hasattr(transformers, architectures):
+                cls = getattr(transformers, architectures)
+            else:
+                cls = AutoModelForCausalLM
+            model = cls.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=trust_remote_code,
+                torch_dtype=torch_dtype,
+                device_map="auto" if use_auto_mapping else None)
+            tokenizer = AutoTokenizer.from_pretrained(
+                pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            processor = AutoProcessor.from_pretrained(
+                pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+
+    model = model.eval()
+    model = _to_model_dtype(model, model_dtype)
+
+    return model, processor, tokenizer, image_processor
+
 def is_pure_text_model(model):
     """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl, """
     if hasattr(model,"config") and hasattr(model.config, "vision_config"):
@@ -1280,4 +1418,4 @@ def is_pure_text_model(model):
             return False
         if "img" in str(module.__class__).lower():
             return False
-    return True 
+    return True
