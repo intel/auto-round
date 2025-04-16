@@ -96,23 +96,24 @@ liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path 
 
 ### Support Matrix
 
-FFor most VLMs, we typically support the default quantization method, which involves quantizing only the language component while excluding the visual component. Besides, we also support quantizing non-text modules of models that follow the Hugging Face standard, i.e., those with a typical processor.
+For most VLMs, we typically support the default quantization configuration, which involves quantizing only the language component while excluding the visual component. Besides, we also support quantizing non-text modules of models that follow the Hugging Face standard, i.e., those with a typical processor, though inference may have some issues due to model architecture or kernel limitations.
 
 | Model                               | calibration dataset | quant nontext module |
 |-------------------------------------|---------------------|----------------------|
-| Qwen/Qwen2-VL                       | pile/llava          | -                    |
+| allenai/Molmo                       | pile                | X                    |
+| deepseek-ai/deepseek-vl2            | pile/llava          | √                    |
+| google/gemma-3                      | pile/llava          | √                    |
+| HuggingFaceTB/SmolVLM               | pile/llava          | √                    |
+| ibm-granite/granite-vision-3.2      | pile/llava          | -                    |
+| liuhaotian/Llava-v1.5               | pile/llava          | X                    |
 | meta-llama/Llama-3.2-Vision         | llava               | √                    |
 | microsoft/Phi3-Vision               | pile/llava          | √                    |
-| liuhaotian/Llava-v1.5               | pile/llava          | X                    |
-| THUDM/CogVLM2                       | pile/llava          | √                    |
-| google/gemma-3                      | pile/llava          | -                    |
-| ibm-granite/granite-vision-3.2      | pile/llava          | -                    |
 | mistralai/Mistral-Small-3.1         | pile/llava          | X                    |
+| moonshotai/Kimi-VL                  | pile/llava          | √                    |
+| Qwen/Qwen2-VL                       | pile/llava          | -                    |
 | rhymes-ai/Aria                      | pile/llava          | √                    |
-| deepseek-ai/deepseek-vl2            | pile/llava          | √                    |
+| THUDM/CogVLM2                       | pile/llava          | √                    |
 | THUDM/glm-4v                        | pile                | X                    |
-| allenai/Molmo                       | pile                | X                    |
-| HuggingFaceTB/SmolVLM               | pile/llava          | √                    |
 
 √ means support, - means support to export but cannot infer, X means not support.
 
