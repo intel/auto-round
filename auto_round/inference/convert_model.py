@@ -33,6 +33,7 @@ logger = getLogger(__name__)
 
 supported_devices = ("cpu", "hpu", "xpu", "cuda")
 
+
 def flatten_list(nested_list):
     flattened = []
     for item in nested_list:
@@ -42,9 +43,10 @@ def flatten_list(nested_list):
             flattened.append(item)
     return flattened
 
+
 def skip_not_convert_modules(model, quantization_config, layer_names, layer_configs):
     modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
-    try: # transformers new api
+    try:  # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
     except Exception:
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert)
@@ -106,13 +108,13 @@ def get_keys_to_not_convert(model):
 
     return filtered_module_names
 
+
 def _get_modules_to_not_convert(
         model,
-        skip_modules = None,
-        keep_in_fp32_modules = None,
+        skip_modules=None,
+        keep_in_fp32_modules=None,
         add_default_skips: bool = False,
-    ):
-
+):
     if skip_modules is None or add_default_skips:
         modules_to_not_convert = get_keys_to_not_convert(model)
     else:
@@ -126,11 +128,14 @@ def _get_modules_to_not_convert(
 
     return modules_to_not_convert
 
+
 try:
     from transformers.quantizers.base import HfQuantizer
+
     get_modules_to_not_convert = HfQuantizer.get_modules_to_not_convert
 except:
     get_modules_to_not_convert = _get_modules_to_not_convert
+
 
 def get_available_devices():
     """
@@ -310,9 +315,9 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
         requirements_info = process_requirement(requirements)
         if len(requirements_info) > 0:
             extra_info = ""
-            for index,req in enumerate(requirements_info):
+            for index, req in enumerate(requirements_info):
                 extra_info += (f"`{req}`")
-                if index != len(requirements_info)-1:
+                if index != len(requirements_info) - 1:
                     extra_info += " and "
             raise ImportError(f"{target_backend} requires the follow libraries. Please install them via {extra_info}")
 
@@ -472,7 +477,7 @@ def post_init(model, used_backends):
     for l in data_types[1:]:
         common &= set(l)
     common = list(common)
-    if len(common)>0 and  str(model.dtype).split('.')[-1] not in common:
+    if len(common) > 0 and str(model.dtype).split('.')[-1] not in common:
         if common[0] == "float16":
             model = model.to(torch.float16)
             logger.warning("force model to float16")
@@ -510,48 +515,50 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
             raise NotImplementedError(
                 "This GPTQ model may contain a non-dummy g_idx, which is not yet supported by AutoRound")
 
-    if not hasattr(quantization_config, "target_backend"):
-        quantization_config.target_backend = quantization_config.backend
+    if hasattr(quantization_config, "backend"):
+        backend = quantization_config.backend
+    else:
+        backend = "auto"
+
 
     ##target_backend could be None
-    _, target_backend = parse_target_device_and_backend(quantization_config.target_backend)
+    _, backend = parse_target_device_and_backend(backend)
 
-    if hasattr(quantization_config, "backend"):  # pragma: no cover
-        backend = quantization_config.backend
+    if hasattr(quantization_config, "packing_format"):  # pragma: no cover
+        packing_format = quantization_config.packing_format
     elif 'gptq' in quantization_config.quant_method:  # pragma: no cover
-        backend = "auto_gptq"
+        packing_format = "auto_gptq"
     elif "awq" in quantization_config.quant_method:
-        backend = "auto_awq"
+        packing_format = "auto_awq"
     else:  # pragma: no cover
-        backend = "auto_gptq"
+        packing_format = "auto_gptq"
         logger.warning("Quantization backend must be specified. Set it to 'auto_gptq' by default.")
-    if backend == "auto":
-        backend = "auto_gptq"
+    if packing_format == "auto":
+        packing_format = "auto_gptq"
 
     layer_configs = get_layer_config(model, quantization_config)
-    if backend.startswith("auto_round:") and ("gptq" in backend or "awq" in backend):
+    if packing_format.startswith("auto_round:") and ("gptq" in packing_format or "awq" in packing_format):
+        packing_format = packing_format[len("auto_round:"):]
+    orig_backend = find_backend(packing_format)
+
+    if backend.startswith("auto_round:") and ("gptq" in packing_format or "awq" in packing_format):
         backend = backend[len("auto_round:"):]
-    backend = find_backend(backend)
 
-    if target_backend.startswith("auto_round:") and ("gptq" in backend or "awq" in backend):
-        target_backend = target_backend[len("auto_round:"):]
+    used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, orig_backend)
 
-    used_backends = _replace_by_quant_layers(model, layer_configs, target_backend, target_device, backend)
-
-    if target_backend == "auto" or target_backend == "":
+    if backend == "auto" or backend == "":
         best_backend = get_highest_priority_backend(quantization_config.bits, quantization_config.sym,
                                                     quantization_config.group_size, target_device,
-                                                    BackendInfos[backend].packing_format)
+                                                    BackendInfos[orig_backend].packing_format)
         if best_backend is not None and best_backend not in used_backends:
             info = f"better backend is found, please install all the following requirements to enable it,"
             extra_info = info
             requirements = BackendInfos[best_backend].requirements
             requirements_info = process_requirement(requirements)
-            for index,req in enumerate(requirements_info):
+            for index, req in enumerate(requirements_info):
                 extra_info += (f"`{req}`")
                 if index != len(requirements_info) - 1:
                     extra_info += " and "
-
 
             logger.warning(extra_info)
 

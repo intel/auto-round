@@ -104,7 +104,8 @@ BackendInfos['auto_gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, Fa
                                                   group_size=[-1, 32, 64, 128, 256, 384, 512, 1024, 2048],
                                                   ##16 seems has accuracy issue
                                                   feature_checks=[exllamav2_feature_check],
-                                                  alias=['gptq', 'auto_gptq', 'exllamav2', "gptq:exllamav2"],
+                                                  alias=['gptq', 'auto_gptq', 'exllamav2', "gptq:exllamav2",
+                                                         "auto_gptq:exllamav2"],
                                                   requirements=["auto-gptq>=0.7.1"]
                                                   )
 
