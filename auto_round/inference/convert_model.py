@@ -521,7 +521,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         backend = "auto"
 
     ##target_backend could be None
-    _, target_backend = parse_target_device_and_backend(quantization_config.target_backend)
+    _, backend = parse_target_device_and_backend(backend)
 
     if hasattr(quantization_config, "packing_format"):  # pragma: no cover
         packing_format = quantization_config.backend
