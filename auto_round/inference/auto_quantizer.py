@@ -239,7 +239,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
         self.dataset = dataset
         self.group_size = group_size
         self.sym = sym
-        self.target_backend = "auto"
+        self.packing_format = "auto_round:auto_gptq"
         self.backend = backend
         self.layer_config = layer_config
         if kwargs is not None:
@@ -256,7 +256,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
             raise ValueError("group_size must be greater than 0 or equal to -1")
 
     def get_loading_attributes(self):
-        loading_attibutes_dict = {"target_backend": self.backend}
+        loading_attibutes_dict = {"backend": self.backend}
         return loading_attibutes_dict
 
     def to_dict(self):
@@ -280,7 +280,7 @@ class AutoRoundConfig(QuantizationConfigMixin):
                 "Failed to convert awq format to auto_round format. Only supports  awq format with gemm version")
 
         if "auto-round" not in quant_method:
-            config_dict["backend"] = f"auto_round:{quant_method}"
+            config_dict["packing_format"] = f"auto_round:{quant_method}"
         return super().from_dict(config_dict, return_unused_kwargs=return_unused_kwargs, **kwargs)
 
 

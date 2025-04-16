@@ -261,10 +261,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
     quantization_config["quant_method"] = "auto-round"
-
-    quantization_config["backend"] = backend
     if quantization_config["bits"] == 3:
         backend = "auto_round:auto_gptq"
+    quantization_config["packing_format"] = backend
 
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
