@@ -78,10 +78,13 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     processor = kwargs.get("processor", None)
     modules_to_not_convert = []
 
+    if output_dir is not None and os.path.exists(output_dir):
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
+
     logger.info("Saving quantized model to auto_awq format")
-    if tokenizer is not None:
+    if tokenizer is not None and output_dir is not None:
         tokenizer.save_pretrained(output_dir)
-    if processor is not None:
+    if processor is not None and output_dir is not None:
         processor.save_pretrained(output_dir)
         # mllm models
         all_blocks = get_block_names(model, quant_vision=True)
@@ -119,8 +122,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     if output_dir is None:
         return compressed_model
 
-    if os.path.exists(output_dir):
-        logger.warning(f"{output_dir} already exists, this may cause model conflict")
+
     layer_config = kwargs["layer_config"]
     for key in layer_config.keys():
         if not check_to_quantized(layer_config[key]) and \

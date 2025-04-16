@@ -457,6 +457,135 @@ class TestAutoRound(unittest.TestCase):
         model_infer(model, tokenizer)
         shutil.rmtree(self.save_folder)
 
+    def test_fallback_layers_regex_awq(self):
+        model_name = "facebook/opt-125m"
+        bits, group_size, sym = 4, 128, True
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        layer_config = {"model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
+                        "model.decoder.layers.1.self_attn.k_proj": {"bits": 16}}
+        autoround = AutoRound(
+            model,
+            tokenizer=tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            layer_config=layer_config
+        )
+        autoround.quantize()
+        quantized_model_path = self.save_folder
+
+        autoround.save_quantized(output_dir=quantized_model_path, format="auto_awq", inplace=True)
+        from auto_round import AutoRoundConfig
+        quantization_config = AutoRoundConfig()
+
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+                                                     device_map='auto',quantization_config=quantization_config)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
+        print(res)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
+
+    def test_fallback_layers_regex_gptq(self):
+        model_name = "facebook/opt-125m"
+        bits, group_size, sym = 4, 128, True
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        layer_config = {"model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
+                        ##"model.decoder.layers.1.self_attn.k_proj": {"bits": 16}
+                        }
+        autoround = AutoRound(
+            model,
+            tokenizer=tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            layer_config=layer_config
+        )
+        autoround.quantize()
+        quantized_model_path = self.save_folder
+
+        autoround.save_quantized(output_dir=quantized_model_path, format="auto_gptq", inplace=True)
+        from auto_round import AutoRoundConfig
+        quantization_config = AutoRoundConfig()
+
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+                                                     device_map='auto',quantization_config=quantization_config)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
+        print(res)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
+
+    def test_fallback_layers_regex_round(self):
+        model_name = "facebook/opt-125m"
+        bits, group_size, sym = 4, 128, True
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        layer_config = {"model\.decoder\.layers\.(?:[0-9]|1[0-1])\.self_attn\.q_proj": {"bits": 16},
+                        "model.decoder.layers.1.self_attn.k_proj": {"bits": 16}
+                        }
+        autoround = AutoRound(
+            model,
+            tokenizer=tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            layer_config=layer_config
+        )
+        autoround.quantize()
+        quantized_model_path = self.save_folder
+
+        autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
+        from auto_round import AutoRoundConfig
+        quantization_config = AutoRoundConfig()
+
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
+                                                     device_map='auto',quantization_config=quantization_config)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=5)[0])
+        print(res)
+        shutil.rmtree(self.save_folder, ignore_errors=True)
+
+
+    def test_fallback_layers_regex_exception(self):
+        model_name = "facebook/opt-125m"
+        bits, group_size, sym = 4, 128, True
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        layer_config = {
+                        "model.decoder.layers.12.self_attn.k_proj": {"bits": 16}
+                        }
+        with self.assertRaises(ValueError):
+            autoround = AutoRound(
+                model,
+                tokenizer=tokenizer,
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                iters=2,
+                seqlen=2,
+                dataset=self.llm_dataloader,
+                layer_config=layer_config
+            )
+
+
+
+
 
 if __name__ == "__main__":
     unittest.main()
