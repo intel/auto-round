@@ -520,11 +520,12 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     else:
         backend = "auto"
 
+
     ##target_backend could be None
     _, backend = parse_target_device_and_backend(backend)
 
     if hasattr(quantization_config, "packing_format"):  # pragma: no cover
-        packing_format = quantization_config.backend
+        packing_format = quantization_config.packing_format
     elif 'gptq' in quantization_config.quant_method:  # pragma: no cover
         packing_format = "auto_gptq"
     elif "awq" in quantization_config.quant_method:
