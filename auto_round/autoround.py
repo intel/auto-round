@@ -123,7 +123,7 @@ class AutoRound(object):
 
     def __init__(
             self,
-            model,
+            model: torch.nn.Module,
             tokenizer,
             bits: int = 4,
             group_size: int = 128,
@@ -165,11 +165,6 @@ class AutoRound(object):
             model_kwargs: dict = None,
             **kwargs,
     ):
-        if isinstance(model, str):
-            torch_dtype = "auto"
-            if device is not None and "hpu" in device:
-                torch_dtype = torch.bfloat16
-            model, tokenizer, low_cpu_mem_usage = llm_load_model(model, torch_dtype=torch_dtype, **model_kwargs)
         self.quantized = False
         self.model_orig_dtype = model.dtype
         self.seed = seed

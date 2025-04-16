@@ -55,6 +55,28 @@ auto-round-mllm \
     --output_dir ./tmp_autoround
 ```
 
+### Support Matrix
+For most VLMs, we typically support the default quantization method, which involves quantizing only the language component while excluding the visual component. Besides, we also support quantizing non-text modules of models that follow the Hugging Face standard, i.e., those with a typical processor.
+
+| Model                               | calibration dataset | quant nontext module |
+|-------------------------------------|---------------------|----------------------|
+| Qwen/Qwen2-VL                       | pile/llava          | -                    |
+| meta-llama/Llama-3.2-Vision         | llava               | ✔                    |
+| microsoft/Phi3-Vision               | pile/llava          | ✔                    |
+| liuhaotian/Llava-v1.5               | pile/llava          | X                    |
+| THUDM/CogVLM2                       | pile/llava          | ✔                    |
+| google/gemma-3                      | pile/llava          | √                    |
+| ibm-granite/granite-vision-3.2      | pile/llava          | -                    |
+| mistralai/Mistral-Small-3.1         | pile/llava          | X                    |
+| rhymes-ai/Aria                      | pile/llava          | ✔                    |
+| deepseek-ai/deepseek-vl2            | pile/llava          | ✔                    |
+| THUDM/glm-4v                        | pile                | X                    |
+| allenai/Molmo                       | pile                | X                    |
+| HuggingFaceTB/SmolVLM               | pile/llava          | ✔                    |
+| moonshotai/Kimi-VL                  | pile/llava          | √                    |
+
+✔ means support, - means support to export but cannot infer, X means not support.
+
 <details>
 <summary style="font-size:17px;">Calibration Dataset</summary>
 
@@ -74,27 +96,26 @@ liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path 
 
 ### Support Matrix
 
-For typical VLLMs, we assume that the default quantization, which excludes quantizing the visual component, is
-supported. The design of vision components in MLLM model APIs is not standardized, and some models do not support the
-quantization of non-text modules.
+For most VLMs, we typically support the default quantization configuration, which involves quantizing only the language component while excluding the visual component. Besides, we also support quantizing non-text modules of models that follow the Hugging Face standard, i.e., those with a typical processor, though inference may have some issues due to model architecture or kernel limitations.
 
-Currently, the quantization of vision components is supported for Llama-3.2-11B-Vision, Phi-3.5-Vision-Instruct, and
-Llava-v1.5-7B.
+| Model                               | calibration dataset | quant nontext module |
+|-------------------------------------|---------------------|----------------------|
+| allenai/Molmo                       | pile                | X                    |
+| deepseek-ai/deepseek-vl2            | pile/llava          | √                    |
+| google/gemma-3                      | pile/llava          | √                    |
+| HuggingFaceTB/SmolVLM               | pile/llava          | √                    |
+| ibm-granite/granite-vision-3.2      | pile/llava          | -                    |
+| liuhaotian/Llava-v1.5               | pile/llava          | X                    |
+| meta-llama/Llama-3.2-Vision         | llava               | √                    |
+| microsoft/Phi3-Vision               | pile/llava          | √                    |
+| mistralai/Mistral-Small-3.1         | pile/llava          | X                    |
+| moonshotai/Kimi-VL                  | pile/llava          | √                    |
+| Qwen/Qwen2-VL                       | pile/llava          | -                    |
+| rhymes-ai/Aria                      | pile/llava          | √                    |
+| THUDM/CogVLM2                       | pile/llava          | √                    |
+| THUDM/glm-4v                        | pile                | X                    |
 
-Support Matrix
-| Model                 | calibration dataset | quant nontext module |
-|-----------------------|---------------------|----------------------|
-| Qwen2-VL              | pile/llava          | -                    |
-| Llama-3.2-Vision      | llava               | ✔                    |
-| Phi3-Vision           | pile/llava          | ✔                    |
-| Llava-v1.5            | pile/llava          | X                    |
-| CogVLM2               | pile/llava          | ✔                    |
-| gemma-3               | pile/llava          | -                    |
-| granite-vision-3.2    | pile/llava          | -                    |
-| Mistral-Small-3.1     | pile/llava          | X                    |
-| Aria                  | pile/llava          | -                    |
-
-✔ means support, - means support but cannot infer or not test infert yet, X means not support.
+√ means support, - means support to export but cannot infer, X means not support.
 
 ### New Models Support
 

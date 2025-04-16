@@ -225,6 +225,8 @@ autoround.quantize_and_save(output_dir, format='auto_round')
 
 ### API Usage for VLMs
 If you encounter issues during quantization, try setting iters=0 (to enable RTN) and use group_size=32 for better results.
+
+
 <details>
   <summary>Click to expand</summary>
 
@@ -409,6 +411,30 @@ release most of the models ourselves.
 | EleutherAI/gpt-j-6b                       | [outdated-recipe](./docs/gpt-j-6B-asym-recipe.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | 
 
 </details> 
+
+
+### VLM Support Matrix
+
+For most VLMs, we typically support the default quantization configuration, which involves quantizing only the language component while excluding the visual component. Besides, we also support quantizing non-text modules of models that follow the Hugging Face standard, i.e., those with a typical processor, though inference may have some issues due to model architecture or kernel limitations.
+
+| Model                               | calibration dataset | quant nontext module |
+|-------------------------------------|---------------------|----------------------|
+| allenai/Molmo                       | pile                | X                    |
+| deepseek-ai/deepseek-vl2            | pile/llava          | √                    |
+| google/gemma-3                      | pile/llava          | √                    |
+| HuggingFaceTB/SmolVLM               | pile/llava          | √                    |
+| ibm-granite/granite-vision-3.2      | pile/llava          | -                    |
+| liuhaotian/Llava-v1.5               | pile/llava          | X                    |
+| meta-llama/Llama-3.2-Vision         | llava               | √                    |
+| microsoft/Phi3-Vision               | pile/llava          | √                    |
+| mistralai/Mistral-Small-3.1         | pile/llava          | X                    |
+| moonshotai/Kimi-VL                  | pile/llava          | √                    |
+| Qwen/Qwen2-VL                       | pile/llava          | -                    |
+| rhymes-ai/Aria                      | pile/llava          | √                    |
+| THUDM/CogVLM2                       | pile/llava          | √                    |
+| THUDM/glm-4v                        | pile                | X                    |
+
+√ means support, - means support to export but cannot infer, X means not support.
 
 ## Integration
 
