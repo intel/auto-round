@@ -40,7 +40,12 @@ supported_formats = (
 
 supported_formats = supported_formats + tuple(GGUF_CONFIG.keys())
 
-supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D)
+class ParamWrapper(torch.nn.Module):
+    def __init__(self, param: torch.nn.Parameter):
+        super().__init__()
+        self.weight = param
+        
+supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D,  ParamWrapper)
 
 
 @lru_cache(None)
@@ -768,7 +773,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(model, supported_types=(torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D), quant_block_list=None):
+                                                     transformers.modeling_utils.Conv1D, ParamWrapper), quant_block_list=None):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -1062,7 +1067,7 @@ def get_fp_layer_names(model, fp_layers):
     fp_layers = fp_layers.replace(" ", "").split(",")
     all_layer_names = []
     for n, m in model.named_modules():
-        if isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D)):
+        if isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D, ParamWrapper)):
             all_layer_names.append(n)
     not_to_quantized_layers = []
 
@@ -1135,6 +1140,127 @@ def get_device_and_parallelism(device):
         device = detect_device(device)
         parallelism = False
     return device, parallelism
+
+def translate_2_sglang_int8(model):
+    state_dict = model.state_dict()
+    count=0
+    state_list = list(state_dict.keys())
+    for name in state_list:
+        if ".experts." in name and "_fake" not in name:
+            state_dict.pop(name, None)
+    gc.collect()
+    for name, module in model.named_modules():
+        if hasattr(module, "weight_scale"):
+            count+=1
+            state_dict[f"{name}.weight_scale"] = module.weight_scale
+            state_dict[f"{name}.weight"] = state_dict[f"{name}.weight"].to(torch.int8)
+            gc.collect()
+    print(f"quantized_count: {count}")
+    
+    # handle specific large experts
+    new_state_dict = {}
+    from tqdm import tqdm
+    state_list = list(state_dict.keys())
+    for name in tqdm(state_list):
+        if name.endswith("_fake.weight"):
+            weight = state_dict[name]
+            if weight.dim() != 3:
+                continue  # skip any unexpected format
+            for id in range(int(weight.size(0))):
+                scale_name = f"{name}_scale"
+                weight_name_expert = name.replace("_fake", "")
+                weight_name_expert = weight_name_expert.replace("experts.", "experts."+str(id)+".")
+                weight_expert = weight[id].transpose(0,1).contiguous()
+                scale_expert = state_dict[scale_name][id]
+                if "gate_up_proj" in name:
+                    weight_expert_0, weight_expert_1 = weight_expert.chunk(2,dim=0)
+                    weight_expert_0 = weight_expert_0.contiguous()
+                    weight_expert_1 = weight_expert_1.contiguous()
+                    scale_0, scale_1 = scale_expert.chunk(2)
+                    scale_0 = scale_0.contiguous()
+                    scale_1 = scale_1.contiguous()
+                    weight_name_expert_0 = weight_name_expert.replace("gate_up_proj", "gate_proj")
+                    weight_name_expert_1 = weight_name_expert.replace("gate_up_proj", "up_proj")
+                    new_scale_name_0 = f"{weight_name_expert_0}_scale"
+                    new_scale_name_1 = f"{weight_name_expert_1}_scale"
+                    new_state_dict[weight_name_expert_0] = weight_expert_0
+                    new_state_dict[new_scale_name_0] = scale_0
+                    new_state_dict[weight_name_expert_1] = weight_expert_1
+                    new_state_dict[new_scale_name_1] = scale_1
+                else:
+                    new_scale_name = f"{weight_name_expert}_scale"
+                    new_state_dict[weight_name_expert] = weight_expert
+                    new_state_dict[new_scale_name] = scale_expert
+            state_dict.pop(name, None)
+            state_dict.pop(scale_name, None)
+            gc.collect()
+        elif ".experts." not in name:
+            new_state_dict[name] = state_dict[name]
+        else:
+            continue
+    return new_state_dict
+
+
+def pack_to_int8(model, output_dir):
+    import json
+    from safetensors.torch import save_file
+    with torch.no_grad():
+        state_dict = translate_2_sglang_int8(model)
+    max_shard_size = 40 * 1024**3  # 40GB
+    shards = {}
+    current_shard = {}
+    current_size = 0
+    shard_id = 1
+    
+    for name, param in state_dict.items():
+        param_size = param.numel() * param.element_size()  # count param size
+        
+        # limit spilt size and save to files
+        if current_size + param_size > max_shard_size:
+            shard_name = f"model-{shard_id:05d}-of-00000.safetensors"
+            shard_path = os.path.join(output_dir, shard_name)
+            save_file(current_shard, shard_path)
+            
+            shards[shard_name] = list(current_shard.keys())  # record shard names
+            current_shard = {}
+            current_size = 0
+            shard_id += 1
+        
+        current_shard[name] = param
+        current_size += param_size
+
+    # save last shard
+    if current_shard:
+        shard_name = f"model-{shard_id:05d}-of-00000.safetensors"
+        shard_path = os.path.join(output_dir, shard_name)
+        save_file(current_shard, shard_path)
+        shards[shard_name] = list(current_shard.keys())
+
+    # update files number
+    total_shards = shard_id
+    for old_name in list(shards.keys()):
+        new_name = old_name.replace("00000", f"{total_shards:05d}")
+        old_path = os.path.join(output_dir, old_name)
+        new_path = os.path.join(output_dir, new_name)
+        os.rename(old_path, new_path)
+        shards[new_name] = shards.pop(old_name)
+
+    # build weight_map（params -> spilt file）
+    weight_map = {}
+    for shard_file, param_names in shards.items():
+        for param_name in param_names:
+            weight_map[param_name] = shard_file
+
+    # generate the model.safetensors.index.json
+    index = {
+        "metadata": {"total_size": sum(os.path.getsize(os.path.join(output_dir, f)) for f in shards.keys())},
+        "weight_map": weight_map
+    }
+
+    index_path = os.path.join(output_dir, "model.safetensors.index.json")
+    with open(index_path, "w") as f:
+        json.dump(index, f, indent=2)
+    return
 
 
 def set_cuda_visible_devices(device):
@@ -1439,3 +1565,4 @@ def get_shared_keys(model):
     shared_keys = shared_cache_keys
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
+

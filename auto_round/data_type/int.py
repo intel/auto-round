@@ -38,29 +38,16 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
-
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2 ** (bits - 1)
-    if tensor_min is None or tensor_max is None:
-        wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
-        wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
-    else:
-        wmin_tmp = tensor_min
-        wmax_tmp = tensor_max
-
-    wmin_abs = -(wmin_tmp * min_scale)  # pylint: disable=E1130
-    wmax_abs = wmax_tmp * max_scale
-    max_v = (2 * (wmax_abs < wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
-    scale = (max_v / maxq).to(scale_dtype)
-    scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
-    zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
-    scale = scale.unsqueeze(dim=-1)
-    zp = zp.unsqueeze(dim=-1)
-    int_w = round_ste(tensor / scale + v)
-    q = torch.clamp(int_w + zp, 0, 2 ** bits - 1)
-    qdq_result = (scale * (q - zp)).to(tensor.dtype)
-    qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
-    return qdq_result, scale, zp
+    assert tensor.dim() == 2
+    qmax = 127.0
+    abs_max = torch.abs(tensor).max(dim=1, keepdim=True)[0]  # [rows, 1]
+    scale = abs_max / qmax  # [rows, 1]
+    assert scale.shape == (tensor.shape[0], 1)
+    quantized = torch.round(tensor / scale)
+    quantized = torch.clamp(quantized, -qmax, qmax)
+    quantized = revert_tensor_by_pad(quantized, orig_shape=orig_shape, pad_len=pad_len)
+    return quantized, scale.to(torch.float32), None
 
 
 ## the values should be positive
@@ -276,3 +263,4 @@ def quant_tensor_asym_wo_round(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
     qdq_result = (scale * (q - zp)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, zp
+

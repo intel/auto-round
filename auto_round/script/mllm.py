@@ -327,11 +327,20 @@ def tune(args):
         model_name,
         torch_dtype=torch_dtype,
         use_auto_mapping=use_auto_mapping,
-        trust_remote_code=not args.disable_trust_remote_code)
+        trust_remote_code=not args.disable_trust_remote_code,
+        model_dtype=args.model_dtype)
 
     from auto_round import AutoRoundMLLM
 
     model = model.eval()
+    
+    from auto_round.utils import (set_module, ParamWrapper)
+    if "llama4" in str(model.__class__.__name__).lower():
+        for n, p in model.named_parameters():
+            if '.experts.gate_up_proj' in n or '.experts.down_proj' in n:
+                name = f"{n}_fake"
+                set_module(model, name, ParamWrapper(p))
+    
 
     round = AutoRoundMLLM
 
@@ -349,7 +358,7 @@ def tune(args):
     if args.fp_layers != "":
         fp_layers = args.fp_layers.replace(" ", "").split(",")
         for n, m in model.named_modules():
-            if not isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D)):
+            if not isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D, ParamWrapper)):
                 continue
             for fp_layer in fp_layers:
                 if fp_layer in n:
@@ -564,3 +573,4 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+

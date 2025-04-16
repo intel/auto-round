@@ -22,7 +22,9 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "qwen2_vl",
     "deepseek_vl_v2",
     "chatglm",
-    "idefics3"
+    "idefics3",
+    "llama4",
+    "phi4mm"
 ]
 
 SPECIAL_SHARED_CACHE_KEYS = {
@@ -104,3 +106,4 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
                   f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}")
             return 1, accumulate_steps
     return batch_size, gradient_accumulate_steps
+

@@ -513,6 +513,7 @@ class AutoRound(object):
 
         return model, folders
 
+
     @torch.inference_mode
     def quantize_rtn(self):
         if self.amp:
@@ -529,7 +530,12 @@ class AutoRound(object):
             m = get_module(self.model, name)
 
             m.to(self.device)
-            m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False, enable_round_tuning=False)
+            if "_fake" not in name:
+                m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False, enable_round_tuning=False)
+            else:
+                from .wrapper import WrapperParameter
+                m = WrapperParameter(m, enable_minmax_tuning=False,
+                                    enable_norm_bias_tuning=False)
             m = m.unwrapper({})
             m.to("cpu")
             if self.is_packing_immediate:
@@ -541,6 +547,7 @@ class AutoRound(object):
                 set_module(self.model, name, m)
         self.quantized = True
         return self.model, self.layer_config
+
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.
@@ -754,10 +761,11 @@ class AutoRound(object):
             # If the layer is outside a block and requires quantization, mark it as a quantized layer outside the block
             if n not in layers_in_blocks and check_to_quantized(layer_config[n]):
                 has_qlayer_outside_block = True
-
-            in_features, out_features = get_layer_features(m)
-            if in_features <= layer_config[n]["group_size"]:
-                layer_config[n]["group_size"] = -1
+            from .utils import ParamWrapper
+            if not isinstance(m , ParamWrapper):
+                in_features, out_features = get_layer_features(m)
+                if in_features <= layer_config[n]["group_size"]:
+                    layer_config[n]["group_size"] = -1
 
             # Apply the configuration to the corresponding layer in the model
             for key in keys:
@@ -1391,7 +1399,7 @@ class AutoRound(object):
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
-        init_loss = None
+        init_loss = 0
         best_params = {}
         total_loss = 0
 
@@ -1635,13 +1643,21 @@ class AutoRound(object):
             return
         if format == "fake" or format == "qdq":  ##TODO fix act quantizaiton later
             self.model = self.model.to("cpu")
-            self.model.save_pretrained(output_dir)
+            os.makedirs(output_dir, exist_ok=True)
+            if "llama4" not in str(self.model.__class__.__name__).lower():
+                self.model.save_pretrained(output_dir)
+            else:
+                from .utils import pack_to_int8
+                pack_to_int8(self.model, output_dir)
+                    
             if self.tokenizer is not None:
                 self.tokenizer.save_pretrained(output_dir)
             processor = kwargs.get("processor", None)
             if processor is not None:
                 processor.save_pretrained(output_dir)
+            
             return
+        
         if self.act_bits <= 8 and format == "qdq":
             logger.warning(
                 "Support for exporting activation quantization is limited. "
@@ -2159,3 +2175,4 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+
