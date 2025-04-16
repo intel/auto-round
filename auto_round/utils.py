@@ -1260,6 +1260,9 @@ def pack_to_int8(model, output_dir):
     index_path = os.path.join(output_dir, "model.safetensors.index.json")
     with open(index_path, "w") as f:
         json.dump(index, f, indent=2)
+    if hasattr(model, config):
+        model.config.save_pretrained(output_dir)
+    
     return
 
 
