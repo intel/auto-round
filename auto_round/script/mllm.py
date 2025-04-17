@@ -327,7 +327,8 @@ def tune(args):
         model_name,
         torch_dtype=torch_dtype,
         use_auto_mapping=use_auto_mapping,
-        trust_remote_code=not args.disable_trust_remote_code)
+        trust_remote_code=not args.disable_trust_remote_code,
+        model_dtype=args.model_dtype)
 
     from auto_round import AutoRoundMLLM
 
@@ -564,3 +565,4 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+
