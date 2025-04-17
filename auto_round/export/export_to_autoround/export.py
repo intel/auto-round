@@ -324,7 +324,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if quantization_config.get("act_bits", 16) <= 8:
         dtype = torch.bfloat16
     else:
-        dtype = torch.float16  ##force dtype to fp16
+        dtype = None
     save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
     return model
