@@ -3313,7 +3313,7 @@ class InternLM2Model(Model):
             qkv = qkv.reshape((num_groups, q_per_kv + 2, head_dim, n_embd))
             q, k, v = qkv[:, :q_per_kv], qkv[:, -2], qkv[:, -1]
 
-            # The model weights of q and k equire additional reshape.
+            # The model weights of q and k require additional reshape.
             q = LlamaModel.permute(q.reshape((-1, q.shape[-1])), num_heads, num_heads)
             k = LlamaModel.permute(k.reshape((-1, k.shape[-1])), num_heads, num_kv_heads)
             v = v.reshape((-1, v.shape[-1]))
