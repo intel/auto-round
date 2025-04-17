@@ -377,7 +377,8 @@ def tune(args):
         trust_remote_code=not args.disable_trust_remote_code,
         device=device_str,
         low_cpu_mem_mode=args.low_cpu_mem_mode,
-        low_cpu_mem_tmp_dir=args.low_cpu_mem_tmp_dir)
+        low_cpu_mem_tmp_dir=args.low_cpu_mem_tmp_dir,
+        model_dtype=args.model_dtype)
 
     from auto_round import AutoRound, AutoRoundAdam
 
@@ -653,3 +654,4 @@ def eval_task_by_task(
             for key in res_keys:
                 res_all[key].update(res[key])
         print(make_table(res_all))
+
