@@ -282,8 +282,7 @@ def setup_light_parser():
         "--lr", default=5e-3, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
-    args.low_gpu_mem_usage = True
-
+    
     return args
 
 
