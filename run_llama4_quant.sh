@@ -2,10 +2,10 @@
 set -x
 
 ## build from source
-# pip install -e .
+# pip install -e .[cpu]
 
-model_dir=/PATH/TO/LLAMA4/MODEL/
-save_path=/PATH/TO/SAVE/MODEL/
+model_dir=$1
+save_path=$2
 for model in Llama-4-Maverick-17B-128E-Instruct
 do
 python3 -m auto_round --mllm \
@@ -22,3 +22,4 @@ python3 -m auto_round --mllm \
     --output_dir ${save_path}/${model} \
     2>&1| tee -a ${save_path}/${model}_int8.txt
 done
+

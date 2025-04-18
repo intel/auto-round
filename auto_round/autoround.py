@@ -1643,10 +1643,12 @@ class AutoRound(object):
             return
         if format == "fake" or format == "qdq":  ##TODO fix act quantizaiton later
             self.model = self.model.to("cpu")
-            os.makedirs(output_dir, exist_ok=True)
             if "llama4" not in str(self.model.__class__.__name__).lower():
+                os.makedirs(output_dir, exist_ok=True)
                 self.model.save_pretrained(output_dir)
             else:
+                output_dir = output_dir.replace("-fake","")
+                os.makedirs(output_dir, exist_ok=True)
                 from .utils import pack_to_int8
                 pack_to_int8(self.model, output_dir)
                     
