@@ -244,7 +244,7 @@ from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTok
 ## load the model
 model_name = "Qwen/Qwen2-VL-2B-Instruct"
 model = Qwen2VLForConditionalGeneration.from_pretrained(
-    model_name, trust_remote_code=True, torch_dype="auto")
+    model_name, trust_remote_code=True, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 
@@ -320,7 +320,7 @@ from auto_round import AutoRoundConfig
 
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map="auto", torch_dype="auto")
+                                             device_map="auto", torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -347,7 +347,7 @@ auto-round --model saved_quantized_model \
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dype="auto",
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto",
                                              device_map="auto")
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
