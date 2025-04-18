@@ -3,11 +3,10 @@ set -x
 
 ## build from source
 # pip install -e .[cpu]
+model=$1
+model_dir=$2
+save_path=$3
 
-model_dir=$1
-save_path=$2
-for model in Llama-4-Maverick-17B-128E-Instruct
-do
 python3 -m auto_round --mllm \
     --model /$model_dir/${model} \
     --bits 8 \
@@ -21,5 +20,5 @@ python3 -m auto_round --mllm \
     --scale_dtype fp32 \
     --output_dir ${save_path}/${model} \
     2>&1| tee -a ${save_path}/${model}_int8.txt
-done
+
 
