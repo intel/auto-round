@@ -303,6 +303,7 @@ def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 
 @register_block("q4_k")
 def q4_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
+    # print(f"q4_k_quant_block: {blocks.shape=}, {blocks.dtype=}, {scale.shape=}, {scale.dtype=}, {wmin_m.shape=}, {wmin_m.dtype=}, {d_scale.shape=}, {d_scale.dtype=}, {d_wmin_m.shape=} {d_wmin_m.dtype=}")
     nb = blocks.shape[0]
     output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
     output_d = np.empty(nb, dtype=np.float32)
