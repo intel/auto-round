@@ -346,6 +346,7 @@ to the following table for the details.
 | gptq:cuda                              | cuda    | 2,3,4,8 | FP16      | gptq                  | yes            | 0        | auto-gptq                        |
 | triton                                 | cuda    | 2,3,8   | BF16/FP16 | gptq                  | yes/no         | 1        | auto-round                       |
 | awq                                    | cuda    | 4       | FP16      | awq                   | None           | 5        | auto-awq                         |
+| hpu                                    | hpu     | 4       | BF16      | gptq                  | yes            | 0        | auto-round                       |
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
