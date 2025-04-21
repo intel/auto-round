@@ -336,16 +336,16 @@ install additional libraries when a better backend is found. On CUDA, the defaul
 Triton, but the final choice depends on factors such as bits group_size packing format compatibility, etc. Please refer
 to the following table for the details.
 
-| Name                                  | Devices | Bits    | Dtypes    | Packing format        | Zp+-1 for gptq | Priority | Requirements                     |
-|---------------------------------------|---------|---------|-----------|-----------------------|----------------|----------|----------------------------------|
-| ipex                                  | cpu/xpu | 4       | BF16/FP16 | gptq/awq              | yes            | 5        | intel-extension-for-pytorch      |
-| itrex                                 | cpu     | 2,4,8   | BF16/FP16 | gptq/(awq not robust) | yes            | 0        | intel-extension-for-transformers |
-| marlin                                | cuda    | 4,8     | BF16/FP16 | gptq                  | yes/no         | 6        | gptqmodels                       |
+| Name                                   | Devices | Bits    | Dtypes    | Packing format        | Zp+-1 for gptq | Priority | Requirements                     |
+|----------------------------------------|---------|---------|-----------|-----------------------|----------------|----------|----------------------------------|
+| ipex                                   | cpu/xpu | 4       | BF16/FP16 | gptq/awq              | yes            | 5        | intel-extension-for-pytorch      |
+| itrex                                  | cpu     | 2,4,8   | BF16/FP16 | gptq/(awq not robust) | yes            | 0        | intel-extension-for-transformers |
+| marlin                                 | cuda    | 4,8     | BF16/FP16 | gptq                  | yes/no         | 6        | gptqmodels                       |
 | exllamav2 or<br/> ogptqmodel:exllamav2 | cuda    | 4       | BF16/FP16 | gptq                  | no             | 5        | gptqmodels                       |
-| exllamav2 or<br/>gptq:exllamav2       | cuda    | 4       | FP16      | gptq                  | yes            | 5        | auto-gptq                        |
-| gptq:cuda                             | cuda    | 2,3,4,8 | FP16      | gptq                  | yes            | 0        | auto-gptq                        |
-| triton                                | cuda    | 2,3,8   | BF16/FP16 | gptq                  | yes/no         | 1        | auto-round                       |
-| awq                                   | cuda    | 4       | FP16      | awq                   | None           | 5        | auto-awq                         |
+| exllamav2 or<br/>gptq:exllamav2        | cuda    | 4       | FP16      | gptq                  | yes            | 5        | auto-gptq                        |
+| gptq:cuda                              | cuda    | 2,3,4,8 | FP16      | gptq                  | yes            | 0        | auto-gptq                        |
+| triton                                 | cuda    | 2,3,8   | BF16/FP16 | gptq                  | yes/no         | 1        | auto-round                       |
+| awq                                    | cuda    | 4       | FP16      | awq                   | None           | 5        | auto-awq                         |
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
