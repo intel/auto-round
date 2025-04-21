@@ -334,8 +334,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 AutoRound automatically selects the best available backend based on the installed libraries and prompts the user to
 install additional libraries when a better backend is found. On CUDA, the default priority is Marlin > ExLLaMAV2 >
-Triton, but the final choice depends on factors such as bits, group_size, packing format compatibility, etc. Please refer
-to the following table for the details.
+Triton, but the final choice depends on factors such as bits, group_size, packing format compatibility, etc. And the backend may not always be the most suitable for certain devices. Please refer
+to the following table for the details and specify the backend you want.
 
 | Name                                 | Devices | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
 |--------------------------------------|---------|---------|-----------|----------|-----------------|-------------------------------|
@@ -351,7 +351,7 @@ to the following table for the details.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import  AutoRound
+from auto_round import  AutoRoundConfig
 
 quantized_model_path = "./tmp_autoround"
 quantization_config = AutoRoundConfig(backend="auto")
