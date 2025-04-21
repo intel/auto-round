@@ -384,10 +384,9 @@ def _import_exllamav2_kernels():
     try:
         from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
     except ImportError:
-        logger.warning_once(
+        raise ImportError(
             "For better inference performance, install ExLlamaV2 kernel via: "
-            "`pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`"
-        )
+            "`pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`")
 
 
 def _create_quant_layer(layer, layer_backend, config, in_features, out_features):

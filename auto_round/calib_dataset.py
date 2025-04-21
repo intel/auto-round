@@ -16,7 +16,7 @@ import json
 import random
 
 import torch
-from datasets import Dataset
+from datasets import Dataset, IterableDataset
 from datasets import Features, Sequence, Value
 from torch.utils.data import DataLoader
 import sys
@@ -614,6 +614,8 @@ def get_dataloader(
         dataset = dataset.filter(filter_func)
         if name in data_lens:
             dataset = select_dataset(dataset, range(data_lens[name]))
+        if isinstance(dataset, IterableDataset):
+            dataset = Dataset.from_list(list(dataset))
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
         new_features = {}
         for k, v in dataset.features.items():
