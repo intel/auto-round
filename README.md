@@ -161,7 +161,7 @@ from auto_round import AutoRound
 bits, group_size, sym = 4, 128, True
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
 
-## the best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+## the best accuracy, 4-5X slower, low_gpu_mem_usage could save ~20G but ~30% slower
 # autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
 
 ## 2-3X speedup, slight accuracy drop at W4G128
