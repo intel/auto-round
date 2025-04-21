@@ -3,7 +3,7 @@ Step-by-Step
 
 This document presents step-by-step instructions for auto-round llm quantization.
 
-# 1 Prerequisite
+## 1 Prerequisite
 
 Install auto-round or install from source
 
@@ -11,7 +11,7 @@ Install auto-round or install from source
 pip install auto-round
 ```
 
-## 2. Prepare Calibration Dataset
+## 2 Prepare Calibration Dataset
 
 ### Default Dataset
 
@@ -69,7 +69,7 @@ Note: If the concatenation option is not enabled, samples shorter than args.seql
 
 Please use ',' to split datasets, ':' to split parameters of a dataset and '+' to add values for one targeted parameter.
 
-## 3. Quantization
+## 3 Quantization
 
 ### Supported Quantization Configurations
 
@@ -190,8 +190,53 @@ autoround.quantize_and_save(output_dir, format='auto_round')
 ```
 
 ### RTN mode
+AutoRound also supports RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. try setting iters=0 and use group_size=32 for better results.
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRound
+
+model_name = "facebook/opt-125m"
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+bits, group_size, sym = 4, 32, True
+autoround = AutoRound(
+    model,
+    tokenizer,
+    bits=bits,
+    group_size=group_size,
+    sym=sym,
+    iters=0,
+)
+
+output_dir = "./tmp_autoround"
+autoround.quantize_and_save(output_dir, format='auto_round') 
+```
 
 ### GGUF format
+
+This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and q4_1 (W4G32) is supported in our repo**.
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRound
+
+model_name = "facebook/opt-125m"
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+bits, group_size, sym = 4, 32, True
+autoround = AutoRound(
+    model,
+    tokenizer,
+    bits=bits,
+    group_size=group_size,
+    sym=sym,
+    iters=0,
+)
+
+output_dir = "./tmp_autoround"
+autoround.quantize_and_save(output_dir, format='gguf:q4_0') 
+```
 
 ### Adjust Hyperparameters
 
@@ -245,9 +290,104 @@ autoround.quantize_and_save(output_dir, format='auto_round')
 
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
-## 4. Evaluation
 
-### 4.1 Combine evaluation with tuning
+## 4 Inference
+
+AutoRound automatically selects the best available backend based on the installed libraries and prompts the user to install additional libraries when a better backend is found.
+
+
+###  CPU
+
+Supports 2, 4, and 8 bits. We recommend using intel-extension-for-pytorch (IPEX) for 4 bits inference.
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
+model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cpu", torch_dtype="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
+```
+
+
+###  XPU
+
+Supports 4 bits only. We recommend using intel-extension-for-pytorch (IPEX) for inference.
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
+model = AutoModelForCausalLM.from_pretrained(model_name, device_map="xpu", torch_dtype="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
+```
+
+### CUDA
+
+Supports 2, 3, 4, and 8 bits. We recommend using GPTQModel for 4 and 8 bits inference.
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
+model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cuda", torch_dtype="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
+```
+
+
+### HPU
+docker image with Gaudi Software Stack is recommended. More details can be found
+in [Gaudi Guide](https://docs.habana.ai/en/latest/).
+
+
+### Specify Inference Backend
+
+AutoRound automatically selects the  backend for each layer based on compatibility. In general, the priority order is Marlin > ExLLaMAV2 > Triton, but the final choice depends on factors such as group size, bit width, packing format, hardware device, and other implementation details.
+
+The backend may not always be the most suitable for certain devices. 
+You can specify your preferred backend such as "ipex" for CPU and XPU, "marlin/exllamav2/triton" for CUDA, according to your needs or hardware compatibility. Please note that additional corresponding libraries may be required.
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
+
+model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
+quantization_config = AutoRoundConfig(backend="ipex")
+model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
+```
+
+
+### Convert GPTQ/AWQ to AutoRound
+
+Most GPTQ/AWQ models can be converted to the AutoRound format for better compatibility and support with Intel devices. Please note that the quantization config will be changed if the model is serialized.
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
+
+model_name = "ybelkada/opt-125m-gptq-4bit"
+quantization_config = AutoRoundConfig()
+model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
+```
+
+
+## 5 Evaluation
+
+### Combine evaluation with tuning
 
 - We leverage lm-eval-harnessing for the evaluation
   ~~~bash
@@ -255,7 +395,7 @@ autoround.quantize_and_save(output_dir, format='auto_round')
   ~~~
   The last format will be used in evaluation if multiple formats have been exported.
 
-### 4.2  Eval the Quantized model
+###  Eval the Quantized model
 
 - AutoRound format
   For lm-eval-harness, you could just call
@@ -284,52 +424,8 @@ autoround.quantize_and_save(output_dir, format='auto_round')
   CUDA_VISIBLE_DEVICES=0,1 lm_eval --model hf --model_args pretrained="your_model_path",parallelize=True --tasks lambada_openai --batch_size 16
   ~~~
 
-## Inference
 
-### AutoRound format
-
-**CPU**: **auto_round version >0.3.1**, pip install intel-extension-for-pytorch(much higher speed on Intel CPU) or pip
-install intel-extension-for-transformers,
-
-**HPU**: docker image with Gaudi Software Stack is recommended. More details can be found
-in [Gaudi Guide](https://docs.habana.ai/en/latest/).
-
-**CUDA**: no extra operations for sym quantization, for asym quantization, need to install auto-round from source
-
-- The following code will automatically detect device, and typically some error message will remind you to install some
-  extra libraries
-  ```python
-  from transformers import AutoModelForCausalLM, AutoTokenizer
-  from auto_round import AutoRoundConfig ## must import
-  
-  quantized_model_path = "./tmp_autoround"
-  device="cuda"
-  model = AutoModelForCausalLM.from_pretrained(quantized_model_path).to(device)
-  tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-  text = "There is a girl who likes adventure,"
-  inputs = tokenizer(text, return_tensors="pt").to(model.device)
-  print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-  ```
-- To specify device use a different backend
-
-  ```python
-  from transformers import AutoModelForCausalLM, AutoTokenizer
-  from auto_round import AutoRoundConfig
-  
-  backend = "auto"  ##cpu, hpu, cuda
-  quantization_config = AutoRoundConfig(
-      backend=backend
-  )
-  quantized_model_path = "./tmp_autoround"
-  model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                               device_map=backend.split(':')[0], quantization_config=quantization_config)
-  tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-  text = "There is a girl who likes adventure,"
-  inputs = tokenizer(text, return_tensors="pt").to(model.device)
-  print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-  ```
-
-## 6. Known Issues
+## 6 Known Issues
 
 * Random quantization results in tuning some models
 * ChatGlm-V1 is not supported
