@@ -336,17 +336,17 @@ install additional libraries when a better backend is found. On CUDA, the defaul
 Triton, but the final choice depends on factors such as bits group_size packing format compatibility, etc. Please refer
 to the following table for the details.
 
-| Name                                   | Devices | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
-|----------------------------------------|---------|---------|-----------|----------|-----------------|-------------------------------|
-| ipex                                   | cpu/xpu | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch   |
-| itrex                                  | cpu     | 2,4,8   | BF16/FP16 | 0        | gptq_zp+-1/awq  | intel-extension-for-transformers |
-| marlin                                 | cuda    | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                     |
-| exllamav2 or<br/> ogptqmodel:exllamav2 | cuda    | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                     |
-| exllamav2 or<br/>gptq:exllamav2        | cuda    | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                     |
-| gptq:cuda                              | cuda    | 2,3,4,8 | FP16      | 0        | gptq_zp+-1      | auto-gptq                     |
-| triton                                 | cuda    | 2,3,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                    |
-| awq                                    | cuda    | 4       | FP16      | 5        | awq             | auto-awq                      |
-| hpu                                    | hpu     | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
+| Name                                 | Devices | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
+|--------------------------------------|---------|---------|-----------|----------|-----------------|-------------------------------|
+| ipex                                 | cpu/xpu | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch   |
+| itrex                                | cpu     | 2,4,8   | BF16/FP16 | 0        | gptq_zp+-1/awq  | intel-extension-for-transformers |
+| marlin                               | cuda    | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                     |
+| exllamav2 or<br/>gptqmodel:exllamav2 | cuda    | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                     |
+| exllamav2 or<br/>gptq:exllamav2      | cuda    | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                     |
+| gptq:cuda                            | cuda    | 2,3,4,8 | FP16      | 0        | gptq_zp+-1      | auto-gptq                     |
+| triton                               | cuda    | 2,3,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                    |
+| awq                                  | cuda    | 4       | FP16      | 5        | awq             | auto-awq                      |
+| hpu                                  | hpu     | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
