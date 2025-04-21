@@ -35,22 +35,24 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_3bits_autogptq(self):
+    def test_3bits_autoround(self):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         autoround = AutoRound(model, tokenizer, bits=3)
         autoround.quantize()
 
-        autoround.save_quantized(self.save_dir, format="auto_gptq", inplace=False)
+        # autoround.save_quantized(self.save_dir, format="auto_gptq", inplace=False)
+        autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
         res = simple_evaluate(model="hf", model_args=model_args,
-                              tasks="arc_easy",
+                            #   tasks="arc_easy",
+                              tasks=self.tasks,
                               batch_size="auto")
 
         ## 0.2529
-        accuracy = res['results']['arc_easy']['acc,none']
-        assert accuracy >= 0.23
+        accuracy = res['results']['lambada_openai']['acc,none']
+        assert accuracy > 0.3
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_norm_bias_tuning(self):
