@@ -272,7 +272,7 @@ inference. **[2,3,4,8] bits are supported**. However, it has not yet gained wide
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
 community, **[2,3,4,8] bits are supported**. However, **the
 asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
-models.
+models. Besides, recently 3 bits may have some accuracy issues in Transformers.
 
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
 adopted within the community, **only 4-bits quantization is supported**.

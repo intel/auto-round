@@ -143,7 +143,8 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_gptq_exllamav2_4bits_sym_group_size(self):
-        for group_size in [32, 512, 1024]:
+        for group_size in [-1, 32, 64, 128, 256, 1024]:  ## 384, 768 has accuracy issue
+            print(f"!!!!!!!!!!!!!!!!!{group_size}!!!!!!!!!!!!!!!!!")
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = 4, group_size, True
@@ -170,7 +171,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
 
             tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
             self.model_infer(model, tokenizer)
-            result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
+            result = simple_evaluate_user_model(model, tokenizer, batch_size=64, tasks="lambada_openai")
             print(result['results']['lambada_openai']['acc,none'])
             self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.15)
             torch.cuda.empty_cache()
