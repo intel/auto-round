@@ -50,7 +50,8 @@ class TestAutoRound(unittest.TestCase):
         autoround.save_quantized(output_dir=quantized_model_path, format="gguf:q4_1")
 
         from llama_cpp import Llama
-        llm = Llama("saved/Qwen2.5-0.5B-Instruct-Q4_1.gguf", n_gpu_layers=-1)
+        gguf_file = os.listdir("saved")[0]
+        llm = Llama(f"saved/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
     
@@ -64,7 +65,8 @@ class TestAutoRound(unittest.TestCase):
         self.assertFalse(res > 0 or res == -1, msg="qwen2 tuning fail")
         
         from llama_cpp import Llama
-        llm = Llama("saved/Qwen2.5-0.5B-Instruct-w4g32-gguf-q4-0/Qwen2.5-0.5B-Instruct-Q4_0.gguf", n_gpu_layers=-1)
+        gguf_file = os.listdir("saved/Qwen2.5-0.5B-Instruct-w4g32")[0]
+        llm = Llama(f"saved/Qwen2.5-0.5B-Instruct-w4g32/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
     
