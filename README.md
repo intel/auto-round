@@ -334,7 +334,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 AutoRound automatically selects the best available backend based on the installed libraries and prompts the user to
 install additional libraries when a better backend is found. On CUDA, the default priority is Marlin > ExLLaMAV2 >
-Triton, but the final choice depends on factors such as bits group_size packing format compatibility, etc. Please refer
+Triton, but the final choice depends on factors such as bits, group_size, packing format compatibility, etc. Please refer
 to the following table for the details.
 
 | Name                                 | Devices | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |

@@ -131,7 +131,6 @@ autoround = AutoRound(
     group_size=group_size,
     sym=sym,
     # enable_torch_compile=True,
-    # layer_config=layer_config,
 )
 
 output_dir = "./tmp_autoround"
