@@ -1,10 +1,10 @@
 import shutil
 import sys
 import unittest
+sys.path.insert(0, "..")
 from auto_round.eval.evaluation import simple_evaluate
 from lm_eval.utils import make_table  # pylint: disable=E0401
 
-sys.path.insert(0, "..")
 from auto_round import AutoRound
 
 import torch
