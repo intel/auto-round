@@ -45,13 +45,12 @@ class TestAutoRound(unittest.TestCase):
         autoround.save_quantized(self.save_dir, format="auto_gptq", inplace=False)
         model_args = f"pretrained={self.save_dir}"
         res = simple_evaluate(model="hf", model_args=model_args,
-                              tasks=self.tasks,
+                              tasks="arc_easy",
                               batch_size="auto")
-        res = make_table(res)
 
-        accuracy = get_accuracy(res)
-        ## 0.0
-        assert accuracy >= 0.0
+        ## 0.2529
+        accuracy = res['results']['arc_easy']['acc,none']
+        assert accuracy >= 0.23
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_norm_bias_tuning(self):
