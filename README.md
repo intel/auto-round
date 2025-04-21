@@ -14,11 +14,12 @@ AutoRound
 ---
 <div align="left">
 
-AutoRound is an advanced quantization algorithm for low-bits LLM/VLM inference. It's tailored for a wide range
-of models. AutoRound adopts sign gradient descent to fine-tune rounding values and minmax values of weights in just 200
-steps,
-which competes impressively against recent methods without introducing any additional inference overhead and keeping low
-tuning cost. The below
+AutoRound is an advanced quantization algorithm that delivers strong accuracy, even at 2-bit precision. 
+It leverages sign gradient descent to fine-tune both rounding values and min-max clipping thresholds in just 200 steps. 
+Designed for broad compatibility, it seamlessly supports a wide range of LLMs and is actively expanding to cover more VLMs as well. 
+It also supports quantization and inference across multiple hardware platforms, including CPU, XPU, and CUDA. 
+AutoRound also offers a variety of useful features, including mixed-bit tuning and inference, lm-head quantization, 
+support for exporting to formats like GPTQ/AWQ/GGUF, and flexible tuning recipes. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
 details and quantized models in several Hugging Face Spaces,
 e.g. [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup)
@@ -500,6 +501,7 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
