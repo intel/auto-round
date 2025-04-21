@@ -384,8 +384,8 @@ def _import_exllamav2_kernels():
     try:
         from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
     except ImportError:
-        logger.warning_once(
-            "For better inference performance, install ExLlamaV2 kernel via: "
+        raise ImportError(
+            "AutoGPTQ ExLlamaV2 has not been installed, Please install it using the following command: "
             "`pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`"
         )
 
