@@ -223,7 +223,7 @@ autoround.quantize_and_save(output_dir, format='auto_round')
 
 
 - **Speedup the tuning:**
-    - use `auto-round-light` configration
+    - use `auto-round-light` configuration
 
     - reduce the seqlen to 512(potential large accuracy drop for some scenarios)
 
