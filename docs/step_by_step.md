@@ -231,7 +231,8 @@ autoround = AutoRound(
     bits=bits,
     group_size=group_size,
     sym=sym,
-    iters=0,
+    iters=50,
+    lr=5e-3,
 )
 
 output_dir = "./tmp_autoround"
