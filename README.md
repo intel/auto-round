@@ -71,7 +71,7 @@ pip install auto-round-lib
 
 ## Model Quantization
 
-### Basic Usage (Gaudi/CPU/XPU/GPU)
+### Command Line Usage (Gaudi/CPU/XPU/GPU)
 
 A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
 Set the format you want in `format` and
@@ -344,12 +344,13 @@ to the following table for the details.
 | exllamav2 or<br/>gptqmodel:exllamav2 | cuda    | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                     |
 | exllamav2 or<br/>gptq:exllamav2      | cuda    | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                     |
 | gptq:cuda                            | cuda    | 2,3,4,8 | FP16      | 0        | gptq_zp+-1      | auto-gptq                     |
-| triton                               | cuda    | 2,3,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                    |
+| triton                               | cuda    | 2,4,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                    |
 | awq                                  | cuda    | 4       | FP16      | 5        | awq             | auto-awq                      |
 | hpu                                  | hpu     | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import  AutoRound
 
 quantized_model_path = "./tmp_autoround"
 quantization_config = AutoRoundConfig(backend="auto")
