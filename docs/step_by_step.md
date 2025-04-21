@@ -124,8 +124,6 @@ model_name = "facebook/opt-125m"
 model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 bits, group_size, sym = 4, 128, True
-# mixed bits config
-# layer_config = {"model.decoder.layers.6.self_attn.out_proj": {"bits": 2, "group_size": 32}}
 autoround = AutoRound(
     model,
     tokenizer,
@@ -140,6 +138,33 @@ output_dir = "./tmp_autoround"
 # format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
 autoround.quantize_and_save(output_dir, format='auto_round') 
 ```
+
+#### mixed bits Usage
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRound
+
+model_name = "facebook/opt-125m"
+model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+bits, group_size, sym = 4, 128, True
+layer_config = {#  Supports both full layer names and fuzzy (partial) matching
+  "model.decoder.layers.6.self_attn.out_proj": {"bits": 8, "group_size": 32}, 
+  "model.decoder.layers.*k_proj": {"bits": 2, "group_size": 32}
+  }
+autoround = AutoRound(
+    model,
+    tokenizer,
+    bits=bits,
+    group_size=group_size,
+    sym=sym,
+    layer_config=layer_config,
+)
+
+output_dir = "./tmp_autoround"
+autoround.quantize_and_save(output_dir, format='auto_round') 
+```
+
 #### AutoRoundBest recipe
 This setting provides the best accuracy in most scenarios but is 4–5× slower than the standard AutoRound recipe. It is especially recommended for 2-bit quantization and is a good choice if sufficient resources are available.
 ```python
@@ -236,7 +261,7 @@ autoround = AutoRound(
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='gguf:q4_0') 
+autoround.quantize_and_save(output_dir, format='gguf:q4_0') # gguf:q4_1
 ```
 
 ### Adjust Hyperparameters
@@ -303,6 +328,7 @@ Supports 2, 4, and 8 bits. We recommend using intel-extension-for-pytorch (IPEX)
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRoundConfig 
 
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cpu", torch_dtype="auto")
@@ -319,6 +345,7 @@ Supports 4 bits only. We recommend using intel-extension-for-pytorch (IPEX) for 
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRoundConfig 
 
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 model = AutoModelForCausalLM.from_pretrained(model_name, device_map="xpu", torch_dtype="auto")
@@ -334,6 +361,7 @@ Supports 2, 3, 4, and 8 bits. We recommend using GPTQModel for 4 and 8 bits infe
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRoundConfig 
 
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cuda", torch_dtype="auto")
@@ -347,6 +375,20 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 ### HPU
 docker image with Gaudi Software Stack is recommended. More details can be found
 in [Gaudi Guide](https://docs.habana.ai/en/latest/).
+
+```python
+import habana_frameworks.torch.core as htcore
+import habana_frameworks.torch.hpu as hthpu
+from transformers import AutoModelForCausalLM,AutoTokenizer
+from auto_round import AutoRoundConfig
+
+model_name = "Intel/Qwen2-7B-int4-inc"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name).to('hpu').to(bfloat16)
+text = "There is a girl who likes adventure,"
+inputs = tokenizer(text, return_tensors="pt").to(model.device)
+print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
+```
 
 
 ### Specify Inference Backend
@@ -390,7 +432,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 
 ### Combine evaluation with tuning
 
-- We leverage lm-eval-harnessing for the evaluation
+- We leverage lm-eval-harnessing for the evaluation. 
+If not explicitly specify '--task', the default value will be used (typically covering 10+ common tasks).
   ~~~bash
    auto-round --model facebook/opt-125m  --bits 4 --format "auto_round,auto_gptq" --tasks mmlu
   ~~~
