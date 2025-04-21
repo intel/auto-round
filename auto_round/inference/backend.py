@@ -178,17 +178,17 @@ BackendInfos['gptqmodel:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, Fa
 BackendInfos['auto_awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False],  ##actually is gemm
                                             packing_format="awq",
                                             bits=[4], group_size=None,
-                                            priority=4,
+                                            priority=5,
                                             dtype=["float16"],
                                             alias=["auto_awq:gemm", "awq","awq:gemm",
                                                    "auto_awq"],
                                             requirements=["autoawq"]
                                             )
 
-BackendInfos['qbits_no_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
+BackendInfos['qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
                                           packing_format="qbits",
                                           bits=[2, 4, 8], group_size=None,
-                                          priority=0 if "intel" in get_cpu_manufacturer() else 5,
+                                          priority=0,
                                           feature_checks=[],
                                           alias=["itrex", "qbits"],
                                           dtype=["float16", "bfloat16"],
@@ -199,25 +199,25 @@ BackendInfos['qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
                                        packing_format="qbits_zp",
                                        bits=[2, 4, 8], group_size=None,
                                        dtype=["float16", "bfloat16"],
-                                       priority=0 if "intel" in get_cpu_manufacturer() else 5,
+                                       priority=0 ,
                                        feature_checks=[],
                                        alias=["itrex", "qbits"],
                                        convertable_format=["int32_zp"],
                                        requirements=["intel-extension-for-transformers"]
                                        )
 
-# BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True], ## for awq, not robust
-#                                                    packing_format="awq",
-#                                                    bits=[2, 4, 8], group_size=None,
-#                                                    priority=0 if "intel" in get_cpu_manufacturer() else 5,
-#                                                    feature_checks=[],
-#                                                    requirements=["intel-extension-for-transformers"]
-#                                                    )
+BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True,False], ## for awq, not robust
+                                                   packing_format="awq",
+                                                   bits=[2, 4, 8], group_size=None,
+                                                   priority=0,
+                                                   feature_checks=[],
+                                                   requirements=["intel-extension-for-transformers"]
+                                                   )
 
 BackendInfos['ipex_gptq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
                                         packing_format="ipex_gptq",
                                         bits=[4], group_size=None,
-                                        priority=5 if "intel" in get_cpu_manufacturer() else 5,
+                                        priority=5,
                                         feature_checks=[],
                                         dtype=["float16", "bfloat16"],
                                         convertable_format=["int32_zp"],
@@ -240,6 +240,7 @@ BackendInfos['hpu'] = BackendInfo(device=["hpu"], sym=[True, False],
                                   packing_format="hpu",
                                   bits=[4],
                                   dtype=["bfloat16"],
+                                  alias=["hpu"],
                                   priority=0,
                                   convertable_format=["int32"]
                                   )
