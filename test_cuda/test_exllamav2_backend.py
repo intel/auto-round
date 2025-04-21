@@ -161,21 +161,21 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
             autoround.quantize_and_save(output_dir=quantized_model_path,
                                         format="auto_round")  ##will convert to gptq model
 
-        quantization_config = AutoRoundConfig(backend="gptq:exllamav2")  ## or exllamav2
-        model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            quantization_config=quantization_config
-        )
+            quantization_config = AutoRoundConfig(backend="gptq:exllamav2")  ## or exllamav2
+            model = AutoModelForCausalLM.from_pretrained(
+                self.save_folder,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                quantization_config=quantization_config
+            )
 
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        self.model_infer(model, tokenizer)
-        result = simple_evaluate_user_model(model, tokenizer, batch_size=64, tasks="lambada_openai")
-        print(result['results']['lambada_openai']['acc,none'])
-        self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.15)
-        torch.cuda.empty_cache()
-        shutil.rmtree(self.save_folder, ignore_errors=True)
+            tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+            self.model_infer(model, tokenizer)
+            result = simple_evaluate_user_model(model, tokenizer, batch_size=64, tasks="lambada_openai")
+            print(result['results']['lambada_openai']['acc,none'])
+            self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.15)
+            torch.cuda.empty_cache()
+            shutil.rmtree(self.save_folder, ignore_errors=True)
 
 
 if __name__ == "__main__":
