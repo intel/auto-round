@@ -351,7 +351,7 @@ to the following table for the details.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import  AutoRound
+from auto_round import AutoRound
 
 quantized_model_path = "./tmp_autoround"
 quantization_config = AutoRoundConfig(backend="auto")
