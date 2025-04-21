@@ -143,7 +143,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
     def test_gptq_exllamav2_4bits_sym_group_size(self):
-        for group_size in [-1, 32, 64, 128, 256, 384, 1024]:  ## 768 has accuracy issue
+        for group_size in [-1, 32, 64, 128, 256, 1024]:  ## 384, 768 has accuracy issue
             print(f"!!!!!!!!!!!!!!!!!{group_size}!!!!!!!!!!!!!!!!!")
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
