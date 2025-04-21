@@ -451,10 +451,10 @@ def post_init(model, used_backends):
     if need_autogptq_init:
         from auto_gptq.modeling._utils import autogptq_post_init as gptq_post_init  # pylint: disable=E0401
         model = gptq_post_init(model, use_act_order=False)
-    elif need_gptqmodel_init:
+    if need_gptqmodel_init:
         from gptqmodel.utils.model import hf_gptqmodel_post_init as gptq_post_init  # pylint: disable=E0401
         model = gptq_post_init(model, use_act_order=False)
-    elif need_ipex_itrex_init:
+    if need_ipex_itrex_init:
         message = "repacking to CPU/XPU format"
         layers = []  ## ipex post_init  will add one more layer
         for n, m in model.named_modules():
@@ -465,8 +465,8 @@ def post_init(model, used_backends):
                           leave=True):
             layer.post_init()
 
-        if used_gptq_exllamav2:
-            _import_exllamav2_kernels()
+    if used_gptq_exllamav2:
+        _import_exllamav2_kernels()
 
     ## convert datatype
     data_types = []
