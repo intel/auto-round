@@ -3,9 +3,9 @@ import shutil
 import sys
 import unittest
 
+sys.path.insert(0, "..")
 from auto_round.eval.evaluation import simple_evaluate_user_model
 
-sys.path.insert(0, "..")
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer

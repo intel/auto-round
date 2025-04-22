@@ -515,7 +515,7 @@ def tune(args):
     logger.info(f"Using lm-eval version {lm_eval_version}")
     eval_gguf_model = False
     for file in os.listdir(eval_folder):
-        if file.endswith("guff"):
+        if file.endswith("gguf"):
             eval_gguf_model = True
             break
 
@@ -585,6 +585,7 @@ def eval(args):
 
 def eval_task_by_task(
         model, device=None, tasks=None, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True):
+    from auto_round import AutoRoundConfig
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
@@ -604,7 +605,7 @@ def eval_task_by_task(
     else:
         if os.path.isfile(model) and model.endswith(".gguf"):
             is_gguf_file = True
-            gguf_file = model
+            gguf_file = model.split("/")[-1]
             model = os.path.dirname(model)
         else:
             for file in os.listdir(model):
