@@ -604,7 +604,7 @@ def eval_task_by_task(
     else:
         if os.path.isfile(model) and model.endswith(".gguf"):
             is_gguf_file = True
-            gguf_file = model.split("/")[-1]
+            gguf_file = os.path.basename(model)
             model = os.path.dirname(model)
         else:
             for file in os.listdir(model):
