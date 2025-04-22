@@ -1,15 +1,15 @@
-import shutil
+import re
 import sys
 import unittest
+import shutil
 sys.path.insert(0, "..")
-from auto_round.eval.evaluation import simple_evaluate
-from lm_eval.utils import make_table  # pylint: disable=E0401
 
-from auto_round import AutoRound
 
 import torch
+from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import re
+from auto_round import AutoRound
+from auto_round.eval.evaluation import simple_evaluate
 
 
 def get_accuracy(data):

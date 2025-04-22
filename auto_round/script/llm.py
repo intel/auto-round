@@ -515,7 +515,7 @@ def tune(args):
     logger.info(f"Using lm-eval version {lm_eval_version}")
     eval_gguf_model = False
     for file in os.listdir(eval_folder):
-        if file.endswith("guff"):
+        if file.endswith("gguf"):
             eval_gguf_model = True
             break
 
@@ -595,7 +595,7 @@ def eval_task_by_task(
     from lm_eval.models.huggingface import HFLM
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    # from auto_round import AutoRoundConfig
+    from auto_round import AutoRoundConfig  # pylint: disable=E0611
     if batch_size is None:
         batch_size = "auto"
     is_gguf_file = False
@@ -604,7 +604,7 @@ def eval_task_by_task(
     else:
         if os.path.isfile(model) and model.endswith(".gguf"):
             is_gguf_file = True
-            gguf_file = model
+            gguf_file = os.path.basename(model)
             model = os.path.dirname(model)
         else:
             for file in os.listdir(model):
