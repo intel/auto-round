@@ -42,6 +42,15 @@ class TestGGUF(unittest.TestCase):
             assert False, "cmd line test fail, please have a check"
         shutil.rmtree("./saved", ignore_errors=True)
 
+        res = os.system(
+            f"cd .. && {python_path} -m auto_round --model {self.model_name}"
+            f" --tasks piqa,openbookqa --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
+        )
+        if res > 0 or res == -1:
+            assert False, "cmd line test fail, please have a check"
+        shutil.rmtree("./saved", ignore_errors=True)
+
+
     def test_q4_0(self):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
