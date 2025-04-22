@@ -349,6 +349,8 @@ to the following table for the details and specify the backend you want.
 | awq                                  | cuda    | 4       | FP16      | 5        | awq             | auto-awq                      |
 | hpu                                  | hpu     | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
 
+Note: Please avoid manually moving the quantized model to a different device (e.g., model.to('cpu')) during inference, as this may cause unexpected exceptions.
+
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import  AutoRoundConfig
