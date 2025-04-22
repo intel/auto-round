@@ -101,8 +101,8 @@ BackendInfos['auto_gptq:exllamav2'] = BackendInfo(device=["cuda"], sym=[True, Fa
                                                   bits=[4],
                                                   priority=5,
                                                   dtype=["float16"],
-                                                  group_size=[-1, 32, 64, 128, 256, 384, 512, 1024, 2048],
-                                                  ##16 seems has accuracy issue
+                                                  ##16, 384,768 accuracy issue
+                                                  group_size=[-1, 32, 64, 128, 256, 512, 1024, 2048],
                                                   feature_checks=[exllamav2_feature_check],
                                                   alias=['gptq', 'auto_gptq', 'exllamav2', "gptq:exllamav2",
                                                          "auto_gptq:exllamav2"],
@@ -180,33 +180,33 @@ BackendInfos['auto_awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False], 
                                             bits=[4], group_size=None,
                                             priority=5,
                                             dtype=["float16"],
-                                            alias=["auto_awq:gemm", "awq","awq:gemm",
+                                            alias=["auto_awq:gemm", "awq", "awq:gemm",
                                                    "auto_awq"],
                                             requirements=["autoawq"]
                                             )
 
 BackendInfos['qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
-                                          packing_format="qbits",
-                                          bits=[2, 4, 8], group_size=None,
-                                          priority=0,
-                                          feature_checks=[],
-                                          alias=["itrex", "qbits"],
-                                          dtype=["float16", "bfloat16"],
-                                          convertable_format=["int32"],
-                                          requirements=["intel-extension-for-transformers"])
+                                    packing_format="qbits",
+                                    bits=[2, 4, 8], group_size=None,
+                                    priority=0,
+                                    feature_checks=[],
+                                    alias=["itrex", "qbits"],
+                                    dtype=["float16", "bfloat16"],
+                                    convertable_format=["int32"],
+                                    requirements=["intel-extension-for-transformers"])
 
 BackendInfos['qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
                                        packing_format="qbits_zp",
                                        bits=[2, 4, 8], group_size=None,
                                        dtype=["float16", "bfloat16"],
-                                       priority=0 ,
+                                       priority=0,
                                        feature_checks=[],
                                        alias=["itrex", "qbits"],
                                        convertable_format=["int32_zp"],
                                        requirements=["intel-extension-for-transformers"]
                                        )
 
-BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True,False], ## for awq, not robust
+BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True, False],  ## for awq, not robust
                                                    packing_format="awq",
                                                    bits=[2, 4, 8], group_size=None,
                                                    priority=0,
