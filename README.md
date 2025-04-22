@@ -317,6 +317,8 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
 #### Gaudi/CPU/XPU/CUDA
 
+**Please avoid manually moving the quantized model to a different device** (e.g., model.to('cpu')) during inference, as this may cause unexpected exceptions.
+
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRoundConfig  ## must import for auto-round format
@@ -502,6 +504,7 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 
