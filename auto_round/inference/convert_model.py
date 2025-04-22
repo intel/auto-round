@@ -533,7 +533,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         packing_format = "auto_awq"
     else:  # pragma: no cover
         packing_format = "auto_gptq"
-        logger.warning("Quantization backend must be specified. Set it to 'auto_gptq' by default.")
+        logger.warning("quantization backend must be specified. Set it to 'auto_gptq' by default.")
     if packing_format == "auto":
         packing_format = "auto_gptq"
 
