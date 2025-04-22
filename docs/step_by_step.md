@@ -138,7 +138,7 @@ output_dir = "./tmp_autoround"
 autoround.quantize_and_save(output_dir, format='auto_round') 
 ```
 
-#### mixed bits Usage
+#### Mixed bits Usage
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
@@ -319,7 +319,7 @@ autoround.quantize_and_save(output_dir, format='gguf:q4_0') # gguf:q4_1
 ## 4 Inference
 
 AutoRound automatically selects the best available backend based on the installed libraries and prompts the user to install additional libraries when a better backend is found.
-
+Please do not manually move the quantized model to another device (e.g., model.to('cpu')) during inference, as this will disrupt the internal device mapping.
 
 ###  CPU
 
@@ -398,7 +398,8 @@ The backend may not always be the most suitable for certain devices.
 You can specify your preferred backend such as "ipex" for CPU and XPU, "marlin/exllamav2/triton" for CUDA, according to your needs or hardware compatibility. Please note that additional corresponding libraries may be required.
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRoundConfig
 
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 quantization_config = AutoRoundConfig(backend="ipex")
@@ -415,7 +416,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 Most GPTQ/AWQ models can be converted to the AutoRound format for better compatibility and support with Intel devices. Please note that the quantization config will be changed if the model is serialized.
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRoundConfig
 
 model_name = "ybelkada/opt-125m-gptq-4bit"
 quantization_config = AutoRoundConfig()
