@@ -319,7 +319,8 @@ autoround.quantize_and_save(output_dir, format='gguf:q4_0') # gguf:q4_1
 ## 4 Inference
 
 AutoRound automatically selects the best available backend based on the installed libraries and prompts the user to install additional libraries when a better backend is found.
-Note: Please avoid manually moving the quantized model to a different device (e.g., model.to('cpu')) during inference, as this may cause unexpected exceptions.
+
+**Please avoid manually moving the quantized model to a different device** (e.g., model.to('cpu')) during inference, as this may cause unexpected exceptions.
 
 ###  CPU
 

@@ -72,7 +72,7 @@ pip install auto-round-lib
 
 ## Model Quantization
 
-### Command Line Usage (Gaudi/CPU/XPU/GPU)
+### Basic Usage (Gaudi/CPU/XPU/GPU)
 
 A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
 Set the format you want in `format` and
@@ -161,7 +161,7 @@ from auto_round import AutoRound
 bits, group_size, sym = 4, 128, True
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
 
-## the best accuracy, 4-5X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+## the best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
 # autoround = AutoRound(model, tokenizer, nsamples=512, iters=1000, low_gpu_mem_usage=True, bits=bits, group_size=group_size, sym=sym)
 
 ## 2-3X speedup, slight accuracy drop at W4G128
@@ -272,7 +272,7 @@ inference. **[2,3,4,8] bits are supported**. However, it has not yet gained wide
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
 community, **[2,3,4,8] bits are supported**. However, **the
 asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
-models. Besides, recently 3 bits may have some accuracy issues in Transformers.
+models.
 
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
 adopted within the community, **only 4-bits quantization is supported**.
@@ -317,6 +317,8 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
 #### Gaudi/CPU/XPU/CUDA
 
+**Please avoid manually moving the quantized model to a different device** (e.g., model.to('cpu')) during inference, as this may cause unexpected exceptions.
+
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRoundConfig  ## must import for auto-round format
@@ -334,8 +336,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 AutoRound automatically selects the best available backend based on the installed libraries and prompts the user to
 install additional libraries when a better backend is found. On CUDA, the default priority is Marlin > ExLLaMAV2 >
-Triton, but the final choice depends on factors such as bits, group_size, packing format compatibility, etc. And the backend may not always be the most suitable for certain devices. Please refer
-to the following table for the details and specify the backend you want.
+Triton, but the final choice depends on factors such as bits group_size packing format compatibility, etc. Please refer
+to the following table for the details.
 
 | Name                                 | Devices | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
 |--------------------------------------|---------|---------|-----------|----------|-----------------|-------------------------------|
@@ -345,15 +347,12 @@ to the following table for the details and specify the backend you want.
 | exllamav2 or<br/>gptqmodel:exllamav2 | cuda    | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                     |
 | exllamav2 or<br/>gptq:exllamav2      | cuda    | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                     |
 | gptq:cuda                            | cuda    | 2,3,4,8 | FP16      | 0        | gptq_zp+-1      | auto-gptq                     |
-| triton                               | cuda    | 2,4,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                    |
+| triton                               | cuda    | 2,3,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                    |
 | awq                                  | cuda    | 4       | FP16      | 5        | awq             | auto-awq                      |
 | hpu                                  | hpu     | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
 
-Note: Please avoid manually moving the quantized model to a different device (e.g., model.to('cpu')) during inference, as this may cause unexpected exceptions.
-
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import  AutoRoundConfig
 
 quantized_model_path = "./tmp_autoround"
 quantization_config = AutoRoundConfig(backend="auto")
