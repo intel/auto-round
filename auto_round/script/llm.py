@@ -585,7 +585,6 @@ def eval(args):
 
 def eval_task_by_task(
         model, device=None, tasks=None, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True):
-    from auto_round import AutoRoundConfig
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
@@ -596,7 +595,7 @@ def eval_task_by_task(
     from lm_eval.models.huggingface import HFLM
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    # from auto_round import AutoRoundConfig
+    from auto_round import AutoRoundConfig  # pylint: disable=E0611
     if batch_size is None:
         batch_size = "auto"
     is_gguf_file = False
