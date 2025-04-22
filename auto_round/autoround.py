@@ -1351,11 +1351,13 @@ class AutoRound(object):
         for n, m in block.named_modules():
             if hasattr(m, "orig_layer"):
                 for key in m.params.keys():
+                    # breakpoint()
                     if "min" in key or "max" in key:
                         minmax_params.append(m.params[key])
                     else:
                         round_params.append(m.params[key])
 
+        
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0

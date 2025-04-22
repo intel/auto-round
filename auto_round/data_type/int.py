@@ -74,7 +74,7 @@ def double_quant_tensor(tensor, bits, q_scale_thresh, coeef):
 
 
 @register_dtype("int_asym_dq")
-def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, k_min=1.0, k_max=1.0, scale_dtype=torch.float16,
+def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, k_wm=1.0, k_scale=1.0, scale_dtype=torch.float16,
                          tensor_min=None, tensor_max=None, q_scale_thresh=1e-5, super_group_size=8, super_bits=6,
                          **kwargs):
     """Quantize and de-quantize tensor asymmetrically.
@@ -104,8 +104,8 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
     if isinstance(min_scale, torch.Tensor):
-        wmin = wmin_tmp * min_scale #* k_min
-        wmax = wmax_tmp * max_scale #* k_max
+        wmin = wmin_tmp * min_scale #* k_wm
+        wmax = wmax_tmp * max_scale #* k_scale
     else:
         wmin = wmin_tmp
         wmax = wmax_tmp
@@ -114,10 +114,9 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     scale = scale.view(-1, super_group_size)
     wmin_m = -wmin  # pylint: disable=E1130
     wmin_m = wmin_m.view(-1, super_group_size)
-
     ##conduct double quant
-    scale, d_scale = double_quant_tensor(scale, super_bits, q_scale_thresh, k_max)
-    wmin_m, d_wmin_m = double_quant_tensor(wmin_m, super_bits, q_scale_thresh, k_min)
+    scale, d_scale = double_quant_tensor(scale, super_bits, q_scale_thresh, k_scale)
+    wmin_m, d_wmin_m = double_quant_tensor(wmin_m, super_bits, q_scale_thresh, k_wm)
 
     scale = scale.view(-1, 1)
     scale = torch.clamp(scale, q_scale_thresh)
