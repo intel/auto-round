@@ -383,11 +383,12 @@ def _import_exllamav2_kernels():
     """Attempts to import ExLlamaV2 kernels for performance optimization."""
     try:
         from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
-    except ImportError:
-        raise ImportError(
+    except:
+        logger.warning_once(
             "AutoGPTQ ExLlamaV2 has not been installed, Please install it using the following command: "
             "`pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`"
         )
+        logger.warning_once("try to fallback to other autogptq backends for now")
 
 
 def _create_quant_layer(layer, layer_backend, config, in_features, out_features):
@@ -520,11 +521,11 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     else:
         backend = "auto"
 
-
     ##target_backend could be None
     _, backend = parse_target_device_and_backend(backend)
 
-    if hasattr(quantization_config, "packing_format"):  # pragma: no cover
+    if hasattr(quantization_config,
+               "packing_format") and "auto-round" in quantization_config.quant_method:  # pragma: no cover
         packing_format = quantization_config.packing_format
     elif 'gptq' in quantization_config.quant_method:  # pragma: no cover
         packing_format = "auto_gptq"
