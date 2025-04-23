@@ -3,7 +3,7 @@ device=1
 CUDA_VISIBLE_DEVICES=$device python -m auto_round \
         --format gguf:q4_k_s \
         --iters 200 \
-        --model ${model_name} \
+        --model /models/${model_name} \
         --output_dir /data5/shiqi/${model_name}_tune \
         --eval_bs 16 \
         --tasks arc_challenge,arc_easy,boolq,hellaswag,lambada_openai,mmlu,openbookqa,piqa,truthfulqa_mc1,winogrande \
