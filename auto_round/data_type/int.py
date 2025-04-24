@@ -17,69 +17,6 @@ from .utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by
 from auto_round.data_type.register import register_dtype
 
 
-
-
-def soft_round(x, alpha=10):
-    return torch.sigmoid(alpha * (x - torch.floor(x) - 0.5)) + torch.floor(x)
-
-
-class SigmoidRoundSTE(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x, beta=10):
-        ctx.save_for_backward(x)
-        ctx.beta = beta
-        return torch.round(x)  # 前向严格整数
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        x, = ctx.saved_tensors
-        beta = ctx.beta
-        fractional = (x - torch.floor(x)-0.5)*beta
-        sigmoid_x = torch.sigmoid(fractional)
-        # Sigmoid 的导数作为梯度近似
-        sigmoid_grad = sigmoid_x * (1.0-sigmoid_x)
-        return grad_output * (beta *sigmoid_grad), None
-
-# class NoisyRound(torch.autograd.Function):
-#     @staticmethod
-#     def forward(ctx, x):
-#         ctx.save_for_backward(x)
-#         return torch.round(x)
-#
-#     @staticmethod
-#     def backward(ctx, grad_output):
-#         x, = ctx.saved_tensors
-#         # 反向时添加与小数部分相关的噪声
-#         noise = (x - torch.round(x)).detach()  # 仅反向传播噪声
-#         return grad_output * (1.0+noise)
-
-class NoisyRound(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x):
-        ctx.save_for_backward(x)
-        return torch.round(x)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        x, = ctx.saved_tensors
-        # 反向时添加与小数部分相关的噪声
-        noise = ((x - torch.round(x)).detach()) # 仅反向传播噪声
-        return grad_output * (1.0+noise)
-
-
-# class RoundSTE(torch.autograd.Function):
-#     @staticmethod
-#     def forward(ctx, x):
-#         ctx.save_for_backward(x)
-#         return torch.round(x)  # 前向严格整数
-#
-#     @staticmethod
-#     def backward(ctx, grad_output):
-#         x, = ctx.saved_tensors
-#         # 梯度乘以输入与最近整数的距离（|x - round(x)|），避免平坦区梯度消失
-#         grad_input = grad_output.clone()
-#         return grad_input * (1.0 - 2.0 * torch.abs(x - torch.round(x)))
-
 @register_dtype("int_sym")
 def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
                      tensor_min=None,
@@ -101,7 +38,7 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
-    iters = kwargs.get("iters", -1)
+
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = 2 ** (bits - 1)
     if tensor_min is None or tensor_max is None:
@@ -119,12 +56,7 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
     scale = scale.unsqueeze(dim=-1)
     zp = zp.unsqueeze(dim=-1)
-    # if iters>=0 and iters<100:
-    #     k = iters/100 *(10-1) + 1
-    #     int_w = soft_round(tensor / scale + v, alpha=k)
-    # else:
-    #     int_w = round_ste(tensor / scale + v)
-    int_w = SigmoidRoundSTE.apply(tensor/scale+v)
+    int_w = round_ste(tensor / scale + v)
     q = torch.clamp(int_w + zp, 0, 2 ** bits - 1)
     qdq_result = (scale * (q - zp)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
@@ -191,13 +123,12 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     scale = torch.clamp(scale, q_scale_thresh)
     wmin_m = wmin_m.view(-1, 1)
 
-    int_w = round_ste((tensor+ wmin_m) / scale + v )
+    int_w = round_ste((tensor + wmin_m) / scale + v)
     q = torch.clamp(int_w, 0, maxq)
     qdq_result = (scale * q - wmin_m).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     # zp = round_ste(wmin_m / scale)  # remove this later
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
-
 
 
 @register_dtype("int_asym")
