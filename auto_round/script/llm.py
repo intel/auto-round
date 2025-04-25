@@ -526,6 +526,7 @@ def tune(args):
                 gguf_file = file
             user_model = AutoModelForCausalLM.from_pretrained(
                 eval_folder, gguf_file=gguf_file, device_map="auto")
+            user_model = user_model.to(torch.bfloat16)
             tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
         else:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -575,12 +576,32 @@ def eval(args):
     tasks, model_args, device_str = _eval_init(args.tasks, args.model, args.device, args.disable_trust_remote_code)
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
-    from auto_round.eval.evaluation import simple_evaluate
+    from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
 
-    res = simple_evaluate(model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+    is_gguf_file = False
+    if os.path.isfile(model) and model.endswith(".gguf"):
+        is_gguf_file = True
+        gguf_file = os.path.basename(model)
+        model = os.path.dirname(model)
+    else:
+        for file in os.listdir(model):
+            if file.endswith(".gguf"):
+                is_gguf_file = True
+                gguf_file = file
+    if is_gguf_file:
+        import torch
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+        tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
+        user_model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto")
+        user_model = user_model.to(torch.bfloat16)
+        res = simple_evaluate_user_model(
+                user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
+        print(make_table(res))
+    else:
+        res = simple_evaluate(model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
 
-    from lm_eval.utils import make_table  # pylint: disable=E0401
-    print(make_table(res))
+        from lm_eval.utils import make_table  # pylint: disable=E0401
+        print(make_table(res))
 
 
 def eval_task_by_task(
@@ -597,7 +618,7 @@ def eval_task_by_task(
 
     from auto_round import AutoRoundConfig  # pylint: disable=E0611
     if batch_size is None:
-        batch_size = "auto"
+        batch_size = "auto:8"
     is_gguf_file = False
     if not isinstance(model, str):
         parallelism = False
@@ -612,8 +633,11 @@ def eval_task_by_task(
                     is_gguf_file = True
                     gguf_file = file
     if is_gguf_file:
+        import torch
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
+        # float32
         model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto")
+        model = model.to(torch.bfloat16)
     hflm = HFLM(
         pretrained=model,
         tokenizer=tokenizer,
