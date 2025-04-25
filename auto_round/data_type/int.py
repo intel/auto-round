@@ -113,6 +113,7 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     scale = torch.from_numpy(scale).to(tensor.dtype).cuda()
     wmin_m = torch.from_numpy(wmin_m).to(tensor.dtype).cuda()
     scale = torch.clamp(scale, min=q_scale_thresh)
+    wmin_m = torch.clamp(wmin_m, min=q_scale_thresh)
     scale = scale.view(-1, super_group_size)
     wmin_m = wmin_m.view(-1, super_group_size)
 
@@ -196,7 +197,7 @@ def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
                 rmin[idx_to_replace] = this_min[idx_to_replace]
 
             scale = scale.astype(cp.float64)
-
+            rmin = rmin.astype(cp.float64)
             return scale.get(),-rmin.get()
         else:
             logger.warning(
@@ -310,7 +311,6 @@ def quant_tensor_sym_gptq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max
     qdq_result = (scale * (q - zp)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, zp
-
 
 def quant_tensor_asym_wo_round(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0,
                                scale_dtype=torch.float16,
