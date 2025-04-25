@@ -282,7 +282,7 @@ def setup_light_parser():
         "--lr", default=5e-3, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
-    
+
     return args
 
 
@@ -579,10 +579,10 @@ def eval(args):
     from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
 
     is_gguf_file = False
-    if os.path.isfile(model) and model.endswith(".gguf"):
+    if os.path.isfile(args.model) and args.model.endswith(".gguf"):
         is_gguf_file = True
-        gguf_file = os.path.basename(model)
-        model = os.path.dirname(model)
+        gguf_file = os.path.basename(args.model)
+        model = os.path.dirname(args.model)
     else:
         for file in os.listdir(model):
             if file.endswith(".gguf"):
@@ -591,14 +591,18 @@ def eval(args):
     if is_gguf_file:
         import torch
         from transformers import AutoTokenizer, AutoModelForCausalLM
+        from lm_eval.utils import make_table  # pylint: disable=E0401
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
         user_model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto")
         user_model = user_model.to(torch.bfloat16)
+        if (batch_size := args.eval_bs) is None:
+            batch_size = "auto:8"
         res = simple_evaluate_user_model(
-                user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
+                user_model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
         print(make_table(res))
     else:
-        res = simple_evaluate(model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+        res = simple_evaluate(
+            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
 
         from lm_eval.utils import make_table  # pylint: disable=E0401
         print(make_table(res))
