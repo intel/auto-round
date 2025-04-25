@@ -525,7 +525,7 @@ def tune(args):
             for file in os.listdir(eval_folder):
                 gguf_file = file
             user_model = AutoModelForCausalLM.from_pretrained(
-                eval_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
+                eval_folder, gguf_file=gguf_file, device_map="auto")
             tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
         else:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:

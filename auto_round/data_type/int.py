@@ -15,7 +15,7 @@
 import torch
 from .utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.data_type.register import register_dtype
-
+import numpy as np
 
 @register_dtype("int_sym")
 def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
@@ -72,6 +72,62 @@ def double_quant_tensor(tensor, bits, q_scale_thresh):
     qdq_tensor = torch.clamp(round_ste(tensor / scale), max=maxq) * scale
     return qdq_tensor, scale
 
+def make_qkx2_quants(data, weight, nmax, group_size, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
+    group_min = np.min(data)
+    group_max = np.max(data)
+ 
+    sum_w = np.sum(weight)
+    sum_x = np.sum(weight * data)
+ 
+    group_min = min(group_min, 0)
+    if group_min == group_max:
+        L = np.zeros(group_size, dtype=np.uint8)
+        the_min = -group_min
+        return 0.0, L, the_min
+ 
+    iscale = nmax / (group_max - group_min)
+    scale = 1 / iscale
+ 
+    l_values = np.round(iscale * (data-group_min))
+    L = np.clip(l_values, 0, nmax).astype(np.uint8)
+ 
+    diffs = scale * L + group_min - data
+    diffs = np.abs(diffs) if use_mad else diffs**2
+    best_mad = np.sum(weight * diffs)
+ 
+    if nstep < 1:
+        the_min = -group_min
+        return scale, L, the_min
+ 
+    for step in range(nstep):
+        iscale = (rmin + rdelta * step + nmax) / (group_max - group_min)
+        l_values = np.round(iscale * (data - group_min))
+        Laux = np.clip(l_values, 0, nmax).astype(np.uint8)
+ 
+        sum_l = np.sum(weight * Laux)
+        sum_l2 = np.sum(weight * Laux**2)
+        sum_xl = np.sum(weight * Laux * data)
+ 
+        D = sum_w * sum_l2 - sum_l * sum_l
+        if D > 0:
+            this_scale = (sum_w * sum_xl - sum_x * sum_l) / D
+            this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
+            if this_min > 0:
+                this_min = 0
+                this_scale = sum_xl / sum_l2
+ 
+            diffs = this_scale * Laux + this_min - data
+            diffs = np.abs(diffs) if use_mad else diffs**2
+            mad = np.sum(weight * diffs)
+ 
+            if mad < best_mad:
+                L = Laux.copy()
+                best_mad = mad
+                scale = this_scale
+                group_min = this_min
+ 
+    the_min = -group_min
+    return scale, L, the_min
 
 @register_dtype("int_asym_dq")
 def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
@@ -109,8 +165,74 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     else:
         wmin = wmin_tmp
         wmax = wmax_tmp
-    scale = ((wmax - wmin) / maxq).to(scale_dtype)
-    scale = torch.clamp(scale, min=q_scale_thresh)
+    #scale = ((wmax - wmin) / maxq).to(scale_dtype)
+    QK_K = 256
+    K_SCALE_SIZE = 12
+    print(tensor.shape)
+    blocks = tensor.numpy()
+    nb = tensor.shape[0]
+    output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
+    # output_d = np.empty(nb, dtype=np.float32)
+    # output_dmin = np.empty(nb, dtype=np.float32)
+    # output_qs = np.empty((nb, QK_K // 64, 32), dtype=np.uint8)
+ 
+    blocks = blocks.reshape((nb, QK_K // 32, 32))
+    sum_x2 = np.sum(np.power(blocks, 2), axis=-1)
+    av_x = np.sqrt(sum_x2 / 32)
+    weight = np.abs(blocks) + av_x.reshape((*av_x.shape, 1))
+    scales = np.empty(QK_K // 32, dtype=np.float32)
+    mins = np.empty(QK_K // 32, dtype=np.float32)
+    for i in range(nb):
+        all_L = np.empty(blocks[i].shape, dtype=np.uint8)
+        
+        for j in range(QK_K // 32):
+            tmp_scale, tmp_l, the_min = make_qkx2_quants(
+                blocks[i][j], weight[i][j], nmax=15, group_size=32, rmin=-1, rdelta=0.1, nstep=20, use_mad=False)
+            all_L[j] = tmp_l
+            scales[j] = tmp_scale
+            mins[j] = the_min
+
+        max_scale = max(scales)
+        max_min = max(mins)
+        inv_scale = 63. / max_scale if max_scale > 0 else 0.
+        inv_min = 63. / max_min if max_min > 0 else 0.
+ 
+        ls = np.round(inv_scale * scales).astype(np.uint8)
+        lm = np.round(inv_min * mins).astype(np.uint8)
+ 
+        output_scale[i][:4] = ls[:4]
+        output_scale[i][4:8] = lm[:4]
+ 
+        output_scale[i][8:] = (ls[4:] & 0xF) | ((lm[4:] & 0xF) << 4)
+        output_scale[i][:4] |= ((ls[4:] >> 4) << 6)
+        output_scale[i][4:8] |= ((lm[4:] >> 4) << 6)
+ 
+    #     if d_scale is None:
+    #         output_d[i] = max_scale / 63
+    #     if d_wmin_m is None:
+    #         output_dmin[i] = max_min / 63
+ 
+    #     d_tmp = output_d[i] * ls
+    #     dm_tmp = output_dmin[i] * lm
+ 
+    #     for j in range(d_tmp.size):
+    #         if d_tmp[j] == 0.:
+    #             continue
+    #         else:
+    #             all_L[j] = np.round((blocks[i][j] + dm_tmp[j]) / d_tmp[j]).astype(np.uint8)
+ 
+    #     all_L = np.clip(all_L, 0, 15)
+    #     output_qs[i] = all_L[::2] | (all_L[1::2] << 4)
+ 
+    # output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
+    # output_dmin = output_dmin.reshape(-1, 1).astype(np.float16).view(np.uint8)
+    # output_qs = output_qs.reshape(nb, QK_K // 2)
+ 
+    # [d, dmin, scale, qs]
+    # return np.concatenate([output_d, output_dmin, output_scale, output_qs], axis=-1)
+    output_scale = tensor.from_numpy(output_scale)
+    print(output_scale.shape)
+    scale = torch.clamp(output_scale, min=q_scale_thresh)
     scale = scale.view(-1, super_group_size)
     wmin_m = -wmin  # pylint: disable=E1130
     wmin_m = wmin_m.view(-1, super_group_size)
