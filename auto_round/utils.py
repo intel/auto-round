@@ -1221,7 +1221,7 @@ def _gguf_args_check(args):
                     setattr(args, k, v)
             if len(unsupport_list) > 0:
                 logger.error(
-                    f"format {format} not support for {', '.join(unsupport_list)},"
+                    f"format {format} does not support for {', '.join(unsupport_list)},"
                     f" reset to {', '.join(reset_list)}.")
             logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
 

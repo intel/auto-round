@@ -165,6 +165,67 @@ def q8_0_quant_block(blocks: np.array, scale=None, zp=None) -> np.ndarray:
 
     return np.concatenate([d, qs], axis=1)
 
+def make_qkx2_quants_multi(data, weight, nmax, group_size, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
+    # output_values
+    bs, group_size = data.shape
+
+    group_min = np.min(data, axis=-1)
+    group_max = np.max(data, axis=-1)
+
+    the_mins = -group_min
+
+    sum_w = np.sum(weight, axis=-1)
+    sum_x = np.sum(weight * data, axis=-1)
+
+    group_min[group_min > 0] = 0
+
+    scale = (group_max - group_min) / nmax
+    iscale = np.where(scale == 0, 0, 1 /scale)
+
+    scale = scale.reshape(-1, 1)
+    iscale = iscale.reshape(-1, 1)
+    group_min = group_min.reshape(-1, 1)
+    group_max = group_max.reshape(-1, 1)
+
+    l_values = np.round(iscale * (data - group_min))
+    L = np.clip(l_values, 0, nmax).astype(np.uint8)
+
+    diffs = scale * L + group_min - data
+    diffs = np.abs(diffs) if use_mad else diffs**2
+    best_mad = np.sum(weight * diffs)
+
+    if nstep < 1:
+        return scale, L, the_mins
+
+    for step in range(nstep):
+        iscale = (rmin + rdelta * step + nmax) / (group_max - group_min)
+        l_values = np.round(iscale * (data - group_min))
+        Laux = np.clip(l_values, 0, nmax).astype(np.uint8)
+
+        sum_l = np.sum(weight * Laux)
+        sum_l2 = np.sum(weight * Laux**2)
+        sum_xl = np.sum(weight * Laux * data)
+
+        D = sum_w * sum_l2 - sum_l * sum_l
+        if D > 0:
+            this_scale = (sum_w * sum_xl - sum_x * sum_l) / D
+            this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
+            if this_min > 0:
+                this_min = 0
+                this_scale = sum_xl / sum_l2
+
+            diffs = this_scale * Laux + this_min - data
+            diffs = np.abs(diffs) if use_mad else diffs**2
+            mad = np.sum(weight * diffs)
+
+            if mad < best_mad:
+                L = Laux.copy()
+                best_mad = mad
+                scale = this_scale
+                group_min = this_min
+
+    the_min = -group_min
+    return scale, L, the_min
 
 def make_qkx2_quants(data, weight, nmax, group_size, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
     group_min = np.min(data)
@@ -173,47 +234,46 @@ def make_qkx2_quants(data, weight, nmax, group_size, rmin=-1, rdelta=0.1, nstep=
     sum_w = np.sum(weight)
     sum_x = np.sum(weight * data)
 
-    if group_min > 0:
-        group_min = 0
+    group_min = min(group_min, 0)
     if group_min == group_max:
         L = np.zeros(group_size, dtype=np.uint8)
         the_min = -group_min
         return 0.0, L, the_min
 
-    iscale = nmax / (group_max-group_min)
+    iscale = nmax / (group_max - group_min)
     scale = 1 / iscale
-    L = np.zeros(group_size, dtype=np.uint8)
 
-    l_values = np.round(iscale * (data-group_max))
+    l_values = np.round(iscale * (data-group_min))
     L = np.clip(l_values, 0, nmax).astype(np.uint8)
-    diffs = scale*L + group_min - data
+
+    diffs = scale * L + group_min - data
     diffs = np.abs(diffs) if use_mad else diffs**2
-    best_mad = np.sum(weight * (diffs))
+    best_mad = np.sum(weight * diffs)
 
     if nstep < 1:
         the_min = -group_min
         return scale, L, the_min
 
-    Laux = []
     for step in range(nstep):
-        iscale = (rmin + rdelta*step + nmax) / (group_max-group_min)
-        l_values = np.round(iscale * (data-group_min))
+        iscale = (rmin + rdelta * step + nmax) / (group_max - group_min)
+        l_values = np.round(iscale * (data - group_min))
         Laux = np.clip(l_values, 0, nmax).astype(np.uint8)
 
         sum_l = np.sum(weight * Laux)
         sum_l2 = np.sum(weight * Laux**2)
         sum_xl = np.sum(weight * Laux * data)
 
-        D = sum_w*sum_l2 - sum_l*sum_l
+        D = sum_w * sum_l2 - sum_l * sum_l
         if D > 0:
-            this_scale = (sum_w*sum_xl - sum_x*sum_l) / D
-            this_min = (sum_l2*sum_x - sum_l*sum_xl) / D
+            this_scale = (sum_w * sum_xl - sum_x * sum_l) / D
+            this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
             if this_min > 0:
                 this_min = 0
                 this_scale = sum_xl / sum_l2
 
-            diffs = this_scale*Laux + this_min - data
-            mad = np.sum(weight * diffs**2)
+            diffs = this_scale * Laux + this_min - data
+            diffs = np.abs(diffs) if use_mad else diffs**2
+            mad = np.sum(weight * diffs)
 
             if mad < best_mad:
                 L = Laux.copy()
@@ -312,7 +372,7 @@ def q4_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
     blocks = blocks.reshape((nb, QK_K // 32, 32))
     sum_x2 = np.sum(np.power(blocks, 2), axis=-1)
     av_x = np.sqrt(sum_x2 / 32)
-    weight = blocks + av_x.reshape((*av_x.shape, 1))
+    weight = np.abs(blocks) + av_x.reshape((*av_x.shape, 1))
     scales = np.empty(QK_K // 32, dtype=np.float32)
     mins = np.empty(QK_K // 32, dtype=np.float32)
 
@@ -339,7 +399,7 @@ def q4_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         else:
             for j in range(QK_K // 32):
                 tmp_scale, tmp_l, the_min = make_qkx2_quants(
-                    blocks[i][j], weight[i][j], nmax=15, group_size=32, rmin=-1, rdelta=0.1, nstep=20)
+                    blocks[i][j], weight[i][j], nmax=15, group_size=32, rmin=-1, rdelta=0.1, nstep=20, use_mad=False)
                 all_L[j] = tmp_l
                 scales[j] = tmp_scale
                 mins[j] = the_min
@@ -382,3 +442,26 @@ def q4_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 
     # [d, dmin, scale, qs]
     return np.concatenate([output_d, output_dmin, output_scale, output_qs], axis=-1)
+
+
+if __name__  == "__main__":
+    from transformers import set_seed
+    set_seed(42)
+    data = np.random.randn(2, 32)
+    print(data)
+    scale, L, the_min = make_qkx2_quants(data[0], data[0], 15, 32, nstep=20)
+    print(scale)
+    print(L)
+    print(the_min)
+    print("--" * 20)
+
+    scale, L, the_min = make_qkx2_quants(data[1], data[1], 15, 32, nstep=20)
+    print(scale)
+    print(L)
+    print(the_min)
+    print("--" * 20)
+
+    scale, L, the_min = make_qkx2_quants_multi(data, data, 15, 32, nstep=20)
+    print(scale)
+    print(L)
+    print(the_min)

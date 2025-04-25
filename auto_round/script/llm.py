@@ -525,7 +525,7 @@ def tune(args):
             for file in os.listdir(eval_folder):
                 gguf_file = file
             user_model = AutoModelForCausalLM.from_pretrained(
-                eval_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
+                eval_folder, gguf_file=gguf_file, device_map="auto")
             tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
         else:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -629,6 +629,8 @@ def eval_task_by_task(
     from lm_eval.utils import make_table  # pylint: disable=E0401
     res_all = {}
     res_keys = ["results", "versions", "n-shot", "higher_is_better"]
+    import time
+    st = time.time()
     for task in tasks:
         try:
             res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size)
@@ -654,3 +656,4 @@ def eval_task_by_task(
                 res_all[key].update(res[key])
         print(make_table(res_all))
 
+    print("total eval time:", time.time() - st)
