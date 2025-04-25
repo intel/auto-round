@@ -227,7 +227,9 @@ def get_layer_config(model, quantization_config):
     # Determine the quantization block list
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is None:
-        to_quant_block_names = getattr(quantization_config, "to_quant_block_names", None)
+        to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None) # Prioritize this parameter
+        if to_quant_block_names is None:
+            to_quant_block_names = getattr(quantization_config, "to_quant_block_names", None)
         if isinstance(to_quant_block_names, (list, tuple)):
             quant_block_list = to_quant_block_names
         elif isinstance(to_quant_block_names, str):
@@ -564,3 +566,4 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
             logger.warning(extra_info)
 
     return model, used_backends
+
