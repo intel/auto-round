@@ -519,6 +519,7 @@ def tune(args):
             eval_gguf_model = True
             break
 
+    import time
     if args.act_bits <= 8 or eval_gguf_model:
         if eval_gguf_model:
             # gguf floder only contains one file
@@ -546,9 +547,11 @@ def tune(args):
                 logger.warning("This API does not support auto currently, reset eval_bs to 16")
                 args.eval_bs = 16
             from auto_round.eval.evaluation import simple_evaluate_user_model
+            st = time.time()
             res = simple_evaluate_user_model(
                 user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
             print(make_table(res))
+            print("evaluation running time=", time.time() - st)
     else:
         if args.eval_task_by_task:
             eval_task_by_task(eval_folder, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
@@ -556,9 +559,11 @@ def tune(args):
             from auto_round.eval.evaluation import simple_evaluate
             tasks, model_args, device_str = _eval_init(
                 args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
+            st = time.time()
             res = simple_evaluate(
                 model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
             print(make_table(res))
+            print("evaluation running time=", time.time() - st)
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
@@ -597,15 +602,20 @@ def eval(args):
         user_model = user_model.to(torch.bfloat16)
         if (batch_size := args.eval_bs) is None:
             batch_size = "auto:8"
+        import time
+        st = time.time()
         res = simple_evaluate_user_model(
                 user_model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
         print(make_table(res))
+        print("evaluation running time=", time.time() - st)
     else:
+        import time
+        st = time.time()
         res = simple_evaluate(
             model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
-
         from lm_eval.utils import make_table  # pylint: disable=E0401
         print(make_table(res))
+        print("evaluation running time=", time.time() - st)
 
 
 def eval_task_by_task(
