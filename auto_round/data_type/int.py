@@ -166,12 +166,12 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     else:
         wmin = wmin_tmp
         wmax = wmax_tmp
-    scale = quant_tensor_k_quant_cuda(tensor)
+    scale,wmin_m = quant_tensor_k_quant_cuda(tensor)
     scale = scale.squeeze(-1)
     scale = torch.from_numpy(scale).to(tensor.dtype).cuda()
+    wmin_m = torch.from_numpy(wmin_m).to(tensor.dtype).cuda()
     scale = torch.clamp(scale, min=q_scale_thresh)
     scale = scale.view(-1, super_group_size)
-    wmin_m = -wmin  # pylint: disable=E1130
     wmin_m = wmin_m.view(-1, super_group_size)
 
     ##conduct double quant
@@ -247,7 +247,7 @@ def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
 
                 mad_1 = cp.array(mad)
                 best_mad_1 = cp.array(best_mad)
-                idx_to_replace = cp.where(mad_1 < best_mad_1)[0]
+                idx_to_replace = cp.where((mad_1 < best_mad_1) & (D > 0))[0]
                 quant_data[idx_to_replace, :] = quant_data_new[idx_to_replace, :]
                 best_mad[idx_to_replace] = mad[idx_to_replace]
                 scale[idx_to_replace] = this_scale[idx_to_replace]
@@ -255,7 +255,7 @@ def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
 
             scale = scale.astype(cp.float64)
 
-            return scale.get()
+            return scale.get(),-rmin.get()
         else:
             logger.warning(
                 "Try to use k-quant quantization on CUDA. However, CUDA is not available."
