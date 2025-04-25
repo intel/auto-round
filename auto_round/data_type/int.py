@@ -17,16 +17,6 @@ from .utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by
 from auto_round.data_type.register import register_dtype
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor
-QK_K = 256
-K_SCALE_SIZE = 12
-GGML_QUANT_SIZES = {
-    "bf16": (1, 2),
-    "q4_0": (32, 2 + 16),
-    "q4_1": (32, 2 + 2 + 16),
-    "q4_k": (256, 2 + 2 + QK_K//2 + 12),
-    "q2_k": (256, 2 + 2 + QK_K//16 + QK_K//4),
-    "q8_0": (32, 2 + 32)
-}
 
 @register_dtype("int_sym")
 def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
@@ -201,7 +191,7 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
 
 def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
     """Quantize tensor per group based on k quant.
-    Ref: https://github.com/ggml-org/llama.cpp/blob/64eda5deb9859e87a020e56bab5d2f9ca956f1de/ggml/src/ggml-quants.c
+    Ref: https://github.com/intel/neural-compressor/pull/2169/files
     Args:
         data : input weight
         num_bits (int, optional): num_bits. Defaults to 4.
