@@ -578,6 +578,7 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
 
 
 def eval(args):
+    import time
     tasks, model_args, device_str = _eval_init(args.tasks, args.model, args.device, args.disable_trust_remote_code)
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
@@ -602,14 +603,12 @@ def eval(args):
         user_model = user_model.to(torch.bfloat16)
         if (batch_size := args.eval_bs) is None:
             batch_size = "auto:8"
-        import time
         st = time.time()
         res = simple_evaluate_user_model(
                 user_model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
         print(make_table(res))
         print("evaluation running time=", time.time() - st)
     else:
-        import time
         st = time.time()
         res = simple_evaluate(
             model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
