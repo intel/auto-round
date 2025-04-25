@@ -63,7 +63,6 @@ def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scal
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, zp
 
-
 ## the values should be positive
 def double_quant_tensor(tensor, bits, q_scale_thresh):
     maxq = 2 ** bits - 1
@@ -72,63 +71,6 @@ def double_quant_tensor(tensor, bits, q_scale_thresh):
     scale = scale.view(-1, 1)
     qdq_tensor = torch.clamp(round_ste(tensor / scale), max=maxq) * scale
     return qdq_tensor, scale
-
-def make_qkx2_quants(data, weight, nmax, group_size, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
-    group_min = np.min(data)
-    group_max = np.max(data)
- 
-    sum_w = np.sum(weight)
-    sum_x = np.sum(weight * data)
- 
-    group_min = min(group_min, 0)
-    if group_min == group_max:
-        L = np.zeros(group_size, dtype=np.uint8)
-        the_min = -group_min
-        return 0.0, L, the_min
- 
-    iscale = nmax / (group_max - group_min)
-    scale = 1 / iscale
- 
-    l_values = np.round(iscale * (data-group_min))
-    L = np.clip(l_values, 0, nmax).astype(np.uint8)
- 
-    diffs = scale * L + group_min - data
-    diffs = np.abs(diffs) if use_mad else diffs**2
-    best_mad = np.sum(weight * diffs)
- 
-    if nstep < 1:
-        the_min = -group_min
-        return scale, L, the_min
- 
-    for step in range(nstep):
-        iscale = (rmin + rdelta * step + nmax) / (group_max - group_min)
-        l_values = np.round(iscale * (data - group_min))
-        Laux = np.clip(l_values, 0, nmax).astype(np.uint8)
- 
-        sum_l = np.sum(weight * Laux)
-        sum_l2 = np.sum(weight * Laux**2)
-        sum_xl = np.sum(weight * Laux * data)
- 
-        D = sum_w * sum_l2 - sum_l * sum_l
-        if D > 0:
-            this_scale = (sum_w * sum_xl - sum_x * sum_l) / D
-            this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
-            if this_min > 0:
-                this_min = 0
-                this_scale = sum_xl / sum_l2
- 
-            diffs = this_scale * Laux + this_min - data
-            diffs = np.abs(diffs) if use_mad else diffs**2
-            mad = np.sum(weight * diffs)
- 
-            if mad < best_mad:
-                L = Laux.copy()
-                best_mad = mad
-                scale = this_scale
-                group_min = this_min
- 
-    the_min = -group_min
-    return scale, L, the_min
 
 @register_dtype("int_asym_dq")
 def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
