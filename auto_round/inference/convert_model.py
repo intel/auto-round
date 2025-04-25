@@ -227,7 +227,9 @@ def get_layer_config(model, quantization_config):
     # Determine the quantization block list
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is None:
-        to_quant_block_names = getattr(quantization_config, "to_quant_block_names", None)
+        to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None) # Prioritize this parameter
+        if to_quant_block_names is None:
+            to_quant_block_names = getattr(quantization_config, "to_quant_block_names", None)
         if isinstance(to_quant_block_names, (list, tuple)):
             quant_block_list = to_quant_block_names
         elif isinstance(to_quant_block_names, str):
@@ -383,11 +385,12 @@ def _import_exllamav2_kernels():
     """Attempts to import ExLlamaV2 kernels for performance optimization."""
     try:
         from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
-    except ImportError:
-        raise ImportError(
+    except:
+        logger.warning_once(
             "AutoGPTQ ExLlamaV2 has not been installed, Please install it using the following command: "
             "`pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`"
         )
+        logger.warning_once("try to fallback to other autogptq backends for now")
 
 
 def _create_quant_layer(layer, layer_backend, config, in_features, out_features):
@@ -520,11 +523,11 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     else:
         backend = "auto"
 
-
     ##target_backend could be None
     _, backend = parse_target_device_and_backend(backend)
 
-    if hasattr(quantization_config, "packing_format"):  # pragma: no cover
+    if hasattr(quantization_config,
+               "packing_format") and "auto-round" in quantization_config.quant_method:  # pragma: no cover
         packing_format = quantization_config.packing_format
     elif 'gptq' in quantization_config.quant_method:  # pragma: no cover
         packing_format = "auto_gptq"
@@ -532,7 +535,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         packing_format = "auto_awq"
     else:  # pragma: no cover
         packing_format = "auto_gptq"
-        logger.warning("Quantization backend must be specified. Set it to 'auto_gptq' by default.")
+        logger.warning("quantization backend must be specified. Set it to 'auto_gptq' by default.")
     if packing_format == "auto":
         packing_format = "auto_gptq"
 
@@ -563,3 +566,4 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
             logger.warning(extra_info)
 
     return model, used_backends
+

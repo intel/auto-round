@@ -6,7 +6,7 @@ AutoRound
 <h3> Advanced Quantization Algorithm for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.5.0-green)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.5.1-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/OPEA">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
@@ -467,7 +467,7 @@ model architecture or kernel limitations.
 |--------------------------------|---------------------|----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | allenai/Molmo                  | pile                | X                    | [Molmo-7B-D-0924-int4-sym](https://huggingface.co/OPEA/Molmo-7B-D-0924-int4-sym-inc), [Molmo-72B-0924-int4-sym-gptq](https://huggingface.co/OPEA/Molmo-72B-0924-int4-sym-gptq-inc), [Molmo-72B-0924-int4-sym](https://huggingface.co/OPEA/Molmo-72B-0924-int4-sym-inc)                                                                                                                                                                                           |
 | deepseek-ai/deepseek-vl2       | pile/llava          | √                    | [deepseek-vl2-int4-sym-gptq](https://huggingface.co/OPEA/deepseek-vl2-int4-sym-gptq-inc)                                                                                                                                                                                                                                                                                                                                                                         |
-| google/gemma-3                 | pile/llava          | √                    | [gemma-3-12b-it-AutoRound-gguf-q4-0](https://huggingface.co/OPEA/gemma-3-12b-it-AutoRound-gguf-q4-0), [gemma-3-27b-it-AutoRound-gguf-q4-0](https://huggingface.co/OPEA/gemma-3-27b-it-AutoRound-gguf-q4-0), [gemma-3-12b-it-int4-AutoRound-cpu](https://huggingface.co/OPEA/gemma-3-12b-it-int4-AutoRound-cpu), [gemma-3-27b-it-int4-AutoRound-cpu](https://huggingface.co/OPEA/gemma-3-27b-it-int4-AutoRound-cpu)                                               |
+| google/gemma-3                 | pile/llava          | √                    | [gemma-3-12b-it-AutoRound-gguf-q4-0](https://huggingface.co/OPEA/gemma-3-12b-it-AutoRound-gguf-q4-0), [gemma-3-27b-it-AutoRound-gguf-q4-0](https://huggingface.co/OPEA/gemma-3-27b-it-AutoRound-gguf-q4-0), [gemma-3-12b-it-int4-AutoRound](https://huggingface.co/OPEA/gemma-3-12b-it-int4-AutoRound), [gemma-3-27b-it-int4-AutoRound](https://huggingface.co/OPEA/gemma-3-27b-it-int4-AutoRound)                                               |
 | HuggingFaceTB/SmolVLM          | pile/llava          | √                    | [SmolVLM-Instruct-int4-sym](https://huggingface.co/OPEA/SmolVLM-Instruct-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                                           |
 | ibm-granite/granite-vision-3.2 | pile/llava          | -                    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | liuhaotian/Llava-v1.5          | pile/llava          | X                    | [llava-v1.5-7b-int4-sym](https://huggingface.co/OPEA/llava-v1.5-7b-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -504,6 +504,7 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
 

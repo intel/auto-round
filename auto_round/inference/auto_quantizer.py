@@ -281,6 +281,8 @@ class AutoRoundConfig(QuantizationConfigMixin):
 
         if "auto-round" not in quant_method:
             config_dict["packing_format"] = f"auto_round:{quant_method}"
+
+
         return super().from_dict(config_dict, return_unused_kwargs=return_unused_kwargs, **kwargs)
 
 
