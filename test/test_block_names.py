@@ -171,7 +171,7 @@ class TestQuantizationBlocks(unittest.TestCase):
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         quant_config = model.config.quantization_config
-        assert quant_config.to_quant_block_names is not None
+        assert quant_config.block_name_to_quantize is not None
         shutil.rmtree("./saved", ignore_errors=True)
         
 
@@ -224,6 +224,7 @@ class TestQuantizationBlocks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
