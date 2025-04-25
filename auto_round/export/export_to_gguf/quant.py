@@ -235,7 +235,6 @@ def make_qkx2_quants_multi(data, weight, nmax, group_size, rmin=-1, rdelta=0.1, 
 def make_qkx2_quants(data, weight, nmax, group_size, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
     group_min = np.min(data)
     group_max = np.max(data)
-    breakpoint()
     sum_w = np.sum(weight)
     sum_x = np.sum(weight * data)
  
