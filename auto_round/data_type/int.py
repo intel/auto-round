@@ -16,6 +16,17 @@ import torch
 from .utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.data_type.register import register_dtype
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor
+QK_K = 256
+K_SCALE_SIZE = 12
+GGML_QUANT_SIZES = {
+    "bf16": (1, 2),
+    "q4_0": (32, 2 + 16),
+    "q4_1": (32, 2 + 2 + 16),
+    "q4_k": (256, 2 + 2 + QK_K//2 + 12),
+    "q2_k": (256, 2 + 2 + QK_K//16 + QK_K//4),
+    "q8_0": (32, 2 + 32)
+}
 
 @register_dtype("int_sym")
 def quant_tensor_sym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
@@ -165,74 +176,10 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     else:
         wmin = wmin_tmp
         wmax = wmax_tmp
-    #scale = ((wmax - wmin) / maxq).to(scale_dtype)
-    QK_K = 256
-    K_SCALE_SIZE = 12
-    print(tensor.shape)
-    blocks = tensor.numpy()
-    nb = tensor.shape[0]
-    output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
-    # output_d = np.empty(nb, dtype=np.float32)
-    # output_dmin = np.empty(nb, dtype=np.float32)
-    # output_qs = np.empty((nb, QK_K // 64, 32), dtype=np.uint8)
- 
-    blocks = blocks.reshape((nb, QK_K // 32, 32))
-    sum_x2 = np.sum(np.power(blocks, 2), axis=-1)
-    av_x = np.sqrt(sum_x2 / 32)
-    weight = np.abs(blocks) + av_x.reshape((*av_x.shape, 1))
-    scales = np.empty(QK_K // 32, dtype=np.float32)
-    mins = np.empty(QK_K // 32, dtype=np.float32)
-    for i in range(nb):
-        all_L = np.empty(blocks[i].shape, dtype=np.uint8)
-        
-        for j in range(QK_K // 32):
-            tmp_scale, tmp_l, the_min = make_qkx2_quants(
-                blocks[i][j], weight[i][j], nmax=15, group_size=32, rmin=-1, rdelta=0.1, nstep=20, use_mad=False)
-            all_L[j] = tmp_l
-            scales[j] = tmp_scale
-            mins[j] = the_min
-
-        max_scale = max(scales)
-        max_min = max(mins)
-        inv_scale = 63. / max_scale if max_scale > 0 else 0.
-        inv_min = 63. / max_min if max_min > 0 else 0.
- 
-        ls = np.round(inv_scale * scales).astype(np.uint8)
-        lm = np.round(inv_min * mins).astype(np.uint8)
- 
-        output_scale[i][:4] = ls[:4]
-        output_scale[i][4:8] = lm[:4]
- 
-        output_scale[i][8:] = (ls[4:] & 0xF) | ((lm[4:] & 0xF) << 4)
-        output_scale[i][:4] |= ((ls[4:] >> 4) << 6)
-        output_scale[i][4:8] |= ((lm[4:] >> 4) << 6)
- 
-    #     if d_scale is None:
-    #         output_d[i] = max_scale / 63
-    #     if d_wmin_m is None:
-    #         output_dmin[i] = max_min / 63
- 
-    #     d_tmp = output_d[i] * ls
-    #     dm_tmp = output_dmin[i] * lm
- 
-    #     for j in range(d_tmp.size):
-    #         if d_tmp[j] == 0.:
-    #             continue
-    #         else:
-    #             all_L[j] = np.round((blocks[i][j] + dm_tmp[j]) / d_tmp[j]).astype(np.uint8)
- 
-    #     all_L = np.clip(all_L, 0, 15)
-    #     output_qs[i] = all_L[::2] | (all_L[1::2] << 4)
- 
-    # output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
-    # output_dmin = output_dmin.reshape(-1, 1).astype(np.float16).view(np.uint8)
-    # output_qs = output_qs.reshape(nb, QK_K // 2)
- 
-    # [d, dmin, scale, qs]
-    # return np.concatenate([output_d, output_dmin, output_scale, output_qs], axis=-1)
-    output_scale = tensor.from_numpy(output_scale)
-    print(output_scale.shape)
-    scale = torch.clamp(output_scale, min=q_scale_thresh)
+    scale = quant_tensor_k_quant_cuda(tensor)
+    scale = scale.squeeze(-1)
+    scale = torch.from_numpy(scale).to(tensor.dtype).cuda()
+    scale = torch.clamp(scale, min=q_scale_thresh)
     scale = scale.view(-1, super_group_size)
     wmin_m = -wmin  # pylint: disable=E1130
     wmin_m = wmin_m.view(-1, super_group_size)
@@ -252,6 +199,86 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     zp = round_ste(wmin_m / scale)  # remove this later
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
 
+def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
+    """Quantize tensor per group based on k quant.
+    Ref: https://github.com/ggml-org/llama.cpp/blob/64eda5deb9859e87a020e56bab5d2f9ca956f1de/ggml/src/ggml-quants.c
+    Args:
+        data : input weight
+        num_bits (int, optional): num_bits. Defaults to 4.
+        group_size (int, optional): how many elements share one scale/zp. Defaults to 4.
+    Returns:
+        output: quantized weight
+        scale: scale
+        zero_point: zero point
+    """
+    try:
+        import cupy as cp
+        import torch
+
+        if torch.cuda.is_available():
+            data = cp.asarray(data)
+            data = data.reshape((-1, group_size)).astype(cp.float32)  # nb = data.shape[0], (nb, group_size)
+            maxq = 2**num_bits - 1
+            minq = 0
+            sum_x2 = cp.sum(data**2, axis=1, keepdims=True)  # (nb, 1)
+            av_x = cp.sqrt(sum_x2 / group_size)  # (nb, 1)
+            weights = cp.add(av_x, cp.abs(data))  # (nb, group_size)
+            rmin = cp.min(data, axis=1, keepdims=True)  # (nb, 1)
+            rmax = cp.max(data, axis=1, keepdims=True)  # (nb, 1)
+            sum_w = cp.sum(weights, axis=1, keepdims=True)  # (nb, 1)
+            sum_x = cp.sum(weights * data, axis=1, keepdims=True)  # (nb, group_size)
+            iscale = cp.ones(rmax.shape, dtype=data.dtype)  # (nb, 1)
+            mask = rmin != rmax
+            iscale[mask] = (maxq - minq) / (rmax[mask] - rmin[mask])
+            scale = 1 / iscale
+            quant_data = cp.clip(cp.round(iscale * (data - rmin)), minq, maxq)  # (nb, group_size)
+            diff = scale * quant_data + rmin - data  # (nb, group_size)
+            best_mad = cp.sum(weights * diff**2, axis=1, keepdims=True)  # (nb, 1)
+            nstep = 20
+            rdelta = 0.1
+            rrmin = -1
+            for is_ in range(nstep):
+                iscale_new = cp.ones(rmax.shape, dtype=data.dtype)  # (nb, 1)
+                factor = cp.array([rrmin + rdelta * is_ + maxq - minq]).astype(data.dtype)[0]
+                mask = rmin != rmax
+                iscale_new[mask] = factor / (rmax[mask] - rmin[mask])
+                quant_data_new = cp.clip(cp.round(iscale_new * (data - rmin)), minq, maxq)  # (nb, group_size)
+                mul_weights_quant_data_new = weights * quant_data_new
+                sum_l = cp.sum(mul_weights_quant_data_new, axis=1, keepdims=True)  # (nb, 1)
+                sum_l2 = cp.sum(mul_weights_quant_data_new * quant_data_new, axis=1, keepdims=True)  # (nb, 1)
+                sum_xl = cp.sum(mul_weights_quant_data_new * data, axis=1, keepdims=True)  # (nb, 1)
+                D = cp.subtract(sum_w * sum_l2, sum_l**2)  # (nb, 1)
+
+                this_scale = (sum_w * sum_xl - sum_x * sum_l) / D  # (nb, 1)
+                this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D  # (nb, 1)
+
+                diff = this_scale * quant_data_new + this_min - data  # (nb, group_size)
+                mad = cp.sum(weights * diff**2, axis=1, keepdims=True)  # (nb, 1)
+
+                mad_1 = cp.array(mad)
+                best_mad_1 = cp.array(best_mad)
+                idx_to_replace = cp.where(mad_1 < best_mad_1)[0]
+                quant_data[idx_to_replace, :] = quant_data_new[idx_to_replace, :]
+                best_mad[idx_to_replace] = mad[idx_to_replace]
+                scale[idx_to_replace] = this_scale[idx_to_replace]
+                rmin[idx_to_replace] = this_min[idx_to_replace]
+
+            scale = scale.astype(cp.float64)
+
+            return scale.get()
+        else:
+            logger.warning(
+                "Try to use k-quant quantization on CUDA. However, CUDA is not available."
+                "Fall back to k-quant quantization on CPU."
+            )
+            return quant_tensor_k_quant_cpu(data, num_bits, group_size)
+    except ImportError:
+        logger.info(
+            "Now we are using k-quant quantization on cpu, which is time consuming."
+            "Please consider install cupy to speed up on CUDA. See https://cupy.dev/"
+            "Please also install torch to check CUDA availability."
+        )
+        return quant_tensor_k_quant_cpu(data, num_bits, group_size)
 
 @register_dtype("int_asym")
 def quant_tensor_asym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
