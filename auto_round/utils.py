@@ -1188,7 +1188,7 @@ def _gguf_args_check(args):
             try:
                 from auto_round.export.export_to_gguf.convert import Model
             except:
-                logger.error(
+                raise ImportError(
                     f"Please use the latest gguf-py for {format}, you can use the following command to insall it:\n"
                     "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .")
                 sys.exit(-1)
