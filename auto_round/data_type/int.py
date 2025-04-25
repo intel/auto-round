@@ -182,11 +182,11 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     scale = torch.clamp(scale, q_scale_thresh)
     wmin_m = wmin_m.view(-1, 1)
 
-    int_w = round_ste(tensor / scale + v)
-    q = torch.clamp(int_w + round_ste(wmin_m / scale), 0, maxq)
+    int_w = round_ste((tensor + wmin_m) / scale + v)
+    q = torch.clamp(int_w, 0, maxq)
     qdq_result = (scale * q - wmin_m).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
-    zp = round_ste(wmin_m / scale)  # remove this later
+    # zp = round_ste(wmin_m / scale)  # remove this later
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
 
 def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):

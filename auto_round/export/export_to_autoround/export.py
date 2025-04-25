@@ -260,6 +260,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
+    quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
     quantization_config["quant_method"] = "auto-round"
     if quantization_config["bits"] == 3:
         backend = "auto_round:auto_gptq"
@@ -363,3 +364,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
