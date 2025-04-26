@@ -1,5 +1,5 @@
 for model_name in "Qwen2.5-1.5B-Instruct"; do
-device=3
+device=0
 format=fake
 CUDA_VISIBLE_DEVICES=$device python -m auto_round \
         --format fake \

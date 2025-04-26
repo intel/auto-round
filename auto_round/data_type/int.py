@@ -108,6 +108,11 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     else:
         wmin = wmin_tmp
         wmax = wmax_tmp
+    
+    scale_old = ((wmax - wmin) / maxq).to(scale_dtype)
+    print(scale_old)
+    print(f"wmax:{wmax}")
+    print(f"wmin:{wmin}")
     scale,wmin_m = quant_tensor_k_quant_cuda(tensor)
     scale = scale.squeeze(-1)
     scale = torch.from_numpy(scale).to(tensor.dtype).cuda()
@@ -149,6 +154,7 @@ def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
         import torch
 
         if torch.cuda.is_available():
+            breakpoint()
             data = cp.asarray(data)
             data = data.reshape((-1, group_size)).astype(cp.float32)  # nb = data.shape[0], (nb, group_size)
             maxq = 2**num_bits - 1
@@ -164,6 +170,7 @@ def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
             mask = rmin != rmax
             iscale[mask] = (maxq - minq) / (rmax[mask] - rmin[mask])
             scale = 1 / iscale
+            breakpoint()
             quant_data = cp.clip(cp.round(iscale * (data - rmin)), minq, maxq)  # (nb, group_size)
             diff = scale * quant_data + rmin - data  # (nb, group_size)
             best_mad = cp.sum(weights * diff**2, axis=1, keepdims=True)  # (nb, 1)
@@ -190,7 +197,8 @@ def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
 
                 mad_1 = cp.array(mad)
                 best_mad_1 = cp.array(best_mad)
-                idx_to_replace = cp.where((mad_1 < best_mad_1) & (D > 0))[0]
+                # idx_to_replace = cp.where((mad_1 < best_mad_1) & (D > 0))[0]
+                idx_to_replace = cp.where(mad_1 < best_mad_1)[0]
                 quant_data[idx_to_replace, :] = quant_data_new[idx_to_replace, :]
                 best_mad[idx_to_replace] = mad[idx_to_replace]
                 scale[idx_to_replace] = this_scale[idx_to_replace]
