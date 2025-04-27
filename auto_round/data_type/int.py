@@ -110,9 +110,10 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
         wmax = wmax_tmp
     
     scale_old = ((wmax - wmin) / maxq).to(scale_dtype)
-    print(scale_old)
-    print(f"wmax:{wmax}")
-    print(f"wmin:{wmin}")
+    # print(scale_old)
+    # print(f"wmax:{wmax}")
+    # print(f"wmin:{wmin}")
+    #breakpoint()
     scale,wmin_m = quant_tensor_k_quant_cuda(tensor)
     scale = scale.squeeze(-1)
     scale = torch.from_numpy(scale).to(tensor.dtype).cuda()
@@ -121,7 +122,7 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     wmin_m = torch.clamp(wmin_m, min=q_scale_thresh)
     scale = scale.view(-1, super_group_size)
     wmin_m = wmin_m.view(-1, super_group_size)
-
+    # print(f"scale_new:{scale}")
     ##conduct double quant
     scale, d_scale = double_quant_tensor(scale, super_bits, q_scale_thresh)
     wmin_m, d_wmin_m = double_quant_tensor(wmin_m, super_bits, q_scale_thresh)
@@ -154,8 +155,12 @@ def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
         import torch
 
         if torch.cuda.is_available():
-            breakpoint()
+            # print(f"之前;{data}")
+            data = data.to(torch.float64)
+            #breakpoint()
+            #print(f"中间:{data}")
             data = cp.asarray(data)
+            #print(f"之后：{data}")
             data = data.reshape((-1, group_size)).astype(cp.float32)  # nb = data.shape[0], (nb, group_size)
             maxq = 2**num_bits - 1
             minq = 0
@@ -170,7 +175,7 @@ def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
             mask = rmin != rmax
             iscale[mask] = (maxq - minq) / (rmax[mask] - rmin[mask])
             scale = 1 / iscale
-            breakpoint()
+            # breakpoint()
             quant_data = cp.clip(cp.round(iscale * (data - rmin)), minq, maxq)  # (nb, group_size)
             diff = scale * quant_data + rmin - data  # (nb, group_size)
             best_mad = cp.sum(weights * diff**2, axis=1, keepdims=True)  # (nb, 1)
