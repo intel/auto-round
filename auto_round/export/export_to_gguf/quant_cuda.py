@@ -237,7 +237,7 @@ def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
     
     replace_ids = (max_scales > 0).squeeze()
     output_scale = torch.zeros_like(scales).to(torch.uint8)
-    output_scale[replace_ids] = torch.round(inv_scales * scales).to(np.uint8)
+    output_scale[replace_ids] = torch.round(inv_scales * scales).to(torch.uint8)
 
     replace_ids = (max_mins > 0).squeeze()
     output_scale[replace_ids] |= torch.round(inv_mins * mins).to(torch.uint8) << 4
@@ -256,6 +256,7 @@ def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
             torch.uint8)
     all_L = np.clip(all_L.cpu().numpy().astype(np.uint8), 0, 3)
 
+    output_scale = output_scale.cpu().numpy()
     output_qs = all_L[:,::4] | (all_L[:,1::4] << 2) | (all_L[:,2::4] << 4) | (all_L[:,3::4] << 6)
     output_d = output_d.cpu().numpy()
     output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
