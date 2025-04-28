@@ -39,7 +39,15 @@ def register_block(name):
     return register
 
 
-def ggml_quant(data: np.array, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
+def ggml_quant_cpu(data, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
+    import torch
+    data = data.squeeze().cpu().numpy() if isinstance(data, torch.Tensor) else data
+    scale = scale.numpy() if isinstance(scale, torch.Tensor) else scale
+    zp = zp.numpy() if isinstance(zp, torch.Tensor) else zp
+    wmin_m = wmin_m.numpy() if isinstance(wmin_m, torch.Tensor) else wmin_m
+    d_scale = d_scale.numpy() if isinstance(d_scale, torch.Tensor) else d_scale
+    d_wmin_m = d_wmin_m.numpy() if isinstance(d_wmin_m, torch.Tensor) else d_wmin_m
+
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
 
     data = data.astype(np.float32, copy=False)
@@ -294,10 +302,10 @@ def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 @register_block("q4_k")
 def q4_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
     nb = blocks.shape[0]
+    blocks = blocks.reshape((nb, QK_K // 32, 32))  # (nb, 8, 32)
+
     output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
     output_qs = np.empty((nb, QK_K // 64, 32), dtype=np.uint8)
-
-    blocks = blocks.reshape((nb, QK_K // 32, 32))  # (nb, 8, 32)
 
     if scale is not None:
         scales = scale.reshape(-1, QK_K // 32)
