@@ -1252,9 +1252,9 @@ class Model(OriModel):
                             if isinstance(zp, torch.Tensor):
                                 zp = zp.numpy()
                             if data_qtype.name.lower().endswith("_k"):
-                                d_scale = module.w_d_scale.numpy()
-                                d_wmin_m = module.w_d_wmin_m.numpy()
-                                wmin_m = module.w_wmin_m.numpy()
+                                d_scale = module.w_d_scale.to(torch.float32).numpy()
+                                d_wmin_m = module.w_d_wmin_m.to(torch.float32).numpy()
+                                wmin_m = module.w_wmin_m.to(torch.float32).numpy()
                                 data = ggml_quant(
                                     data,
                                     data_qtype.name.lower(),
