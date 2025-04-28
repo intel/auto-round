@@ -3,6 +3,8 @@ set -xe
 
 # install requirements
 echo "set up UT env..."
+export TQDM_MININTERVAL=60
+export TQDM_POSITION=-1
 pip install pytest-cov pytest-html
 pip install -r /auto-round/test/requirements.txt
 pip list
