@@ -133,6 +133,123 @@ def pack_qact_layer(name, model):
     qlayer.to(device)
 
 
+# def pack_layer(layer_name, model, backend):
+#     """
+#      Packs a model layer for quantization based on its type and configuration.
+#
+#     This function retrieves the specified layer from the model, checks its
+#     compatibility for quantization, and replaces it with a quantized version
+#     if applicable. The quantization process depends on the layer's bit-width,
+#     group size, symmetry, and activation bits.
+#
+#     Args:
+#         layer_name (str): The name of the layer to be packed.
+#         model (torch.nn.Module): The model containing the layer.
+#         backend (str): The backend framework to be used for quantization.
+#
+#     Returns:
+#         None: The function modifies the model in place.
+#     """
+#     layer = get_module(model, layer_name)
+#     if hasattr(layer, "orig_layer"):
+#         layer = layer.orig_layer
+#
+#     if not isinstance(layer, supported_layer_types):  ##already packed
+#         return
+#
+#     if int(layer.act_bits) <= 8:
+#         return pack_qact_layer(layer_name, model)
+#
+#     if not check_to_quantized(layer):
+#         return
+#
+#     device = layer.weight.device
+#     bits = layer.bits
+#     group_size = layer.group_size
+#     sym = layer.sym
+#     act_bits = layer.act_bits
+#
+#     scale = layer.scale
+#     zp = layer.zp
+#     QuantLinear = dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits)
+#
+#     if isinstance(layer, nn.Linear):
+#         in_features = layer.in_features
+#         out_features = layer.out_features
+#     elif isinstance(layer, nn.Conv2d):
+#         in_features = layer.in_channels
+#         out_features = layer.out_channels
+#     elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+#         in_features = layer.weight.shape[0]
+#         out_features = layer.weight.shape[1]
+#     bias = layer.bias is not None
+#
+#     if "awq" not in backend:
+#         new_layer = QuantLinear(  ##pylint: disable=E1123
+#             bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
+#         )
+#         new_layer.device = device
+#         set_module(model, layer_name, new_layer)
+#         qlayer = new_layer
+#         import auto_round.export.export_to_autoround.qlinear_triton
+#         if sym and isinstance(QuantLinear, (auto_round.export.export_to_autoround.qlinear_triton.QuantLinear,
+#                                             auto_round_extension.cuda.qlinear_tritonv2.QuantLinear)):
+#             zp = int(zp.flatten()[0])
+#
+#         qlayer.to("cpu")
+#         ##force to float32 to be compatible with torch 2.0
+#         sig = inspect.signature(qlayer.pack)
+#         param_count = len(sig.parameters)
+#         if param_count == 2:
+#             qlayer.pack(layer, scale)
+#         else:
+#             qlayer.pack(layer, scale, zp, None)
+#         qlayer.to(device)
+#     else:
+#         scale, zp = scale.to(torch.float32), zp.to(torch.float32)
+#         scale = scale.t().contiguous()
+#         zp = zp.t().contiguous()
+#         if sym:
+#             zp = int(zp.flatten()[0])
+#
+#         if bits != 4:
+#             logger.error("AutoAWQ format only supports 4-bits quantization.")
+#         qlayer = QuantLinear.from_linear(
+#             linear=layer,
+#             w_bit=bits,
+#             group_size=group_size,
+#             init_only=False,
+#             scales=scale,
+#             zeros=zp,
+#         )
+#         qlayer.to(device)
+#         set_module(model, layer_name, qlayer)
+
+torch.nn.Linear
+class MyLinear(torch.nn.Module):
+    def __init__(self, in_features, out_features, bias=True, device=None,
+                 dtype=None):
+        factory_kwargs = {"device": device}
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = torch.nn.Parameter(
+            torch.empty((out_features, in_features), dtype=torch.float8_e5m2, **factory_kwargs)
+        )
+        if bias:
+            self.bias = torch.nn.Parameter(torch.empty(out_features, **factory_kwargs))
+        else:
+            self.register_parameter("bias", None)
+        self.register_buffer('scale', torch.ones((1),dtype=torch.bfloat16))
+
+    # # 如果你需要forward里用scale的话，可以加在forward里
+    # def forward(self, input):
+    #     out = super().forward(input)
+    #     # 例如，简单用scale做点什么（可选）
+    #     # out = out * self.scale.sum()
+    #     return out
+
+
 def pack_layer(layer_name, model, backend):
     """
      Packs a model layer for quantization based on its type and configuration.
@@ -171,7 +288,10 @@ def pack_layer(layer_name, model, backend):
 
     scale = layer.scale
     zp = layer.zp
-    QuantLinear = dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits)
+    weight = layer.weight
+    q_weight = weight / scale
+
+    # QuantLinear = dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits)
 
     if isinstance(layer, nn.Linear):
         in_features = layer.in_features
@@ -183,47 +303,53 @@ def pack_layer(layer_name, model, backend):
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
     bias = layer.bias is not None
+    my_linear = MyLinear(in_features, out_features, bias)
+    my_linear.scale.data.copy_(scale)
+    my_linear.weight.data.copy_(q_weight.to(torch.float8_e5m2))
+    if bias:
+        my_linear.bias.data.copy_(layer.bias)
 
-    if "awq" not in backend:
-        new_layer = QuantLinear(  ##pylint: disable=E1123
-            bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
-        )
-        new_layer.device = device
-        set_module(model, layer_name, new_layer)
-        qlayer = new_layer
-        import auto_round.export.export_to_autoround.qlinear_triton
-        if sym and isinstance(QuantLinear, (auto_round.export.export_to_autoround.qlinear_triton.QuantLinear,
-                                            auto_round_extension.cuda.qlinear_tritonv2.QuantLinear)):
-            zp = int(zp.flatten()[0])
-
-        qlayer.to("cpu")
-        ##force to float32 to be compatible with torch 2.0
-        sig = inspect.signature(qlayer.pack)
-        param_count = len(sig.parameters)
-        if param_count == 2:
-            qlayer.pack(layer, scale)
-        else:
-            qlayer.pack(layer, scale, zp, None)
-        qlayer.to(device)
-    else:
-        scale, zp = scale.to(torch.float32), zp.to(torch.float32)
-        scale = scale.t().contiguous()
-        zp = zp.t().contiguous()
-        if sym:
-            zp = int(zp.flatten()[0])
-
-        if bits != 4:
-            logger.error("AutoAWQ format only supports 4-bits quantization.")
-        qlayer = QuantLinear.from_linear(
-            linear=layer,
-            w_bit=bits,
-            group_size=group_size,
-            init_only=False,
-            scales=scale,
-            zeros=zp,
-        )
-        qlayer.to(device)
-        set_module(model, layer_name, qlayer)
+    #
+    # if "awq" not in backend:
+    #     new_layer = QuantLinear(  ##pylint: disable=E1123
+    #         bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
+    #     )
+    #     new_layer.device = device
+    #     set_module(model, layer_name, new_layer)
+    #     qlayer = new_layer
+    #     import auto_round.export.export_to_autoround.qlinear_triton
+    #     if sym and isinstance(QuantLinear, (auto_round.export.export_to_autoround.qlinear_triton.QuantLinear,
+    #                                         auto_round_extension.cuda.qlinear_tritonv2.QuantLinear)):
+    #         zp = int(zp.flatten()[0])
+    #
+    #     qlayer.to("cpu")
+    #     ##force to float32 to be compatible with torch 2.0
+    #     sig = inspect.signature(qlayer.pack)
+    #     param_count = len(sig.parameters)
+    #     if param_count == 2:
+    #         qlayer.pack(layer, scale)
+    #     else:
+    #         qlayer.pack(layer, scale, zp, None)
+    #     qlayer.to(device)
+    # else:
+    #     scale, zp = scale.to(torch.float32), zp.to(torch.float32)
+    #     scale = scale.t().contiguous()
+    #     zp = zp.t().contiguous()
+    #     if sym:
+    #         zp = int(zp.flatten()[0])
+    #
+    #     if bits != 4:
+    #         logger.error("AutoAWQ format only supports 4-bits quantization.")
+    #     qlayer = QuantLinear.from_linear(
+    #         linear=layer,
+    #         w_bit=bits,
+    #         group_size=group_size,
+    #         init_only=False,
+    #         scales=scale,
+    #         zeros=zp,
+    #     )
+    my_linear.to(device)
+    set_module(model, layer_name, my_linear)
 
 
 def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):
