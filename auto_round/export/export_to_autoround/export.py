@@ -225,7 +225,7 @@ def pack_qact_layer(name, model):
 #         qlayer.to(device)
 #         set_module(model, layer_name, qlayer)
 
-torch.nn.Linear
+
 class MyLinear(torch.nn.Module):
     def __init__(self, in_features, out_features, bias=True, device=None,
                  dtype=None):
@@ -242,12 +242,6 @@ class MyLinear(torch.nn.Module):
             self.register_parameter("bias", None)
         self.register_buffer('scale', torch.ones((1),dtype=torch.bfloat16))
 
-    # # 如果你需要forward里用scale的话，可以加在forward里
-    # def forward(self, input):
-    #     out = super().forward(input)
-    #     # 例如，简单用scale做点什么（可选）
-    #     # out = out * self.scale.sum()
-    #     return out
 
 
 def pack_layer(layer_name, model, backend):
