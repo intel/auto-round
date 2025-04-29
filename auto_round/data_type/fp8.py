@@ -76,26 +76,27 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
             - Placeholder for zp (None).
     """
     orig_shape = tensor.shape
-    info = torch.finfo(torch.float8_e4m3fn)
+    info = torch.finfo(torch.float8_e5m2)
     orig_dtype = tensor.dtype
 
-    if tensor_max is None:  ##dynamic per-token
-        tensor = tensor.reshape(-1, orig_shape[-1])
-        max_tensor = torch.max(torch.abs(tensor), dim=-1)[
-                         0] * max_scale
-    elif isinstance(tensor_max,torch.Tensor):
-        max_tensor = tensor_max.clone().detach().to(tensor.device) * max_scale
-    else:
-        max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+    # if tensor_max is None:  ##dynamic per-token
+    #     tensor = tensor.reshape(-1, orig_shape[-1])
+    #     max_tensor = torch.max(torch.abs(tensor), dim=-1)[
+    #                      0] * max_scale
+    # elif isinstance(tensor_max,torch.Tensor):
+    #     max_tensor = tensor_max.clone().detach().to(tensor.device) * max_scale
+    # else:
+    # max_tensor = torch.tensor(tensor_max).to(tensor.device) * max_scale
+    max_tensor =torch.max(torch.abs(tensor))
     scale = max_tensor.to(torch.float32) / info.max
     min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
     scale = torch.clip(scale, min=min_scaling_factor)
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
-    scale = scale.unsqueeze(dim=-1)
+    # scale = scale.unsqueeze(dim=-1)
     fp8_res = (tensor / scale)
     fp8_res = torch.clip(fp8_res, info.min, info.max)
-    fp8_res = float8_e4m3fn_ste(fp8_res)
+    fp8_res = fp8_res.to(torch.float8_e5m2).to(torch.bfloat16)
     qdq_res = fp8_res * scale
     qdq_res = qdq_res.to(orig_dtype).reshape(orig_shape)
     return qdq_res, scale, None
