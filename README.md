@@ -32,10 +32,11 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 <div align="left">
 
 ## What's New
-* [2024/04] AutoRound has been integrated into Transformers. You can run models in the AutoRound format directly with Transformers versions later than 4.51.3.
-* [2024/03] The INT2-mixed R1 model (~200GB) retains 97.9% accuracy. Check
+* [2025/04] AutoRound supports some recipes for Qwen3 series, please refer to [Qwen3-8B-sym-recipe](./docs/Qwen3-8B-sym-recipe.md) and [Qwen3-14B-sym-recipe](./docs/Qwen3-14B-sym-recipe.md) for more details.
+* [2025/04] AutoRound has been integrated into Transformers. You can run models in the AutoRound format directly with Transformers versions later than 4.51.3.
+* [2025/03] The INT2-mixed R1 model (~200GB) retains 97.9% accuracy. Check
   out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
-* [2024/01] We provide experimental support for GGUF q4_0 and q4_1 formats.
+* [2025/01] We provide experimental support for GGUF q4_0 and q4_1 formats.
 * [2024/11] We provide experimental support for VLM quantization, please check out
   the [README](./auto_round/mllm/README.md)
 
