@@ -73,7 +73,7 @@ def double_quant_tensor(tensor, bits, q_scale_thresh):
     return qdq_tensor, scale
 
 @register_dtype("int_asym_dq")
-def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
+def quant_tensor_asym_dq(tensor, cur_iter, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
                          tensor_min=None, tensor_max=None, q_scale_thresh=1e-5, super_group_size=8, super_bits=6,
                          **kwargs):
     """Quantize and de-quantize tensor asymmetrically.
@@ -110,10 +110,10 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
         wmax = wmax_tmp
     
     # scale_old = ((wmax - wmin) / maxq).to(scale_dtype)
-    scale,wmin_m = quant_tensor_k_quant_cuda(tensor,num_bits=bits, group_size=group_size)
+    scale,wmin_m = quant_tensor_k_quant_torch(tensor, cur_iter=cur_iter, num_bits=bits, group_size=group_size)
     scale = scale.squeeze(-1)
-    scale = torch.from_numpy(scale).to(tensor.dtype).cuda()
-    wmin_m = torch.from_numpy(wmin_m).to(tensor.dtype).cuda()
+    # scale = torch.from_numpy(scale).to(tensor.dtype).cuda()
+    # wmin_m = torch.from_numpy(wmin_m).to(tensor.dtype).cuda()
     scale = torch.clamp(scale, min=q_scale_thresh)
     wmin_m = torch.clamp(wmin_m, min=q_scale_thresh)
     scale = scale.view(-1, super_group_size)
@@ -125,11 +125,76 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     scale = torch.clamp(scale, q_scale_thresh)
     wmin_m = wmin_m.view(-1, 1)
     int_w = round_ste((tensor + wmin_m) / scale + v)
+    # if v.sum() == 0:
+    #     print(f"是不是零：{v}")
     q = torch.clamp(int_w, 0, maxq)
     qdq_result = (scale * q - wmin_m).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     # zp = round_ste(wmin_m / scale)  # remove this later
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
+
+def quant_tensor_k_quant_torch(data, cur_iter, num_bits=4, group_size=32):
+    data = data.to(torch.float32)
+    data = data.reshape((-1, group_size))  # nb = data.shape[0], (nb, group_size)
+ 
+    maxq = 2 ** num_bits - 1
+    minq = 0
+    sum_x2 = torch.sum(data ** 2, dim=1, keepdim=True)  # (nb, 1)
+    av_x = torch.sqrt(sum_x2 / group_size)  # (nb, 1)
+    weights = av_x + torch.abs(data)  # (nb, group_size)
+ 
+    rmin = torch.min(data, dim=1, keepdim=True)[0]  # (nb, 1)
+    rmax = torch.max(data, dim=1, keepdim=True)[0]  # (nb, 1)
+ 
+    sum_w = torch.sum(weights, dim=1, keepdim=True)  # (nb, 1)
+    sum_x = torch.sum(weights * data, dim=1, keepdim=True)  # (nb, group_size)
+ 
+    iscale = torch.ones_like(rmax, dtype=data.dtype)  # (nb, 1)
+    mask = rmin != rmax
+    iscale[mask] = (maxq - minq) / (rmax[mask] - rmin[mask])
+    scale = 1 / iscale
+    if cur_iter % 20 != 0:
+        return scale,-rmin
+
+    quant_data = torch.clamp(torch.round(iscale * (data - rmin)), minq, maxq)  # (nb, group_size)
+    diff = scale * quant_data + rmin - data  # (nb, group_size)
+ 
+    best_mad = torch.sum(weights * diff ** 2, dim=1, keepdim=True)  # (nb, 1)
+ 
+    nstep = 40
+    rdelta = 0.1
+    rrmin = -2
+ 
+    for is_ in range(nstep):
+        iscale_new = torch.ones_like(rmax, dtype=data.dtype)  # (nb, 1)
+        factor = rrmin + rdelta * is_ + maxq - minq
+        iscale_new[mask] = factor / (rmax[mask] - rmin[mask])
+ 
+        quant_data_new = torch.clamp(torch.round(iscale_new * (data - rmin)), minq, maxq)  # (nb, group_size)
+        mul_weights_quant_data_new = weights * quant_data_new
+ 
+        sum_l = torch.sum(mul_weights_quant_data_new, dim=1, keepdim=True)  # (nb, 1)
+        sum_l2 = torch.sum(mul_weights_quant_data_new * quant_data_new, dim=1, keepdim=True)  # (nb, 1)
+        sum_xl = torch.sum(mul_weights_quant_data_new * data, dim=1, keepdim=True)  # (nb, 1)
+ 
+        D = sum_w * sum_l2 - sum_l ** 2  # (nb, 1)
+ 
+        this_scale = (sum_w * sum_xl - sum_x * sum_l) / D  # (nb, 1)
+        this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D  # (nb, 1)
+ 
+        diff = this_scale * quant_data_new + this_min - data  # (nb, group_size)
+        mad = torch.sum(weights * diff ** 2, dim=1, keepdim=True)  # (nb, 1)
+ 
+        idx_to_replace = torch.where((mad < best_mad) & (D > 0))[0]
+ 
+        quant_data[idx_to_replace] = quant_data_new[idx_to_replace]
+        best_mad[idx_to_replace] = mad[idx_to_replace]
+        scale[idx_to_replace] = this_scale[idx_to_replace]
+        rmin[idx_to_replace] = this_min[idx_to_replace]
+ 
+    scale = scale.to(torch.float32)
+    rmin = rmin.to(torch.float32)
+    return scale, -rmin
 
 def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
     """Quantize tensor per group based on k quant.
@@ -169,7 +234,7 @@ def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
             best_mad = cp.sum(weights * diff**2, axis=1, keepdims=True)  # (nb, 1)
             nstep = 20
             rdelta = 0.1
-            rrmin = -1
+            rrmin = 0 #origin:-1 
             for is_ in range(nstep):
                 iscale_new = cp.ones(rmax.shape, dtype=data.dtype)  # (nb, 1)
                 factor = cp.array([rrmin + rdelta * is_ + maxq - minq]).astype(data.dtype)[0]
@@ -190,8 +255,8 @@ def quant_tensor_k_quant_cuda(data, num_bits=4, group_size=32):
 
                 mad_1 = cp.array(mad)
                 best_mad_1 = cp.array(best_mad)
-                # idx_to_replace = cp.where((mad_1 < best_mad_1) & (D > 0))[0]
-                idx_to_replace = cp.where(mad_1 < best_mad_1)[0]
+                idx_to_replace = cp.where((mad_1 < best_mad_1) & (D > 0))[0]
+                # idx_to_replace = cp.where(mad_1 < best_mad_1)[0]
                 quant_data[idx_to_replace, :] = quant_data_new[idx_to_replace, :]
                 best_mad[idx_to_replace] = mad[idx_to_replace]
                 scale[idx_to_replace] = this_scale[idx_to_replace]

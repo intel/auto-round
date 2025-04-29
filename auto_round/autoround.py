@@ -1240,10 +1240,10 @@ class AutoRound(object):
 
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
+                        output_q = wrapper_linear(current_input, cur_iter=i)  # pylint: disable=not-callable
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
-                    output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
+                    output_q = wrapper_linear(current_input, cur_iter=i)  # pylint: disable=not-callable
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
@@ -1465,6 +1465,7 @@ class AutoRound(object):
             logger.info(f"{unquantized_layer_names} have not been quantized")
         with torch.no_grad():
             unwrapper_block(block, best_params)
+            # assert torch.sum(torch.sum(best_params))>0
         if self.enable_quanted_input:
             if self.low_cpu_mem_usage:
                 block = block.to(device)

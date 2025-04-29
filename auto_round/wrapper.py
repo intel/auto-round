@@ -340,7 +340,7 @@ class WrapperLinear(torch.nn.Module):
         x = x.view(*size_out)
         return x
 
-    def forward(self, x):
+    def forward(self, x, cur_iter):
         """Executes the forward pass with quantized weights and optional bias/activation quantization.
 
         Args:
@@ -350,11 +350,11 @@ class WrapperLinear(torch.nn.Module):
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
         x = x.to(self.device)
-        weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
+        weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale, cur_iter=cur_iter)
 
         if self.enable_act_quant:
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-            x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_max=act_max)
+            x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_max=act_max, cur_iter=cur_iter)
 
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
