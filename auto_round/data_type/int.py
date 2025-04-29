@@ -109,8 +109,13 @@ def quant_tensor_asym_dq(tensor, cur_iter, bits=4, group_size=-1, v=0, min_scale
         wmin = wmin_tmp
         wmax = wmax_tmp
     
-    # scale_old = ((wmax - wmin) / maxq).to(scale_dtype)
-    scale,wmin_m = quant_tensor_k_quant_torch(tensor, cur_iter=cur_iter, num_bits=bits, group_size=group_size)
+    
+    
+    if iter%20==0:
+        scale,wmin_m = quant_tensor_k_quant_torch(tensor, cur_iter=cur_iter, num_bits=bits, group_size=group_size)
+    else:
+        scale = ((wmax - wmin) / maxq).to(scale_dtype)
+        wmin_m = 
     scale = scale.squeeze(-1)
     # scale = torch.from_numpy(scale).to(tensor.dtype).cuda()
     # wmin_m = torch.from_numpy(wmin_m).to(tensor.dtype).cuda()
@@ -153,9 +158,6 @@ def quant_tensor_k_quant_torch(data, cur_iter, num_bits=4, group_size=32):
     mask = rmin != rmax
     iscale[mask] = (maxq - minq) / (rmax[mask] - rmin[mask])
     scale = 1 / iscale
-    if cur_iter % 20 != 0:
-        return scale,-rmin
-
     quant_data = torch.clamp(torch.round(iscale * (data - rmin)), minq, maxq)  # (nb, group_size)
     diff = scale * quant_data + rmin - data  # (nb, group_size)
  

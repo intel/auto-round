@@ -150,7 +150,7 @@ class WrapperLinear(torch.nn.Module):
 
         setattr(self, name, p)
 
-    def _qdq_weight(self, value, min_scale, max_scale):
+    def _qdq_weight(self, value, min_scale, max_scale, iter):
         """Quantizes and dequantizes weights with tuning parameters.
 
         Args:
@@ -181,6 +181,7 @@ class WrapperLinear(torch.nn.Module):
             v=value,
             min_scale=min_scale,
             max_scale=max_scale,
+            iter=iter,
             scale_dtype=self.orig_layer.scale_dtype,
             tensor_min=self.weight_min,
             tensor_max=self.weight_max,
@@ -506,7 +507,7 @@ class WrapperMultiblock(torch.nn.Module):
         return hidden_states
 
 
-def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='cpu', **kwargs):
+def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, iter, device='cpu', **kwargs):
     """Wraps the layers in the given block with a custom Wrapper module.
 
     Args:
@@ -523,7 +524,7 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning,
+            new_m = WrapperLinear(m, iter=iter, enable_minmax_tuning=enable_minmax_tuning,
                                   enable_norm_bias_tuning=enable_norm_bias_tuning, device=device,
                                   **kwargs,
                                   )
