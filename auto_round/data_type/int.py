@@ -115,7 +115,7 @@ def quant_tensor_asym_dq(tensor, cur_iter, bits=4, group_size=-1, v=0, min_scale
         scale,wmin_m = quant_tensor_k_quant_torch(tensor, cur_iter=cur_iter, num_bits=bits, group_size=group_size)
     else:
         scale = ((wmax - wmin) / maxq).to(scale_dtype)
-        wmin_m = 
+        wmin_m = -wmin
     scale = scale.squeeze(-1)
     # scale = torch.from_numpy(scale).to(tensor.dtype).cuda()
     # wmin_m = torch.from_numpy(wmin_m).to(tensor.dtype).cuda()
