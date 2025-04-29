@@ -40,15 +40,15 @@ def register_block(name):
     return register
 
 
-def ggml_quant_cuda(data, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
+def ggml_quant_cuda(data, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, device="cuda"):
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
 
-    data = data.to(torch.float32).to("cuda")
-    scale = scale.to("cuda") if scale is not None else scale
-    zp = zp.to("cuda") if zp is not None else zp
-    wmin_m = wmin_m.to("cuda") if wmin_m is not None else wmin_m
-    d_scale = d_scale.to("cuda") if d_scale is not None else d_scale
-    d_wmin_m = d_wmin_m.to("cuda") if d_wmin_m is not None else d_wmin_m
+    data = data.to(torch.float32).to(device)
+    scale = scale.to(device) if scale is not None else scale
+    zp = zp.to(device) if zp is not None else zp
+    wmin_m = wmin_m.to(device) if wmin_m is not None else wmin_m
+    d_scale = d_scale.to(device) if d_scale is not None else d_scale
+    d_wmin_m = d_wmin_m.to(device) if d_wmin_m is not None else d_wmin_m
 
     shape = data.shape
     n_blocks = data.nelement() // block_size
@@ -71,12 +71,12 @@ def torch_roundf(n):
 
 @register_block("bf16")
 def bf16_quant_block(blocks, scale=None, zp=None, **kwargs):
-    n = blocks.cpu().numpy().view(np.uint32)
+    n = blocks.view(torch.uint32)
     # force nan to quiet
-    n = np.where((n & 0x7fffffff) > 0x7f800000, (n & np.uint32(0xffff0000)) | np.uint32(64 << 16), n)
+    n = torch.where((n & 0x7fffffff) > 0x7f800000, (n & 0xffff0000) | (64 << 16), n)
     # round to nearest even
-    n = (np.uint64(n) + (0x7fff + ((n >> 16) & 1))) >> 16
-    return n.astype(np.uint16).view(np.uint8)
+    n = n.to(torch.uint64) + (0x7fff + ((n >> 16) & 1)) >> 16
+    return n.cpu().numpy().astype(np.uint16).view(np.uint8)
 
 
 @register_block("q4_0")
@@ -234,7 +234,7 @@ def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         max_mins = torch.max(mins, axis=-1, keepdims=True)[0]
         inv_scales = torch.where(max_scales > 0, 15. / max_scales, 0)
         inv_mins = torch.where(max_mins > 0, 15. / max_mins, 0)
-    
+
     replace_ids = (max_scales > 0).squeeze()
     output_scale = torch.zeros_like(scales).to(torch.uint8)
     output_scale[replace_ids] = torch.round(inv_scales * scales).to(torch.uint8)
@@ -246,7 +246,7 @@ def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         output_d = torch.where(max_scales > 0, max_scales / 15, 0)
     if d_wmin_m is None:
         output_dmin = torch.where(max_mins > 0 ,max_mins / 15., 0)
-    
+
     d_tmp = output_d * (output_scale & 0xF)
     dm_tmp = output_dmin * (output_scale >> 4)
 
@@ -302,7 +302,7 @@ def q4_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
         output_d = max_scales / 63
     if d_wmin_m is None:
         output_dmin = max_mins / 63
-    
+
     d_tmp = output_d * q_scales
     dm_tmp = output_dmin * q_mins
 
