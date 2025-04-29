@@ -486,7 +486,7 @@ model architecture or kernel limitations.
 
 AutoRound has been integrated into multiple repositories.
 
-[huggingface/transfomers](https://github.com/huggingface/transformers)
+[huggingface/transformers](https://github.com/huggingface/transformers)
 
 [Intel Neural Compressor](https://github.com/intel/neural-compressor)
 
