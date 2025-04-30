@@ -227,7 +227,7 @@ class WrapperLinear(torch.nn.Module):
                                                q_scale_thresh=self.q_scale_thresh)
         return bias, scale, zp
 
-    def unwrapper(self, best_params):
+    def unwrapper(self, best_params, iter):
         """Restores the original layer by applying the best tuning parameters.
 
         Args:
@@ -244,7 +244,7 @@ class WrapperLinear(torch.nn.Module):
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
         ##unwrapper weight
-        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
+        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale, iter)
 
         self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
@@ -341,7 +341,7 @@ class WrapperLinear(torch.nn.Module):
         x = x.view(*size_out)
         return x
 
-    def forward(self, x, cur_iter):
+    def forward(self, x, iter):
         """Executes the forward pass with quantized weights and optional bias/activation quantization.
 
         Args:
@@ -351,11 +351,11 @@ class WrapperLinear(torch.nn.Module):
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
         x = x.to(self.device)
-        weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale, cur_iter=cur_iter)
+        weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale, iter=iter)
 
         if self.enable_act_quant:
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-            x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_max=act_max, cur_iter=cur_iter)
+            x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_max=act_max, iter=iter)
 
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
@@ -507,7 +507,7 @@ class WrapperMultiblock(torch.nn.Module):
         return hidden_states
 
 
-def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, iter, device='cpu', **kwargs):
+def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='cpu', **kwargs):
     """Wraps the layers in the given block with a custom Wrapper module.
 
     Args:
@@ -524,7 +524,7 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, iter, de
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
-            new_m = WrapperLinear(m, iter=iter, enable_minmax_tuning=enable_minmax_tuning,
+            new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning,
                                   enable_norm_bias_tuning=enable_norm_bias_tuning, device=device,
                                   **kwargs,
                                   )

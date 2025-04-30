@@ -1,6 +1,6 @@
 for model_name in "Qwen2.5-7B-Instruct" "falcon-three-7b" "Meta-Llama-3.1-8B-Instruct" "phi-4"; do
-device=4
-format=q4_k_s
+device=3
+format=fake
 CUDA_VISIBLE_DEVICES=$device python -m auto_round \
         --format ${format} \
         --data_type int_asym_dq \

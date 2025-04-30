@@ -1240,10 +1240,10 @@ class AutoRound(object):
 
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        output_q = wrapper_linear(current_input, cur_iter=i)  # pylint: disable=not-callable
+                        output_q = wrapper_linear(current_input, iter=i)  # pylint: disable=not-callable
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
-                    output_q = wrapper_linear(current_input, cur_iter=i)  # pylint: disable=not-callable
+                    output_q = wrapper_linear(current_input, iter=i)  # pylint: disable=not-callable
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
@@ -1418,9 +1418,9 @@ class AutoRound(object):
                 current_output = torch.cat(current_output, dim=self.batch_dim)
 
                 current_output = to_device(current_output, device)
-
+                breakpoint()
                 output_q = block_forward(
-                    block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
+                    block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device, iter=i
                 )
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
@@ -1441,7 +1441,6 @@ class AutoRound(object):
                 if not self.not_use_best_mse:
                     best_params = collect_best_params(block)
                     # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
-
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
                 best_params = collect_best_params(block)

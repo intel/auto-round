@@ -441,7 +441,7 @@ def collect_best_params(block):
     return params
 
 
-def block_forward(block, input_ids, iter, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu")):
+def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu"), iter=-1):
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -464,9 +464,16 @@ def block_forward(block, input_ids, iter, input_others, amp=False, amp_dtype=tor
         input_others["alibi"] = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
     if amp:
         with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
-            output = block(input_ids, *input_tuple, **input_others, iter=iter)
+            if iter==-1:
+                output = block(input_ids, *input_tuple, **input_others)
+            else:
+                breakpoint()
+                output = block(input_ids, iter, *input_tuple, **input_others)
     else:
-        output = block(input_ids, *input_tuple, **input_others, iter=iter)
+        if iter==-1:
+            output = block(input_ids, *input_tuple, **input_others)
+        else:
+            output = block(input_ids, iter, *input_tuple, **input_others)
     if isinstance(output, list) or isinstance(output, tuple):
         output = output[0]
     return output
