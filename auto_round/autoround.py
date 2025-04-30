@@ -1240,10 +1240,10 @@ class AutoRound(object):
 
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):
-                        output_q = wrapper_linear(current_input, iter=i)  # pylint: disable=not-callable
+                        output_q = wrapper_linear(current_input, cur_iter=i)  # pylint: disable=not-callable
                         loss = mse_loss(output_q, current_output)  # pylint: disable=not-callable
                 else:
-                    output_q = wrapper_linear(current_input, iter=i)  # pylint: disable=not-callable
+                    output_q = wrapper_linear(current_input, cur_iter=i)  # pylint: disable=not-callable
                     loss = mse_loss(  # pylint: disable=not-callable
                         output_q.to(torch.float32), current_output.to(torch.float32)
                     )
@@ -1396,6 +1396,9 @@ class AutoRound(object):
         total_loss = 0
 
         for i in range(self.iters):
+            for n, m in block.named_modules():
+                if isinstance(m, WrapperLinear):
+                    setattr(m, "cur_iter", i)
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]
@@ -1418,9 +1421,8 @@ class AutoRound(object):
                 current_output = torch.cat(current_output, dim=self.batch_dim)
 
                 current_output = to_device(current_output, device)
-                breakpoint()
                 output_q = block_forward(
-                    block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device, iter=i
+                    block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device
                 )
                 if self.amp:
                     with autocast(device_type=device.split(":")[0], dtype=self.amp_dtype):

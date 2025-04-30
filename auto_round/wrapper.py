@@ -80,6 +80,8 @@ class WrapperLinear(torch.nn.Module):
         self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
         self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
+        self.pre_scale = None
+        self.pre_wmin_m = None
 
     @staticmethod
     def _check_act_quantization(data_type: str):
@@ -150,7 +152,7 @@ class WrapperLinear(torch.nn.Module):
 
         setattr(self, name, p)
 
-    def _qdq_weight(self, value, min_scale, max_scale, iter):
+    def _qdq_weight(self, value, min_scale, max_scale, cur_iter):
         """Quantizes and dequantizes weights with tuning parameters.
 
         Args:
@@ -161,6 +163,8 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             tuple: Quantized weight, scale, and zero point.
         """
+        pre_scale = self.pre_scale
+        pre_wmin_m = self.pre_wmin_m
         min_scale.data.clamp_(0, 1.0)
         max_scale.data.clamp_(0, 1.0)
         weight = self.orig_layer.weight
@@ -181,12 +185,14 @@ class WrapperLinear(torch.nn.Module):
             v=value,
             min_scale=min_scale,
             max_scale=max_scale,
-            iter=iter,
+            cur_iter=cur_iter,
             scale_dtype=self.orig_layer.scale_dtype,
             tensor_min=self.weight_min,
             tensor_max=self.weight_max,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
+            pre_scale=pre_scale,
+            pre_wmin_m=pre_wmin_m,
             **quant_kwargs
         )
         weight_q = weight_q.to(weight.dtype)
@@ -194,7 +200,7 @@ class WrapperLinear(torch.nn.Module):
             weight_q = weight_q.t()
         return weight_q, scale, zp
 
-    def _qdq_act(self, x, act_max_scale, act_max=None):
+    def _qdq_act(self, x, act_max_scale, act_max=None, cur_iter=-1):
         """Quantizes and dequantizes activations.
 
         Args:
@@ -208,7 +214,7 @@ class WrapperLinear(torch.nn.Module):
         act_max_scale.data.clamp_(0, 1.0)
         x, scale, zp = self.act_quant_func(x, bits=self.orig_layer.act_bits, group_size=self.orig_layer.act_group_size,
                                            scale_dtype=self.orig_layer.scale_dtype, q_scale_thresh=self.q_scale_thresh,
-                                           data_type=self.act_data_type, max_scale=act_max_scale, tensor_max=act_max)
+                                           data_type=self.act_data_type, max_scale=act_max_scale, tensor_max=act_max, cur_iter=cur_iter)
         return x, scale, zp
 
     def _qdq_bias(self, bias, bias_v):
@@ -227,7 +233,7 @@ class WrapperLinear(torch.nn.Module):
                                                q_scale_thresh=self.q_scale_thresh)
         return bias, scale, zp
 
-    def unwrapper(self, best_params, iter):
+    def unwrapper(self, best_params):
         """Restores the original layer by applying the best tuning parameters.
 
         Args:
@@ -236,6 +242,7 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.nn.Module: The unwrapped and restored original layer.
         """
+        cur_iter = self.cur_iter
         best_params = best_params or {}
         v = best_params.get('value', torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get('min_scale', torch.tensor(1.0)).to(self.device)
@@ -244,7 +251,7 @@ class WrapperLinear(torch.nn.Module):
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
         ##unwrapper weight
-        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale, iter)
+        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale, cur_iter)
 
         self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
@@ -298,7 +305,7 @@ class WrapperLinear(torch.nn.Module):
                 if self.orig_layer.act_group_size > 1:
                     tmp_shape = (1, self.orig_layer.act_group_size)
                 _, act_scale, _ = self._qdq_act(torch.zeros(tmp_shape).to(self.device),
-                                                act_max_scale=self.act_max_scale, act_max=act_max)
+                                                act_max_scale=self.act_max_scale, act_max=act_max, cur_iter=cur_iter)
                 self.orig_layer.act_max = torch.tensor(self.orig_layer.act_max * act_max_scale.item()).to("cpu")
                 self.orig_layer.act_scale = act_scale.to("cpu")
 
@@ -341,7 +348,7 @@ class WrapperLinear(torch.nn.Module):
         x = x.view(*size_out)
         return x
 
-    def forward(self, x, iter):
+    def forward(self, x):
         """Executes the forward pass with quantized weights and optional bias/activation quantization.
 
         Args:
@@ -350,12 +357,14 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
+        cur_iter = self.cur_iter
         x = x.to(self.device)
-        weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale, iter=iter)
-
+        weight_q, pre_scale, pre_wmin_m = self._qdq_weight(self.value, self.min_scale, self.max_scale, cur_iter)
+        self.pre_scale = pre_scale["scale"]
+        self.pre_wmin_m = pre_wmin_m["wmin_m"]
         if self.enable_act_quant:
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-            x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_max=act_max, iter=iter)
+            x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_max=act_max, cur_iter=cur_iter)
 
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
@@ -374,15 +383,15 @@ class WrapperWALayer(torch.nn.Module):
         self.orig_layer = orig_layer
         self.act_quant_func = self.orig_layer.act_quant_func
 
-    def forward(self, x):
+    def forward(self, x, cur_iter):
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-        x, _, _ = self.orig_layer.act_quant_func(x, bits=self.orig_layer.act_bits,
+        x, _, _ = self.orig_layer.act_quant_func(x, cur_iter=cur_iter, bits=self.orig_layer.act_bits,
                                                  group_size=self.orig_layer.group_size,
                                                  scale_dtype=self.orig_layer.scale_dtype,
                                                  q_scale_thresh=self.orig_layer.q_scale_thresh,
                                                  data_type=self.orig_layer.act_data_type,
                                                  tensor_max=act_max)
-        return self.orig_layer.forward(x)
+        return self.orig_layer.forward(x, cur_iter)
 
 
 class WrapperLayerNorm(torch.nn.Module):

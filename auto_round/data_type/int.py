@@ -74,7 +74,7 @@ def double_quant_tensor(tensor, bits, q_scale_thresh):
 
 @register_dtype("int_asym_dq")
 def quant_tensor_asym_dq(tensor, cur_iter, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-                         tensor_min=None, tensor_max=None, q_scale_thresh=1e-5, super_group_size=8, super_bits=6,
+                         tensor_min=None, tensor_max=None, q_scale_thresh=1e-5, super_group_size=8, super_bits=6, pre_scale=None, pre_wmin_m=None,
                          **kwargs):
     """Quantize and de-quantize tensor asymmetrically.
 
@@ -109,15 +109,13 @@ def quant_tensor_asym_dq(tensor, cur_iter, bits=4, group_size=-1, v=0, min_scale
         wmin = wmin_tmp
         wmax = wmax_tmp
     
-    if iter%20==0:
-        scale,wmin_m = quant_tensor_k_quant_torch(tensor, cur_iter=cur_iter, num_bits=bits, group_size=group_size)
+    if cur_iter%20==0 or pre_scale==None:
+        scale,wmin_m = quant_tensor_k_quant_torch(tensor, num_bits=bits, group_size=group_size)
         scale = scale.squeeze(-1)
     else:
-        scale = ((wmax - wmin) / maxq).to(scale_dtype)
-        wmin_m = -wmin
+        scale = pre_scale
+        wmin_m = pre_wmin_m
     
-    # scale = torch.from_numpy(scale).to(tensor.dtype).cuda()
-    # wmin_m = torch.from_numpy(wmin_m).to(tensor.dtype).cuda()
     scale = torch.clamp(scale, min=q_scale_thresh)
     wmin_m = torch.clamp(wmin_m, min=q_scale_thresh)
     scale = scale.view(-1, super_group_size)
@@ -129,15 +127,13 @@ def quant_tensor_asym_dq(tensor, cur_iter, bits=4, group_size=-1, v=0, min_scale
     scale = torch.clamp(scale, q_scale_thresh)
     wmin_m = wmin_m.view(-1, 1)
     int_w = round_ste((tensor + wmin_m) / scale + v)
-    # if v.sum() == 0:
-    #     print(f"是不是零：{v}")
     q = torch.clamp(int_w, 0, maxq)
     qdq_result = (scale * q - wmin_m).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     # zp = round_ste(wmin_m / scale)  # remove this later
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
 
-def quant_tensor_k_quant_torch(data, cur_iter, num_bits=4, group_size=32):
+def quant_tensor_k_quant_torch(data, num_bits=4, group_size=32):
     data = data.to(torch.float32)
     data = data.reshape((-1, group_size))  # nb = data.shape[0], (nb, group_size)
  
