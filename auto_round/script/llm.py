@@ -192,7 +192,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant.")
 
-        self.add_argument("--torch_dtype", default=None, type=str, help="torch_dytpe to load the model.")
+        self.add_argument(
+            "--eval_model_dtype",
+            default=None,
+            type=str,
+            help="the torch_dytpe to load gguf model for evaluation. work for gguf format only.")
 
 
 class EvalArgumentParser(argparse.ArgumentParser):
@@ -220,7 +224,11 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--disable_trust_remote_code", action='store_true', help="whether to disable trust_remote_code")
         self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int, help="batch size in evaluation")
         self.add_argument("--eval_task_by_task", action='store_true', help="whether to eval task by task.")
-        self.add_argument("--torch_dtype", default=None, type=str, help="torch_dytpe to load the model.")
+        self.add_argument(
+            "--eval_model_dtype",
+            default=None,
+            type=str,
+            help="the torch_dytpe to load gguf model for evaluation. work for gguf format only.")
 
 
 def setup_parser():
@@ -528,25 +536,25 @@ def tune(args):
             # gguf floder only contains one file
             for file in os.listdir(eval_folder):
                 gguf_file = file
-            torch_dtype = args.torch_dtype
-            if torch_dtype is None:
-                torch_dtype = torch.float32
-            elif torch_dtype in ["bf16", "bfloat16"]:
-                torch_dtype = torch.bfloat16
-            elif torch_dtype in ["f16", "float16"]:
-                torch_dtype = torch.float16
-            elif torch_dtype in ["f32", "float32"]:
-                torch_dtype = torch.float32
+            eval_model_dtype = args.eval_model_dtype
+            if eval_model_dtype is None:
+                eval_model_dtype = "float32"
+            elif eval_model_dtype in ["bf16", "bfloat16"]:
+                eval_model_dtype = "bfloat16"
+            elif eval_model_dtype in ["f16", "float16"]:
+                eval_model_dtype = "float16"
+            elif eval_model_dtype in ["f32", "float32"]:
+                eval_model_dtype = "float32"
             else:
-                logger.warning(f"Unable to identify torch_dtype {torch_dtype}, reset to float32")
+                logger.warning(f"Unable to identify eval_model_dtype {eval_model_dtype}, reset to float32")
 
-            if torch_dtype == torch.float32:
+            if eval_model_dtype == "float32":
                 logger.warning(
-                    "set '--torch_dtype bf16' can significantly speed up evaluation for gguf model,"
+                    "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
                     " but may affect accuracy."
                 )
             model = AutoModelForCausalLM.from_pretrained(
-                eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=torch_dtype)
+                eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
             model.eval()
             tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
         else:
@@ -619,24 +627,24 @@ def eval(args):
         from transformers import AutoTokenizer, AutoModelForCausalLM
         from lm_eval.utils import make_table  # pylint: disable=E0401
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        torch_dtype = args.torch_dtype
-        if torch_dtype is None:
-            torch_dtype = torch.float32
-        elif torch_dtype in ["bf16", "bfloat16"]:
-            torch_dtype = torch.bfloat16
-        elif torch_dtype in ["f16", "float16"]:
-            torch_dtype = torch.float16
-        elif torch_dtype in ["f32", "float32"]:
-            torch_dtype = torch.float32
+        eval_model_dtype = args.eval_model_dtype
+        if eval_model_dtype is None:
+            eval_model_dtype = "float32"
+        elif eval_model_dtype in ["bf16", "bfloat16"]:
+            eval_model_dtype = "bfloat16"
+        elif eval_model_dtype in ["f16", "float16"]:
+            eval_model_dtype = "float16"
+        elif eval_model_dtype in ["f32", "float32"]:
+            eval_model_dtype = "float32"
         else:
-            logger.warning(f"Unable to identify torch_dtype {torch_dtype}, reset to float32")
+            logger.warning(f"Unable to identify eval_model_dtype {eval_model_dtype}, reset to float32")
 
-        if torch_dtype == torch.float32:
+        if eval_model_dtype == "float32":
             logger.warning(
-                "set '--torch_dtype bf16' can significantly speed up evaluation for gguf model,"
+                "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
                 " but may affect accuracy."
             )
-        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto", torch_dtype=torch_dtype)
+        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
         model.eval()
         if (batch_size := args.eval_bs) is None:
             batch_size = "auto:8"
@@ -662,7 +670,7 @@ def eval_task_by_task(
         batch_size=None,
         max_batch_size=64,
         trust_remote_code=True,
-        torch_dtype=None,
+        eval_model_dtype=None,
         retry_times=3):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
@@ -693,25 +701,25 @@ def eval_task_by_task(
     if is_gguf_file:
         import torch
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        if torch_dtype is None:
-            torch_dtype = torch.float32
-        elif torch_dtype in ["bf16", "bfloat16"]:
-            torch_dtype = torch.bfloat16
-        elif torch_dtype in ["f16", "float16"]:
-            torch_dtype = torch.float16
-        elif torch_dtype in ["f32", "float32"]:
-            torch_dtype = torch.float32
+        if eval_model_dtype is None:
+            eval_model_dtype = "float32"
+        elif eval_model_dtype in ["bf16", "bfloat16"]:
+            eval_model_dtype = "bfloat16"
+        elif eval_model_dtype in ["f16", "float16"]:
+            eval_model_dtype = "float16"
+        elif eval_model_dtype in ["f32", "float32"]:
+            eval_model_dtype = "float32"
         else:
-            logger.warning(f"Unable to identify torch_dtype {torch_dtype}, reset to float32")
+            logger.warning(f"Unable to identify eval_model_dtype {eval_model_dtype}, reset to float32")
 
-        if torch_dtype == torch.float32:
+        if eval_model_dtype == "float32":
             logger.warning(
-                "set '--torch_dtype bf16' can significantly speed up evaluation for gguf model,"
+                "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
                 " but may affect accuracy."
             )
 
         model = AutoModelForCausalLM.from_pretrained(
-            model, gguf_file=gguf_file, device_map="auto", torch_dtype=torch_dtype)
+            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
         model.eval()
         parallelism=False
     hflm = HFLM(
@@ -735,7 +743,7 @@ def eval_task_by_task(
         while retry_times:
             try:
                 res = lm_simple_evaluate(
-                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size, limit=500)
+                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size)
                 break
             except Exception as e:
                 if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
