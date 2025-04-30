@@ -298,7 +298,7 @@ def pack_layer(layer_name, model, backend):
         out_features = layer.weight.shape[1]
     bias = layer.bias is not None
     my_linear = MyLinear(in_features, out_features, bias)
-    my_linear.weight_sclae.data.copy_(scale)
+    my_linear.weight_scale.data.copy_(scale)
     my_linear.weight.data.copy_(q_weight.to(torch.float8_e5m2))
     if bias:
         my_linear.bias.data.copy_(layer.bias)
