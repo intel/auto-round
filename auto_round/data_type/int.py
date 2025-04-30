@@ -121,6 +121,8 @@ def quant_tensor_asym_dq(tensor, cur_iter, bits=4, group_size=-1, v=0, min_scale
     scale = scale.view(-1, super_group_size)
     wmin_m = wmin_m.view(-1, super_group_size)
     #conduct double quant
+    p_scale = scale
+    p_wmin_m = wmin_m
     scale, d_scale = double_quant_tensor(scale, super_bits, q_scale_thresh)
     wmin_m, d_wmin_m = double_quant_tensor(wmin_m, super_bits, q_scale_thresh)
     scale = scale.view(-1, 1)
@@ -131,7 +133,7 @@ def quant_tensor_asym_dq(tensor, cur_iter, bits=4, group_size=-1, v=0, min_scale
     qdq_result = (scale * q - wmin_m).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     # zp = round_ste(wmin_m / scale)  # remove this later
-    return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
+    return qdq_result, {"scale": scale, "d_scale": d_scale, "pre_scale":p_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m, "pre_wmin_m":p_wmin_m}
 
 def quant_tensor_k_quant_torch(data, num_bits=4, group_size=32):
     data = data.to(torch.float32)

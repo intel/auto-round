@@ -360,8 +360,8 @@ class WrapperLinear(torch.nn.Module):
         cur_iter = self.cur_iter
         x = x.to(self.device)
         weight_q, pre_scale, pre_wmin_m = self._qdq_weight(self.value, self.min_scale, self.max_scale, cur_iter)
-        self.pre_scale = pre_scale["scale"]
-        self.pre_wmin_m = pre_wmin_m["wmin_m"]
+        self.pre_scale = pre_scale["pre_scale"]
+        self.pre_wmin_m = pre_wmin_m["pre_wmin_m"]
         if self.enable_act_quant:
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
             x, _, _ = self._qdq_act(x, act_max_scale=self.act_max_scale, act_max=act_max, cur_iter=cur_iter)
