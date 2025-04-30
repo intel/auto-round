@@ -525,23 +525,22 @@ def tune(args):
             # gguf floder only contains one file
             for file in os.listdir(eval_folder):
                 gguf_file = file
-            user_model = AutoModelForCausalLM.from_pretrained(
-                eval_folder, gguf_file=gguf_file, device_map="auto")
-            user_model = user_model.to(torch.bfloat16)
+            model = AutoModelForCausalLM.from_pretrained(
+                eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=torch.bfloat16)
+            model.eval()
             tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
         else:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
 
                 dispatch_model(model, model.hf_device_map)
-                user_model = model
             else:
                 device_str = detect_device(device_str)
-                user_model = model.to(device_str)
+                model = model.to(device_str)
 
         if args.eval_task_by_task:
             eval_task_by_task(
-                user_model, tokenizer=tokenizer, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+                model, tokenizer=tokenizer, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
         else:
             if args.eval_bs is None or args.eval_bs == "auto":
                 logger.warning("This API does not support auto currently, reset eval_bs to 16")
@@ -549,7 +548,7 @@ def tune(args):
             from auto_round.eval.evaluation import simple_evaluate_user_model
             st = time.time()
             res = simple_evaluate_user_model(
-                user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
+                model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
             print(make_table(res))
             print("evaluation running time=", time.time() - st)
     else:
@@ -599,13 +598,13 @@ def eval(args):
         from transformers import AutoTokenizer, AutoModelForCausalLM
         from lm_eval.utils import make_table  # pylint: disable=E0401
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        user_model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto")
-        user_model = user_model.to(torch.bfloat16)
+        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto", torch_dtype=torch.bfloat16)
+        model.eval()
         if (batch_size := args.eval_bs) is None:
             batch_size = "auto:8"
         st = time.time()
         res = simple_evaluate_user_model(
-                user_model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
+                model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
         print(make_table(res))
         print("evaluation running time=", time.time() - st)
     else:
@@ -649,8 +648,9 @@ def eval_task_by_task(
         import torch
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
         # float32
-        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto")
-        model = model.to(torch.bfloat16)
+        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto", torch_dtype=torch.bfloat16)
+        model.eval()
+        parallelism=False
     hflm = HFLM(
         pretrained=model,
         tokenizer=tokenizer,
@@ -673,20 +673,21 @@ def eval_task_by_task(
             try:
                 res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size)
                 break
-            except RuntimeError as e:
+            except Exception as e:
                 if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                    ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
                     try:
-                        hflm.batch_size_per_gpu = max(hflm.batch_size_per_gpu // 2, 1)
-                        logger.warning(f"Out of memory, reset batch_size to {hflm.batch_size_per_gpu} and re-try.")
+                        for k, v in hflm.batch_sizes.items():
+                            hflm.batch_sizes[k] =  max(v // 2, 1)
+                        logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
                         res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1)
+                        hflm.batch_sizes = ori_batch_sizes
                     except Exception as e:
+                        traceback.print_exc()
                         pass
                 else:
                     traceback.print_exc()
                     break
-            except Exception as e:
-                traceback.print_exc()
-                break
             retry_times -= 1
 
         if not res_all:
