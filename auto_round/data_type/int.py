@@ -109,8 +109,6 @@ def quant_tensor_asym_dq(tensor, cur_iter, bits=4, group_size=-1, v=0, min_scale
         wmin = wmin_tmp
         wmax = wmax_tmp
     
-    
-    
     if iter%20==0:
         scale,wmin_m = quant_tensor_k_quant_torch(tensor, cur_iter=cur_iter, num_bits=bits, group_size=group_size)
     else:
@@ -163,9 +161,9 @@ def quant_tensor_k_quant_torch(data, cur_iter, num_bits=4, group_size=32):
  
     best_mad = torch.sum(weights * diff ** 2, dim=1, keepdim=True)  # (nb, 1)
  
-    nstep = 40
+    nstep = 20
     rdelta = 0.1
-    rrmin = -2
+    rrmin = -1
  
     for is_ in range(nstep):
         iscale_new = torch.ones_like(rmax, dtype=data.dtype)  # (nb, 1)
