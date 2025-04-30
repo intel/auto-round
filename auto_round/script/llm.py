@@ -618,7 +618,7 @@ def eval(args):
 
 
 def eval_task_by_task(
-        model, device=None, tasks=None, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True):
+        model, device=None, tasks=None, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True, retry_times=3):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
@@ -669,22 +669,25 @@ def eval_task_by_task(
     import time
     st = time.time()
     for task in tasks:
-        try:
-            res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size)
-        except RuntimeError as e:
-            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                try:
-                    logger.warning("Out of memory, reset batch_size to 1 and re-try.")
-                    res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1)
-                except Exception as e:
+        while retry_times:
+            try:
+                res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size)
+                break
+            except RuntimeError as e:
+                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                    try:
+                        hflm.batch_size_per_gpu = max(hflm.batch_size_per_gpu // 2, 1)
+                        logger.warning(f"Out of memory, reset batch_size to {hflm.batch_size_per_gpu} and re-try.")
+                        res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1)
+                    except Exception as e:
+                        pass
+                else:
                     traceback.print_exc()
-                    continue
-            else:
+                    break
+            except Exception as e:
                 traceback.print_exc()
-                continue
-        except Exception as e:
-            traceback.print_exc()
-            continue
+                break
+            retry_times -= 1
 
         if not res_all:
             res_all = res
