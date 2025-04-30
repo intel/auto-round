@@ -1145,16 +1145,19 @@ def translate_2_sglang_int8(model):
     state_dict = model.state_dict()
     count=0
     state_list = list(state_dict.keys())
-    for name in state_list:
-        if ".experts." in name and "_fake" not in name:
-            state_dict.pop(name, None)
+    llama4_model_type = "llama4" in str(model.__class__.__name__).lower()
+    if llama4_model_type:
+        for name in state_list:
+            if ".experts." in name and "_fake" not in name:
+                state_dict.pop(name, None)
     gc.collect()
     for name, module in model.named_modules():
         if hasattr(module, "weight_scale"):
             count+=1
             state_dict[f"{name}.weight_scale"] = module.weight_scale
             state_dict[f"{name}.weight"] = state_dict[f"{name}.weight"].to(torch.int8)
-            gc.collect()
+            if llama4_model_type:
+                gc.collect()
     print(f"quantized_count: {count}")
     
     # handle specific large experts
@@ -1162,7 +1165,7 @@ def translate_2_sglang_int8(model):
     from tqdm import tqdm
     state_list = list(state_dict.keys())
     for name in tqdm(state_list):
-        if name.endswith("_fake.weight"):
+        if llama4_model_type and name.endswith("_fake.weight"):
             weight = state_dict[name]
             if weight.dim() != 3:
                 continue  # skip any unexpected format
@@ -1194,7 +1197,7 @@ def translate_2_sglang_int8(model):
             state_dict.pop(name, None)
             state_dict.pop(scale_name, None)
             gc.collect()
-        elif ".experts." not in name:
+        elif not llama4_model_type or ".experts." not in name:
             new_state_dict[name] = state_dict[name]
         else:
             continue
