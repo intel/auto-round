@@ -538,7 +538,7 @@ def tune(args):
             elif torch_dtype in ["f32", "float32"]:
                 torch_dtype = torch.float32
             else:
-                logger.warning(f"Unable to identify {torch_dtype}, reset to float32")
+                logger.warning(f"Unable to identify torch_dtype {torch_dtype}, reset to float32")
 
             if torch_dtype == torch.float32:
                 logger.warning(
@@ -629,7 +629,7 @@ def eval(args):
         elif torch_dtype in ["f32", "float32"]:
             torch_dtype = torch.float32
         else:
-            logger.warning(f"Unable to identify {torch_dtype}, reset to float32")
+            logger.warning(f"Unable to identify torch_dtype {torch_dtype}, reset to float32")
 
         if torch_dtype == torch.float32:
             logger.warning(
@@ -702,7 +702,7 @@ def eval_task_by_task(
         elif torch_dtype in ["f32", "float32"]:
             torch_dtype = torch.float32
         else:
-            logger.warning(f"Unable to identify {torch_dtype}, reset to float32")
+            logger.warning(f"Unable to identify torch_dtype {torch_dtype}, reset to float32")
 
         if torch_dtype == torch.float32:
             logger.warning(
