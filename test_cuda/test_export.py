@@ -145,7 +145,7 @@ class TestAutoRound(unittest.TestCase):
     def test_autoround_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        bits, group_size, sym = 4, 128, False
+        bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             model,
             tokenizer,
