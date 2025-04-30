@@ -18,7 +18,7 @@ pip install auto-round
 The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in huggingface is adopted as the default
 calibration data and will be downloaded automatically from the datasets Hub. Other available datasets include:
 
-- `swift/pile-val-backup` for addressing HF network issue
+- `swift/pile-val-backup` from modelscope for addressing HF network issue
 - `BAAI/CCI3-HQ` for Chinese
 - `codeparrot/github-code-clean` for code
 - `madao33/new-title-chinese` for Chinese
@@ -83,7 +83,7 @@ AutoRound supports several quantization configurations:
 
 ### Hardware Compatibility
 
-CPU, XPU, HPU,and CUDA for both quantization and inference.
+CPU, Intel GPU, HPU,and CUDA for both quantization and inference.
 
 ### Command Line Usage
 
@@ -106,7 +106,7 @@ CPU, XPU, HPU,and CUDA for both quantization and inference.
 
 - **Light Settings:**
 
-    This setting offers the best speed (2 - 3X faster than AutoRound), but it may cause a significant accuracy drop for small models and 2-bit quantization. It is recommended for 4-bit settings and models larger than 3B
+    This setting offers the best speed (2-3X faster than AutoRound), but it may cause a significant accuracy drop for small models and 2-bit quantization. It is recommended for 4-bit settings and models larger than 3B
     
     ```bash
     auto-round-light --model facebook/opt-125m  --bits 4  --group_size 128 --format "auto_gptq,auto_awq,auto_round"
@@ -135,10 +135,14 @@ autoround = AutoRound(
 
 output_dir = "./tmp_autoround"
 # format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
-autoround.quantize_and_save(output_dir, format='auto_round') 
+autoround.quantize_and_save(output_dir, format='auto_gptq,auto_awq,auto_round') 
 ```
 
 #### Mixed bits Usage
+Auto-GPTQ and Auto-AWQ only support a limited set of mixed-bit configurations. If you're unsure about the details, we recommend using the AutoRound format.
+
+Also, avoid setting mixed bits to 3 for asymmetric quantization at this time, as models exported with this setting may not be compatible with future versions of the AutoRound format.
+
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
@@ -339,7 +343,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 ```
 
 
-###  XPU
+### Intel GPU
 
 Supports 4 bits only. We recommend using intel-extension-for-pytorch (IPEX) for inference.
 
@@ -396,7 +400,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 AutoRound automatically selects the  backend for each layer based on compatibility. In general, the priority order is Marlin > ExLLaMAV2 > Triton, but the final choice depends on factors such as group size, bit width, packing format, hardware device, and other implementation details.
 
 The backend may not always be the most suitable for certain devices. 
-You can specify your preferred backend such as "ipex" for CPU and XPU, "marlin/exllamav2/triton" for CUDA, according to your needs or hardware compatibility. Please note that additional corresponding libraries may be required.
+You can specify your preferred backend such as "ipex" for CPU and Intel GPU, "marlin/exllamav2/triton" for CUDA, according to your needs or hardware compatibility. Please note that additional corresponding libraries may be required.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -410,6 +414,17 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
 ```
+| Name                                 | Devices | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
+|--------------------------------------|---------|---------|-----------|----------|-----------------|-------------------------------|
+| ipex                                 | cpu/xpu | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch   |
+| itrex                                | cpu     | 2,4,8   | BF16/FP16 | 0        | gptq_zp+-1/awq  | intel-extension-for-transformers |
+| marlin                               | cuda    | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                     |
+| exllamav2 or<br/>gptqmodel:exllamav2 | cuda    | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                     |
+| exllamav2 or<br/>gptq:exllamav2      | cuda    | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                     |
+| gptq:cuda                            | cuda    | 2,3,4,8 | FP16      | 0        | gptq_zp+-1      | auto-gptq                     |
+| triton                               | cuda    | 2,4,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                    |
+| awq                                  | cuda    | 4       | FP16      | 5        | awq             | auto-awq                      |
+| hpu                                  | hpu     | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
 
 
 ### Convert GPTQ/AWQ to AutoRound

@@ -17,7 +17,7 @@ AutoRound
 AutoRound is an advanced quantization algorithm that delivers strong accuracy, even at 2-bit precision. 
 It leverages sign gradient descent to fine-tune both rounding values and min-max clipping thresholds in just 200 steps. 
 Designed for broad compatibility, it seamlessly supports a wide range of LLMs and is actively expanding to cover more VLMs as well. 
-It also supports quantization and inference across multiple hardware platforms, including CPU, XPU, and CUDA. 
+It also supports quantization and inference across multiple hardware platforms, including CPU, Intel GPU, and CUDA. 
 AutoRound also offers a variety of useful features, including mixed-bit tuning and inference, lm-head quantization, 
 support for exporting to formats like GPTQ/AWQ/GGUF, and flexible tuning recipes. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
@@ -32,10 +32,11 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 <div align="left">
 
 ## What's New
-
-* [2024/03] The INT2-mixed R1 model (~200GB) retains 97.9% accuracy. Check
+* [2025/04] AutoRound supports some recipes for Qwen3 series, please refer to [Qwen3-8B-sym-recipe](./docs/Qwen3-8B-sym-recipe.md) and [Qwen3-14B-sym-recipe](./docs/Qwen3-14B-sym-recipe.md) for more details.
+* [2025/04] AutoRound has been integrated into Transformers. You can run models in the AutoRound format directly with Transformers versions later than 4.51.3.
+* [2025/03] The INT2-mixed R1 model (~200GB) retains 97.9% accuracy. Check
   out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
-* [2024/01] We provide experimental support for GGUF q4_0 and q4_1 formats.
+* [2025/01] We provide experimental support for GGUF q4_0 and q4_1 formats.
 * [2024/11] We provide experimental support for VLM quantization, please check out
   the [README](./auto_round/mllm/README.md)
 
@@ -72,7 +73,7 @@ pip install auto-round-lib
 
 ## Model Quantization
 
-### Command Line Usage (Gaudi/CPU/XPU/GPU)
+### Command Line Usage (Gaudi/CPU/Intel GPU/CUDA)
 
 A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
 Set the format you want in `format` and
@@ -81,7 +82,7 @@ more details about calibration dataset or evaluation.
 
 ```bash
 auto-round \
-    --model facebook/opt-125m \
+    --model Qwen/Qwen3-0.6B \
     --bits 4 \
     --group_size 128 \
     --format "auto_gptq,auto_awq,auto_round" \
@@ -96,7 +97,7 @@ respectively. Details are as follows.
   ```bash
 ## best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
 auto-round-best \
-    --model facebook/opt-125m \
+    --model Qwen/Qwen3-0.6B \
     --bits 4 \
     --group_size 128 \
     --low_gpu_mem_usage 
@@ -105,7 +106,7 @@ auto-round-best \
   ```bash
 ## light accuracy, 2-3X speedup, slight accuracy drop at W4 and larger accuracy drop at W2
 auto-round-light \
-    --model facebook/opt-125m \
+    --model Qwen/Qwen3-0.6B \
     --bits 4 \
     --group_size 128 \
 
@@ -114,7 +115,7 @@ auto-round-light \
   <!-- ```bash
 auto-round-fast \
 ## fast and low memory, 2-3X speedup, slight accuracy drop at W4G128
-    --model facebook/opt-125m \
+    --model Qwen/Qwen3-0.6B \
     --bits 4 \
     --group_size 128 \
   ``` -->
@@ -147,12 +148,12 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 </details>
 
-### API Usage (Gaudi/CPU/XPU/GPU)
+### API Usage (HPU/CPU/XPU/CUDA)
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model_name = "facebook/opt-125m"
+model_name = "Qwen/Qwen3-0.6B"
 model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -315,7 +316,7 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
 **CUDA**: no extra operations for sym quantization, for asym quantization, need to install auto-round from source
 
-#### Gaudi/CPU/XPU/CUDA
+#### HPU/CPU/XPU/CUDA
 
 **Please avoid manually moving the quantized model to a different device** (e.g., model.to('cpu')) during inference, as this may cause unexpected exceptions.
 
@@ -486,11 +487,14 @@ model architecture or kernel limitations.
 
 AutoRound has been integrated into multiple repositories.
 
+[huggingface/transformers](https://github.com/huggingface/transformers)
+
 [Intel Neural Compressor](https://github.com/intel/neural-compressor)
 
 [ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel)
 
 [pytorch/ao](https://github.com/pytorch/ao)
+
 
 ## Reference
 
