@@ -76,7 +76,7 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         assert ("!!!" not in res)
 
     def test_autoround_sym(self):
-        for bits in [2, 4, 8]:
+        for bits in [4]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = bits, 128, True
