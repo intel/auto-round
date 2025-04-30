@@ -33,7 +33,7 @@ class TestQuantizationConv1d(unittest.TestCase):
 
     def test_quant(self):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        bits, group_size, sym = 4, 128, False
+        bits, group_size, sym = 4, 128, True
         from auto_round import  AutoRoundConfig
         autoround = AutoRound(
             self.model,

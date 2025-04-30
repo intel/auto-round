@@ -75,6 +75,35 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    def test_autoround_asym(self):
+        for bits in [2, 4, 8]:
+            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+            bits, group_size, sym = bits, 128, False
+            autoround = AutoRound(
+                model,
+                tokenizer,
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                iters=2,
+                seqlen=2,
+                dataset=self.llm_dataloader,
+            )
+            quantized_model_path = self.save_folder
+
+            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+
+            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
+                                                         trust_remote_code=True)
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+            text = "There is a girl who likes adventure,"
+            inputs = tokenizer(text, return_tensors="pt").to(model.device)
+            res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
+            print(res)
+            assert ("!!!" not in res)
+            shutil.rmtree(self.save_folder, ignore_errors=True)
+
     def test_mixed_precision(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -108,7 +137,6 @@ class TestAutoRound(unittest.TestCase):
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
         print(result['results']['lambada_openai']['acc,none'])
         self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.32)
-
 
     def test_awq_backend(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -292,7 +320,7 @@ class TestAutoRound(unittest.TestCase):
         self.model_infer(model, tokenizer)
 
     def test_autoround_asym(self):
-        for bits in [2,3,4,8]:
+        for bits in [2, 3, 4, 8]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = bits, 128, False

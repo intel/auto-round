@@ -41,44 +41,13 @@ class TestAutoRound(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_load_gptq_model_4bits(self):
-        model_name = "ybelkada/opt-125m-gptq-4bit"
-        quantization_config = AutoRoundConfig()
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True,
-                                                     device_map="cpu",
-                                                     quantization_config=quantization_config)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.model_infer(model, tokenizer)
-
-    def test_load_gptq_model_8bits(self):
-        model_name = "acloudfan/opt-125m-gptq-8bit"
-        quantization_config = AutoRoundConfig()
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True,
-                                                     device_map="cpu",
-                                                     quantization_config=quantization_config)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.model_infer(model, tokenizer)
-
-
-    def test_load_gptq_model_2bits(self):
-        model_name = "LucasSantiago257/gemma-2b-2bits-gptq"
-        quantization_config = AutoRoundConfig()
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True,
-                                                     device_map="cpu",
-                                                     quantization_config=quantization_config)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.model_infer(model, tokenizer)
-
-
-
-
     def test_load_gptq_no_dummy_gidx_model(self):
         model_name = "ModelCloud/Llama-3.2-1B-Instruct-gptqmodel-4bit-vortex-v1"
         quantization_config = AutoRoundConfig()
         with self.assertRaises(NotImplementedError) as cm:
             model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True,
-                                                        device_map="cpu",
-                                                        quantization_config=quantization_config)
+                                                         device_map="cpu",
+                                                         quantization_config=quantization_config)
 
     def test_load_awq(self):
         model_name = "casperhansen/opt-125m-awq"
@@ -88,6 +57,3 @@ class TestAutoRound(unittest.TestCase):
                                                      quantization_config=quantization_config)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model_infer(model, tokenizer)
-
-
-

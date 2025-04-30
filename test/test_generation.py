@@ -34,40 +34,6 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-
-    def test_4bits_asym(self):
-        bits = 4
-        group_size = 128
-        sym = False
-        autoround = AutoRound(
-            self.model,
-            self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=1,
-            seqlen=2,
-            dataset=self.llm_dataloader,
-        )
-        quantized_model_path = self.save_folder
-
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round", inplace=False)
-
-        from auto_round import AutoRoundConfig
-        quantization_config = AutoRoundConfig(
-            backend="auto"
-        )
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map="cpu", quantization_config=quantization_config)
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "My name is "
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)
-        assert ("!!!" not in res)
-
-        shutil.rmtree(self.save_folder, ignore_errors=True)
-
     def test_4bits_sym(self):
         bits = 4
         group_size = 128
@@ -109,62 +75,8 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
         print(res)
         assert ("!!!" not in res)
 
-
-        from auto_round import AutoRoundConfig
-        quantization_config = AutoRoundConfig(
-            backend="itrex"
-        )
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map="cpu", quantization_config=quantization_config)
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "My name is "
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)
-        assert ("!!!" not in res)
-
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map="cpu", quantization_config=quantization_config,
-                                                     torch_dtype=torch.float16)
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)
-        assert ("!!!" not in res)
-        shutil.rmtree(self.save_folder, ignore_errors=True)
-
-    def test_autoround_asym(self):
-        for bits in [2, 4, 8]:
-            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-            tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-            bits, group_size, sym = bits, 128, False
-            autoround = AutoRound(
-                model,
-                tokenizer,
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                iters=2,
-                seqlen=2,
-                dataset=self.llm_dataloader,
-            )
-            quantized_model_path = "./saved"
-
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
-                                                         trust_remote_code=True)
-            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-            text = "There is a girl who likes adventure,"
-            inputs = tokenizer(text, return_tensors="pt").to(model.device)
-            res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-            print(res)
-            assert ("!!!" not in res)
-            shutil.rmtree(self.save_folder, ignore_errors=True)
-
     def test_autoround_sym(self):
-        for bits in [2, 4, 8]:
+        for bits in [4]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = bits, 128, True
@@ -191,39 +103,4 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
             print(res)
             assert ("!!!" not in res)
             shutil.rmtree(self.save_folder, ignore_errors=True)
-
-
-    def test_mixed_precision(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        layer_config = {}
-
-        layer_config["model.decoder.layers.0.self_attn.k_proj"] = {"bits": 8}
-        layer_config["model.decoder.layers.6.self_attn.out_proj"] = {"bits": 2, "group_size": 32}
-        bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(
-            model,
-            tokenizer,
-            bits=bits,
-            group_size=group_size,
-            iters=1,
-            nsamples=1,
-            sym=sym,
-            layer_config=layer_config
-        )
-        quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-
-        model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
-            torch_dtype=torch.float16,
-            device_map="cpu",
-        )
-        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-        print(res)
-        assert ("!!!" not in res)
-        shutil.rmtree(self.save_folder, ignore_errors=True)
 

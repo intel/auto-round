@@ -193,7 +193,7 @@ BackendInfos['qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
                                     alias=["itrex", "qbits"],
                                     dtype=["float16", "bfloat16"],
                                     convertable_format=["int32"],
-                                    requirements=["intel-extension-for-transformers"])
+                                    requirements=["intel-extension-for-transformers", "torch<2.7.0"])
 
 BackendInfos['qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
                                        packing_format="qbits_zp",
@@ -203,7 +203,7 @@ BackendInfos['qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
                                        feature_checks=[],
                                        alias=["itrex", "qbits"],
                                        convertable_format=["int32_zp"],
-                                       requirements=["intel-extension-for-transformers"]
+                                       requirements=["intel-extension-for-transformers","torch<2.7.0"]
                                        )
 
 BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True, False],  ## for awq, not robust
