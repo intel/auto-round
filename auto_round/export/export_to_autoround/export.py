@@ -240,7 +240,7 @@ class MyLinear(torch.nn.Module):
             self.bias = torch.nn.Parameter(torch.empty(out_features, **factory_kwargs))
         else:
             self.register_parameter("bias", None)
-        self.register_buffer('scale', torch.ones((1),dtype=torch.bfloat16))
+        self.register_buffer('weight_scale', torch.ones((1),dtype=torch.bfloat16))
 
 
 
@@ -298,7 +298,7 @@ def pack_layer(layer_name, model, backend):
         out_features = layer.weight.shape[1]
     bias = layer.bias is not None
     my_linear = MyLinear(in_features, out_features, bias)
-    my_linear.scale.data.copy_(scale)
+    my_linear.weight_sclae.data.copy_(scale)
     my_linear.weight.data.copy_(q_weight.to(torch.float8_e5m2))
     if bias:
         my_linear.bias.data.copy_(layer.bias)
@@ -380,7 +380,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
-    quantization_config["quant_method"] = "auto-round"
+    quantization_config["quant_method"] = "fp8"
+    quantization_config["fmt"] = "e5m2"
+    quantization_config["activation_scheme"] = "dynamic"
     if quantization_config["bits"] == 3:
         backend = "auto_round:auto_gptq"
     quantization_config["packing_format"] = backend
