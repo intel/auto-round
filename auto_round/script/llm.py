@@ -192,6 +192,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant.")
 
+        self.add_argument("--torch_dtype", default=None, type=str, help="torch_dytpe to load the model.")
+
 
 class EvalArgumentParser(argparse.ArgumentParser):
 
@@ -218,6 +220,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--disable_trust_remote_code", action='store_true', help="whether to disable trust_remote_code")
         self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int, help="batch size in evaluation")
         self.add_argument("--eval_task_by_task", action='store_true', help="whether to eval task by task.")
+        self.add_argument("--torch_dtype", default=None, type=str, help="torch_dytpe to load the model.")
 
 
 def setup_parser():
@@ -525,8 +528,25 @@ def tune(args):
             # gguf floder only contains one file
             for file in os.listdir(eval_folder):
                 gguf_file = file
+            torch_dtype = args.torch_dtype
+            if torch_dtype is None:
+                torch_dtype = torch.float32
+            elif torch_dtype in ["bf16", "bfloat16"]:
+                torch_dtype = torch.bfloat16
+            elif torch_dtype in ["f16", "float16"]:
+                torch_dtype = torch.float16
+            elif torch_dtype in ["f32", "float32"]:
+                torch_dtype = torch.float32
+            else:
+                logger.warning(f"Unable to identify {torch_dtype}, reset to float32")
+
+            if torch_dtype == torch.float32:
+                logger.warning(
+                    "set '--torch_dtype bf16' can significantly speed up evaluation for gguf model,"
+                    " but may affect accuracy."
+                )
             model = AutoModelForCausalLM.from_pretrained(
-                eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=torch.bfloat16)
+                eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=torch_dtype)
             model.eval()
             tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
         else:
@@ -582,6 +602,7 @@ def eval(args):
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
     from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
+    from auto_round.utils import logger
 
     is_gguf_file = False
     if os.path.isfile(args.model) and args.model.endswith(".gguf"):
@@ -598,7 +619,24 @@ def eval(args):
         from transformers import AutoTokenizer, AutoModelForCausalLM
         from lm_eval.utils import make_table  # pylint: disable=E0401
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto", torch_dtype=torch.bfloat16)
+        torch_dtype = args.torch_dtype
+        if torch_dtype is None:
+            torch_dtype = torch.float32
+        elif torch_dtype in ["bf16", "bfloat16"]:
+            torch_dtype = torch.bfloat16
+        elif torch_dtype in ["f16", "float16"]:
+            torch_dtype = torch.float16
+        elif torch_dtype in ["f32", "float32"]:
+            torch_dtype = torch.float32
+        else:
+            logger.warning(f"Unable to identify {torch_dtype}, reset to float32")
+
+        if torch_dtype == torch.float32:
+            logger.warning(
+                "set '--torch_dtype bf16' can significantly speed up evaluation for gguf model,"
+                " but may affect accuracy."
+            )
+        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto", torch_dtype=torch_dtype)
         model.eval()
         if (batch_size := args.eval_bs) is None:
             batch_size = "auto:8"
@@ -617,7 +655,15 @@ def eval(args):
 
 
 def eval_task_by_task(
-        model, device=None, tasks=None, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True, retry_times=3):
+        model,
+        device=None,
+        tasks=None,
+        tokenizer=None,
+        batch_size=None,
+        max_batch_size=64,
+        trust_remote_code=True,
+        torch_dtype=None,
+        retry_times=3):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
@@ -647,8 +693,25 @@ def eval_task_by_task(
     if is_gguf_file:
         import torch
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        # float32
-        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto", torch_dtype=torch.bfloat16)
+        if torch_dtype is None:
+            torch_dtype = torch.float32
+        elif torch_dtype in ["bf16", "bfloat16"]:
+            torch_dtype = torch.bfloat16
+        elif torch_dtype in ["f16", "float16"]:
+            torch_dtype = torch.float16
+        elif torch_dtype in ["f32", "float32"]:
+            torch_dtype = torch.float32
+        else:
+            logger.warning(f"Unable to identify {torch_dtype}, reset to float32")
+
+        if torch_dtype == torch.float32:
+            logger.warning(
+                "set '--torch_dtype bf16' can significantly speed up evaluation for gguf model,"
+                " but may affect accuracy."
+            )
+
+        model = AutoModelForCausalLM.from_pretrained(
+            model, gguf_file=gguf_file, device_map="auto", torch_dtype=torch_dtype)
         model.eval()
         parallelism=False
     hflm = HFLM(
@@ -671,7 +734,8 @@ def eval_task_by_task(
     for task in tasks:
         while retry_times:
             try:
-                res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size)
+                res = lm_simple_evaluate(
+                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size, limit=500)
                 break
             except Exception as e:
                 if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):

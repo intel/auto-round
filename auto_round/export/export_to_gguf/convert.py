@@ -55,7 +55,7 @@ import torch
 # autoround import
 from auto_round.utils import logger, LazyImport
 from .quant_cpu import ggml_quant_cpu
-from .quant_cuda import ggml_quant_cuda
+from .quant_gpu import ggml_quant_gpu
 
 gguf = LazyImport("gguf")
 
@@ -1154,7 +1154,7 @@ class Model(OriModel):
                             setattr(module, attr, attr_tensor)
                 scale = module.scale
                 zp = module.zp if hasattr(module, "zp") else None
-                ggml_quant = ggml_quant_cuda if torch.cuda.is_available() else ggml_quant_cpu
+                ggml_quant = ggml_quant_gpu if torch.cuda.is_available() else ggml_quant_cpu
 
                 if data_qtype.name.lower().endswith("_k"):
                     d_scale = module.w_d_scale.to(torch.float32)
