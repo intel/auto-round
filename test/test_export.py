@@ -56,41 +56,8 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
-    # def test_autogptq_marlin_format(self):
-    #
-    #     if not torch.cuda.is_available():
-    #         return
-    #     try:
-    #         import auto_gptq
-    #     except:
-    #         return
-    #     bits, group_size, sym = 4, 128, True
-    #     autoround = AutoRound(
-    #         self.model,
-    #         self.tokenizer,
-    #         bits=bits,
-    #         group_size=group_size,
-    #         sym=sym,
-    #         iters=2,
-    #         seqlen=2,
-    #         dataset=self.llm_dataloader,
-    #     )
-    #     autoround.quantize()
-    #     quantized_model_path = "./saved"
-    #
-    #     autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
-    #
-    #     from auto_gptq import AutoGPTQForCausalLM
-    #     model = AutoGPTQForCausalLM.from_quantized(quantized_model_path, device_map="auto", use_safetensors=True,
-    #                                                use_marlin=True)
-    #     tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-    #     text = "There is a girl who likes adventure,"
-    #     inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    #     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-    #     shutil.rmtree("./saved", ignore_errors=True)
-
     def test_autoround_format(self):
-        bits, group_size, sym = 4, 128, False
+        bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             self.model,
             self.tokenizer,
@@ -105,10 +72,7 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
-        try:
-            import intel_extension_for_transformers
-        except:
-            return
+
 
         device = "auto"  ##cpu, hpu, cuda
         from auto_round import AutoRoundConfig
