@@ -644,7 +644,8 @@ def eval(args):
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
                 " but may affect accuracy."
             )
-        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
+        model = AutoModelForCausalLM.from_pretrained(
+            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
         model.eval()
         if (batch_size := args.eval_bs) is None:
             batch_size = "auto:8"
@@ -751,8 +752,10 @@ def eval_task_by_task(
                     try:
                         for k, v in hflm.batch_sizes.items():
                             hflm.batch_sizes[k] =  max(v // 2, 1)
-                        logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
-                        res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1)
+                        logger.warning(
+                            f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
+                        res = lm_simple_evaluate(
+                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1)
                         hflm.batch_sizes = ori_batch_sizes
                     except Exception as e:
                         traceback.print_exc()
