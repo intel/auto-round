@@ -73,7 +73,6 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     if "auto_round" in backend and "awq" not in backend and "gptq" not in backend:
         if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
             return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
-
         from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
         return QuantLinear
     elif "auto_round" in backend and "gptq" in backend and bits in (2, 4, 8):
@@ -83,7 +82,11 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
     elif "gptqmodel" in backend:
-        return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
+        if not sym:
+            from auto_round_extension.cuda.gptqmodel_torch import QuantLinear
+            return QuantLinear
+        else:
+            return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
     elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
@@ -185,9 +188,14 @@ def pack_layer(layer_name, model, backend):
     bias = layer.bias is not None
 
     if "awq" not in backend:
-        new_layer = QuantLinear(  ##pylint: disable=E1123
-            bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
-        )
+        if "gptqmodel_torch" in QuantLinear.__module__: # add sym arg
+            new_layer = QuantLinear(  ##pylint: disable=E1123
+            bits, group_size, sym, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
+            )
+        else:
+            new_layer = QuantLinear(  ##pylint: disable=E1123
+                bits, group_size, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
+            )
         new_layer.device = device
         set_module(model, layer_name, new_layer)
         qlayer = new_layer
@@ -262,8 +270,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     quantization_config = kwargs["serialization_dict"]
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
     quantization_config["quant_method"] = "auto-round"
-    if quantization_config["bits"] == 3:
-        backend = "auto_round:auto_gptq"
     quantization_config["packing_format"] = backend
 
     tokenizer = kwargs.get("tokenizer", None)
@@ -364,4 +370,5 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
 

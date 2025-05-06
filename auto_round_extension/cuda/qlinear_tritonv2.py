@@ -156,8 +156,8 @@ class QuantLinear(nn.Module, TritonModuleMixin):
     def forward(self, x):
         out_shape = x.shape[:-1] + (self.outfeatures,)
         quant_linear_fn = QuantLinearFunction
-        if not hasattr(self,"g_idx"):
-            self.g_idx =  torch.tensor(
+        if not hasattr(self, "g_idx"):
+            self.g_idx = torch.tensor(
                 [i // self.group_size for i in range(self.infeatures)], dtype=torch.int32
             ).to(self.qweight.device)
 
