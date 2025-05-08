@@ -1446,3 +1446,18 @@ def get_shared_keys(model):
     shared_keys = shared_cache_keys
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
+
+
+def get_model_dtype(model_dtype, default="auto"):
+    if model_dtype is None or model_dtype == "auto":
+        model_dtype = default
+    elif model_dtype in ["bf16", "bfloat16"]:
+        model_dtype = "bfloat16"
+    elif model_dtype in ["f16", "float16", "fp16"]:
+        model_dtype = "float16"
+    elif model_dtype in ["f32", "float32", "fp32"]:
+        model_dtype = "float32"
+    else:
+        logger.warning(f"Unable to identify model_dtype {model_dtype}, reset to default model_dtype {default}")
+        model_dtype = default
+    return model_dtype

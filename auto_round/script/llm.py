@@ -34,6 +34,7 @@ from auto_round.utils import (
     get_fp_layer_names,
     clear_memory,
     get_device_and_parallelism,
+    get_model_dtype,
     set_cuda_visible_devices)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -531,22 +532,12 @@ def tune(args):
             break
 
     import time
+    eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
     if args.act_bits <= 8 or eval_gguf_model:
         if eval_gguf_model:
             # gguf floder only contains one file
             for file in os.listdir(eval_folder):
                 gguf_file = file
-            eval_model_dtype = args.eval_model_dtype
-            if eval_model_dtype is None:
-                eval_model_dtype = "float32"
-            elif eval_model_dtype in ["bf16", "bfloat16"]:
-                eval_model_dtype = "bfloat16"
-            elif eval_model_dtype in ["f16", "float16"]:
-                eval_model_dtype = "float16"
-            elif eval_model_dtype in ["f32", "float32"]:
-                eval_model_dtype = "float32"
-            else:
-                logger.warning(f"Unable to identify eval_model_dtype {eval_model_dtype}, reset to float32")
 
             if eval_model_dtype == "float32":
                 logger.warning(
@@ -565,10 +556,17 @@ def tune(args):
             else:
                 device_str = detect_device(device_str)
                 model = model.to(device_str)
+            if model.dtype != eval_model_dtype and eval_model_dtype != "auto":
+                model.to(getattr(torch, eval_model_dtype))
 
         if args.eval_task_by_task:
             eval_task_by_task(
-                model, tokenizer=tokenizer, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+                model,
+                tokenizer=tokenizer,
+                device=device_str,
+                tasks=args.tasks,
+                batch_size=args.eval_bs,
+                eval_model_dtype=eval_model_dtype)
         else:
             if args.eval_bs is None or args.eval_bs == "auto":
                 logger.warning("This API does not support auto currently, reset eval_bs to 16")
@@ -576,16 +574,21 @@ def tune(args):
             from auto_round.eval.evaluation import simple_evaluate_user_model
             st = time.time()
             res = simple_evaluate_user_model(
-                model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
+                model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str, eval_model_dtype=eval_model_dtype)
             print(make_table(res))
             print("evaluation running time=", time.time() - st)
     else:
         if args.eval_task_by_task:
-            eval_task_by_task(eval_folder, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+            eval_task_by_task(
+                eval_folder,
+                device=device_str,
+                tasks=args.tasks,
+                batch_size=args.eval_bs,
+                eval_model_dtype=eval_model_dtype)
         else:
             from auto_round.eval.evaluation import simple_evaluate
             tasks, model_args, device_str = _eval_init(
-                args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
+                args.tasks, eval_folder, args.device, args.disable_trust_remote_code, dtype=eval_model_dtype)
             st = time.time()
             res = simple_evaluate(
                 model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
@@ -593,10 +596,12 @@ def tune(args):
             print("evaluation running time=", time.time() - st)
 
 
-def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
+def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype="auto"):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
-    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}'  # ,add_bos_token={True}
+    if dtype != "auto":
+        dtype = get_model_dtype(model_dtype=dtype)
+    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code},dtype={dtype}'  # ,add_bos_token={True}
     if parallelism:
         model_args += ",parallelize=True"
     if isinstance(tasks, str):
@@ -606,7 +611,8 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
 
 def eval(args):
     import time
-    tasks, model_args, device_str = _eval_init(args.tasks, args.model, args.device, args.disable_trust_remote_code)
+    tasks, model_args, device_str = _eval_init(
+        args.tasks, args.model, args.device, args.disable_trust_remote_code, args.eval_model_dtype)
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
     from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
@@ -618,27 +624,16 @@ def eval(args):
         gguf_file = os.path.basename(args.model)
         model = os.path.dirname(args.model)
     else:
-        for file in os.listdir(model):
+        for file in os.listdir(args.model):
             if file.endswith(".gguf"):
                 is_gguf_file = True
                 gguf_file = file
+    eval_model_dtype = get_model_dtype(args.eval_model_dtype)
     if is_gguf_file:
         import torch
         from transformers import AutoTokenizer, AutoModelForCausalLM
         from lm_eval.utils import make_table  # pylint: disable=E0401
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        eval_model_dtype = args.eval_model_dtype
-        if eval_model_dtype is None:
-            eval_model_dtype = "float32"
-        elif eval_model_dtype in ["bf16", "bfloat16"]:
-            eval_model_dtype = "bfloat16"
-        elif eval_model_dtype in ["f16", "float16"]:
-            eval_model_dtype = "float16"
-        elif eval_model_dtype in ["f32", "float32"]:
-            eval_model_dtype = "float32"
-        else:
-            logger.warning(f"Unable to identify eval_model_dtype {eval_model_dtype}, reset to float32")
-
         if eval_model_dtype == "float32":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -699,21 +694,10 @@ def eval_task_by_task(
                 if file.endswith(".gguf"):
                     is_gguf_file = True
                     gguf_file = file
+    eval_model_dtype = get_model_dtype(eval_model_dtype)
     if is_gguf_file:
-        import torch
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        if eval_model_dtype is None:
-            eval_model_dtype = "float32"
-        elif eval_model_dtype in ["bf16", "bfloat16"]:
-            eval_model_dtype = "bfloat16"
-        elif eval_model_dtype in ["f16", "float16"]:
-            eval_model_dtype = "float16"
-        elif eval_model_dtype in ["f32", "float32"]:
-            eval_model_dtype = "float32"
-        else:
-            logger.warning(f"Unable to identify eval_model_dtype {eval_model_dtype}, reset to float32")
-
-        if eval_model_dtype == "float32":
+        if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
                 " but may affect accuracy."
@@ -730,7 +714,9 @@ def eval_task_by_task(
         batch_size=batch_size,
         max_batch_size=max_batch_size,
         parallelize=parallelism,
-        trust_remote_code=trust_remote_code)
+        trust_remote_code=trust_remote_code, 
+        dtype=eval_model_dtype
+        )
 
     if isinstance(tasks, str):
         tasks = tasks.replace(" ", "").split(",")
