@@ -197,7 +197,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--eval_model_dtype",
             default=None,
             type=str,
-            help="the torch_dytpe to load gguf model for evaluation. work for gguf format only.")
+            help="the torch_dytpe to load the model for evaluation.")
 
 
 class EvalArgumentParser(argparse.ArgumentParser):
@@ -229,7 +229,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--eval_model_dtype",
             default=None,
             type=str,
-            help="the torch_dytpe to load gguf model for evaluation. work for gguf format only.")
+            help="the torch_dytpe to load the model for evaluation.")
 
 
 def setup_parser():
@@ -539,6 +539,7 @@ def tune(args):
             for file in os.listdir(eval_folder):
                 gguf_file = file
 
+            logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
             if eval_model_dtype == "float32" or eval_model_dtype == "auto":
                 logger.warning(
                     "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -640,6 +641,8 @@ def eval(args):
         from transformers import AutoTokenizer, AutoModelForCausalLM
         from lm_eval.utils import make_table  # pylint: disable=E0401
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
+
+        logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -703,6 +706,7 @@ def eval_task_by_task(
     eval_model_dtype = get_model_dtype(eval_model_dtype)
     if is_gguf_file:
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
+        logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
