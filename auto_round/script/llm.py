@@ -539,7 +539,7 @@ def tune(args):
             for file in os.listdir(eval_folder):
                 gguf_file = file
 
-            if eval_model_dtype == "float32":
+            if eval_model_dtype == "float32" or eval_model_dtype == "auto":
                 logger.warning(
                     "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
                     " but may affect accuracy."
@@ -634,7 +634,7 @@ def eval(args):
         from transformers import AutoTokenizer, AutoModelForCausalLM
         from lm_eval.utils import make_table  # pylint: disable=E0401
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        if eval_model_dtype == "float32":
+        if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
                 " but may affect accuracy."
