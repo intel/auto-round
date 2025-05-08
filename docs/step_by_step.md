@@ -100,7 +100,7 @@ CPU, Intel GPU, HPU,and CUDA for both quantization and inference.
 
   This setting provides the best accuracy in most scenarios but is 4–5× slower than the standard AutoRound recipe. It is especially recommended for 2-bit quantization and is a good choice if sufficient resources are available.
   
-- ```bash
+  ```bash
     auto-round-best --model facebook/opt-125m  --bits 4 --group_size 128  --format "auto_gptq,auto_awq,auto_round"
     ```
 

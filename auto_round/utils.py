@@ -1185,6 +1185,13 @@ def _gguf_args_check(args):
     pre_dq_format = ""
     for format in GGUF_CONFIG:
         if format in formats:
+            try:
+                from auto_round.export.export_to_gguf.convert import Model
+            except:
+                raise ImportError(
+                    f"Please use the latest gguf-py for {format}, you can use the following command to install it:\n"
+                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .")
+                sys.exit(-1)
             if re.search(pattern, format):
                 if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
                     logger.error(f"Cannot eport {pre_dq_format} and {format} at the same time.")
@@ -1221,7 +1228,7 @@ def _gguf_args_check(args):
                     setattr(args, k, v)
             if len(unsupport_list) > 0:
                 logger.error(
-                    f"format {format} not support for {', '.join(unsupport_list)},"
+                    f"format {format} does not support for {', '.join(unsupport_list)},"
                     f" reset to {', '.join(reset_list)}.")
             logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
 
@@ -1439,3 +1446,18 @@ def get_shared_keys(model):
     shared_keys = shared_cache_keys
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
+
+
+def get_model_dtype(model_dtype, default="auto"):
+    if model_dtype is None or model_dtype == "auto":
+        model_dtype = default
+    elif model_dtype in ["bf16", "bfloat16"]:
+        model_dtype = "bfloat16"
+    elif model_dtype in ["f16", "float16", "fp16"]:
+        model_dtype = "float16"
+    elif model_dtype in ["f32", "float32", "fp32"]:
+        model_dtype = "float32"
+    else:
+        logger.warning(f"Unable to identify model_dtype {model_dtype}, reset to default model_dtype {default}")
+        model_dtype = default
+    return model_dtype

@@ -34,6 +34,7 @@ from auto_round.utils import (
     get_fp_layer_names,
     clear_memory,
     get_device_and_parallelism,
+    get_model_dtype,
     set_cuda_visible_devices)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -192,6 +193,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant.")
 
+        self.add_argument(
+            "--eval_model_dtype",
+            default=None,
+            type=str,
+            help="the torch_dytpe to load the model for evaluation.")
+
 
 class EvalArgumentParser(argparse.ArgumentParser):
 
@@ -218,6 +225,11 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--disable_trust_remote_code", action='store_true', help="whether to disable trust_remote_code")
         self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int, help="batch size in evaluation")
         self.add_argument("--eval_task_by_task", action='store_true', help="whether to eval task by task.")
+        self.add_argument(
+            "--eval_model_dtype",
+            default=None,
+            type=str,
+            help="the torch_dytpe to load the model for evaluation.")
 
 
 def setup_parser():
@@ -282,7 +294,7 @@ def setup_light_parser():
         "--lr", default=5e-3, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
 
     args = parser.parse_args()
-    
+
     return args
 
 
@@ -519,51 +531,84 @@ def tune(args):
             eval_gguf_model = True
             break
 
+    import time
+    eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
     if args.act_bits <= 8 or eval_gguf_model:
         if eval_gguf_model:
             # gguf floder only contains one file
             for file in os.listdir(eval_folder):
                 gguf_file = file
-            user_model = AutoModelForCausalLM.from_pretrained(
-                eval_folder, gguf_file=gguf_file, device_map="auto" if use_auto_mapping else None)
+
+            logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
+            if eval_model_dtype == "float32" or eval_model_dtype == "auto":
+                logger.warning(
+                    "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
+                    " but may affect accuracy."
+                )
+            model = AutoModelForCausalLM.from_pretrained(
+                eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
+            model.eval()
             tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
         else:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
 
                 dispatch_model(model, model.hf_device_map)
-                user_model = model
             else:
                 device_str = detect_device(device_str)
-                user_model = model.to(device_str)
+                model = model.to(device_str)
+            if model.dtype != eval_model_dtype and eval_model_dtype != "auto":
+                model.to(getattr(torch, eval_model_dtype))
 
         if args.eval_task_by_task:
             eval_task_by_task(
-                user_model, tokenizer=tokenizer, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+                model,
+                tokenizer=tokenizer,
+                device=device_str,
+                tasks=args.tasks,
+                batch_size=args.eval_bs,
+                eval_model_dtype=eval_model_dtype)
         else:
             if args.eval_bs is None or args.eval_bs == "auto":
                 logger.warning("This API does not support auto currently, reset eval_bs to 16")
                 args.eval_bs = 16
             from auto_round.eval.evaluation import simple_evaluate_user_model
+            st = time.time()
             res = simple_evaluate_user_model(
-                user_model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str)
+                model,
+                tokenizer,
+                tasks=tasks,
+                batch_size=args.eval_bs,
+                device=device_str,
+                eval_model_dtype=eval_model_dtype)
             print(make_table(res))
+            print("evaluation running time=", time.time() - st)
     else:
         if args.eval_task_by_task:
-            eval_task_by_task(eval_folder, device=device_str, tasks=args.tasks, batch_size=args.eval_bs)
+            eval_task_by_task(
+                eval_folder,
+                device=device_str,
+                tasks=args.tasks,
+                batch_size=args.eval_bs,
+                eval_model_dtype=eval_model_dtype)
         else:
             from auto_round.eval.evaluation import simple_evaluate
             tasks, model_args, device_str = _eval_init(
-                args.tasks, eval_folder, args.device, args.disable_trust_remote_code)
+                args.tasks, eval_folder, args.device, args.disable_trust_remote_code, dtype=eval_model_dtype)
+            st = time.time()
             res = simple_evaluate(
                 model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
             print(make_table(res))
+            print("evaluation running time=", time.time() - st)
 
 
-def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
+def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype="auto"):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
-    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code}'  # ,add_bos_token={True}
+    if dtype != "auto":
+        dtype = get_model_dtype(model_dtype=dtype)
+    # ,add_bos_token={True}
+    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code},dtype={dtype}'
     if parallelism:
         model_args += ",parallelize=True"
     if isinstance(tasks, str):
@@ -572,19 +617,66 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False):
 
 
 def eval(args):
-    tasks, model_args, device_str = _eval_init(args.tasks, args.model, args.device, args.disable_trust_remote_code)
+    import time
+    tasks, model_args, device_str = _eval_init(
+        args.tasks, args.model, args.device, args.disable_trust_remote_code, args.eval_model_dtype)
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
-    from auto_round.eval.evaluation import simple_evaluate
+    from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
+    from auto_round.utils import logger
 
-    res = simple_evaluate(model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+    is_gguf_file = False
+    if os.path.isfile(args.model) and args.model.endswith(".gguf"):
+        is_gguf_file = True
+        gguf_file = os.path.basename(args.model)
+        model = os.path.dirname(args.model)
+    else:
+        for file in os.listdir(args.model):
+            if file.endswith(".gguf"):
+                is_gguf_file = True
+                gguf_file = file
+    eval_model_dtype = get_model_dtype(args.eval_model_dtype)
+    if is_gguf_file:
+        import torch
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+        from lm_eval.utils import make_table  # pylint: disable=E0401
+        tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
 
-    from lm_eval.utils import make_table  # pylint: disable=E0401
-    print(make_table(res))
+        logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
+        if eval_model_dtype == "float32" or eval_model_dtype == "auto":
+            logger.warning(
+                "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
+                " but may affect accuracy."
+            )
+        model = AutoModelForCausalLM.from_pretrained(
+            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
+        model.eval()
+        if (batch_size := args.eval_bs) is None:
+            batch_size = "auto:8"
+        st = time.time()
+        res = simple_evaluate_user_model(
+                model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
+        print(make_table(res))
+        print("evaluation running time=", time.time() - st)
+    else:
+        st = time.time()
+        res = simple_evaluate(
+            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+        from lm_eval.utils import make_table  # pylint: disable=E0401
+        print(make_table(res))
+        print("evaluation running time=", time.time() - st)
 
 
 def eval_task_by_task(
-        model, device=None, tasks=None, tokenizer=None, batch_size=None, max_batch_size=64, trust_remote_code=True):
+        model,
+        device=None,
+        tasks=None,
+        tokenizer=None,
+        batch_size=None,
+        max_batch_size=64,
+        trust_remote_code=True,
+        eval_model_dtype=None,
+        retry_times=3):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
@@ -597,7 +689,7 @@ def eval_task_by_task(
 
     from auto_round import AutoRoundConfig  # pylint: disable=E0611
     if batch_size is None:
-        batch_size = "auto"
+        batch_size = "auto:8"
     is_gguf_file = False
     if not isinstance(model, str):
         parallelism = False
@@ -611,9 +703,20 @@ def eval_task_by_task(
                 if file.endswith(".gguf"):
                     is_gguf_file = True
                     gguf_file = file
+    eval_model_dtype = get_model_dtype(eval_model_dtype)
     if is_gguf_file:
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        model = AutoModelForCausalLM.from_pretrained(model, gguf_file=gguf_file, device_map="auto")
+        logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
+        if eval_model_dtype == "float32" or eval_model_dtype == "auto":
+            logger.warning(
+                "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
+                " but may affect accuracy."
+            )
+
+        model = AutoModelForCausalLM.from_pretrained(
+            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
+        model.eval()
+        parallelism=False
     hflm = HFLM(
         pretrained=model,
         tokenizer=tokenizer,
@@ -621,7 +724,9 @@ def eval_task_by_task(
         batch_size=batch_size,
         max_batch_size=max_batch_size,
         parallelize=parallelism,
-        trust_remote_code=trust_remote_code)
+        trust_remote_code=trust_remote_code,
+        dtype=eval_model_dtype
+        )
 
     if isinstance(tasks, str):
         tasks = tasks.replace(" ", "").split(",")
@@ -629,23 +734,32 @@ def eval_task_by_task(
     from lm_eval.utils import make_table  # pylint: disable=E0401
     res_all = {}
     res_keys = ["results", "versions", "n-shot", "higher_is_better"]
+    import time
+    st = time.time()
     for task in tasks:
-        try:
-            res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size)
-        except RuntimeError as e:
-            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                try:
-                    logger.warning("Out of memory, reset batch_size to 1 and re-try.")
-                    res = lm_simple_evaluate(model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1)
-                except Exception as e:
+        while retry_times:
+            try:
+                res = lm_simple_evaluate(
+                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size)
+                break
+            except Exception as e:
+                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                    ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
+                    try:
+                        for k, v in hflm.batch_sizes.items():
+                            hflm.batch_sizes[k] =  max(v // 2, 1)
+                        logger.warning(
+                            f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
+                        res = lm_simple_evaluate(
+                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1)
+                        hflm.batch_sizes = ori_batch_sizes
+                    except Exception as e:
+                        traceback.print_exc()
+                        pass
+                else:
                     traceback.print_exc()
-                    continue
-            else:
-                traceback.print_exc()
-                continue
-        except Exception as e:
-            traceback.print_exc()
-            continue
+                    break
+            retry_times -= 1
 
         if not res_all:
             res_all = res
@@ -654,3 +768,4 @@ def eval_task_by_task(
                 res_all[key].update(res[key])
         print(make_table(res_all))
 
+    print("total eval time:", time.time() - st)
