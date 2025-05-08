@@ -574,7 +574,12 @@ def tune(args):
             from auto_round.eval.evaluation import simple_evaluate_user_model
             st = time.time()
             res = simple_evaluate_user_model(
-                model, tokenizer, tasks=tasks, batch_size=args.eval_bs, device=device_str, eval_model_dtype=eval_model_dtype)
+                model,
+                tokenizer,
+                tasks=tasks,
+                batch_size=args.eval_bs,
+                device=device_str,
+                eval_model_dtype=eval_model_dtype)
             print(make_table(res))
             print("evaluation running time=", time.time() - st)
     else:
@@ -601,7 +606,8 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype
     device_str, parallelism = get_device_and_parallelism(device)
     if dtype != "auto":
         dtype = get_model_dtype(model_dtype=dtype)
-    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code},dtype={dtype}'  # ,add_bos_token={True}
+    # ,add_bos_token={True}
+    model_args = f'pretrained={model_path},trust_remote_code={not disable_trust_remote_code},dtype={dtype}'
     if parallelism:
         model_args += ",parallelize=True"
     if isinstance(tasks, str):
@@ -714,7 +720,7 @@ def eval_task_by_task(
         batch_size=batch_size,
         max_batch_size=max_batch_size,
         parallelize=parallelism,
-        trust_remote_code=trust_remote_code, 
+        trust_remote_code=trust_remote_code,
         dtype=eval_model_dtype
         )
 
