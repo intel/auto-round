@@ -278,7 +278,7 @@ There are typically two scenarios that require multi-GPU tuning: one is the cali
 For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which requires the entire model to reside on 
   the GPU for efficient calibration. If the model is too large to fit into a single GPU, AutoRound will prompt the user to use `--device '0,1'` to load the model across multiple GPUs.
 
-#### Enable multiple gpus tuning for extreamly large model
+#### Enable multiple gpus tuning for extremely large model
 AutoRound tunes the model in a block-by-block manner. Although the block size is much smaller than the model size, it still requires a significant amount of GPU memory for tuning—typically 10 times the block size. This can lead to out-of-memory (OOM) errors when working with extremely large models.
 
 For strategies to reduce GPU memory usage, please refer to the Reduced GPU Memory Usage section below, where you can adjust hyperparameters to optimize memory consumption.
