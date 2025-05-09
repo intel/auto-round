@@ -210,9 +210,11 @@ BackendInfos['qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
 BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True, False],  ## for awq, not robust
                                                    packing_format="awq",
                                                    bits=[2, 4, 8], group_size=None,
+                                                   dtype=["float16","bfloat16"],
                                                    priority=0,
                                                    feature_checks=[],
-                                                   requirements=["intel-extension-for-transformers"]
+                                                   alias=["itrex", "qbits"],
+                                                   requirements=["intel-extension-for-transformers","torch<2.7.0"]
                                                    )
 
 BackendInfos['ipex_gptq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
@@ -672,42 +674,64 @@ def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
     else:
         return None
 
+def process_requirement(requirements: list, target_device="cuda", logger_level="error"):
+    def log(message):
+        (logger.warning if logger_level != "error" else logger.error)(message)
 
-def process_requirement(requirements: list, target_device="cuda"):
-    gptqmodel_requirements = None
-    other_requirements = []
-    for requirement in requirements:
+    def build_pip_commands(gptq_req, other_reqs):
+        commands = []
+
+        if gptq_req:
+            commands.append(f"pip install -v '{gptq_req}' --no-build-isolation")
+            try:
+                require_version("numpy<2.0")
+            except:
+                commands.append("pip install 'numpy<2.0'")
+
+        if other_reqs:
+            other_str = " ".join(other_reqs)
+            commands.append(f"pip install {other_str}")
+
+        return commands
+
+    gptq_req = next((req for req in requirements if "gptqmodel" in req), None)
+    other_reqs = [req for req in requirements if "gptqmodel" not in req]
+
+    # Filter requirements
+    valid_requirements = []
+    for req in requirements:
         try:
-            require_version(requirement)
+            require_version(req)
         except:
-            if "gptqmodel" in requirement:
-                gptqmodel_requirements = requirement
-            else:
-                other_requirements.append(requirement)
+            valid_requirements.append(req)
 
-    infos = []
+    pip_cmds = build_pip_commands(gptq_req, other_reqs)
+    if not pip_cmds:
+        return
 
-    if gptqmodel_requirements is not None:
-        infos.append(f"pip install -v '{gptqmodel_requirements}' --no-build-isolation")
-        try:
-            require_version("numpy<2.0")
-        except:
-            infos.append(f"pip install 'numpy<2.0'")
+    # Instructional messages
+    install_instructions = []
+    for cmd in pip_cmds:
+        if "intel-extension-for-pytorch" in cmd and target_device == "xpu":
+            install_instructions.append(
+                "Please refer to https://pytorch-extension.intel.com/installation?platform=gpu "
+                "to install intel-extension-for-pytorch. Ensure that the version matches your installed PyTorch."
+            )
 
-    other_info = f"pip install"
-    if len(other_requirements) > 0:
-        for requirement in other_requirements:
-            other_info += f" {requirement}"
-        infos.append(other_info)
-    if len(infos) > 0:
-        concat_info = ""
-        for index, req in enumerate(infos):
-            if "intel-extension-for-pytorch" in req and target_device == "xpu":
-                logging.error("please refer to https://pytorch-extension.intel.com/installation?platform=gpu to "
-                              "install intel-extension-for-pytorch. Ensure that the version matches your "
-                              "installed PyTorch version.")
-                continue
-            concat_info += f"`{req}`"
-            if index != len(infos) - 1:
-                concat_info += " and "
-        raise ImportError(f"inference requires the follow libraries. Please install them via {concat_info}")
+    prefix_msg = (
+        "Better backend is found, please install all the following requirements to enable it."
+        if logger_level != "error"
+        else "Inference requires the following libraries. Please install all of them."
+    )
+    log(prefix_msg)
+
+    for msg in install_instructions:
+        log(msg)
+        if logger_level == "error" and len(pip_cmds) == 0:
+            exit(-1)
+
+    joined_cmds = " and ".join(f"`{cmd}`" for cmd in pip_cmds)
+    if joined_cmds:
+        log(joined_cmds)
+        if logger_level == "error":
+            exit(-1)

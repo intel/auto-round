@@ -19,7 +19,8 @@ from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 
 
-# taken from https://github.com/vllm-project/vllm/blob/ebb554cdb7cd9cc54b2feec20c45ab9cd9067d52/tests/kernels/test_nvfp4_quant.py
+# taken from
+# https://github.com/vllm-project/vllm/blob/ebb554cdb7cd9cc54b2feec20c45ab9cd9067d52/tests/kernels/test_nvfp4_quant.py
 def cast_to_fp4(x):
     sign = torch.sign(x)
     x = torch.abs(x)
@@ -64,7 +65,7 @@ def ref_nvfp4_quant(x, global_scale, block_size=16, v=0):
 
     scaled_x = x.to(torch.float32) * output_scale
     clipped_x = torch.clamp(scaled_x, -6.0, 6.0) + v
-    return (cast_to_fp4_ste(clipped_x) * get_reciprocal(output_scale)).reshape(m, n),output_scale
+    return (cast_to_fp4_ste(clipped_x) * get_reciprocal(output_scale)).reshape(m, n), output_scale
 
 
 @register_dtype("nv_fp4")
@@ -73,6 +74,6 @@ def full_quant(tensor, bits=4, group_size=16, v=0, **kwargs):
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     tensor_amax = tensor.abs().max().to(torch.float32)
     global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / tensor_amax
-    qdq_res,output_scale = ref_nvfp4_quant(tensor, global_scale, group_size, v)
+    qdq_res, output_scale = ref_nvfp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), output_scale, None
