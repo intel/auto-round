@@ -292,44 +292,6 @@ def check_is_cpu(device):
     return device == torch.device("cpu") or device == "cpu"
 
 
-def validate_modules(module_names, quant_vision=False, vison_blocks_names=None):
-    """
-    Test a list of modules' validity.
-
-    Args:
-    modules (list of str): List of strings to be validated.
-
-    Returns:
-    bool: True if all modules have equal length or not dependent, otherwise False.
-    """
-    if not bool(module_names):  # pragma: no cover
-        raise ValueError(f"Empty modules")
-    if len(module_names) < 2:
-        return True
-    split_modules = [s.split('.') for s, _ in module_names]
-    lengths = [len(parts) for parts in split_modules]
-    if len(set(lengths)) == 1:  # pragma: no cover
-        return True
-    max_length = max(lengths)
-    min_length = min(lengths)
-    longest_module = next(s for s in split_modules if len(s) == max_length)
-    shortest_module = next(s for s in split_modules if len(s) == min_length)
-    shortest_module = '.'.join(shortest_module)
-    longest_module = '.'.join(longest_module)
-    # Check if the shortest name is a substring of the longest name
-    if shortest_module in longest_module:  # pragma: no cover
-        raise ValueError(f"Invalid modules, at least two modules detected" \
-                         " as dependent, {shortest_module} and {longest_module}")
-    flag = False
-    if quant_vision:
-        for n, _ in module_names:
-            flag = any(key not in n.lower() for key in (vison_blocks_names))
-    if quant_vision and not flag:
-        raise ValueError(f"Cannot find the visual block. Please reset the quant_nontext_module parameter to False, " \
-                         "or raise an issue at https://github.com/intel/auto-round/issues.")
-    return
-
-
 def get_common_prefix(paths):
     # Split each path into components and find the common prefix
     split_paths = [path.split('.') for path in paths]
@@ -1461,3 +1423,28 @@ def get_model_dtype(model_dtype, default="auto"):
         logger.warning(f"Unable to identify model_dtype {model_dtype}, reset to default model_dtype {default}")
         model_dtype = default
     return model_dtype
+
+
+def filter_quantization_config(quantization_config):
+    default_dict = {"amp": True, "batch_size": 8, "data_type": int, "dataset": "NeelNanda/pile-10k",
+                    "enable_minmax_tuning": True, "enable_norm_bias_tuning": False, "enable_quanted_input": True,
+                    "gradient_accumulate_steps": 1, "iters": 200, "low_gpu_mem_usage": False, "nsamples": 128,
+                    "scale_dtype": "torch.float16", "seqlen": 2048}
+    iters = quantization_config.get("iters", 200)
+
+    default_dict["lr"] = 1.0 / iters if iters > 0 else 5e-3
+    default_dict["minmax_lr"] = default_dict["lr"]
+
+    for key in default_dict:
+        if key in quantization_config and default_dict[key] == quantization_config[key]:
+            quantization_config.pop(key)
+    for k in list(quantization_config.keys()):
+        if quantization_config[k] is None:
+            quantization_config.pop(k)
+
+    if quantization_config.get("act_bits", 16) >= 16:
+        quantization_config.pop("act_bits", None)
+        quantization_config.pop("act_data_type", None)
+        quantization_config.pop("act_dynamic", None)
+        quantization_config.pop("act_sym", None)
+        quantization_config.pop("act_group_size", None)

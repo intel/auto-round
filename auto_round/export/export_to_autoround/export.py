@@ -24,7 +24,8 @@ import transformers
 import auto_round.export.export_to_autoround.qlinear_triton_act
 
 import auto_round_extension.cuda.qlinear_tritonv2
-from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized
+from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized, \
+    filter_quantization_config
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
@@ -306,7 +307,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
             for _ in executor.map(wrapper, names):
                 pass
-
+    filter_quantization_config(quantization_config)
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:
@@ -364,4 +365,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
