@@ -217,13 +217,15 @@ class AutoRound(object):
         self.act_bits = act_bits if not (act_bits is None) else self.bits
         self.act_sym = act_sym if not (act_sym is None) else self.sym
         self.act_dynamic = act_dynamic
-        if data_type in supported_dtypes:
-            self.act_data_type = act_data_type if act_data_type is not None else data_type
-        else:
-            self.act_data_type = act_data_type if act_data_type is not None else "int"
+        self.act_data_type = act_data_type
+        if self.act_data_type is None:
+            if data_type in supported_dtypes and self.act_bits <= 16:
+                self.act_data_type = data_type
+            else:
+                self.act_data_type = "float"
 
         tmp_act_bits = infer_act_bits_by_data_type(self.act_data_type)
-        if tmp_act_bits<16:
+        if tmp_act_bits < 16:
             self.act_bits = tmp_act_bits
 
         self.sampler = sampler
@@ -309,7 +311,6 @@ class AutoRound(object):
 
         self.has_qlayer_outside_block = self.set_layerwise_config(self.layer_config)  ##better place in the end
         self.shared_cache_keys = get_shared_keys(self.model)
-
 
     def set_device_map_in_blocks(self, device_map):
         """Sets the device map for specific blocks in the model.
@@ -1617,7 +1618,7 @@ class AutoRound(object):
         """
         # only support to export afp8
         if self.act_bits <= 8:
-            if "fp8" not in self.act_data_type:
+            if "fp8" not in self.act_data_type or self.act_dynamic:
                 if format != "fake":
                     logger.warning(
                         f"Currently only support to export auto_round format quantized model"
@@ -1628,7 +1629,7 @@ class AutoRound(object):
             else:
                 if format != "auto_round":
                     logger.warning(
-                        f"Currently only support to export auto_round format for W{self.bits}AFP8 model,"
+                        f"Currently only support to export auto_round format for static W{self.bits}AFP8 model,"
                         " change format to auto_round"
                     )
                     format = "auto_round"
@@ -1819,7 +1820,7 @@ class AutoRound(object):
     @classmethod
     @torch.no_grad()
     def sampling_inputs(cls, input_ids, input_others, indices, seqlen,
-                        batch_dim=0,share_cache_keys=()):
+                        batch_dim=0, share_cache_keys=()):
         """Samples inputs based on the given indices and sequence length.
 
         Args:
