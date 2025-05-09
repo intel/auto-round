@@ -532,13 +532,18 @@ class AutoRound(object):
             m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False, enable_round_tuning=False)
             m = m.unwrapper({})
             m.to("cpu")
-            if self.is_packing_immediate:
+            if self.low_gpu_mem_usage:
+                clear_memory()
+            if self.:
                 from auto_round.export import PACKING_LAYER_WITH_FORMAT
                 if check_to_quantized(m):
                     target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                    PACKING_LAYER_WITH_FORMAT[target_backend](n, self.model, self.formats[0])
+                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
+                    if self.low_gpu_mem_usage:
+                        clear_memory()
             else:
                 set_module(self.model, name, m)
+
         self.quantized = True
         return self.model, self.layer_config
 
