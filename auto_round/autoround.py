@@ -534,7 +534,7 @@ class AutoRound(object):
             m.to("cpu")
             if self.low_gpu_mem_usage:
                 clear_memory()
-            if self.:
+            if self.is_packing_immediate:
                 from auto_round.export import PACKING_LAYER_WITH_FORMAT
                 if check_to_quantized(m):
                     target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
