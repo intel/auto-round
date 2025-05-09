@@ -42,6 +42,20 @@ supported_formats = supported_formats + tuple(GGUF_CONFIG.keys())
 
 supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D)
 
+supported_dtypes = ("int", "mx_fp", "fp", "nv_fp")
+
+
+def infer_act_bits_by_data_type(data_type: str):
+    for supported_dtype in supported_dtypes:
+        if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
+            ##first check the following two bits
+            suc_2str = data_type[len(supported_dtype):len(supported_dtype) + 2]
+            if str.isdigit(suc_2str):
+                return int(suc_2str)
+            if str.isdigit(data_type[len(supported_dtype)]):
+                return int(data_type[len(supported_dtype)])
+    return 16
+
 
 @lru_cache(None)
 def warning_once(self, msg: str):

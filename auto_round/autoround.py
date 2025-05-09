@@ -51,7 +51,7 @@ from .utils import (
     set_module,
     llm_load_model,
     reset_params,
-    init_cache, check_skippable_keywords, get_shared_keys,
+    init_cache, check_skippable_keywords, get_shared_keys, supported_dtypes, infer_act_bits_by_data_type,
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -217,7 +217,14 @@ class AutoRound(object):
         self.act_bits = act_bits if not (act_bits is None) else self.bits
         self.act_sym = act_sym if not (act_sym is None) else self.sym
         self.act_dynamic = act_dynamic
-        self.act_data_type = act_data_type if act_data_type is not None else data_type
+        if data_type in supported_dtypes:
+            self.act_data_type = act_data_type if act_data_type is not None else data_type
+        else:
+            self.act_data_type = act_data_type if act_data_type is not None else "int"
+
+        tmp_act_bits = infer_act_bits_by_data_type(self.act_data_type)
+        if tmp_act_bits<16:
+            self.act_bits = tmp_act_bits
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
@@ -302,6 +309,7 @@ class AutoRound(object):
 
         self.has_qlayer_outside_block = self.set_layerwise_config(self.layer_config)  ##better place in the end
         self.shared_cache_keys = get_shared_keys(self.model)
+
 
     def set_device_map_in_blocks(self, device_map):
         """Sets the device map for specific blocks in the model.
