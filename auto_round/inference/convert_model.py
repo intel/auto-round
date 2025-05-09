@@ -431,7 +431,6 @@ def infer_target_device(device_map=None):
                     target_device = str(device).split(":")[0]
     else:
         target_device = get_available_devices()[0]
-    assert isinstance(target_device, str)
     return target_device
 
 
