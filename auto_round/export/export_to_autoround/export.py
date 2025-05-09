@@ -82,7 +82,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
     elif "gptqmodel" in backend:
-        from gptqmodel.nn_modules.qlinear.torch import TorchQuantLinear
+        from gptqmodel.nn_modules.qlinear.torch import TorchQuantLinear # pylint: disable=E0401
         return TorchQuantLinear
     elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
