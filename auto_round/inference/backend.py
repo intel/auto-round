@@ -131,7 +131,7 @@ BackendInfos['auto_gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
 BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                                   packing_format="int32",
                                                   dtype=["float16", "bfloat16"],
-                                                  bits=[2, 4, 8],
+                                                  bits=[2, 3, 4, 8],
                                                   priority=1, feature_checks=[feature_multiply_checker_32],
                                                   alias=["auto_round", "tritonv2", "triton"],
                                                   requirements=["auto-round>=0.5.0", "triton>=2.0"]
@@ -153,6 +153,16 @@ BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
                                                dtype=["float16", "bfloat16"],
                                                priority=6, feature_checks=[gptqmodel_marlin_feature_check],
                                                alias=["marlin", "gptqmodel"],
+                                               requirements=["gptqmodel>=2.0"],
+                                               )
+
+BackendInfos['gptqmodel:torch'] = BackendInfo(device=["cuda"], sym=[True, False],
+                                               packing_format="int32",
+                                               bits=[2, 3, 4, 8],
+                                               group_size=[-1, 16, 32, 64, 128],
+                                               dtype=["float16", "bfloat16"],
+                                               priority=0,
+                                               alias=["torch"],
                                                requirements=["gptqmodel>=2.0"],
                                                )
 
@@ -422,6 +432,8 @@ def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
         return gptqmodel.nn_modules.qlinear.exllamav2.ExllamaV2QuantLinear
     elif "tritonv2" in backend:
         return gptqmodel.nn_modules.qlinear.tritonv2.TritonV2QuantLinear
+    elif "torch" in backend:
+        return gptqmodel.nn_modules.qlinear.torch.TorchQuantLinear
     else:
         raise ValueError(f"Unsupported {backend}")
 
@@ -711,3 +723,4 @@ def process_requirement(requirements: list):
             other_info += f" {requirement}"
         infos.append(other_info)
     return infos
+

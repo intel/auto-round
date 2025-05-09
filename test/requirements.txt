@@ -1,3 +1,5 @@
 addict
 modelscope
 gguf
+gptqmodel
+
