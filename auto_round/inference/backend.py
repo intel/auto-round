@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import functools
+import logging
 from dataclasses import dataclass, field
 from typing import List, Any, Optional
 
@@ -623,20 +624,8 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
                                                      key=lambda support_backend: BackendInfos[support_backend].priority,
                                                      reverse=True)
             backend_info = BackendInfos[supported_backends_need_package[0]]
+            process_requirement(backend_info.requirements, target_device=device)
             logger.error("please install all the following packages to support inference")
-            for requirement in backend_info.requirements:
-                if isinstance(requirement, str):
-                    try:
-                        require_version(requirement)
-                    except ImportError:
-                        if "gptqmodel" in requirement:
-                            logger.error(f"pip install -v '{requirement}' --no-build-isolation")
-                        else:
-                            logger.error(f"pip install '{requirement}' ")
-                else:
-                    str_info = requirement()[1]
-                    logger.error(str_info)
-            exit(-1)
 
         return None
 
@@ -684,7 +673,7 @@ def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
         return None
 
 
-def process_requirement(requirements: list):
+def process_requirement(requirements: list,target_device="cuda"):
     gptqmodel_requirements = None
     other_requirements = []
     for requirement in requirements:
@@ -710,4 +699,16 @@ def process_requirement(requirements: list):
         for requirement in other_requirements:
             other_info += f" {requirement}"
         infos.append(other_info)
-    return infos
+    if len(infos) > 0:
+        concat_info = ""
+        for index, req in enumerate(infos):
+            if "intel-extension-for-pytorch" in req and target_device == "xpu":
+                logging.error("please refer to https://pytorch-extension.intel.com/installation?platform=gpu to "
+                              "install intel-extension-for-pytorch. Ensure that the version matches your "
+                              "installed PyTorch version.")
+                continue
+            concat_info += f"`{req}`"
+            if index != len(infos) - 1:
+                concat_info += " and "
+        raise ImportError(f"inference requires the follow libraries. Please install them via {concat_info}")
+

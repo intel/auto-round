@@ -314,14 +314,7 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
             raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
         ##check requirements
         requirements = BackendInfos[layer_backend_must].requirements
-        requirements_info = process_requirement(requirements)
-        if len(requirements_info) > 0:
-            extra_info = ""
-            for index, req in enumerate(requirements_info):
-                extra_info += (f"`{req}`")
-                if index != len(requirements_info) - 1:
-                    extra_info += " and "
-            raise ImportError(f"{target_backend} requires the follow libraries. Please install them via {extra_info}")
+        process_requirement(requirements,target_device)
 
     target_backend = target_backend or orig_backend  # Default to original backend if not specified
 
