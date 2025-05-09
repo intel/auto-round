@@ -204,7 +204,7 @@ BackendInfos['qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
                                        feature_checks=[],
                                        alias=["itrex", "qbits"],
                                        convertable_format=["int32_zp"],
-                                       requirements=["intel-extension-for-transformers","torch<2.7.0"]
+                                       requirements=["intel-extension-for-transformers", "torch<2.7.0"]
                                        )
 
 BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True, False],  ## for awq, not robust
@@ -673,7 +673,7 @@ def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
         return None
 
 
-def process_requirement(requirements: list,target_device="cuda"):
+def process_requirement(requirements: list, target_device="cuda"):
     gptqmodel_requirements = None
     other_requirements = []
     for requirement in requirements:
@@ -711,4 +711,3 @@ def process_requirement(requirements: list,target_device="cuda"):
             if index != len(infos) - 1:
                 concat_info += " and "
         raise ImportError(f"inference requires the follow libraries. Please install them via {concat_info}")
-
