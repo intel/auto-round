@@ -82,11 +82,8 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
     elif "gptqmodel" in backend:
-        if not sym:
-            from auto_round_extension.cuda.gptqmodel_torch import QuantLinear
-            return QuantLinear
-        else:
-            return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
+        from gptqmodel.nn_modules.qlinear.torch import TorchQuantLinear
+        return TorchQuantLinear
     elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
@@ -188,9 +185,9 @@ def pack_layer(layer_name, model, backend):
     bias = layer.bias is not None
 
     if "awq" not in backend:
-        if "gptqmodel_torch" in QuantLinear.__module__: # add sym arg
+        if "gptqmodel" in QuantLinear.__module__: # use gptqmodel args sort
             new_layer = QuantLinear(  ##pylint: disable=E1123
-            bits, group_size, sym, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
+            bits, group_size, False, sym, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
             )
         else:
             new_layer = QuantLinear(  ##pylint: disable=E1123
