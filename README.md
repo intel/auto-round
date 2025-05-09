@@ -45,11 +45,8 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 ### Install from pypi
 
 ```bash
-# GPU
+# CPU/Intel GPU/CUDA
 pip install auto-round
-
-# CPU
-pip install auto-round[cpu]
 
 # HPU
 pip install auto-round-lib
@@ -59,11 +56,8 @@ pip install auto-round-lib
   <summary>Build from Source</summary>
 
   ```bash
-  # GPU
+  # CPU/Intel GPU/CUDA
   pip install .
-
-  # CPU
-  pip install .[cpu]
 
   # HPU
   python setup.py install lib
@@ -89,7 +83,8 @@ auto-round \
     --output_dir ./tmp_autoround
 ```
 
-We offer two configurations, `auto-round-best` and `auto-round-light`, designed for optimal accuracy and improved speed,
+We offer another two configurations, `auto-round-best` and `auto-round-light`, 
+designed for optimal accuracy and improved speed,
 respectively. Details are as follows.
 <details>
   <summary>Other Recipes</summary>

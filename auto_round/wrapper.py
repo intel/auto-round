@@ -75,24 +75,12 @@ class WrapperLinear(torch.nn.Module):
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_round_tuning = enable_round_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
-        self.enable_act_quant = self.orig_layer.act_bits <= 8 or self._check_act_quantization(
-            self.orig_layer.act_data_type)
+        self.enable_act_quant = self.orig_layer.act_bits <= 8
         self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
         self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
 
-    @staticmethod
-    def _check_act_quantization(data_type: str):
-        support_dtypes = ["int", "mx_fp", "fp", "nv_fp"]
-        for support_dtype in support_dtypes:
-            if data_type.startswith(support_dtype) and len(data_type) > len(support_dtype):
-                ##first check the following two bits
-                suc_2str = data_type[len(support_dtype):len(support_dtype) + 2]
-                if str.isdigit(suc_2str):  ##>8
-                    return False
-                if str.isdigit(data_type[len(support_dtype)]) and int(data_type[len(support_dtype)]) <= 8:
-                    return True
-        return False
+
 
     def _init_tuning_params_and_quant_func(self):
         """Initializes tuning parameters and quantization functions.
