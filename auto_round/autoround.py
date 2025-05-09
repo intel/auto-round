@@ -480,9 +480,6 @@ class AutoRound(object):
                 if (self.sym and ("gptq" not in format and "awq" not in format)):
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
-                if (not self.sym and self.bits == 3 and ("gptq" not in format and "awq" not in format)):
-                    format = format.replace('auto_round', 'auto_round:gptqmodel')
-                    formats[index] = format
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):

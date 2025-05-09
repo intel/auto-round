@@ -131,7 +131,7 @@ BackendInfos['auto_gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
 BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
                                                   packing_format="int32",
                                                   dtype=["float16", "bfloat16"],
-                                                  bits=[2, 4, 8],
+                                                  bits=[2, 3, 4, 8],
                                                   priority=1, feature_checks=[feature_multiply_checker_32],
                                                   alias=["auto_round", "tritonv2", "triton"],
                                                   requirements=["auto-round>=0.5.0", "triton>=2.0"]
@@ -161,8 +161,8 @@ BackendInfos['gptqmodel:torch'] = BackendInfo(device=["cuda"], sym=[True, False]
                                                bits=[2, 3, 4, 8],
                                                group_size=[-1, 16, 32, 64, 128],
                                                dtype=["float16", "bfloat16"],
-                                               priority=6,
-                                               alias=["torch", "gptqmodel"],
+                                               priority=0,
+                                               alias=["torch"],
                                                requirements=["gptqmodel>=2.0"],
                                                )
 
