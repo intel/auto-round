@@ -51,7 +51,7 @@ from .utils import (
     set_module,
     llm_load_model,
     reset_params,
-    init_cache, check_skippable_keywords, get_shared_keys, supported_dtypes, infer_act_bits_by_data_type,
+    init_cache, check_skippable_keywords, get_shared_keys, supported_dtypes, infer_bits_by_data_type,
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -182,6 +182,7 @@ class AutoRound(object):
         self.enable_norm_bias_tuning = enable_norm_bias_tuning
         self.group_size = group_size
         self.sym = sym
+
         self.low_gpu_mem_usage = low_gpu_mem_usage
         self.low_cpu_mem_usage = low_cpu_mem_usage
         self.layer_config = {} if layer_config is None else layer_config
@@ -200,6 +201,11 @@ class AutoRound(object):
         self.minmax_lr = minmax_lr or self.lr
 
         self.data_type = data_type
+        tmp_bits =  infer_bits_by_data_type(self.data_type)
+        if tmp_bits<16 and tmp_bits!=bits:
+            logger.warning(
+                f"bits set in 'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
+            self.bits = tmp_bits
         self.supported_types = supported_layer_types
         self.model = model.eval()
         self.tokenizer = tokenizer
@@ -221,10 +227,11 @@ class AutoRound(object):
         if self.act_data_type is None:
             if data_type in supported_dtypes and self.act_bits <= 16:
                 self.act_data_type = data_type
+                logger.info(f"activation adopts {data_type}")
             else:
                 self.act_data_type = "float"
 
-        tmp_act_bits = infer_act_bits_by_data_type(self.act_data_type)
+        tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
         if tmp_act_bits < 16:
             self.act_bits = tmp_act_bits
 

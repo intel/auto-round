@@ -210,11 +210,11 @@ BackendInfos['qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
 BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True, False],  ## for awq, not robust
                                                    packing_format="awq",
                                                    bits=[2, 4, 8], group_size=None,
-                                                   dtype=["float16","bfloat16"],
+                                                   dtype=["float16", "bfloat16"],
                                                    priority=0,
                                                    feature_checks=[],
                                                    alias=["itrex", "qbits"],
-                                                   requirements=["intel-extension-for-transformers","torch<2.7.0"]
+                                                   requirements=["intel-extension-for-transformers", "torch<2.7.0"]
                                                    )
 
 BackendInfos['ipex_gptq'] = BackendInfo(device=["cpu", "xpu"], sym=[True, False],
@@ -627,7 +627,6 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
                                                      reverse=True)
             backend_info = BackendInfos[supported_backends_need_package[0]]
             process_requirement(backend_info.requirements, target_device=device)
-            logger.error("please install all the following packages to support inference")
 
         return None
 
@@ -674,6 +673,7 @@ def get_highest_priority_backend(bits, sym, group_size, device, packing_format):
     else:
         return None
 
+
 def process_requirement(requirements: list, target_device="cuda", logger_level="error"):
     def log(message):
         (logger.warning if logger_level != "error" else logger.error)(message)
@@ -694,16 +694,16 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
 
         return commands
 
-    gptq_req = next((req for req in requirements if "gptqmodel" in req), None)
-    other_reqs = [req for req in requirements if "gptqmodel" not in req]
-
     # Filter requirements
-    valid_requirements = []
+    missing_requirements = []
     for req in requirements:
         try:
             require_version(req)
         except:
-            valid_requirements.append(req)
+            missing_requirements.append(req)
+
+    gptq_req = next((req for req in missing_requirements if "gptqmodel" in req), None)
+    other_reqs = [req for req in missing_requirements if "gptqmodel" not in req]
 
     pip_cmds = build_pip_commands(gptq_req, other_reqs)
     if not pip_cmds:
