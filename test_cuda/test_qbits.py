@@ -7,9 +7,15 @@ sys.path.insert(0, "..")
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRoundConfig, AutoRound
+from auto_round.testing_utils import require_ipex, require_itrex, require_gptqmodel, require_old_version
 
 
 class TestAutoRound(unittest.TestCase):
+    @classmethod
+    def setUpClass(self):
+        self.model_name = "/models/opt-125m"
+        self.save_folder = "./saved"
+
     def model_infer(self, model, tokenizer):
         prompts = [
             "Hello,my name is",
@@ -43,6 +49,8 @@ class TestAutoRound(unittest.TestCase):
 
 
     ## require torch 2.6
+    @require_itrex
+    @require_old_version
     def test_load_gptq_model_8bits(self):
         model_name = "acloudfan/opt-125m-gptq-8bit"
         quantization_config = AutoRoundConfig()
@@ -52,7 +60,8 @@ class TestAutoRound(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model_infer(model, tokenizer)
 
-
+    @require_itrex
+    @require_old_version
     def test_load_gptq_model_2bits(self):
         model_name = "LucasSantiago257/gemma-2b-2bits-gptq"
         quantization_config = AutoRoundConfig()
@@ -62,7 +71,7 @@ class TestAutoRound(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model_infer(model, tokenizer)
 
-
+    @require_ipex
     def test_mixed_precision(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -99,6 +108,7 @@ class TestAutoRound(unittest.TestCase):
         assert ("!!!" not in res)
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
+    @require_gptqmodel
     def test_autoround_sym(self):
         for bits in [4]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)

@@ -9,8 +9,8 @@ from auto_round.eval.evaluation import simple_evaluate_user_model
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRound
-from auto_round import AutoRoundConfig
+from auto_round import AutoRound, AutoRoundConfig
+from auto_round.testing_utils import require_new_version
 
 
 class LLMDataLoader:
@@ -62,6 +62,7 @@ class TestAutoRoundTritonBackend(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @require_new_version
     def test_tritonv2_4bits_asym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -109,6 +110,7 @@ class TestAutoRoundTritonBackend(unittest.TestCase):
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @require_new_version
     def test_tritonv2_2bits_asym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -153,6 +155,7 @@ class TestAutoRoundTritonBackend(unittest.TestCase):
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @require_new_version
     def test_tritonv2_4bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -199,8 +202,9 @@ class TestAutoRoundTritonBackend(unittest.TestCase):
         self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.26)
         torch.cuda.empty_cache()
 
-    shutil.rmtree("./saved", ignore_errors=True)
+        shutil.rmtree("./saved", ignore_errors=True)
 
+    @require_new_version
     def test_tritonv2_8bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -247,6 +251,7 @@ class TestAutoRoundTritonBackend(unittest.TestCase):
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @require_new_version
     def test_tritonv2_2bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)

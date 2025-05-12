@@ -1,15 +1,16 @@
-import copy
-import shutil
-import sys
-import unittest
 import re
 import os
+import sys
+import copy
+import shutil
+import unittest
+import requests
 
 sys.path.insert(0, "..")
 
 from PIL import Image
 from auto_round import AutoRoundConfig
-import requests
+from auto_round.testing_utils import require_gptqmodel, require_vlm_env
 
 
 class TestAutoRound(unittest.TestCase):
@@ -87,6 +88,7 @@ class TestAutoRound(unittest.TestCase):
         )
         print(output_text[0])
 
+    @require_gptqmodel
     def test_vlm_tune(self):
         from auto_round import AutoRoundMLLM
         from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
@@ -161,6 +163,7 @@ class TestAutoRound(unittest.TestCase):
 
         print(response)
 
+    @require_vlm_env
     def test_quant_not_text(self):
         from auto_round import AutoRoundMLLM
         from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
@@ -183,6 +186,7 @@ class TestAutoRound(unittest.TestCase):
         self.phi3_infernece("./saved")
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @require_vlm_env
     def test_quant_not_text_fp_layers(self):
         import  os
         python_path = sys.executable
@@ -194,6 +198,7 @@ class TestAutoRound(unittest.TestCase):
         self.phi3_infernece(absolute_path)
         shutil.rmtree(absolute_path, ignore_errors=True)
     
+    @require_vlm_env
     def test_mm_block_name(self):
         from auto_round.utils import get_block_names
 

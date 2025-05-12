@@ -11,6 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round import AutoRoundConfig
 from auto_round.eval.evaluation import simple_evaluate_user_model
+from auto_round.testing_utils import require_autogptq, require_gptqmodel
 
 
 class LLMDataLoader:
@@ -63,6 +64,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @require_gptqmodel
     def test_gptqmodel_exllmav2_4bits_asym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -110,6 +112,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @require_autogptq
     def test_gptq_exllamav2_4bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -143,6 +146,7 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
         torch.cuda.empty_cache()
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
+    @require_autogptq
     def test_gptq_exllamav2_4bits_sym_group_size(self):
         for group_size in [-1, 32, 64, 128, 256, 1024]:  ## 384, 768 has accuracy issue
             print(f"!!!!!!!!!!!!!!!!!{group_size}!!!!!!!!!!!!!!!!!")

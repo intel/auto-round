@@ -9,6 +9,7 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.testing_utils import require_awq, require_optimum
 
 
 class LLMDataLoader:
@@ -32,6 +33,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @require_optimum
     def test_autogptq_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -60,6 +62,7 @@ class TestAutoRound(unittest.TestCase):
                        "she is a good friend of mine, she is")
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @require_optimum
     def test_autogptq_format_fp_layers(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -173,8 +176,7 @@ class TestAutoRound(unittest.TestCase):
                        "she is a great artist, she is a great artist, she is a great artist, she is")
         shutil.rmtree("./saved", ignore_errors=True)
 
-
-    #
+    @require_awq
     def test_autoawq_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -205,6 +207,7 @@ class TestAutoRound(unittest.TestCase):
                        "I just think it's funny that people are downvoting")
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @require_optimum
     def test_autoawq_format_fp_qsave_layers(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         layer_config = {"model.decoder.layers.0.self_attn.k_proj": {"bits": 16},

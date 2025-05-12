@@ -5,6 +5,7 @@ import unittest
 
 sys.path.insert(0, "..")
 from auto_round.eval.evaluation import simple_evaluate_user_model
+from auto_round.testing_utils import require_new_version, require_autogptq, require_awq, require_ipex
 
 import torch
 import transformers
@@ -75,8 +76,9 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @require_new_version
     def test_autoround_asym(self):
-        for bits in [2, 4, 8]:
+        for bits in [2, 3, 4, 8]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
             bits, group_size, sym = bits, 128, False
@@ -94,7 +96,7 @@ class TestAutoRound(unittest.TestCase):
 
             autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
+            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0",
                                                          trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"
@@ -104,6 +106,7 @@ class TestAutoRound(unittest.TestCase):
             assert ("!!!" not in res)
             shutil.rmtree(self.save_folder, ignore_errors=True)
 
+    @require_autogptq
     def test_mixed_precision(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -138,6 +141,7 @@ class TestAutoRound(unittest.TestCase):
         print(result['results']['lambada_openai']['acc,none'])
         self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.32)
 
+    @require_awq
     def test_awq_backend(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -180,8 +184,9 @@ class TestAutoRound(unittest.TestCase):
         self.model_infer(model, tokenizer)
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
+    @require_new_version
     def test_tritonv2_bf16(self):
-        model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
+        model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
@@ -195,6 +200,7 @@ class TestAutoRound(unittest.TestCase):
 
         torch.cuda.empty_cache()
 
+    @require_ipex
     def test_autoround_gptq_sym_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -244,6 +250,7 @@ class TestAutoRound(unittest.TestCase):
 
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @require_awq
     def test_autoround_awq_sym_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -281,6 +288,7 @@ class TestAutoRound(unittest.TestCase):
 
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @require_new_version
     def test_autoround_sym(self):
         for bits in [2, 3, 4, 8]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -310,6 +318,7 @@ class TestAutoRound(unittest.TestCase):
             assert ("!!!" not in res)
             shutil.rmtree(self.save_folder, ignore_errors=True)
 
+    @require_new_version
     def test_load_gptq_model_3bits(self):
         model_name = "LucasSantiago257/gemma-2b-2bits-gptq"
         quantization_config = AutoRoundConfig()
@@ -318,35 +327,6 @@ class TestAutoRound(unittest.TestCase):
                                                      quantization_config=quantization_config)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model_infer(model, tokenizer)
-
-    def test_autoround_asym(self):
-        for bits in [2, 3, 4, 8]:
-            model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-            tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-            bits, group_size, sym = bits, 128, False
-            autoround = AutoRound(
-                model,
-                tokenizer,
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                iters=2,
-                seqlen=2,
-                dataset=self.llm_dataloader,
-            )
-            quantized_model_path = self.save_folder
-
-            autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0",
-                                                         trust_remote_code=True)
-            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-            text = "There is a girl who likes adventure,"
-            inputs = tokenizer(text, return_tensors="pt").to(model.device)
-            res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
-            print(res)
-            assert ("!!!" not in res)
-            shutil.rmtree(self.save_folder, ignore_errors=True)
 
 
 if __name__ == "__main__":

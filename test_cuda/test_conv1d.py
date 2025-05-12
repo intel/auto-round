@@ -8,6 +8,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.testing_utils import require_gptqmodel
 from _test_helpers import model_infer
 class LLMDataLoader:
     def __init__(self):
@@ -30,7 +31,7 @@ class TestQuantizationConv1d(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-
+    @require_gptqmodel
     def test_quant(self):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         bits, group_size, sym = 4, 128, True

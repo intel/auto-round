@@ -11,6 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoRoundAdam
 from auto_round.eval.evaluation import simple_evaluate
+from auto_round.testing_utils import require_gptqmodel
 from lm_eval.utils import make_table  # pylint: disable=E0401
 
 
@@ -35,6 +36,7 @@ class TestMainFunc(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @require_gptqmodel
     def test_backend(self):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
@@ -76,6 +78,7 @@ class TestMainFunc(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     @unittest.skipIf(torch.cuda.is_available() is False, "Skipping because no cuda")
+    @require_gptqmodel
     def test_fp_layers(self):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
@@ -119,7 +122,7 @@ class TestMainFunc(unittest.TestCase):
         autoround = AutoRound(model, tokenizer, bits=4, group_size=127, nsamples=2, iters=2)
         autoround.quantize()
 
-
+    @require_gptqmodel
     def test_adam(self):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")

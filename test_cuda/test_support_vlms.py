@@ -6,6 +6,7 @@ import unittest
 sys.path.insert(0, '..')
 
 from auto_round import AutoRoundConfig ## must import for auto-round format
+from auto_round.testing_utils import require_gptqmodel, require_vlm_env
 import requests
 from PIL import Image
 
@@ -13,7 +14,8 @@ from PIL import Image
 class TestSupportVLMS(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.save_dir = os.path.join(os.path.dirname(__file__), "ut_saved")
+        # self.save_dir = os.path.join(os.path.dirname(__file__), "ut_saved")
+        self.save_dir = os.path.join(os.path.dirname("/data5/hengguo"), "ut_saved")
         self.python_path = sys.executable
         self.device = 0
 
@@ -21,6 +23,7 @@ class TestSupportVLMS(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree(self.save_dir, ignore_errors=True)
     
+    @require_gptqmodel
     def test_qwen2(self):
         model_path = "/models/Qwen2-VL-2B-Instruct/"
         # test tune
@@ -76,6 +79,7 @@ class TestSupportVLMS(unittest.TestCase):
         print(output_text[0])
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @require_vlm_env
     def test_phi3(self):
         model_path = "/models/Phi-3.5-vision-instruct/"
         ## test tune
@@ -132,7 +136,8 @@ class TestSupportVLMS(unittest.TestCase):
         clean_up_tokenization_spaces=False)[0] 
         print(response)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-        
+
+    @require_vlm_env
     def test_phi3_vision_awq(self):
         model_path = "/models/Phi-3.5-vision-instruct/"
         ## test tune
@@ -195,6 +200,7 @@ class TestSupportVLMS(unittest.TestCase):
         print(response)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @require_vlm_env
     def test_llava(self):
         model_path = "/models/llava-v1.5-7b/"
         ## test tune
@@ -231,6 +237,7 @@ class TestSupportVLMS(unittest.TestCase):
         print(tokenizer.batch_decode(output))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
     
+    @require_gptqmodel
     def test_llama(self):
         model_path = "/models/Llama-3.2-11B-Vision-Instruct/"
         ## test tune

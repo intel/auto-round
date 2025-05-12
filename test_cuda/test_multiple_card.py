@@ -10,6 +10,7 @@ from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
+from auto_round.testing_utils import multi_card, require_new_version, require_gptqmodel
 
 
 def get_accuracy(data):
@@ -35,6 +36,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree(self.save_dir, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @multi_card
     def test_device_map(self):
         model_name = "/models/Qwen2-0.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
@@ -43,6 +45,8 @@ class TestAutoRound(unittest.TestCase):
         autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7,seqlen=32)
         autoround.quantize()
 
+    @multi_card
+    @require_gptqmodel
     def test_device_map_str(self):
         model_name = "/models/Qwen2-0.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
@@ -61,6 +65,7 @@ class TestAutoRound(unittest.TestCase):
         assert accuracy > 0.45 ##0.4786
         shutil.rmtree("./saved", ignore_errors=True)
 
+    @multi_card
     def test_layer_norm(self):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
@@ -70,7 +75,7 @@ class TestAutoRound(unittest.TestCase):
                               enable_norm_bias_tuning=True)
         autoround.quantize()
 
-
+    @multi_card
     def test_rms_norm(self):
         model_name = "/models/Qwen2-0.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
@@ -80,6 +85,7 @@ class TestAutoRound(unittest.TestCase):
                               enable_norm_bias_tuning=True)
         autoround.quantize()
 
+    @multi_card
     def test_act_quantization(self):
         model_name = "/models/Qwen2-0.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
@@ -88,6 +94,7 @@ class TestAutoRound(unittest.TestCase):
         autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7,seqlen=32,act_bits=4,act_dynamic=False)
         autoround.quantize()
 
+    @multi_card
     def test_lm_head(self):
         model_name = "/models/Qwen2.5-7B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
@@ -98,9 +105,10 @@ class TestAutoRound(unittest.TestCase):
                               enable_norm_bias_tuning=True,layer_config=layer_config)
         autoround.quantize()
 
+    @multi_card
     def test_device_map(self):
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
+        model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
 
         device_map = {}
         for i in range(0, 32):
@@ -192,9 +200,11 @@ class TestAutoRound(unittest.TestCase):
             del model
             torch.cuda.empty_cache()
 
+    @multi_card
+    @require_new_version
     def test_device_map_for_triton(self):
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        model_name = "/data5/wenhuach/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
+        model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
 
         device_map = {}
         for i in range(0, 32):
@@ -289,4 +299,5 @@ class TestAutoRound(unittest.TestCase):
             del model
             torch.cuda.empty_cache()
 
-
+if __name__ == "__main__":
+    unittest.main()
