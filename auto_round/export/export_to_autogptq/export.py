@@ -139,7 +139,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     if common_prefix not in BLOCK_PATTERNS:
         logger.error(f"auto-gptq format may not support loading this quantized model")
         quantization_config['block_name_to_quantize'] = common_prefix
-        quantization_config.pop("to_quant_block_names", None)
+    quantization_config.pop("to_quant_block_names", None)
 
     ## as layers maybe already packed, we need to check in layer_config
     layer_config = kwargs["layer_config"]
@@ -237,3 +237,5 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
+

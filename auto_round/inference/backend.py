@@ -128,16 +128,16 @@ BackendInfos['auto_gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              requirements=["auto-gptq>=0.7.1"]
                                              )
 
-BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, False],
+BackendInfos['auto_round:int32'] = BackendInfo(device=["cuda"], sym=[True, False],
                                                   packing_format="int32",
                                                   dtype=["float16", "bfloat16"],
-                                                  bits=[2, 4, 8],
+                                                  bits=[2, 3, 4, 8],
                                                   priority=1, feature_checks=[feature_multiply_checker_32],
                                                   alias=["auto_round", "tritonv2", "triton"],
                                                   requirements=["auto-round>=0.5.0", "triton>=2.0"]
                                                   )
 
-BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda"], sym=[True],  ## asym has accuracy issue
+BackendInfos['auto_round:int32_zp'] = BackendInfo(device=["cuda"], sym=[True],  ## asym has accuracy issue
                                                      packing_format="int32_zp",
                                                      dtype=["float16", "bfloat16"],
                                                      bits=[2, 4, 8],
@@ -402,12 +402,12 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
                 "autoawq is required. Please install it by 'pip install autoawq' to support auto_awq format.")
         return WQLinear_GEMM
 
-    if backend == "auto_round:tritonv2":
-        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
+    if backend == "auto_round:int32":
+        from auto_round_extension.cuda.qlinear_int32 import QuantLinear
         return QuantLinear
 
-    if backend == "auto_round:tritonv2_zp":
-        from auto_round_extension.cuda.qlinear_tritonv2_zp import QuantLinear
+    if backend == "auto_round:int32_zp":
+        from auto_round_extension.cuda.qlinear_int32_zp import QuantLinear
         return QuantLinear
 
     raise ValueError(f"unsupported backend {backend}, please set it to `auto` and retry")
@@ -422,6 +422,8 @@ def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
         return gptqmodel.nn_modules.qlinear.exllamav2.ExllamaV2QuantLinear
     elif "tritonv2" in backend:
         return gptqmodel.nn_modules.qlinear.tritonv2.TritonV2QuantLinear
+    elif "torch" in backend:
+        return gptqmodel.nn_modules.qlinear.torch.TorchQuantLinear
     else:
         raise ValueError(f"Unsupported {backend}")
 
@@ -711,3 +713,4 @@ def process_requirement(requirements: list):
             other_info += f" {requirement}"
         infos.append(other_info)
     return infos
+
