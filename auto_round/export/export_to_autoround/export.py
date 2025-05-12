@@ -23,7 +23,7 @@ import transformers
 
 import auto_round.export.export_to_autoround.qlinear_triton_act
 
-import auto_round_extension.cuda.qlinear_tritonv2
+import auto_round_extension.cuda.qlinear_int32
 from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized
 import threadpoolctl as tctl
 import inspect
@@ -73,7 +73,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     if "auto_round" in backend and "awq" not in backend and "gptq" not in backend:
         if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
             return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
-        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
+        from auto_round_extension.cuda.qlinear_int32 import QuantLinear
         return QuantLinear
     elif "auto_round" in backend and "gptq" in backend and bits in (2, 4, 8):
         from auto_round.export.export_to_autoround.qlinear_triton import QuantLinear  ##no g_idx
@@ -82,8 +82,8 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
     elif "gptqmodel" in backend:
-        from gptqmodel.nn_modules.qlinear.torch import TorchQuantLinear # pylint: disable=E0401
-        return TorchQuantLinear
+        from auto_round_extension.cuda.qlinear_int32 import QuantLinear
+        return QuantLinear
     elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
@@ -185,20 +185,15 @@ def pack_layer(layer_name, model, backend):
     bias = layer.bias is not None
 
     if "awq" not in backend:
-        if "gptqmodel" in QuantLinear.__module__: # use gptqmodel args sort
-            new_layer = QuantLinear(  ##pylint: disable=E1123
-            bits, group_size, False, sym, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
-            )
-        else:
-            new_layer = QuantLinear(  ##pylint: disable=E1123
-                bits, group_size, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
-            )
+        new_layer = QuantLinear(  ##pylint: disable=E1123
+            bits, group_size, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
+        )
         new_layer.device = device
         set_module(model, layer_name, new_layer)
         qlayer = new_layer
         import auto_round.export.export_to_autoround.qlinear_triton
         if sym and isinstance(QuantLinear, (auto_round.export.export_to_autoround.qlinear_triton.QuantLinear,
-                                            auto_round_extension.cuda.qlinear_tritonv2.QuantLinear)):
+                                            auto_round_extension.cuda.qlinear_int32.QuantLinear)):
             zp = int(zp.flatten()[0])
 
         qlayer.to("cpu")
