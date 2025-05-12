@@ -227,7 +227,7 @@ def get_layer_config(model, quantization_config):
     # Determine the quantization block list
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is None:
-        to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None) # Prioritize this parameter
+        to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None)  # Prioritize this parameter
         if to_quant_block_names is None:
             to_quant_block_names = getattr(quantization_config, "to_quant_block_names", None)
         if isinstance(to_quant_block_names, (list, tuple)):
@@ -314,14 +314,7 @@ def _replace_by_quant_layers(module: nn.Module, layer_configs, target_backend, t
             raise ValueError(f"{target_backend} does not support {target_device}, please change device or backend")
         ##check requirements
         requirements = BackendInfos[layer_backend_must].requirements
-        requirements_info = process_requirement(requirements)
-        if len(requirements_info) > 0:
-            extra_info = ""
-            for index, req in enumerate(requirements_info):
-                extra_info += (f"`{req}`")
-                if index != len(requirements_info) - 1:
-                    extra_info += " and "
-            raise ImportError(f"{target_backend} requires the follow libraries. Please install them via {extra_info}")
+        process_requirement(requirements, target_device)
 
     target_backend = target_backend or orig_backend  # Default to original backend if not specified
 
@@ -431,7 +424,6 @@ def infer_target_device(device_map=None):
                     target_device = str(device).split(":")[0]
     else:
         target_device = get_available_devices()[0]
-    assert isinstance(target_device, str)
     return target_device
 
 
@@ -554,16 +546,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
                                                     quantization_config.group_size, target_device,
                                                     BackendInfos[orig_backend].packing_format)
         if best_backend is not None and best_backend not in used_backends:
-            info = f"better backend is found, please install all the following requirements to enable it,"
-            extra_info = info
             requirements = BackendInfos[best_backend].requirements
-            requirements_info = process_requirement(requirements)
-            for index, req in enumerate(requirements_info):
-                extra_info += (f"`{req}`")
-                if index != len(requirements_info) - 1:
-                    extra_info += " and "
-
-            logger.warning(extra_info)
+            process_requirement(requirements, target_device,"warning")
 
     return model, used_backends
-

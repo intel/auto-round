@@ -28,7 +28,7 @@ from auto_round.utils import (logger, get_module,
                               set_module,
                               check_to_quantized,
                               get_block_names,
-                              extract_block_names_to_str, supported_layer_types)
+                              extract_block_names_to_str, supported_layer_types, filter_quantization_config)
 import copy
 import json
 from .utils import WQLinear_GEMM
@@ -135,7 +135,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
 
     quantization_config["modules_to_not_convert"] = modules_to_not_convert
     ##check module quantized in block, this may have bug for mixed precision quantization
-
+    filter_quantization_config(quantization_config)
     if hasattr(compressed_model, "config"):
         compressed_model.config.quantization_config = quantization_config
     safe_serialization = kwargs.get('safe_serialization', True)
