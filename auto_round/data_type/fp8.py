@@ -94,6 +94,7 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
     # scale = scale.unsqueeze(dim=-1)
+    scale = torch.ones((1), device=tensor.device)
     fp8_res = (tensor / scale)
     fp8_res = torch.clip(fp8_res, info.min, info.max)
     fp8_res = fp8_res.to(torch.float8_e5m2).to(torch.bfloat16)

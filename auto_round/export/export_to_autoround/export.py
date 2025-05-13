@@ -380,7 +380,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
-    quantization_config["quant_method"] = "fp8"
+    quantization_config["quant_method"] = "auto-round"
     quantization_config["fmt"] = "e5m2"
     quantization_config["activation_scheme"] = "dynamic"
     if quantization_config["bits"] == 3:
