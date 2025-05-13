@@ -10,7 +10,7 @@ from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
-from auto_round.testing_utils import multi_card, require_new_version, require_gptqmodel
+from auto_round.testing_utils import multi_card, require_greater_than_050, require_gptqmodel
 
 
 def get_accuracy(data):
@@ -201,7 +201,7 @@ class TestAutoRound(unittest.TestCase):
             torch.cuda.empty_cache()
 
     @multi_card
-    @require_new_version
+    @require_greater_than_050
     def test_device_map_for_triton(self):
         from transformers import AutoModelForCausalLM, AutoTokenizer
         model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"

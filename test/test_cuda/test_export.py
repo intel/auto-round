@@ -208,6 +208,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_optimum
+    @require_awq
     def test_autoawq_format_fp_qsave_layers(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         layer_config = {"model.decoder.layers.0.self_attn.k_proj": {"bits": 16},
@@ -225,8 +226,8 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
             layer_config=layer_config
         )
-        quantized_model_path = "/data5/wenhuach/test_export"
-        autoround.qsave(output_dir=quantized_model_path,
+        quantized_model_path = "./saved/test_export"
+        autoround.quantize_and_save(output_dir=quantized_model_path,
                         format="auto_awq")
         from auto_round import AutoRoundConfig
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",

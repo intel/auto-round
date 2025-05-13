@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, "..")
 from auto_round.eval.evaluation import simple_evaluate_user_model
-from auto_round.testing_utils import require_new_version, require_autogptq, require_awq, require_ipex
+from auto_round.testing_utils import require_greater_than_050, require_autogptq, require_awq, require_ipex
 
 import torch
 import transformers
@@ -76,7 +76,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree(self.save_folder, ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-    @require_new_version
+    @require_greater_than_050
     def test_autoround_asym(self):
         for bits in [2, 3, 4, 8]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -184,7 +184,7 @@ class TestAutoRound(unittest.TestCase):
         self.model_infer(model, tokenizer)
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    @require_new_version
+    @require_greater_than_050
     def test_tritonv2_bf16(self):
         model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
         quantization_config = AutoRoundConfig(backend="tritonv2")
@@ -251,6 +251,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     @require_awq
+    @require_ipex
     def test_autoround_awq_sym_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -288,7 +289,7 @@ class TestAutoRound(unittest.TestCase):
 
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @require_new_version
+    @require_greater_than_050
     def test_autoround_sym(self):
         for bits in [2, 3, 4, 8]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -318,7 +319,7 @@ class TestAutoRound(unittest.TestCase):
             assert ("!!!" not in res)
             shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    @require_new_version
+    @require_greater_than_050
     def test_load_gptq_model_3bits(self):
         model_name = "LucasSantiago257/gemma-2b-2bits-gptq"
         quantization_config = AutoRoundConfig()

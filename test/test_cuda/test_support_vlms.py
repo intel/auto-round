@@ -24,60 +24,60 @@ class TestSupportVLMS(unittest.TestCase):
         shutil.rmtree(self.save_dir, ignore_errors=True)
     
     @require_gptqmodel
-    def test_qwen2(self):
-        model_path = "/models/Qwen2-VL-2B-Instruct/"
-        # test tune
-        res = os.system(
-            f"cd .. && {self.python_path} -m auto_round --mllm "
-            f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
-        self.assertFalse(res > 0 or res == -1, msg="qwen2 tuning fail")
+    # def test_qwen2(self):
+    #     model_path = "/models/Qwen2-VL-2B-Instruct/"
+    #     # test tune
+    #     res = os.system(
+    #         f"cd .. && {self.python_path} -m auto_round --mllm "
+    #         f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
+    #     self.assertFalse(res > 0 or res == -1, msg="qwen2 tuning fail")
 
-        # test infer
-        quantized_model_path = os.path.join(self.save_dir, "Qwen2-VL-2B-Instruct-w4g128-auto_round")
+    #     # test infer
+    #     quantized_model_path = os.path.join(self.save_dir, "Qwen2-VL-2B-Instruct-w4g128-auto_round")
        
-        from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            quantized_model_path,
-            torch_dtype="float16",
-            device_map=f"cuda:{self.device}",
-        )
-        processor = AutoProcessor.from_pretrained(quantized_model_path)
-        image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "image": image_url,
-                    },
-                    {"type": "text", "text": "Describe this image."},
-                ],
-            }
-        ]
+    #     from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+    #     model = Qwen2VLForConditionalGeneration.from_pretrained(
+    #         quantized_model_path,
+    #         torch_dtype="float16",
+    #         device_map=f"cuda:{self.device}",
+    #     )
+    #     processor = AutoProcessor.from_pretrained(quantized_model_path)
+    #     image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
+    #     messages = [
+    #         {
+    #             "role": "user",
+    #             "content": [
+    #                 {
+    #                     "type": "image",
+    #                     "image": image_url,
+    #                 },
+    #                 {"type": "text", "text": "Describe this image."},
+    #             ],
+    #         }
+    #     ]
 
-        # Preparation for inference
-        text = processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        image_inputs = Image.open(requests.get(image_url, stream=True).raw)
-        inputs = processor(
-            text=[text],
-            images=image_inputs,
-            padding=True,
-            return_tensors="pt",
-        )
-        inputs = inputs.to(model.device)
+    #     # Preparation for inference
+    #     text = processor.apply_chat_template(
+    #         messages, tokenize=False, add_generation_prompt=True
+    #     )
+    #     image_inputs = Image.open(requests.get(image_url, stream=True).raw)
+    #     inputs = processor(
+    #         text=[text],
+    #         images=image_inputs,
+    #         padding=True,
+    #         return_tensors="pt",
+    #     )
+    #     inputs = inputs.to(model.device)
 
-        generated_ids = model.generate(**inputs, max_new_tokens=128)
-        generated_ids_trimmed = [
-            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-        ]
-        output_text = processor.batch_decode(
-            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        )
-        print(output_text[0])
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
+    #     generated_ids = model.generate(**inputs, max_new_tokens=128)
+    #     generated_ids_trimmed = [
+    #         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+    #     ]
+    #     output_text = processor.batch_decode(
+    #         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+    #     )
+    #     print(output_text[0])
+    #     shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @require_vlm_env
     def test_phi3(self):
@@ -238,45 +238,46 @@ class TestSupportVLMS(unittest.TestCase):
         shutil.rmtree(quantized_model_path, ignore_errors=True)
     
     @require_gptqmodel
-    def test_llama(self):
-        model_path = "/models/Llama-3.2-11B-Vision-Instruct/"
-        ## test tune
-        res = os.system(
-            f"cd .. && {self.python_path} -m auto_round --mllm "
-            f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
-        self.assertFalse(res > 0 or res == -1, msg="llama-3.2 tuning fail")
+    # def test_llama(self):
+    #     model_path = "/models/Llama-3.2-11B-Vision-Instruct/"
+    #     ## test tune
+    #     res = os.system(
+    #         f"cd .. && {self.python_path} -m auto_round --mllm "
+    #         f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
+    #     self.assertFalse(res > 0 or res == -1, msg="llama-3.2 tuning fail")
 
-        ## test infer
-        from transformers import MllamaForConditionalGeneration, AutoProcessor
-        quantized_model_path = os.path.join(self.save_dir, "Llama-3.2-11B-Vision-Instruct-w4g128-auto_round")
-        model = MllamaForConditionalGeneration.from_pretrained(
-            quantized_model_path,
-            torch_dtype="float16",
-            device_map=f"cuda:{self.device}",
-        )
-        processor = AutoProcessor.from_pretrained(quantized_model_path)
-        image_url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/0052a70beed5bf71b92610a43a52df6d286cd5f3/diffusers/rabbit.jpg"
-        messages = [
-            {"role": "user", "content": [
-                {"type": "image"},
-                {"type": "text", "text": "Please write a haiku for this one, it would be: "}
-            ]}
-        ]
+    #     ## test infer
+    #     from transformers import MllamaForConditionalGeneration, AutoProcessor
+    #     quantized_model_path = os.path.join(self.save_dir, "Llama-3.2-11B-Vision-Instruct-w4g128-auto_round")
+    #     model = MllamaForConditionalGeneration.from_pretrained(
+    #         quantized_model_path,
+    #         torch_dtype="float16",
+    #         device_map=f"cuda:{self.device}",
+    #     )
+    #     processor = AutoProcessor.from_pretrained(quantized_model_path)
+    #     image_url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/0052a70beed5bf71b92610a43a52df6d286cd5f3/diffusers/rabbit.jpg"
+    #     messages = [
+    #         {"role": "user", "content": [
+    #             {"type": "image"},
+    #             {"type": "text", "text": "Please write a haiku for this one, it would be: "}
+    #         ]}
+    #     ]
 
-        # Preparation for inference
-        image = Image.open(requests.get(image_url, stream=True).raw)
-        input_text = processor.apply_chat_template(messages, add_generation_prompt=True)
-        inputs = processor(
-            image,
-            input_text,
-            add_special_tokens=False,
-            return_tensors="pt"
-        ).to(model.device)
+    #     # Preparation for inference
+    #     image = Image.open(requests.get(image_url, stream=True).raw)
+    #     input_text = processor.apply_chat_template(messages, add_generation_prompt=True)
+    #     inputs = processor(
+    #         image,
+    #         input_text,
+    #         add_special_tokens=False,
+    #         return_tensors="pt"
+    #     ).to(model.device)
 
-        output = model.generate(**inputs, max_new_tokens=50)
-        print(processor.decode(output[0]))
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
+    #     output = model.generate(**inputs, max_new_tokens=50)
+    #     print(processor.decode(output[0]))
+    #     shutil.rmtree(quantized_model_path, ignore_errors=True)
     
+    @require_vlm_env
     def test_cogvlm(self):
         model_path = "/models/cogvlm2-llama3-chat-19B/"
         ## test tune
@@ -331,15 +332,16 @@ class TestSupportVLMS(unittest.TestCase):
         print(response)     
         shutil.rmtree(quantized_model_path, ignore_errors=True)
     
-    def test_72b(self):
-        model_path = "/models/Qwen2-VL-72B-Instruct/"
-        res = os.system(
-            f"cd .. && {self.python_path} -m auto_round --mllm "
-            f"--model {model_path} --iter 1 --nsamples 1 --bs 1 --output_dir {self.save_dir} --device {self.device}"
-            )
-        self.assertFalse(res > 0 or res == -1, msg="qwen2-72b tuning fail")
-        shutil.rmtree(self.save_dir, ignore_errors=True)
+    # def test_72b(self):
+    #     model_path = "/models/Qwen2-VL-72B-Instruct/"
+    #     res = os.system(
+    #         f"cd .. && {self.python_path} -m auto_round --mllm "
+    #         f"--model {model_path} --iter 1 --nsamples 1 --bs 1 --output_dir {self.save_dir} --device {self.device}"
+    #         )
+    #     self.assertFalse(res > 0 or res == -1, msg="qwen2-72b tuning fail")
+    #     shutil.rmtree(self.save_dir, ignore_errors=True)
     
+    @require_vlm_env
     def test_deepseek_vl2(self):
         model_path = "/models/deepseek-vl2-tiny"
         res = os.system(

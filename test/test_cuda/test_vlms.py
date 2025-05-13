@@ -10,7 +10,7 @@ sys.path.insert(0, "..")
 
 from PIL import Image
 from auto_round import AutoRoundConfig
-from auto_round.testing_utils import require_gptqmodel, require_vlm_env
+from auto_round.testing_utils import require_gptqmodel, require_vlm_env, require_optimum
 
 
 class TestAutoRound(unittest.TestCase):
@@ -89,6 +89,7 @@ class TestAutoRound(unittest.TestCase):
         print(output_text[0])
 
     @require_gptqmodel
+    @require_optimum
     def test_vlm_tune(self):
         from auto_round import AutoRoundMLLM
         from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer

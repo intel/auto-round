@@ -12,7 +12,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
 from lm_eval.utils import make_table  # pylint: disable=E0401
-from auto_round.testing_utils import require_autogptq, require_new_version
+from auto_round.testing_utils import require_autogptq, require_greater_than_050
 
 
 def get_accuracy(data):
@@ -57,7 +57,7 @@ class TestAutoRound(unittest.TestCase):
         assert accuracy > 0.3
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @require_new_version
+    @require_greater_than_050
     def test_norm_bias_tuning(self):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
@@ -76,7 +76,7 @@ class TestAutoRound(unittest.TestCase):
         assert accuracy > 0.18
         shutil.rmtree("./saved", ignore_errors=True)
 
-    @require_new_version
+    @require_greater_than_050
     def test_2bits_autoround(self):
         model_name = "/models/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, device_map="auto")
