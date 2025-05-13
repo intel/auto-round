@@ -48,7 +48,7 @@ class TestAutoRoundAct(unittest.TestCase):
             seqlen=2,
             dataset=self.llm_dataloader,
             act_bits=4,
-            data_type="mx_fp4"
+            data_type="mx_fp"
         )
         autoround.quantize()
 

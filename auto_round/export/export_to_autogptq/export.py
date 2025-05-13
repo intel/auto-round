@@ -37,7 +37,7 @@ import torch
 
 import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module, supported_layer_types
+    get_module, logger, set_module, supported_layer_types, filter_quantization_config
 import copy
 import json
 import os
@@ -193,6 +193,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     quantization_config["damp_percent"] = 0.01
     if modules_in_block_to_quantize is not None:
         quantization_config["modules_in_block_to_quantize"] = modules_in_block_to_quantize
+    filter_quantization_config(quantization_config)
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
 

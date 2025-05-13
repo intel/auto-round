@@ -144,9 +144,8 @@ class TestQuantizationBlocks(unittest.TestCase):
     
     def test_block_name_quant(self):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        from auto_round.utils import get_block_names, validate_modules
+        from auto_round.utils import get_block_names
         llm_block_names = get_block_names(self.model)
-        validate_modules(llm_block_names)
         bits, group_size, sym, batch_size = 4, 128, True, 20
         autoround = AutoRound(
             self.model,
