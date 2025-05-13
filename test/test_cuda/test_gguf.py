@@ -3,7 +3,7 @@ import shutil
 import sys
 import unittest
 
-sys.path.insert(0, "..")
+sys.path.insert(0, "../..")
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -60,7 +60,7 @@ class TestAutoRound(unittest.TestCase):
         save_dir = os.path.join(os.path.dirname(__file__), "saved")
         model_path = "Qwen/Qwen2.5-0.5B-Instruct"
         res = os.system(
-            f"cd .. && {sys.executable} -m auto_round --model {model_path} --iter 2 "
+            f"cd ../.. && {sys.executable} -m auto_round --model {model_path} --iter 2 "
             f"--output_dir {save_dir} --nsample 2 --format gguf:q4_0 --device 0"
         )
         print(save_dir)
@@ -110,7 +110,7 @@ class TestAutoRound(unittest.TestCase):
     def test_basic_usage(self):
         python_path = sys.executable
         res = os.system(
-            f"cd .. && {python_path} -m auto_round --model {self.model_name} --eval_task_by_task"
+            f"cd ../.. && {python_path} -m auto_round --model {self.model_name} --eval_task_by_task"
             f" --tasks piqa,openbookqa --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
         )
         if res > 0 or res == -1:

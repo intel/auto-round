@@ -1,16 +1,14 @@
 # git+https://github.com/haotian-liu/LLaVA.git@v1.2.2
 # git clone https://github.com/deepseek-ai/DeepSeek-VL2.git && cd DeepSeek-VL2 && pip install -e .
 accelerate
-autoawq
-auto-gptq
 bitsandbytes==0.44.0 
 datasets
 einops
 flash-attn==2.6.1
-gptqmodel>=2.0
 intel-extension-for-pytorch==2.6.0
 intel-extension-for-transformers
 lm-eval>=0.4.2,<0.5
+nvidia-cudnn-cu12==8.9.7.29
 numpy < 2.0
 optimum
 pandas

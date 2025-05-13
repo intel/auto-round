@@ -2,7 +2,7 @@ import re
 import sys
 import unittest
 import shutil
-sys.path.insert(0, "..")
+sys.path.insert(0, "../..")
 
 
 import torch

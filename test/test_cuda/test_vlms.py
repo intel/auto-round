@@ -6,7 +6,7 @@ import shutil
 import unittest
 import requests
 
-sys.path.insert(0, "..")
+sys.path.insert(0, "../..")
 
 from PIL import Image
 from auto_round import AutoRoundConfig

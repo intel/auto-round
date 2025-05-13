@@ -3,7 +3,7 @@ import sys
 import shutil
 import unittest
 
-sys.path.insert(0, '..')
+sys.path.insert(0, '../..')
 
 from auto_round import AutoRoundConfig ## must import for auto-round format
 from auto_round.testing_utils import require_gptqmodel, require_vlm_env
@@ -28,7 +28,7 @@ class TestSupportVLMS(unittest.TestCase):
     #     model_path = "/models/Qwen2-VL-2B-Instruct/"
     #     # test tune
     #     res = os.system(
-    #         f"cd .. && {self.python_path} -m auto_round --mllm "
+    #         f"cd ../.. && {self.python_path} -m auto_round --mllm "
     #         f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
     #     self.assertFalse(res > 0 or res == -1, msg="qwen2 tuning fail")
 
@@ -84,7 +84,7 @@ class TestSupportVLMS(unittest.TestCase):
         model_path = "/models/Phi-3.5-vision-instruct/"
         ## test tune
         res = os.system(
-            f"cd .. && {self.python_path} -m auto_round --mllm "
+            f"cd ../.. && {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}")
         self.assertFalse(res > 0 or res == -1, msg="Phi-3.5 tuning fail")
 
@@ -142,7 +142,7 @@ class TestSupportVLMS(unittest.TestCase):
         model_path = "/models/Phi-3.5-vision-instruct/"
         ## test tune
         res = os.system(
-            f"cd .. && {self.python_path} -m auto_round --mllm "
+            f"cd ../.. && {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --quant_nontext_module "
             f"--nsample 64 --seqlen 32 "
             f"--format auto_awq --output_dir {self.save_dir} --device {self.device}")
@@ -205,7 +205,7 @@ class TestSupportVLMS(unittest.TestCase):
         model_path = "/models/llava-v1.5-7b/"
         ## test tune
         res = os.system(
-            f"cd .. && {self.python_path} -m auto_round --mllm "
+            f"cd ../.. && {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
         self.assertFalse(res > 0 or res == -1, msg="llava-v1.5-7b tuning fail")
     
@@ -242,7 +242,7 @@ class TestSupportVLMS(unittest.TestCase):
     #     model_path = "/models/Llama-3.2-11B-Vision-Instruct/"
     #     ## test tune
     #     res = os.system(
-    #         f"cd .. && {self.python_path} -m auto_round --mllm "
+    #         f"cd ../.. && {self.python_path} -m auto_round --mllm "
     #         f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
     #     self.assertFalse(res > 0 or res == -1, msg="llama-3.2 tuning fail")
 
@@ -282,7 +282,7 @@ class TestSupportVLMS(unittest.TestCase):
         model_path = "/models/cogvlm2-llama3-chat-19B/"
         ## test tune
         res = os.system(
-            f"cd .. && {self.python_path} -m auto_round --mllm "
+            f"cd ../.. && {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
         self.assertFalse(res > 0 or res == -1, msg="cogvlm2 tuning fail")
     
@@ -335,7 +335,7 @@ class TestSupportVLMS(unittest.TestCase):
     # def test_72b(self):
     #     model_path = "/models/Qwen2-VL-72B-Instruct/"
     #     res = os.system(
-    #         f"cd .. && {self.python_path} -m auto_round --mllm "
+    #         f"cd ../.. && {self.python_path} -m auto_round --mllm "
     #         f"--model {model_path} --iter 1 --nsamples 1 --bs 1 --output_dir {self.save_dir} --device {self.device}"
     #         )
     #     self.assertFalse(res > 0 or res == -1, msg="qwen2-72b tuning fail")
@@ -345,7 +345,7 @@ class TestSupportVLMS(unittest.TestCase):
     def test_deepseek_vl2(self):
         model_path = "/models/deepseek-vl2-tiny"
         res = os.system(
-            f"cd .. && {self.python_path} -m auto_round --mllm "
+            f"cd ../.. && {self.python_path} -m auto_round --mllm "
             f"--model {model_path} --iter 3 --nsamples 10 --bs 4 --output_dir {self.save_dir} --device auto --group_size 32 "
             f"--fp_layers language.model.layers.4,language.model.layers.6"
             )

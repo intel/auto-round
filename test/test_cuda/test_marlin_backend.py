@@ -3,7 +3,7 @@ import sys
 import unittest
 import pytest
 
-sys.path.insert(0, "..")
+sys.path.insert(0, "../..")
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 

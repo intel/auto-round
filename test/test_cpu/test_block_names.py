@@ -3,7 +3,7 @@ import shutil
 import sys
 import unittest
 sys.path.insert(0, ".")
-sys.path.insert(0, "..")
+sys.path.insert(0, "../..")
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
@@ -203,7 +203,7 @@ class TestQuantizationBlocks(unittest.TestCase):
         ##tokenizer = AutoTokenizer.from_pretrained(model_name)
         # python_path = sys.executable
         # res = os.system(
-        #     f"cd .. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {model_name} --iter 1 --nsamples 1 --format auto_round --output_dir test/saved --disable_eval")
+        #     f"cd ../.. && CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {model_name} --iter 1 --nsamples 1 --format auto_round --output_dir test/saved --disable_eval")
         # if res > 0 or res == -1:
         #     assert False, "cmd line test fail, please have a check"
         #

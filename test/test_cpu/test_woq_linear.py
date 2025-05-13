@@ -1,6 +1,7 @@
 import pytest
 import torch
-
+import sys
+sys.path.insert(0, "../..")
 from auto_round.export.export_to_itrex.model_wrapper import WeightOnlyLinear
 
 

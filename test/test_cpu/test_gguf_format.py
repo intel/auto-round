@@ -2,7 +2,7 @@ import os
 import sys
 import unittest
 import shutil
-sys.path.insert(0, "..")
+sys.path.insert(0, "../..")
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -35,7 +35,7 @@ class TestGGUF(unittest.TestCase):
     def test_basic_usage(self):
         python_path = sys.executable
         res = os.system(
-            f"cd .. && {python_path} -m auto_round --model {self.model_name} --eval_task_by_task"
+            f"cd ../.. && {python_path} -m auto_round --model {self.model_name} --eval_task_by_task"
             f" --tasks piqa --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
         )
         if res > 0 or res == -1:
@@ -43,7 +43,7 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
         res = os.system(
-            f"cd .. && {python_path} -m auto_round --model {self.model_name}"
+            f"cd ../.. && {python_path} -m auto_round --model {self.model_name}"
             f" --tasks piqa,openbookqa --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
         )
         if res > 0 or res == -1:

@@ -2,7 +2,7 @@ import shutil
 import sys
 import unittest
 
-sys.path.insert(0, "..")
+sys.path.insert(0, "../..")
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 

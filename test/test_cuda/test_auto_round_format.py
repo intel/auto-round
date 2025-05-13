@@ -3,7 +3,7 @@ import shutil
 import sys
 import unittest
 
-sys.path.insert(0, "..")
+sys.path.insert(0, "../..")
 from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.testing_utils import require_greater_than_050, require_autogptq, require_awq, require_ipex
 

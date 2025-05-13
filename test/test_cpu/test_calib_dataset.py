@@ -3,7 +3,7 @@ import shutil
 import sys
 import unittest
 
-sys.path.insert(0, "..")
+sys.path.insert(0, "../..")
 import json
 
 import torch

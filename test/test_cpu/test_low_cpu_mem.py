@@ -2,7 +2,7 @@ import shutil
 import sys
 import os
 import unittest
-sys.path.insert(0, "..")
+sys.path.insert(0, "../..")
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
