@@ -8,14 +8,13 @@ flash-attn==2.6.1
 intel-extension-for-pytorch==2.6.0
 intel-extension-for-transformers
 lm-eval>=0.4.2,<0.5
-nvidia-cudnn-cu12==8.9.7.29
 numpy < 2.0
 optimum
 pandas
 pillow
 py-cpuinfo
-torch==2.0.1
-torchvision==0.15.2
-triton==2.0.0
+torch==2.3.0
+torchvision
+triton==2.3.0
 tqdm
 transformers==4.45.0
