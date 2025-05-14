@@ -51,7 +51,7 @@ from .utils import (
     set_module,
     llm_load_model,
     reset_params,
-    init_cache, check_skippable_keywords, get_shared_keys,
+    init_cache, check_skippable_keywords, get_shared_keys, supported_dtypes, infer_bits_by_data_type,
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -183,6 +183,7 @@ class AutoRound(object):
         self.enable_norm_bias_tuning = enable_norm_bias_tuning
         self.group_size = group_size
         self.sym = sym
+
         self.low_gpu_mem_usage = low_gpu_mem_usage
         self.low_cpu_mem_usage = low_cpu_mem_usage
         self.layer_config = {} if layer_config is None else layer_config
@@ -201,6 +202,11 @@ class AutoRound(object):
         self.minmax_lr = minmax_lr or self.lr
 
         self.data_type = data_type
+        tmp_bits =  infer_bits_by_data_type(self.data_type)
+        if tmp_bits<16 and tmp_bits!=bits:
+            logger.warning(
+                f"bits set in 'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
+            self.bits = tmp_bits
         self.supported_types = supported_layer_types
         self.model = model.eval()
         self.tokenizer = tokenizer
@@ -218,7 +224,17 @@ class AutoRound(object):
         self.act_bits = act_bits if not (act_bits is None) else self.bits
         self.act_sym = act_sym if not (act_sym is None) else self.sym
         self.act_dynamic = act_dynamic
-        self.act_data_type = act_data_type if act_data_type is not None else data_type
+        self.act_data_type = act_data_type
+        if self.act_data_type is None:
+            if data_type in supported_dtypes and self.act_bits <= 16:
+                self.act_data_type = data_type
+                logger.info(f"activation adopts {data_type}")
+            else:
+                self.act_data_type = "float"
+
+        tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
+        if tmp_act_bits < 16:
+            self.act_bits = tmp_act_bits
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
@@ -535,13 +551,18 @@ class AutoRound(object):
             m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False, enable_round_tuning=False, float_zp=self.float_zp)
             m = m.unwrapper({})
             m.to("cpu")
+            if self.low_gpu_mem_usage:
+                clear_memory()
             if self.is_packing_immediate:
                 from auto_round.export import PACKING_LAYER_WITH_FORMAT
                 if check_to_quantized(m):
                     target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                    PACKING_LAYER_WITH_FORMAT[target_backend](n, self.model, self.formats[0])
+                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
+                    if self.low_gpu_mem_usage:
+                        clear_memory()
             else:
                 set_module(self.model, name, m)
+
         self.quantized = True
         return self.model, self.layer_config
 
@@ -1607,7 +1628,7 @@ class AutoRound(object):
         """
         # only support to export afp8
         if self.act_bits <= 8:
-            if "fp8" not in self.act_data_type:
+            if "fp8" not in self.act_data_type or self.act_dynamic:
                 if format != "fake":
                     logger.warning(
                         f"Currently only support to export auto_round format quantized model"
@@ -1618,7 +1639,7 @@ class AutoRound(object):
             else:
                 if format != "auto_round":
                     logger.warning(
-                        f"Currently only support to export auto_round format for W{self.bits}AFP8 model,"
+                        f"Currently only support to export auto_round format for static W{self.bits}AFP8 model,"
                         " change format to auto_round"
                     )
                     format = "auto_round"
@@ -1809,7 +1830,7 @@ class AutoRound(object):
     @classmethod
     @torch.no_grad()
     def sampling_inputs(cls, input_ids, input_others, indices, seqlen,
-                        batch_dim=0,share_cache_keys=()):
+                        batch_dim=0, share_cache_keys=()):
         """Samples inputs based on the given indices and sequence length.
 
         Args:
