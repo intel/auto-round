@@ -1,11 +1,11 @@
 # git+https://github.com/haotian-liu/LLaVA.git@v1.2.2
-# git clone https://github.com/deepseek-ai/DeepSeek-VL2.git && cd DeepSeek-VL2 && pip install -e .
+# pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git
 accelerate
 bitsandbytes==0.44.0 
 datasets
 einops
 flash-attn==2.6.1
-intel-extension-for-pytorch==2.6.0
+intel-extension-for-pytorch==2.3.0
 intel-extension-for-transformers
 lm-eval>=0.4.2,<0.5
 numpy < 2.0
@@ -18,3 +18,4 @@ torchvision
 triton==2.3.0
 tqdm
 transformers==4.45.0
+xformers
