@@ -162,6 +162,7 @@ class AutoRound(object):
             device_map: Union[str, dict] = None,
             super_bits: int = None,
             super_group_size: int = None,
+            float_zp: bool = False,
             model_kwargs: dict = None,
             **kwargs,
     ):
@@ -229,6 +230,8 @@ class AutoRound(object):
 
         self.super_bits = super_bits
         self.super_group_size = super_group_size
+
+        self.float_zp = float_zp if float_zp else False
 
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
@@ -529,7 +532,7 @@ class AutoRound(object):
             m = get_module(self.model, name)
 
             m.to(self.device)
-            m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False, enable_round_tuning=False)
+            m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False, enable_round_tuning=False, float_zp=self.float_zp)
             m = m.unwrapper({})
             m.to("cpu")
             if self.is_packing_immediate:
@@ -1172,8 +1175,8 @@ class AutoRound(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        wrapper_linear = WrapperLinear(layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device).to(
-            device)
+        wrapper_linear = WrapperLinear(
+            layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device, float_zp=self.float_zp).to(device)
         round_params = []
         minmax_params = []
         for key in wrapper_linear.params.keys():
@@ -1344,7 +1347,7 @@ class AutoRound(object):
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
-            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device)
+            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device, float_zp=self.float_zp)
 
         round_params = []
         minmax_params = []

@@ -35,6 +35,7 @@ from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
     get_model_dtype,
+    str2bool,
     set_cuda_visible_devices)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -198,7 +199,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=None,
             type=str,
             help="the torch_dytpe to load the model for evaluation.")
-
+        
+        self.add_argument("--float_zp", nargs='?', const=True, default=None, type=str, help="whether to use float zero point.")
 
 class EvalArgumentParser(argparse.ArgumentParser):
 
@@ -460,6 +462,7 @@ def tune(args):
 
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
 
+    args.float_zp = str2bool(args.float_zp)
     autoround = round(
         model,
         tokenizer,
@@ -495,6 +498,7 @@ def tune(args):
         device_map=args.device_map,
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
+        float_zp=args.float_zp
     )
 
     model_name = args.model.rstrip("/")
@@ -539,7 +543,7 @@ def tune(args):
             for file in os.listdir(eval_folder):
                 gguf_file = file
 
-            logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
+            logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
             if eval_model_dtype == "float32" or eval_model_dtype == "auto":
                 logger.warning(
                     "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -642,7 +646,7 @@ def eval(args):
         from lm_eval.utils import make_table  # pylint: disable=E0401
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
 
-        logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
+        logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -706,7 +710,7 @@ def eval_task_by_task(
     eval_model_dtype = get_model_dtype(eval_model_dtype)
     if is_gguf_file:
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
+        logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"

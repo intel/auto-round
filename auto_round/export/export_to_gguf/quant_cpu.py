@@ -13,19 +13,8 @@
 # limitations under the License.
 
 import numpy as np
-from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
-
-QK_K = 256
-K_SCALE_SIZE = 12
-GGML_QUANT_SIZES = {
-    "bf16": (1, 2),
-    "q4_0": (32, 2 + 16),
-    "q4_1": (32, 2 + 2 + 16),
-    "q4_k": (256, 2 + 2 + QK_K//2 + 12),
-    "q2_k": (256, 2 + 2 + QK_K//16 + QK_K//4),
-    "q8_0": (32, 2 + 32)
-}
+from .utils import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
 
 GGML_QUANT_BLOCK = {}
 
@@ -71,21 +60,12 @@ def ggml_quant_cpu(data, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=No
         d_wmin_m = np.array_split(d_wmin_m, n_groups, axis=0) if d_wmin_m is not None else [None] * n_groups
 
         quant_func = GGML_QUANT_BLOCK[ggml_type]
-        if ggml_type.endswith("_k"):
-            with ProcessPoolExecutor(worker) as executor:
-                result = executor.map(quant_func, blocks, scale, zp, wmin_m, d_scale, d_wmin_m)
-            new_data = np.array(list(result), dtype=np.uint8)
-        else:
-            with ProcessPoolExecutor(n_groups) as executor:
-                result = executor.map(quant_func, blocks, scale, zp)
-            new_data = np.array(list(result), dtype=np.uint8)
+        with ProcessPoolExecutor(worker) as executor:
+            result = executor.map(quant_func, blocks, scale, zp, wmin_m, d_scale, d_wmin_m)
+        new_data = np.array(list(result), dtype=np.uint8)
     else:
         quant_func = GGML_QUANT_BLOCK[ggml_type]
-        if ggml_type.endswith("_k"):
-            # 0.5588 vs 63.05
-            new_data = quant_func(blocks, scale, zp, wmin_m=wmin_m, d_scale=d_scale, d_wmin_m=d_wmin_m)
-        else:
-            new_data = quant_func(blocks, scale, zp)
+        new_data = quant_func(blocks, scale, zp, wmin_m=wmin_m, d_scale=d_scale, d_wmin_m=d_wmin_m)
 
     assert new_data.dtype == np.uint8
     assert new_data.shape[-1] == type_size
@@ -101,7 +81,7 @@ def np_roundf(n: np.ndarray) -> np.ndarray:
 
 
 @register_block("bf16")
-def bf16_quant_block(blocks: np.array, scale=None, zp=None):
+def bf16_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     n = blocks.view(np.uint32)
     # force nan to quiet
     n = np.where((n & 0x7fffffff) > 0x7f800000, (n & np.uint32(0xffff0000)) | np.uint32(64 << 16), n)
@@ -111,7 +91,7 @@ def bf16_quant_block(blocks: np.array, scale=None, zp=None):
 
 
 @register_block("q4_0")
-def q4_0_quant_block(blocks: np.array, scale=None, zp=None):
+def q4_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     if scale is not None:
         d = scale.reshape((-1, 1))
     else:
@@ -135,7 +115,7 @@ def q4_0_quant_block(blocks: np.array, scale=None, zp=None):
 
 
 @register_block("q4_1")
-def q4_1_quant_block(blocks: np.array, scale=None, zp=None):
+def q4_1_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     if scale is not None:
         d = scale.reshape((-1, 1))
         min = zp.reshape((-1, 1)) * d * -1
@@ -156,6 +136,60 @@ def q4_1_quant_block(blocks: np.array, scale=None, zp=None):
     d = d.astype(np.float16).view(np.uint8)
     m = min.astype(np.float16).view(np.uint8)
     return np.concatenate([d, m, qs], axis=-1)
+
+
+@register_block("q5_0")
+def q5_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
+    if scale is not None:
+        d = scale.reshape((-1, 1))
+    else:
+        imax = abs(blocks).argmax(axis=-1, keepdims=True)
+        max = np.take_along_axis(blocks, imax, axis=-1)
+        d = max / -16
+        
+    n_blocks = blocks.shape[0]
+    block_size = GGML_QUANT_SIZES["q5_0"][0]
+    with np.errstate(divide="ignore"):
+        id = np.where(d == 0, 0, 1 / d)
+    # FIXME: Q5_0's reference rounding is cursed and depends on FMA
+    q = np.trunc((np.float64(blocks) * np.float64(id)) + np.float64(16.5), dtype=np.float32).astype(np.uint8).clip(0, 31)
+
+    qs = q.reshape((n_blocks, 2, block_size // 2))
+    qs = (qs[..., 0, :] & np.uint8(0x0F)) | (qs[..., 1, :] << np.uint8(4))
+
+    qh = np.packbits(q.reshape((n_blocks, 1, 32)) >> np.uint8(4), axis=-1, bitorder="little").reshape(n_blocks, 4)
+
+    d = d.astype(np.float16).view(np.uint8)
+
+    return np.concatenate([d, qh, qs], axis=-1)
+
+
+@register_block("q5_1")
+def q5_1_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
+    if scale is not None:
+        d = scale.reshape((-1, 1))
+        min = zp.reshape((-1, 1)) * d * -1
+    else:
+        max = blocks.max(axis=-1, keepdims=True)
+        min = blocks.min(axis=-1, keepdims=True)
+        d = (max - min) / 31
+
+    n_blocks = blocks.shape[0]
+    block_size = GGML_QUANT_SIZES["q5_1"][0]
+
+    with np.errstate(divide="ignore"):
+        id = np.where(d == 0, 0, 1 / d)
+    q = np.trunc((blocks - min) * id + np.float32(0.5), dtype=np.float32).astype(np.uint8).clip(0, 31)
+
+    qs = q.reshape((n_blocks, 2, block_size // 2))
+    qs = (qs[..., 0, :] & np.uint8(0x0F)) | (qs[..., 1, :] << np.uint8(4))
+
+    qh = np.packbits(q.reshape((n_blocks, 1, 32)) >> np.uint8(4), axis=-1, bitorder="little").reshape(n_blocks, 4)
+
+    d = d.astype(np.float16).view(np.uint8)
+    m = min.astype(np.float16).view(np.uint8)
+
+    return np.concatenate([d, m, qh, qs], axis=-1)
 
 
 @register_block("q8_0")

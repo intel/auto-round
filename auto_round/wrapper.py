@@ -59,7 +59,7 @@ class WrapperLinear(torch.nn.Module):
     """
 
     def __init__(self, orig_layer, enable_minmax_tuning=True, enable_norm_bias_tuning=False, device='cpu',
-                 enable_round_tuning=True, **kwargs):
+                 enable_round_tuning=True, float_zp=False, **kwargs):
         """Initializes the WrapperLinear module.
 
         Args:
@@ -80,6 +80,7 @@ class WrapperLinear(torch.nn.Module):
         self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
         self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
+        self.float_zp = float_zp
 
     @staticmethod
     def _check_act_quantization(data_type: str):
@@ -186,6 +187,7 @@ class WrapperLinear(torch.nn.Module):
             tensor_max=self.weight_max,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
+            float_zp=self.float_zp,
             **quant_kwargs
         )
         weight_q = weight_q.to(weight.dtype)
@@ -506,7 +508,7 @@ class WrapperMultiblock(torch.nn.Module):
         return hidden_states
 
 
-def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='cpu', **kwargs):
+def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='cpu', float_zp=False, **kwargs):
     """Wraps the layers in the given block with a custom Wrapper module.
 
     Args:
@@ -525,6 +527,7 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
                 continue
             new_m = WrapperLinear(m, enable_minmax_tuning=enable_minmax_tuning,
                                   enable_norm_bias_tuning=enable_norm_bias_tuning, device=device,
+                                  float_zp=float_zp,
                                   **kwargs,
                                   )
             set_module(block, n, new_m)

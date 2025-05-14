@@ -15,20 +15,9 @@
 import torch
 import numpy as np
 
-QK_K = 256
-K_SCALE_SIZE = 12
-GGML_QUANT_SIZES = {
-    "bf16": (1, 2),
-    "q4_0": (32, 2 + 16),
-    "q4_1": (32, 2 + 2 + 16),
-    "q4_k": (256, 2 + 2 + QK_K//2 + 12),
-    "q2_k": (256, 2 + 2 + QK_K//16 + QK_K//4),
-    "q8_0": (32, 2 + 32)
-}
+from .utils import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
 
 GGML_QUANT_BLOCK = {}
-
-
 
 
 def register_block(name):
@@ -80,7 +69,7 @@ def bf16_quant_block(blocks, scale=None, zp=None, **kwargs):
 
 
 @register_block("q4_0")
-def q4_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
+def q4_0_quant_block(blocks, scale=None, zp=None, **kwargs):
     if scale is not None:
         d = scale.reshape((-1, 1))
     else:
@@ -101,7 +90,7 @@ def q4_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
 
 
 @register_block("q4_1")
-def q4_1_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
+def q4_1_quant_block(blocks, scale=None, zp=None, **kwargs):
     if scale is not None:
         d = scale.reshape((-1, 1))
         min = zp.reshape((-1, 1)) * d * -1
@@ -122,9 +111,60 @@ def q4_1_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     m = min.cpu().numpy().astype(np.float16).view(np.uint8)
     return np.concatenate([d, m, qs], axis=-1)
 
+@register_block("q5_0")
+def q5_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
+    if scale is not None:
+        d = scale.reshape((-1, 1))
+    else:
+        max = torch.max(blocks, axis=-1, keepdim=True)[0]
+        d = max / -16
+        
+    id = torch.where(d == 0, 0, 1 / d)
+    n_blocks = blocks.shape[0]
+    block_size = GGML_QUANT_SIZES["q5_0"][0]
+
+    # FIXME: Q5_0's reference rounding is cursed and depends on FMA
+    q = torch.trunc(blocks.to(torch.float64) * id.to(torch.float64) + 16.5).to(torch.uint8).clip(0, 31).cpu().numpy()
+
+    qs = q.reshape((n_blocks, 2, block_size // 2))
+    qs = (qs[..., 0, :] & np.uint8(0x0F)) | (qs[..., 1, :] << np.uint8(4))
+
+    qh = np.packbits(q.reshape((n_blocks, 1, 32)) >> np.uint8(4), axis=-1, bitorder="little").reshape(n_blocks, 4)
+
+    d = d.cpu().numpy().astype(np.float16).view(np.uint8)
+
+    return np.concatenate([d, qh, qs], axis=-1)
+
+
+@register_block("q5_1")
+def q5_1_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
+    if scale is not None:
+        d = scale.reshape((-1, 1))
+        min = zp.reshape((-1, 1)) * d * -1
+    else:
+        max = blocks.max(axis=-1, keepdims=True)[0]
+        min = blocks.min(axis=-1, keepdims=True)[0]
+        d = (max - min) / 31
+
+    n_blocks = blocks.shape[0]
+    block_size = GGML_QUANT_SIZES["q5_1"][0]
+
+    id = torch.where(d == 0, 0, 1 / d)
+    q = torch.trunc((blocks - min) * id + 0.5).to(torch.uint8).clip(0, 31).cpu().numpy()
+
+    qs = q.reshape((n_blocks, 2, block_size // 2))
+    qs = (qs[..., 0, :] & np.uint8(0x0F)) | (qs[..., 1, :] << np.uint8(4))
+
+    qh = np.packbits(q.reshape((n_blocks, 1, 32)) >> np.uint8(4), axis=-1, bitorder="little").reshape(n_blocks, 4)
+
+    d = d.cpu().numpy().astype(np.float16).view(np.uint8)
+    m = min.cpu().numpy().astype(np.float16).view(np.uint8)
+
+    return np.concatenate([d, m, qh, qs], axis=-1)
+
 
 @register_block("q8_0")
-def q8_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs) -> np.ndarray:
+def q8_0_quant_block(blocks, scale=None, zp=None, **kwargs) -> np.ndarray:
     if scale is not None:
         d = scale.reshape((-1, 1))
     else:
@@ -209,7 +249,7 @@ def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
 
 
 @register_block("q2_k")
-def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
+def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
     nb = blocks.shape[0]
     output_scale = np.empty((nb, 16), dtype=np.uint8)
     output_qs = np.empty((nb, QK_K // 16 // 4, 16), dtype=np.uint8)
