@@ -16,13 +16,12 @@ import numpy as np
 from concurrent.futures import ProcessPoolExecutor
 from .utils import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
 
-GGML_QUANT_BLOCK = {}
+GGML_QUANT_TYPE = {}
 
 
-def register_block(name):
-
+def register_qtype(name):
     def register(cls):
-        GGML_QUANT_BLOCK[name] = cls
+        GGML_QUANT_TYPE[name] = cls
         return cls
 
     return register
@@ -59,12 +58,12 @@ def ggml_quant_cpu(data, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=No
         d_scale = np.array_split(d_scale, n_groups, axis=0) if d_scale is not None else [None] * n_groups
         d_wmin_m = np.array_split(d_wmin_m, n_groups, axis=0) if d_wmin_m is not None else [None] * n_groups
 
-        quant_func = GGML_QUANT_BLOCK[ggml_type]
+        quant_func = GGML_QUANT_TYPE[ggml_type]
         with ProcessPoolExecutor(worker) as executor:
             result = executor.map(quant_func, blocks, scale, zp, wmin_m, d_scale, d_wmin_m)
         new_data = np.array(list(result), dtype=np.uint8)
     else:
-        quant_func = GGML_QUANT_BLOCK[ggml_type]
+        quant_func = GGML_QUANT_TYPE[ggml_type]
         new_data = quant_func(blocks, scale, zp, wmin_m=wmin_m, d_scale=d_scale, d_wmin_m=d_wmin_m)
 
     assert new_data.dtype == np.uint8
@@ -80,7 +79,7 @@ def np_roundf(n: np.ndarray) -> np.ndarray:
     return np.sign(n) * b
 
 
-@register_block("bf16")
+@register_qtype("bf16")
 def bf16_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     n = blocks.view(np.uint32)
     # force nan to quiet
@@ -90,7 +89,7 @@ def bf16_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     return n.astype(np.uint16).view(np.uint8)
 
 
-@register_block("q4_0")
+@register_qtype("q4_0")
 def q4_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     if scale is not None:
         d = scale.reshape((-1, 1))
@@ -114,7 +113,7 @@ def q4_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     return np.concatenate([d, qs], axis=-1)
 
 
-@register_block("q4_1")
+@register_qtype("q4_1")
 def q4_1_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     if scale is not None:
         d = scale.reshape((-1, 1))
@@ -138,7 +137,7 @@ def q4_1_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     return np.concatenate([d, m, qs], axis=-1)
 
 
-@register_block("q5_0")
+@register_qtype("q5_0")
 def q5_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     if scale is not None:
         d = scale.reshape((-1, 1))
@@ -146,7 +145,7 @@ def q5_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
         imax = abs(blocks).argmax(axis=-1, keepdims=True)
         max = np.take_along_axis(blocks, imax, axis=-1)
         d = max / -16
-        
+
     n_blocks = blocks.shape[0]
     block_size = GGML_QUANT_SIZES["q5_0"][0]
     with np.errstate(divide="ignore"):
@@ -164,7 +163,7 @@ def q5_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     return np.concatenate([d, qh, qs], axis=-1)
 
 
-@register_block("q5_1")
+@register_qtype("q5_1")
 def q5_1_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     if scale is not None:
         d = scale.reshape((-1, 1))
@@ -192,7 +191,7 @@ def q5_1_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
     return np.concatenate([d, m, qh, qs], axis=-1)
 
 
-@register_block("q8_0")
+@register_qtype("q8_0")
 def q8_0_quant_block(blocks: np.array, scale=None, zp=None) -> np.ndarray:
     if scale is not None:
         d = scale.reshape((-1, 1))
@@ -210,9 +209,8 @@ def q8_0_quant_block(blocks: np.array, scale=None, zp=None) -> np.ndarray:
     return np.concatenate([d, qs], axis=1)
 
 def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
-    assert bits in [2, 4], f"bits={bits} is not supported"
-    nmax = bits ** 2 -1
     # data shape (nb, 8, 32) for Q4_K, (nb, 16, 16) for Q2_K
+    nmax = 2 ** bits - 1
     if len(data.shape) == 2:
         data_shape = (-1, 8, 32) if bits == 4 else (-1, 16, 16)
         data = data.reshape(data_shape)
@@ -276,7 +274,7 @@ def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
     return scale.reshape(scale.shape[:2]), L, the_mins.reshape(the_mins.shape[:2])
 
 
-@register_block("q2_k")
+@register_qtype("q2_k")
 def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
     nb = blocks.shape[0]
     output_scale = np.empty((nb, 16), dtype=np.uint8)
@@ -302,7 +300,7 @@ def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         max_mins = np.max(mins, axis=-1, keepdims=True)
         inv_scales = np.where(max_scales > 0, 15. / max_scales, 0)
         inv_mins = np.where(max_mins > 0, 15. / max_mins, 0)
-    
+
     replace_ids = (max_scales > 0).reshape(-1)
     output_scale = np.zeros_like(scales).astype(np.uint8)
     output_scale[replace_ids] = np.round(inv_scales * scales).astype(np.uint8)
@@ -314,7 +312,7 @@ def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         output_d = np.where(max_scales > 0, max_scales / 15, 0)
     if d_wmin_m is None:
         output_dmin = np.where(max_mins > 0 ,max_mins / 15., 0)
-    
+
     d_tmp = output_d * (output_scale & 0xF)
     dm_tmp = output_dmin * (output_scale >> 4)
 
@@ -331,9 +329,20 @@ def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 
     # [scale, qs, d, dmin]
     return np.concatenate([output_scale, output_qs, output_d, output_dmin], axis=-1)
-    
 
-@register_block("q4_k")
+
+# @register_qtype("q3_k")
+# def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
+#     nb = blocks.shape[0]
+
+#     blocks = blocks.reshape((nb, QK_K // 16, 16))
+
+#     if scale is not None:
+#         pass
+#     else:
+#         scales, all_L, mins = make_q3_quants()
+
+@register_qtype("q4_k")
 def q4_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
     nb = blocks.shape[0]
     blocks = blocks.reshape((nb, QK_K // 32, 32))  # (nb, 8, 32)
@@ -360,8 +369,8 @@ def q4_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         inv_scales = np.where(max_scales > 0, 63. / max_scales, 0)
         inv_mins = np.where(max_mins > 0, 63. / max_mins, 0)
 
-    q_scales = np.round(inv_scales * scales).astype(np.uint8)
-    q_mins = np.round(inv_mins * mins).astype(np.uint8)
+    q_scales = np.round(inv_scales * scales).astype(np.uint8).clip(0, 63)
+    q_mins = np.round(inv_mins * mins).astype(np.uint8).clip(0, 63)
 
     output_scale[:,:4] = q_scales[:,:4]
     output_scale[:,4:8] = q_mins[:,:4]
@@ -391,3 +400,67 @@ def q4_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 
     # [d, dmin, scale, qs]
     return np.concatenate([output_d, output_dmin, output_scale, output_qs], axis=-1)
+
+
+@register_qtype("q5_k")
+def q5_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
+    nb = blocks.shape[0]
+    blocks = blocks.reshape((nb, QK_K // 32, 32))
+
+    output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
+    output_qs = np.empty((nb, QK_K // 64, 32), dtype=np.uint8)
+    output_qh = np.empty((nb, QK_K // 8), dtype=np.uint8)
+
+    if scale is not None:
+        scales = scale.reshape(-1, QK_K // 32)
+        mins = wmin_m.reshape(-1, QK_K // 32)
+        output_d = d_scale.astype(np.float32) if len(d_scale.shape) == 2 \
+            else d_scale.reshape(-1, 1).astype(np.float32)
+        output_dmin = d_wmin_m.astype(np.float32) if len(d_wmin_m.shape) == 2 \
+            else d_wmin_m.reshape(-1, 1).astype(np.float32)
+        inv_scales = np.where(d_scale == 0, 0, 1 / output_d)
+        inv_mins = np.where(d_wmin_m == 0, 0, 1 / output_dmin)
+        max_scales = np.max(scales, axis=-1, keepdims=True)  # (nb, 1)
+        max_mins = np.max(mins, axis=-1, keepdims=True)  # (nb, 1)
+        all_L = np.round((blocks + mins.reshape(*mins.shape, 1)) / scales.reshape(*scales.shape, 1)).astype(np.uint8)
+    else:
+        scales, all_L, mins = make_qkx2_quants(blocks, bits=5, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=False)
+        max_scales = np.max(scales, axis=-1, keepdims=True)
+        max_mins = np.max(mins, axis=-1, keepdims=True)
+        inv_scales = np.where(max_scales > 0, 63. / max_scales, 0)
+        inv_mins = np.where(max_mins > 0, 63. / max_mins, 0)
+
+    q_scales = np.round(inv_scales * scales).astype(np.uint8).clip(0, 63)
+    q_mins = np.round(inv_mins * mins).astype(np.uint8).clip(0, 63)
+
+
+    output_scale[:,:4] = q_scales[:,:4]
+    output_scale[:,4:8] = q_mins[:,:4]
+
+    output_scale[:,8:] = (q_scales[:,4:] & 0xF) | ((q_mins[:,4:] & 0xF) << 4)
+    output_scale[:,:4] |= ((q_scales[:,4:] >> 4) << 6)
+    output_scale[:,4:8] |= ((q_mins[:,4:] >> 4) << 6)
+
+    if d_scale is None:
+        output_d = max_scales / 63
+    if d_wmin_m is None:
+        output_dmin = max_mins / 63
+
+    d_tmp = output_d * q_scales
+    dm_tmp = output_dmin * q_mins
+
+    replace_ids = d_tmp != 0
+    all_L[replace_ids] = np.round(
+        (blocks[replace_ids] + dm_tmp[replace_ids].reshape(-1, 1)) / d_tmp[replace_ids].reshape(-1, 1)).astype(
+            np.uint8)
+    all_L = np.clip(all_L, 0, 31) # (nb, 8, 32)
+
+    output_qs = all_L[:,::2] | (all_L[:,1::2] << 4)
+    output_qh = np.bitwise_or.reduce(
+        all_L >> 4 << np.arange(8, dtype=np.uint8).reshape(1, 8, 1), axis=1).astype(np.uint8)
+
+    output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
+    output_dmin = output_dmin.reshape(-1, 1).astype(np.float16).view(np.uint8)
+    output_qs = output_qs.reshape(nb, QK_K // 2)
+    # [d, dmin, scale, qh, qs]
+    return np.concatenate([output_d, output_dmin, output_scale, output_qh, output_qs], axis=-1)

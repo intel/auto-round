@@ -462,7 +462,7 @@ def tune(args):
 
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
 
-    args.float_zp = str2bool(args.float_zp)
+    args.float_zp = str2bool(args.float_zp) if args.float_zp else None
     autoround = round(
         model,
         tokenizer,

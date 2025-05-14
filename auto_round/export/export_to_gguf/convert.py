@@ -1155,7 +1155,7 @@ class Model(OriModel):
                 scale = module.scale
                 zp = module.zp if hasattr(module, "zp") else None
                 ggml_quant = ggml_quant_gpu if torch.cuda.is_available() else ggml_quant_cpu
-                ggml_quant = ggml_quant_cpu
+                # ggml_quant = ggml_quant_cpu
 
                 if data_qtype.name.lower().endswith("_k"):
                     d_scale = module.w_d_scale.to(torch.float32)
@@ -1260,10 +1260,12 @@ class Model(OriModel):
                         data_qtype = gguf.GGMLQuantizationType.Q5_0
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_1:
                         data_qtype = gguf.GGMLQuantizationType.Q5_1
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S:
-                        data_qtype = gguf.GGMLQuantizationType.Q4_K
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K_S:
                         data_qtype = gguf.GGMLQuantizationType.Q2_K
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S:
+                        data_qtype = gguf.GGMLQuantizationType.Q4_K
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_S:
+                        data_qtype = gguf.GGMLQuantizationType.Q5_K
                     else:
                         raise ValueError(f"Unknown file type: {self.ftype.name}")
 
