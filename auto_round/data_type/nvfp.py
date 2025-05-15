@@ -81,6 +81,7 @@ def full_quant(tensor, bits=4, group_size=16, v=0, **kwargs):
 
 FLOAT8_UE5M3_MAX = 114688
 
+
 def float_to_e5m3_frexp(x: torch.Tensor) -> torch.Tensor:
     x = torch.clamp(x, min=0.0)
     e5m3 = torch.zeros_like(x, dtype=torch.uint8)
@@ -155,7 +156,8 @@ def cast_to_ue5m3_ste(x):
 
 if __name__ == "__main__":
     test = torch.tensor(
-        [0.0, 2 ** (-17), (2 ** -14) * 0.875, 2 ** -14, 2 ** -13, 2 ** -6, 1e-6, 2.7657e-05, 0.1, 1.0, 3.14, 1000.0,
+        [0.0, 2 ** (-17), (2 ** -14) * 0.875, 2 ** -14, 2 ** -13, 2 ** -6,
+         1e-6, 2.7657e-05, 0.1, 1.0, 3.14, 1000.0,
          114688,
          1e10],
         dtype=torch.float32)
@@ -166,4 +168,5 @@ if __name__ == "__main__":
 
     for i in range(len(test)):
         print(
-            f"{test[i].item():.6g} -> {encoded[i].item():3d} -> {decoded[i].item():.6g} (error={abs(test[i] - decoded[i]).item():.3g})")
+            f"{test[i].item():.6g} -> {encoded[i].item():3d} -> {decoded[i].item():.6g} "
+            f"(error={abs(test[i] - decoded[i]).item():.3g})")
