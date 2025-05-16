@@ -7,13 +7,13 @@ import torch.nn as nn
 import transformers
 
 
-from auto_round_extension.cuda.triton_utils_zp.mixin import TritonModuleMixin
+from auto_round_extension.triton.triton_utils_zp.mixin import TritonModuleMixin
 
 
 logger = getLogger(__name__)
 
 try:
-    from auto_round_extension.cuda.triton_utils_zp.dequant import QuantLinearFunction, quant_matmul_248
+    from auto_round_extension.triton.triton_utils_zp.dequant import QuantLinearFunction, quant_matmul_248
 except ImportError as e:
     triton_import_exception = e
 

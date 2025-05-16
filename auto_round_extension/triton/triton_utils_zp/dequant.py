@@ -38,7 +38,6 @@ import itertools
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
 
 
 def make_dequant_configs(block_sizes, num_warps):

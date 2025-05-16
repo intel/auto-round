@@ -39,7 +39,6 @@ from logging import getLogger
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
 
 from . import custom_autotune
 
@@ -443,7 +442,6 @@ def transpose_quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq
 
 class QuantLinearFunction(torch.autograd.Function):
     @staticmethod
-    @custom_fwd
     def forward(ctx, input, qweight, scales, qzeros, g_idx, bits, maxq):
         output = quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq)
         ctx.save_for_backward(qweight, scales, qzeros, g_idx)
@@ -451,7 +449,6 @@ class QuantLinearFunction(torch.autograd.Function):
         return output
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, grad_output):
         qweight, scales, qzeros, g_idx = ctx.saved_tensors
         bits, maxq = ctx.bits, ctx.maxq
@@ -494,7 +491,6 @@ def quant_matmul_inference_only_248(input, qweight, scales, qzeros, g_idx, bits,
 
 class QuantLinearInferenceOnlyFunction(torch.autograd.Function):
     @staticmethod
-    @custom_fwd(cast_inputs=torch.float16)
     def forward(ctx, input, qweight, scales, qzeros, g_idx, bits, maxq):
         output = quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq)
         return output
