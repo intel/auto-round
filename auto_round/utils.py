@@ -1208,6 +1208,9 @@ def _gguf_args_check(args):
                     f" reset to {', '.join(reset_list)}.")
             logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
 
+            if re.search("q\d_1", format) and args.float_zp is None:
+                logger.warning(f"set float_zp to true for {format}")
+                args.float_zp = True
     return args
 
 
@@ -1438,6 +1441,16 @@ def get_model_dtype(model_dtype, default="auto"):
         model_dtype = default
     return model_dtype
 
+def str2bool(v):
+    import argparse
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def filter_quantization_config(quantization_config):
     default_dict = {"amp": True, "batch_size": 8, "data_type": int, "dataset": "NeelNanda/pile-10k",
