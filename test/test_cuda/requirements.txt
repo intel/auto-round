@@ -1,0 +1,18 @@
+accelerate
+autoawq
+auto-gptq
+datasets
+einops
+gptqmodel>=2.0
+intel-extension-for-pytorch==2.6.0
+intel-extension-for-transformers
+lm-eval>=0.4.2,<0.5
+numpy < 2.0
+optimum
+pandas
+pillow
+py-cpuinfo
+torch<2.7.0
+torchvision
+tqdm
+transformers
