@@ -1159,8 +1159,8 @@ class Model(OriModel):
 
                 if data_qtype.name.lower().endswith("_k"):
                     d_scale = module.w_d_scale.to(torch.float32)
-                    d_wmin_m = module.w_d_wmin_m.to(torch.float32)
-                    wmin_m = module.w_wmin_m.to(torch.float32)
+                    d_wmin_m = module.w_d_wmin_m.to(torch.float32) if hasattr(module, "w_d_wmin_m") else None
+                    wmin_m = module.w_wmin_m.to(torch.float32) if hasattr(module, "w_wmin_m") else None
                     data = ggml_quant(
                         data_torch,
                         data_qtype.name.lower(),
@@ -1262,10 +1262,14 @@ class Model(OriModel):
                         data_qtype = gguf.GGMLQuantizationType.Q5_1
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K_S:
                         data_qtype = gguf.GGMLQuantizationType.Q2_K
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_S:
+                        data_qtype = gguf.GGMLQuantizationType.Q3_K
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S:
                         data_qtype = gguf.GGMLQuantizationType.Q4_K
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_S:
                         data_qtype = gguf.GGMLQuantizationType.Q5_K
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q6_K:
+                        data_qtype = gguf.GGMLQuantizationType.Q6_K
                     else:
                         raise ValueError(f"Unknown file type: {self.ftype.name}")
 

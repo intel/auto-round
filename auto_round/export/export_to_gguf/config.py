@@ -35,6 +35,16 @@ GGUF_CONFIG["gguf:q2_k_s"] = {
     "data_type": "int_asym_dq"
 }
 
+GGUF_CONFIG["gguf:q3_k_s"] = {
+    "bits": 3,
+    "act_bits": 16,
+    "super_group_size": 16,
+    "super_bits": 6,
+    "group_size": 16,
+    "asym": False,
+    "data_type": "int_sym_dq"
+}
+
 GGUF_CONFIG["gguf:q4_k_s"] = {
     "bits": 4,
     "act_bits": 16,
