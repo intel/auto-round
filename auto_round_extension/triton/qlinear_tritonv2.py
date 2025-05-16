@@ -15,6 +15,10 @@ logger = getLogger(__name__)
 try:
     from auto_round_extension.triton.triton_utils.dequant import QuantLinearFunction, quant_matmul_248
 except ImportError as e:
+    if torch.xpu.is_available():
+        logger.error(f"please following https://github.com/intel/intel-xpu-backend-for-triton  to install triton for "
+                     f"Intel GPU, or you could use ipex backend")
+        exit(-1)
     triton_import_exception = e
 
     def error_raiser_triton(*args, **kwargs):
