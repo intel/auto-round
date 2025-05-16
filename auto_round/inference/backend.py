@@ -128,7 +128,7 @@ BackendInfos['auto_gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              requirements=["auto-gptq>=0.7.1"]
                                              )
 
-BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda","cpu","xpu"], sym=[True, False],
+BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda","xpu"], sym=[True, False],
                                                   packing_format="int32",
                                                   dtype=["float16", "bfloat16"],
                                                   bits=[2, 4, 8],
