@@ -14,11 +14,12 @@ AutoRound
 ---
 <div align="left">
 
-AutoRound is an advanced quantization algorithm that delivers strong accuracy, even at 2-bit precision. 
-It leverages sign gradient descent to fine-tune both rounding values and min-max clipping thresholds in just 200 steps. 
-Designed for broad compatibility, it seamlessly supports a wide range of LLMs and is actively expanding to cover more VLMs as well. 
-It also supports quantization and inference across multiple hardware platforms, including CPU, Intel GPU, and CUDA. 
-AutoRound also offers a variety of useful features, including mixed-bit tuning and inference, lm-head quantization, 
+AutoRound is an advanced quantization algorithm that delivers strong accuracy, even at 2-bit precision.
+It leverages sign gradient descent to fine-tune both rounding values and min-max clipping thresholds in just 200 steps.
+Designed for broad compatibility, it seamlessly supports a wide range of LLMs and is actively expanding to cover more
+VLMs as well.
+It also supports quantization and inference across multiple hardware platforms, including CPU, Intel GPU, and CUDA.
+AutoRound also offers a variety of useful features, including mixed-bit tuning and inference, lm-head quantization,
 support for exporting to formats like GPTQ/AWQ/GGUF, and flexible tuning recipes. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
 details and quantized models in several Hugging Face Spaces,
@@ -32,8 +33,12 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 <div align="left">
 
 ## What's New
-* [2025/04] AutoRound provides some recipes for Qwen3 series, please refer to [Qwen3-8B-sym-recipe](./docs/Qwen3-8B-sym-recipe.md) and [Qwen3-14B-sym-recipe](./docs/Qwen3-14B-sym-recipe.md) for more details.
-* [2025/04] AutoRound has been integrated into Transformers. You can run models in the AutoRound format directly with Transformers versions later than 4.51.3.
+
+* [2025/04] AutoRound provides some recipes for Qwen3 series, please refer
+  to [Qwen3-8B-sym-recipe](./docs/Qwen3-8B-sym-recipe.md) and [Qwen3-14B-sym-recipe](./docs/Qwen3-14B-sym-recipe.md) for
+  more details.
+* [2025/04] AutoRound has been integrated into Transformers. You can run models in the AutoRound format directly with
+  Transformers versions later than 4.51.3.
 * [2025/03] The INT2-mixed R1 model (~200GB) retains 97.9% accuracy. Check
   out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
 * [2025/01] We provide experimental support for GGUF q4_0 and q4_1 formats.
@@ -83,7 +88,7 @@ auto-round \
     --output_dir ./tmp_autoround
 ```
 
-We offer another two configurations, `auto-round-best` and `auto-round-light`, 
+We offer another two configurations, `auto-round-best` and `auto-round-light`,
 designed for optimal accuracy and improved speed,
 respectively. Details are as follows.
 <details>
@@ -313,7 +318,8 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 
 #### HPU/CPU/XPU/CUDA
 
-**Please avoid manually moving the quantized model to a different device** (e.g., model.to('cpu')) during inference, as this may cause unexpected exceptions.
+**Please avoid manually moving the quantized model to a different device** (e.g., model.to('cpu')) during inference, as
+this may cause unexpected exceptions.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -332,24 +338,25 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 AutoRound automatically selects the best available backend based on the installed libraries and prompts the user to
 install additional libraries when a better backend is found. On CUDA, the default priority is Marlin > ExLLaMAV2 >
-Triton, but the final choice depends on factors such as bits, group_size, packing format compatibility, etc. And the backend may not always be the most suitable for certain devices. Please refer
+Triton, but the final choice depends on factors such as bits, group_size, packing format compatibility, etc. And the
+backend may not always be the most suitable for certain devices. Please refer
 to the following table for the details and specify the backend you want.
 
-| Name                                 | Devices  | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
-|--------------------------------------|----------|---------|-----------|----------|-----------------|-------------------------------|
-| ipex                                 | cpu/xpu  | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch   |
+| Name                                 | Devices  | Bits    | Dtypes    | Priority | Packing format  | Requirements                     |
+|--------------------------------------|----------|---------|-----------|----------|-----------------|----------------------------------|
+| ipex                                 | cpu/xpu  | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch      |
 | itrex                                | cpu      | 2,4,8   | BF16/FP16 | 0        | gptq_zp+-1/awq  | intel-extension-for-transformers |
-| marlin                               | cuda     | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                     |
-| exllamav2 or<br/>gptqmodel:exllamav2 | cuda     | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                     |
-| exllamav2 or<br/>gptq:exllamav2      | cuda     | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                     |
-| gptq:cuda                            | cuda     | 2,3,4,8 | FP16      | 0        | gptq_zp+-1      | auto-gptq                     |
-| triton                               | cuda/xpu | 2,4,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round   <br/> <br/>                |
-| awq                                  | cuda     | 4       | FP16      | 5        | awq             | auto-awq                      |
-| hpu                                  | hpu      | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
+| marlin                               | cuda     | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                        |
+| exllamav2 or<br/>gptqmodel:exllamav2 | cuda     | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                        |
+| exllamav2 or<br/>gptq:exllamav2      | cuda     | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                        |
+| gptq:cuda                            | cuda     | 2,3,4,8 | FP16      | 0        | gptq_zp+-1      | auto-gptq                        |
+| triton                               | cuda/xpu | 2,4,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                       |
+| awq                                  | cuda     | 4       | FP16      | 5        | awq             | auto-awq                         |
+| hpu                                  | hpu      | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                       |
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import  AutoRoundConfig
+from auto_round import AutoRoundConfig
 
 quantized_model_path = "./tmp_autoround"
 quantization_config = AutoRoundConfig(backend="auto")
@@ -463,7 +470,7 @@ model architecture or kernel limitations.
 |--------------------------------|---------------------|----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | allenai/Molmo                  | pile                | X                    | [Molmo-7B-D-0924-int4-sym](https://huggingface.co/OPEA/Molmo-7B-D-0924-int4-sym-inc), [Molmo-72B-0924-int4-sym-gptq](https://huggingface.co/OPEA/Molmo-72B-0924-int4-sym-gptq-inc), [Molmo-72B-0924-int4-sym](https://huggingface.co/OPEA/Molmo-72B-0924-int4-sym-inc)                                                                                                                                                                                           |
 | deepseek-ai/deepseek-vl2       | pile/llava          | √                    | [deepseek-vl2-int4-sym-gptq](https://huggingface.co/OPEA/deepseek-vl2-int4-sym-gptq-inc)                                                                                                                                                                                                                                                                                                                                                                         |
-| google/gemma-3                 | pile/llava          | √                    | [gemma-3-12b-it-AutoRound-gguf-q4-0](https://huggingface.co/OPEA/gemma-3-12b-it-AutoRound-gguf-q4-0), [gemma-3-27b-it-AutoRound-gguf-q4-0](https://huggingface.co/OPEA/gemma-3-27b-it-AutoRound-gguf-q4-0), [gemma-3-12b-it-int4-AutoRound](https://huggingface.co/OPEA/gemma-3-12b-it-int4-AutoRound), [gemma-3-27b-it-int4-AutoRound](https://huggingface.co/OPEA/gemma-3-27b-it-int4-AutoRound)                                               |
+| google/gemma-3                 | pile/llava          | √                    | [gemma-3-12b-it-AutoRound-gguf-q4-0](https://huggingface.co/OPEA/gemma-3-12b-it-AutoRound-gguf-q4-0), [gemma-3-27b-it-AutoRound-gguf-q4-0](https://huggingface.co/OPEA/gemma-3-27b-it-AutoRound-gguf-q4-0), [gemma-3-12b-it-int4-AutoRound](https://huggingface.co/OPEA/gemma-3-12b-it-int4-AutoRound), [gemma-3-27b-it-int4-AutoRound](https://huggingface.co/OPEA/gemma-3-27b-it-int4-AutoRound)                                                               |
 | HuggingFaceTB/SmolVLM          | pile/llava          | √                    | [SmolVLM-Instruct-int4-sym](https://huggingface.co/OPEA/SmolVLM-Instruct-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                                           |
 | ibm-granite/granite-vision-3.2 | pile/llava          | -                    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | liuhaotian/Llava-v1.5          | pile/llava          | X                    | [llava-v1.5-7b-int4-sym](https://huggingface.co/OPEA/llava-v1.5-7b-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -489,7 +496,6 @@ AutoRound has been integrated into multiple repositories.
 [ModelCloud/GPTQModel](https://github.com/ModelCloud/GPTQModel)
 
 [pytorch/ao](https://github.com/pytorch/ao)
-
 
 ## Reference
 
