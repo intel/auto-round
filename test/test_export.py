@@ -165,11 +165,7 @@ class TestAutoRound(unittest.TestCase):
 
         device = "auto"  ##cpu, hpu, cuda
         from auto_round import AutoRoundConfig
-        quantization_config = AutoRoundConfig(
-            backend=device
-        )
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device,
-                                                     quantization_config=quantization_config)
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -229,9 +225,9 @@ class TestAutoRound(unittest.TestCase):
     #     )
     #     autoround.quantize()
     #     quantized_model_path = "./saved"
-    #
+    
     #     autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:marlin")
-    #
+    
     #     from auto_round.auto_quantizer import AutoHfQuantizer
     #     model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
     #     tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -239,5 +235,6 @@ class TestAutoRound(unittest.TestCase):
     #     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     #     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
     #     shutil.rmtree("./saved", ignore_errors=True)
-    #
-
+    
+if __name__ == "__main__":
+    unittest.main()

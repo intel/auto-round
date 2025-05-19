@@ -1641,7 +1641,7 @@ class AutoRound(object):
                     )
                     format = "auto_round"
 
-        if re.search("q\d_k", format) and not self.data_type.endswith("_dq"):
+        if re.search(r"q\d_k", format) and not self.data_type.endswith("_dq"):
             logger.error(
                 f"datatype<{self.data_type}> not support to export {format} format."
                 " Please change export format or data_type."
