@@ -156,7 +156,7 @@ BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda","xpu"], sym=
                                                      requirements=[ "triton>=2.0","auto-round>=0.5.0"]
                                                      )
 
-BackendInfos['auto_round:torch_zp'] = BackendInfo(device=["cuda"], sym=[True],  ## asym has accuracy issue
+BackendInfos['auto_round:torch_zp'] = BackendInfo(device=["cuda"], sym=[True],
                                                      packing_format="int32_zp",
                                                      dtype=["float16", "bfloat16"],
                                                      bits=[2, 4, 8],
