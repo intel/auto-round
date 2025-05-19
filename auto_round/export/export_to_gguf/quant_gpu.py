@@ -342,9 +342,9 @@ def make_q3_quants(data, bits, do_rmse=False):
             sumlx = slx
             suml2 = sl2
 
-    L = torch.round(iscale * data).clip(-nmax, nmax - 1).to(torch.uint8) + nmax
+    L = torch.round(iscale * data).clip(-nmax, nmax - 1) + nmax
     scales = torch.where(iscale != 0, 1 / iscale, 0).reshape(iscale.shape[:2])
-    return scales, L
+    return scales, L.to(torch.uint8)
 
 
 @register_qtype("q3_k")
@@ -354,11 +354,13 @@ def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 
     output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
 
+    # scale = None
     if scale is not None:
         scales = scale.reshape(-1, QK_K // 16)
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         iscales = torch.where(output_d == 0, 0, 1 / output_d)
-        all_L = torch.round(blocks / scales.unsqueeze(-1)).clip(-4, 3).to(torch.uint8) + 4
+        all_L = torch.round(blocks / scales.unsqueeze(-1)).clip(-4, 3) + 4
+        all_L = all_L.to(torch.uint8)
     else:
         scales, all_L = make_q3_quants(blocks, bits=3, do_rmse=True)
         imax = abs(scales).argmax(axis=-1, keepdims=True)
