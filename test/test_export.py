@@ -236,5 +236,3 @@ class TestAutoRound(unittest.TestCase):
     #     print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
     #     shutil.rmtree("./saved", ignore_errors=True)
     
-if __name__ == "__main__":
-    unittest.main()

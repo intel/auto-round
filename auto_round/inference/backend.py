@@ -128,7 +128,7 @@ BackendInfos['auto_gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              requirements=["auto-gptq>=0.7.1"]
                                              )
 
-BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda","xpu"], sym=[True, False],
+BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda", "xpu"], sym=[True, False],
                                                   packing_format="int32",
                                                   dtype=["float16", "bfloat16"],
                                                   bits=[2, 4, 8],
@@ -142,11 +142,11 @@ BackendInfos['auto_round:int32'] = BackendInfo(device=["cuda"], sym=[True, False
                                                   dtype=["float16", "bfloat16"],
                                                   bits=[2, 3, 4, 8],
                                                   priority=1, feature_checks=[feature_multiply_checker_32],
-                                                  alias=["auto_round", "tritonv2", "triton"],
+                                                  alias=["auto_round", "torch"],
                                                   requirements=["triton>=2.0","auto-round>=0.5.0"]
                                                   )
 
-BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda","xpu"], sym=[True],  ## asym has accuracy
+BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda","xpu"], sym=[True],  ## asym has accuracys
                                                      # issue
                                                      packing_format="int32_zp",
                                                      dtype=["float16", "bfloat16"],
@@ -161,7 +161,7 @@ BackendInfos['auto_round:int32_zp'] = BackendInfo(device=["cuda"], sym=[True],  
                                                      dtype=["float16", "bfloat16"],
                                                      bits=[2, 4, 8],
                                                      priority=1, feature_checks=[feature_multiply_checker_32],
-                                                     alias=["tritonv2", "tritonv2_zp", "triton"],
+                                                     alias=["torch", "torch_zp"],
                                                      requirements=[ "triton>=2.0","auto-round>=0.5.0"]
                                                      )
 
