@@ -137,7 +137,7 @@ BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda", "xpu"], sym=[T
                                                   requirements=["triton>=2.0","auto-round>=0.5.0"]
                                                   )
 
-BackendInfos['auto_round:int32'] = BackendInfo(device=["cuda"], sym=[True, False],
+BackendInfos['auto_round:torch'] = BackendInfo(device=["cuda"], sym=[True, False],
                                                   packing_format="int32",
                                                   dtype=["float16", "bfloat16"],
                                                   bits=[2, 3, 4, 8],
@@ -156,7 +156,7 @@ BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda","xpu"], sym=
                                                      requirements=[ "triton>=2.0","auto-round>=0.5.0"]
                                                      )
 
-BackendInfos['auto_round:int32_zp'] = BackendInfo(device=["cuda"], sym=[True],  ## asym has accuracy issue
+BackendInfos['auto_round:torch_zp'] = BackendInfo(device=["cuda"], sym=[True],  ## asym has accuracy issue
                                                      packing_format="int32_zp",
                                                      dtype=["float16", "bfloat16"],
                                                      bits=[2, 4, 8],
@@ -430,11 +430,11 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
     if backend == "auto_round:tritonv2_zp":
         from auto_round_extension.triton.qlinear_tritonv2_zp import QuantLinear
 
-    if backend == "auto_round:int32":
+    if backend == "auto_round:torch":
         from auto_round_extension.torch.qlinear_int32 import QuantLinear
         return QuantLinear
 
-    if backend == "auto_round:int32_zp":
+    if backend == "auto_round:torch_zp":
         from auto_round_extension.torch.qlinear_int32_zp import QuantLinear
         return QuantLinear
 
