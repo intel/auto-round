@@ -25,17 +25,19 @@ from lm_eval.models.huggingface import HFLM
 def simple_evaluate_user_model(
         user_model,
         tokenizer,
-        batch_size: Optional[int] = None,
-        max_batch_size: Optional[int] = None,
+        batch_size: Optional[int] = 1,
+        max_batch_size: Optional[int] = 64,
+        eval_model_dtype = "auto",
         **kwargs
 ):
-    hflm = HFLM(pretrained=user_model, tokenizer=tokenizer, batch_size=batch_size, max_batch_size=max_batch_size)
-    return lm_simple_evaluate(
-        model=hflm,
-        model_args=None,
+    hflm = HFLM(
+        pretrained=user_model,
+        tokenizer=tokenizer,
         batch_size=batch_size,
         max_batch_size=max_batch_size,
-        **kwargs)
+        dtype=eval_model_dtype)
+    return lm_simple_evaluate(
+        model=hflm, model_args=None, batch_size=batch_size, max_batch_size=max_batch_size, **kwargs)
 
 
 def simple_evaluate(

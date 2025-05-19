@@ -42,6 +42,20 @@ supported_formats = supported_formats + tuple(GGUF_CONFIG.keys())
 
 supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D)
 
+supported_dtypes = ("int", "mx_fp", "fp", "nv_fp")
+
+
+def infer_bits_by_data_type(data_type: str):
+    for supported_dtype in supported_dtypes:
+        if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
+            ##first check the following two bits
+            suc_2str = data_type[len(supported_dtype):len(supported_dtype) + 2]
+            if str.isdigit(suc_2str):
+                return int(suc_2str)
+            if str.isdigit(data_type[len(supported_dtype)]):
+                return int(data_type[len(supported_dtype)])
+    return 16
+
 
 @lru_cache(None)
 def warning_once(self, msg: str):
@@ -290,44 +304,6 @@ def check_is_cpu(device):
         bool: True if the device is a CPU, False otherwise.
     """
     return device == torch.device("cpu") or device == "cpu"
-
-
-def validate_modules(module_names, quant_vision=False, vison_blocks_names=None):
-    """
-    Test a list of modules' validity.
-
-    Args:
-    modules (list of str): List of strings to be validated.
-
-    Returns:
-    bool: True if all modules have equal length or not dependent, otherwise False.
-    """
-    if not bool(module_names):  # pragma: no cover
-        raise ValueError(f"Empty modules")
-    if len(module_names) < 2:
-        return True
-    split_modules = [s.split('.') for s, _ in module_names]
-    lengths = [len(parts) for parts in split_modules]
-    if len(set(lengths)) == 1:  # pragma: no cover
-        return True
-    max_length = max(lengths)
-    min_length = min(lengths)
-    longest_module = next(s for s in split_modules if len(s) == max_length)
-    shortest_module = next(s for s in split_modules if len(s) == min_length)
-    shortest_module = '.'.join(shortest_module)
-    longest_module = '.'.join(longest_module)
-    # Check if the shortest name is a substring of the longest name
-    if shortest_module in longest_module:  # pragma: no cover
-        raise ValueError(f"Invalid modules, at least two modules detected" \
-                         " as dependent, {shortest_module} and {longest_module}")
-    flag = False
-    if quant_vision:
-        for n, _ in module_names:
-            flag = any(key not in n.lower() for key in (vison_blocks_names))
-    if quant_vision and not flag:
-        raise ValueError(f"Cannot find the visual block. Please reset the quant_nontext_module parameter to False, " \
-                         "or raise an issue at https://github.com/intel/auto-round/issues.")
-    return
 
 
 def get_common_prefix(paths):
@@ -1185,6 +1161,13 @@ def _gguf_args_check(args):
     pre_dq_format = ""
     for format in GGUF_CONFIG:
         if format in formats:
+            try:
+                from auto_round.export.export_to_gguf.convert import Model
+            except:
+                raise ImportError(
+                    f"Please use the latest gguf-py for {format}, you can use the following command to install it:\n"
+                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .")
+                sys.exit(-1)
             if re.search(pattern, format):
                 if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
                     logger.error(f"Cannot eport {pre_dq_format} and {format} at the same time.")
@@ -1221,7 +1204,7 @@ def _gguf_args_check(args):
                     setattr(args, k, v)
             if len(unsupport_list) > 0:
                 logger.error(
-                    f"format {format} not support for {', '.join(unsupport_list)},"
+                    f"format {format} does not support for {', '.join(unsupport_list)},"
                     f" reset to {', '.join(reset_list)}.")
             logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
 
@@ -1439,3 +1422,43 @@ def get_shared_keys(model):
     shared_keys = shared_cache_keys
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
+
+
+def get_model_dtype(model_dtype, default="auto"):
+    if model_dtype is None or model_dtype == "auto":
+        model_dtype = default
+    elif model_dtype in ["bf16", "bfloat16"]:
+        model_dtype = "bfloat16"
+    elif model_dtype in ["f16", "float16", "fp16"]:
+        model_dtype = "float16"
+    elif model_dtype in ["f32", "float32", "fp32"]:
+        model_dtype = "float32"
+    else:
+        logger.warning(f"Unable to identify model_dtype {model_dtype}, reset to default model_dtype {default}")
+        model_dtype = default
+    return model_dtype
+
+
+def filter_quantization_config(quantization_config):
+    default_dict = {"amp": True, "batch_size": 8, "data_type": int, "dataset": "NeelNanda/pile-10k",
+                    "enable_minmax_tuning": True, "enable_norm_bias_tuning": False, "enable_quanted_input": True,
+                    "gradient_accumulate_steps": 1, "iters": 200, "low_gpu_mem_usage": False, "nsamples": 128,
+                    "scale_dtype": "torch.float16", "seqlen": 2048}
+    iters = quantization_config.get("iters", 200)
+
+    default_dict["lr"] = 1.0 / iters if iters > 0 else 5e-3
+    default_dict["minmax_lr"] = default_dict["lr"]
+
+    for key in default_dict:
+        if key in quantization_config and default_dict[key] == quantization_config[key]:
+            quantization_config.pop(key)
+    for k in list(quantization_config.keys()):
+        if quantization_config[k] is None:
+            quantization_config.pop(k)
+
+    if quantization_config.get("act_bits", 16) >= 16:
+        quantization_config.pop("act_bits", None)
+        quantization_config.pop("act_data_type", None)
+        quantization_config.pop("act_dynamic", None)
+        quantization_config.pop("act_sym", None)
+        quantization_config.pop("act_group_size", None)

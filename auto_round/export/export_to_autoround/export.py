@@ -22,9 +22,10 @@ import torch.nn as nn
 import transformers
 
 import auto_round.export.export_to_autoround.qlinear_triton_act
-
 import auto_round_extension.cuda.qlinear_int32
-from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized
+import auto_round_extension.triton.qlinear_tritonv2
+from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized, \
+    filter_quantization_config
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
@@ -74,6 +75,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
         if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
             return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
         from auto_round_extension.cuda.qlinear_int32 import QuantLinear
+        from auto_round_extension.triton.qlinear_tritonv2 import QuantLinear
         return QuantLinear
     elif "auto_round" in backend and "gptq" in backend and bits in (2, 4, 8):
         from auto_round.export.export_to_autoround.qlinear_triton import QuantLinear  ##no g_idx
@@ -193,7 +195,8 @@ def pack_layer(layer_name, model, backend):
         qlayer = new_layer
         import auto_round.export.export_to_autoround.qlinear_triton
         if sym and isinstance(QuantLinear, (auto_round.export.export_to_autoround.qlinear_triton.QuantLinear,
-                                            auto_round_extension.cuda.qlinear_int32.QuantLinear)):
+                                            auto_round_extension.cuda.qlinear_int32.QuantLinear,
+                                            auto_round_extension.triton.qlinear_tritonv2.QuantLinear)):
             zp = int(zp.flatten()[0])
 
         qlayer.to("cpu")
@@ -304,7 +307,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
             for _ in executor.map(wrapper, names):
                 pass
-
+    filter_quantization_config(quantization_config)
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:
@@ -322,6 +325,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         processor.save_pretrained(output_dir)
     if quantization_config.get("act_bits", 16) <= 8:
         dtype = torch.bfloat16
+    elif "awq" in quantization_config.get("packing_format", "auto_round:auto_gptq"):
+        dtype = torch.float16 ## awq kernel only supports float16 on cuda
     else:
         dtype = None
     save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
@@ -362,5 +367,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-

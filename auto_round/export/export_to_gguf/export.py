@@ -39,6 +39,9 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
 
 def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
     """Export the model to gguf format."""
+    if output_dir is not None and os.path.exists(output_dir):
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
+
     st = time.time()
 
     model = kwargs["model"]

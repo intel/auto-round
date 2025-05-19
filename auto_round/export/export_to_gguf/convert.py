@@ -54,7 +54,8 @@ import torch
 
 # autoround import
 from auto_round.utils import logger, LazyImport
-from .quant import ggml_quant
+from .quant_cpu import ggml_quant_cpu
+from .quant_gpu import ggml_quant_gpu
 
 gguf = LazyImport("gguf")
 
@@ -1134,6 +1135,49 @@ class Model(OriModel):
     def get_tensors(self) -> Iterator[tuple[str, Tensor]]:
         for name, tensor in self.model.named_parameters():
             yield name, tensor
+    
+    def _quant_data(self, data_torch, data_qtype, name, bid):
+        from auto_round.utils import get_module
+        suffix = '.weight'
+        if suffix in name:
+            layer_name = name[:-len(suffix)]
+            module = get_module(self.model, layer_name)
+            if hasattr(module, "scale"):
+                if hasattr(self, "permute"):
+                    bs = module.scale.shape[0]
+                    for attr in ["scale", "zp", "w_d_scale", "w_d_wmin_m", "w_wmin_m"]:
+                        if hasattr(module, attr) and getattr(module, attr) is not None:
+                            attr_tensor = getattr(module, attr)
+                            ori_shape = attr_tensor.shape
+                            attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), name, bid)[0][1]
+                            attr_tensor = attr_tensor.reshape(ori_shape)
+                            setattr(module, attr, attr_tensor)
+                scale = module.scale
+                zp = module.zp if hasattr(module, "zp") else None
+                ggml_quant = ggml_quant_gpu if torch.cuda.is_available() else ggml_quant_cpu
+
+                if data_qtype.name.lower().endswith("_k"):
+                    d_scale = module.w_d_scale.to(torch.float32)
+                    d_wmin_m = module.w_d_wmin_m.to(torch.float32)
+                    wmin_m = module.w_wmin_m.to(torch.float32)
+                    data = ggml_quant(
+                        data_torch,
+                        data_qtype.name.lower(),
+                        scale,
+                        zp,
+                        wmin_m=wmin_m,
+                        d_scale=d_scale,
+                        d_wmin_m=d_wmin_m
+                    )
+                else:
+                    data = ggml_quant(data_torch, data_qtype.name.lower(), scale, zp)
+            else:
+                data_qtype = gguf.GGMLQuantizationType.F32
+                data = data_torch.squeeze().cpu().numpy()
+        else:
+            data_qtype = gguf.GGMLQuantizationType.F32
+            data = data_torch.squeeze().cpu().numpy()
+        return data, data_qtype
 
     def prepare_tensors(self):
         max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
@@ -1225,67 +1269,21 @@ class Model(OriModel):
                 #     data_qtype = gguf.GGMLQuantizationType.F16
                 #     data = gguf.quants.quantize(data, data_qtype)
 
-                # Quant here
-                def _quant_data(data, data_qtype):
-                    from auto_round.utils import get_module
-                    suffix = '.weight'
-                    if suffix in name:
-                        layer_name = name[:-len(suffix)]
-                        module = get_module(self.model, layer_name)
-                        if hasattr(module, "scale"):
-
-                            if hasattr(self, "permute"):
-                                bs = module.scale.shape[0]
-                                for attr in ["scale", "zp", "w_d_scale", "w_d_wmin_m", "w_wmin_m"]:
-                                    if hasattr(module, attr) and getattr(module, attr) is not None:
-                                        attr_tensor = getattr(module, attr)
-                                        ori_shape = attr_tensor.shape
-                                        attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), name, bid)[0][1]
-                                        attr_tensor = attr_tensor.reshape(ori_shape)
-                                        setattr(module, attr, attr_tensor)
-
-                            scale = module.scale
-
-                            if isinstance(scale, torch.Tensor):
-                                scale = scale.numpy()
-                            zp = module.zp if hasattr(module, "zp") else None
-                            if isinstance(zp, torch.Tensor):
-                                zp = zp.numpy()
-                            if data_qtype.name.lower().endswith("_k"):
-                                d_scale = module.w_d_scale.numpy()
-                                d_wmin_m = module.w_d_wmin_m.numpy()
-                                wmin_m = module.w_wmin_m.numpy()
-                                data = ggml_quant(
-                                    data,
-                                    data_qtype.name.lower(),
-                                    scale,
-                                    zp,
-                                    wmin_m=wmin_m,
-                                    d_scale=d_scale,
-                                    d_wmin_m=d_wmin_m)
-                            else:
-                                data = ggml_quant(data, data_qtype.name.lower(), scale, zp)
-                        else:
-                            data_qtype = gguf.GGMLQuantizationType.F32
-                    else:
-                        data_qtype = gguf.GGMLQuantizationType.F32
-                    return data, data_qtype
-
                 # for MOE model
-                if len(data.shape) == 3:
+                if len(data_torch.shape) == 3:
                     new_data = []
-                    for idx, arr in enumerate(data):
+                    for idx, arr in enumerate(data_torch):
                         arr_name = name.split('.')
                         for i in range(len(arr_name) - 1, -1, -1):
-                            if arr_name[i].isdecimal() and int(arr_name[i]) == (data.shape[0] - 1):
+                            if arr_name[i].isdecimal() and int(arr_name[i]) == (data_torch.shape[0] - 1):
                                 arr_name[i] = str(idx)
                         arr_name = ".".join(arr_name)
-                        arr, data_qtype = _quant_data(arr, data_qtype)
+                        arr, data_qtype = self._quant_data(arr, data_qtype, name, bid)
                         new_data.append(arr)
                     data = np.array(new_data)
                     del new_data
                 else:
-                    data, data_qtype = _quant_data(data, data_qtype)
+                    data, data_qtype = self._quant_data(data_torch, data_qtype, name, bid)
 
                 shape = gguf.quant_shape_from_byte_shape(
                     data.shape, data_qtype) if data.dtype == np.uint8 else data.shape

@@ -39,7 +39,15 @@ def register_block(name):
     return register
 
 
-def ggml_quant(data: np.array, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
+def ggml_quant_cpu(data, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
+    import torch
+    data = data.squeeze().cpu().numpy() if isinstance(data, torch.Tensor) else data
+    scale = scale.numpy() if isinstance(scale, torch.Tensor) else scale
+    zp = zp.numpy() if isinstance(zp, torch.Tensor) else zp
+    wmin_m = wmin_m.numpy() if isinstance(wmin_m, torch.Tensor) else wmin_m
+    d_scale = d_scale.numpy() if isinstance(d_scale, torch.Tensor) else d_scale
+    d_wmin_m = d_wmin_m.numpy() if isinstance(d_wmin_m, torch.Tensor) else d_wmin_m
+
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
 
     data = data.astype(np.float32, copy=False)
@@ -52,6 +60,7 @@ def ggml_quant(data: np.array, ggml_type, scale=None, zp=None, wmin_m=None, d_sc
     else:
         worker = 0
 
+    worker = 0
     if worker > 0:
         n_groups = (data.shape[0] // worker) or 1
         blocks = np.array_split(blocks, n_groups, axis=0)
@@ -73,6 +82,7 @@ def ggml_quant(data: np.array, ggml_type, scale=None, zp=None, wmin_m=None, d_sc
     else:
         quant_func = GGML_QUANT_BLOCK[ggml_type]
         if ggml_type.endswith("_k"):
+            # 0.5588 vs 63.05
             new_data = quant_func(blocks, scale, zp, wmin_m=wmin_m, d_scale=d_scale, d_wmin_m=d_wmin_m)
         else:
             new_data = quant_func(blocks, scale, zp)
@@ -165,216 +175,181 @@ def q8_0_quant_block(blocks: np.array, scale=None, zp=None) -> np.ndarray:
 
     return np.concatenate([d, qs], axis=1)
 
+def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
+    assert bits in [2, 4], f"bits={bits} is not supported"
+    nmax = bits ** 2 -1
+    # data shape (nb, 8, 32) for Q4_K, (nb, 16, 16) for Q2_K
+    if len(data.shape) == 2:
+        data_shape = (-1, 8, 32) if bits == 4 else (-1, 16, 16)
+        data = data.reshape(data_shape)
+    sum_x2 = np.sum(np.power(data, 2), axis=-1, keepdims=True)
+    av_x = np.sqrt(sum_x2 / 32)
+    weight = np.abs(data) + av_x
 
-def make_qkx2_quants(data, weight, nmax, group_size, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
-    group_min = np.min(data)
-    group_max = np.max(data)
+    group_min = np.min(data, axis=-1, keepdims=True)
+    group_max = np.max(data, axis=-1, keepdims=True)
 
-    sum_w = np.sum(weight)
-    sum_x = np.sum(weight * data)
+    the_mins = -group_min
 
-    if group_min > 0:
-        group_min = 0
-    if group_min == group_max:
-        L = np.zeros(group_size, dtype=np.uint8)
-        the_min = -group_min
-        return 0.0, L, the_min
+    sum_w = np.sum(weight, axis=-1, keepdims=True)
+    sum_x = np.sum(weight * data, axis=-1, keepdims=True)
 
-    iscale = nmax / (group_max-group_min)
-    scale = 1 / iscale
-    L = np.zeros(group_size, dtype=np.uint8)
+    group_min[group_min > 0] = 0
 
-    l_values = np.round(iscale * (data-group_max))
+    scale = (group_max - group_min) / nmax
+    iscale = np.where(scale == 0, 0, 1 /scale)
+
+    l_values = np.round(iscale * (data - group_min))
     L = np.clip(l_values, 0, nmax).astype(np.uint8)
-    diffs = scale*L + group_min - data
+
+    diffs = scale * L + group_min - data
     diffs = np.abs(diffs) if use_mad else diffs**2
-    best_mad = np.sum(weight * (diffs))
+    best_mad = np.sum(weight * diffs, axis=-1, keepdims=True)
 
     if nstep < 1:
-        the_min = -group_min
-        return scale, L, the_min
+        return scale.reshape(scale.shape[:2]), L, the_mins.reshape(the_mins.shape[:2])
 
-    Laux = []
     for step in range(nstep):
-        iscale = (rmin + rdelta*step + nmax) / (group_max-group_min)
-        l_values = np.round(iscale * (data-group_min))
+        new_scale = (group_max - group_min) / (rmin + rdelta * step + nmax)
+        new_iscale = np.where(new_scale == 0, 0, 1 /new_scale)
+
+        l_values = np.round(new_iscale * (data - group_min))
         Laux = np.clip(l_values, 0, nmax).astype(np.uint8)
 
-        sum_l = np.sum(weight * Laux)
-        sum_l2 = np.sum(weight * Laux**2)
-        sum_xl = np.sum(weight * Laux * data)
+        sum_l = np.sum(weight * Laux, axis=-1, keepdims=True)
+        sum_l2 = np.sum(weight * Laux**2, axis=-1, keepdims=True)
+        sum_xl = np.sum(weight * Laux * data, axis=-1, keepdims=True)
 
-        D = sum_w*sum_l2 - sum_l*sum_l
-        if D > 0:
-            this_scale = (sum_w*sum_xl - sum_x*sum_l) / D
-            this_min = (sum_l2*sum_x - sum_l*sum_xl) / D
-            if this_min > 0:
-                this_min = 0
-                this_scale = sum_xl / sum_l2
+        D = sum_w * sum_l2 - sum_l * sum_l
+        replace_idx = D > 0
 
-            diffs = this_scale*Laux + this_min - data
-            mad = np.sum(weight * diffs**2)
+        this_scale = (sum_w * sum_xl - sum_x * sum_l) / D
+        this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
+        this_min[this_min > 0] = 0
+        this_scale[this_min > 0] = (sum_xl / sum_l2)[this_min > 0]
 
-            if mad < best_mad:
-                L = Laux.copy()
-                best_mad = mad
-                scale = this_scale
-                group_min = this_min
+        diffs = this_scale * Laux + this_min - data
+        diffs = np.abs(diffs) if use_mad else diffs**2
+        mad = np.sum(weight * diffs, axis=-1, keepdims=True)
 
-    the_min = -group_min
-    return scale, L, the_min
+        replace_idx &= mad < best_mad
+        best_mad[replace_idx] = mad[replace_idx]
+        L[replace_idx.reshape(replace_idx.shape[:2])] = Laux[replace_idx.reshape(replace_idx.shape[:2])]
+        scale[replace_idx] = this_scale[replace_idx]
+        group_min[replace_idx] = this_min[replace_idx]
+
+    the_mins = -group_min
+    return scale.reshape(scale.shape[:2]), L, the_mins.reshape(the_mins.shape[:2])
 
 
 @register_block("q2_k")
 def q2_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
     nb = blocks.shape[0]
     output_scale = np.empty((nb, 16), dtype=np.uint8)
-    output_d = np.empty(nb, dtype=np.float32)
-    output_dmin = np.empty(nb, dtype=np.float32)
     output_qs = np.empty((nb, QK_K // 16 // 4, 16), dtype=np.uint8)
 
-    blocks = blocks.reshape((nb, QK_K // 16, 16))
-    weight = np.abs(blocks)
-    scales = np.empty(QK_K // 16, dtype=np.float32)
-    mins = np.empty((QK_K // 16), dtype=np.float32)
+    blocks = blocks.reshape((nb, QK_K // 16, 16)) # (nb, 16, 16)
 
     if scale is not None:
-        scale = scale.reshape((-1, QK_K // 16))
-        wmin_m = wmin_m.reshape((-1, QK_K // 16))
-        output_d = d_scale.astype(np.float32)
-        output_dmin = d_wmin_m.astype(np.float32)
+        scales = scale.reshape((-1, QK_K // 16))
+        mins = wmin_m.reshape((-1, QK_K // 16))
+        output_d = d_scale.astype(np.float32) if len(d_scale.shape) == 2 \
+            else d_scale.reshape(-1, 1).astype(np.float32)
+        output_dmin = d_wmin_m.astype(np.float32) if len(d_wmin_m.shape) == 2 \
+            else d_wmin_m.reshape(-1, 1).astype(np.float32)
         inv_scales = np.where(d_scale == 0, 0, 1 / output_d)
         inv_mins = np.where(d_wmin_m == 0, 0, 1 / output_dmin)
+        max_scales = np.max(scales, axis=-1, keepdims=True)  # (nb, 1)
+        max_mins = np.max(mins, axis=-1, keepdims=True)  # (nb, 1)
+        all_L = np.round((blocks + mins.reshape(*mins.shape, 1)) / scales.reshape(*scales.shape, 1)).astype(np.uint8)
+    else:
+        scales, all_L, mins = make_qkx2_quants(blocks, bits=2, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=True)
+        max_scales = np.max(scales, axis=-1, keepdims=True)
+        max_mins = np.max(mins, axis=-1, keepdims=True)
+        inv_scales = np.where(max_scales > 0, 15. / max_scales, 0)
+        inv_mins = np.where(max_mins > 0, 15. / max_mins, 0)
+    
+    replace_ids = (max_scales > 0).reshape(-1)
+    output_scale = np.zeros_like(scales).astype(np.uint8)
+    output_scale[replace_ids] = np.round(inv_scales * scales).astype(np.uint8)
 
-    # for i in tqdm(range(nb), desc="packing layer"):
-    for i in range(nb):
-        all_L = np.empty(blocks[i].shape, dtype=np.uint8)
+    replace_ids = (max_mins > 0).reshape(-1)
+    output_scale[replace_ids] |= np.round(inv_mins * mins).astype(np.uint8) << 4
 
-        if scale is not None:
-            scales = scale[i]
-            mins = wmin_m[i]
-            inv_scale = inv_scales[i]
-            inv_min = inv_mins[i]
-            max_scale = max(scales)
-            max_min = max(mins)
-            all_L = np.round((blocks[i] + mins.reshape(-1, 1)) / scales.reshape(-1, 1)).astype(np.uint8)
-        else:
-            for j in range(QK_K // 16):
-                tmp_scale, tmp_l, the_min = make_qkx2_quants(
-                    blocks[i][j], weight[i][j], nmax=3, group_size=16, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=True)
-                all_L[j] = tmp_l
-                scales[j] = tmp_scale
-                mins[j] = the_min
+    if d_scale is None:
+        output_d = np.where(max_scales > 0, max_scales / 15, 0)
+    if d_wmin_m is None:
+        output_dmin = np.where(max_mins > 0 ,max_mins / 15., 0)
+    
+    d_tmp = output_d * (output_scale & 0xF)
+    dm_tmp = output_dmin * (output_scale >> 4)
 
-            max_scale = max(scales)
-            max_min = max(mins)
-            inv_scale = 15. / max_scale
-            inv_min = 15. / max_min
+    replace_ids = d_tmp != 0
+    all_L[replace_ids] = np.round(
+        (blocks[replace_ids] + dm_tmp[replace_ids].reshape(-1, 1)) / d_tmp[replace_ids].reshape(-1, 1)).astype(
+            np.uint8)
+    all_L = np.clip(all_L, 0, 3)
 
-        if max_scale > 0:
-            output_scale[i] = np.round(inv_scale * scales).astype(np.uint8)
-            output_d[i] = max_scale / 15.
-        else:
-            output_scale[i] = np.zeros_like(scales).astype(np.uint8)
-            output_d[i] = 0.
-        if max_min > 0:
-            output_scale[i] |= (np.round(inv_min * mins).astype(np.uint8) << 4)
-            output_dmin[i] = max_min / 15.
-        else:
-            output_dmin[i] = 0.
-
-        d_tmp = output_d[i] * (output_scale[i] & 0xF)
-        dm_tmp = output_dmin[i] * (output_scale[i] >> 4)
-        for j in range(QK_K // 16):
-            if d_tmp[j] == 0.:
-                continue
-            else:
-                all_L[j] = np.round((blocks[i][j] + dm_tmp[j]) / d_tmp[j]).astype(np.uint8)
-        all_L = np.clip(all_L, 0, 3)
-        output_qs[i] = all_L[::4] | (all_L[1::4] << 2) | (all_L[2::4] << 4) | (all_L[3::4] << 6)
-
+    output_qs = all_L[:,::4] | (all_L[:,1::4] << 2) | (all_L[:,2::4] << 4) | (all_L[:,3::4] << 6)
     output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
     output_dmin = output_dmin.reshape(-1, 1).astype(np.float16).view(np.uint8)
     output_qs = output_qs.reshape((nb, QK_K // 4))
 
     # [scale, qs, d, dmin]
     return np.concatenate([output_scale, output_qs, output_d, output_dmin], axis=-1)
-
+    
 
 @register_block("q4_k")
 def q4_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
     nb = blocks.shape[0]
+    blocks = blocks.reshape((nb, QK_K // 32, 32))  # (nb, 8, 32)
+
     output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
-    output_d = np.empty(nb, dtype=np.float32)
-    output_dmin = np.empty(nb, dtype=np.float32)
     output_qs = np.empty((nb, QK_K // 64, 32), dtype=np.uint8)
 
-    blocks = blocks.reshape((nb, QK_K // 32, 32))
-    sum_x2 = np.sum(np.power(blocks, 2), axis=-1)
-    av_x = np.sqrt(sum_x2 / 32)
-    weight = blocks + av_x.reshape((*av_x.shape, 1))
-    scales = np.empty(QK_K // 32, dtype=np.float32)
-    mins = np.empty(QK_K // 32, dtype=np.float32)
-
     if scale is not None:
-        scale = scale.reshape(-1, QK_K // 32)
-        wmin_m = wmin_m.reshape(-1, QK_K // 32)
-        output_d = d_scale.astype(np.float32)
-        output_dmin = d_wmin_m.astype(np.float32)
+        scales = scale.reshape(-1, QK_K // 32)
+        mins = wmin_m.reshape(-1, QK_K // 32)
+        output_d = d_scale.astype(np.float32) if len(d_scale.shape) == 2 \
+            else d_scale.reshape(-1, 1).astype(np.float32)
+        output_dmin = d_wmin_m.astype(np.float32) if len(d_wmin_m.shape) == 2 \
+            else d_wmin_m.reshape(-1, 1).astype(np.float32)
         inv_scales = np.where(d_scale == 0, 0, 1 / output_d)
         inv_mins = np.where(d_wmin_m == 0, 0, 1 / output_dmin)
+        max_scales = np.max(scales, axis=-1, keepdims=True)  # (nb, 1)
+        max_mins = np.max(mins, axis=-1, keepdims=True)  # (nb, 1)
+        all_L = np.round((blocks + mins.reshape(*mins.shape, 1)) / scales.reshape(*scales.shape, 1)).astype(np.uint8)
+    else:
+        scales, all_L, mins = make_qkx2_quants(blocks, bits=4, rmin=-1, rdelta=0.1, nstep=20, use_mad=False)
+        max_scales = np.max(scales, axis=-1, keepdims=True)
+        max_mins = np.max(mins, axis=-1, keepdims=True)
+        inv_scales = np.where(max_scales > 0, 63. / max_scales, 0)
+        inv_mins = np.where(max_mins > 0, 63. / max_mins, 0)
 
-    # for i in tqdm(range(nb), desc="packing layer"):
-    for i in range(nb):
-        all_L = np.empty(blocks[i].shape, dtype=np.uint8)
+    q_scales = np.round(inv_scales * scales).astype(np.uint8)
+    q_mins = np.round(inv_mins * mins).astype(np.uint8)
 
-        if scale is not None:
-            scales = scale[i]
-            mins = wmin_m[i]
-            inv_scale = inv_scales[i]
-            inv_min = inv_mins[i]
-            max_scale = max(scales)
-            max_min = max(mins)
-            all_L = np.round((blocks[i] + mins.reshape(-1, 1)) / scales.reshape(-1, 1)).astype(np.uint8)
-        else:
-            for j in range(QK_K // 32):
-                tmp_scale, tmp_l, the_min = make_qkx2_quants(
-                    blocks[i][j], weight[i][j], nmax=15, group_size=32, rmin=-1, rdelta=0.1, nstep=20)
-                all_L[j] = tmp_l
-                scales[j] = tmp_scale
-                mins[j] = the_min
+    output_scale[:,:4] = q_scales[:,:4]
+    output_scale[:,4:8] = q_mins[:,:4]
 
-            max_scale = max(scales)
-            max_min = max(mins)
-            inv_scale = 63. / max_scale if max_scale > 0 else 0.
-            inv_min = 63. / max_min if max_min > 0 else 0.
+    output_scale[:,8:] = (q_scales[:,4:] & 0xF) | ((q_mins[:,4:] & 0xF) << 4)
+    output_scale[:,:4] |= ((q_scales[:,4:] >> 4) << 6)
+    output_scale[:,4:8] |= ((q_mins[:,4:] >> 4) << 6)
 
-        ls = np.round(inv_scale * scales).astype(np.uint8)
-        lm = np.round(inv_min * mins).astype(np.uint8)
+    if d_scale is None:
+        output_d = max_scales / 63
+    if d_wmin_m is None:
+        output_dmin = max_mins / 63
 
-        output_scale[i][:4] = ls[:4]
-        output_scale[i][4:8] = lm[:4]
+    d_tmp = output_d * q_scales
+    dm_tmp = output_dmin * q_mins
 
-        output_scale[i][8:] = (ls[4:] & 0xF) | ((lm[4:] & 0xF) << 4)
-        output_scale[i][:4] |= ((ls[4:] >> 4) << 6)
-        output_scale[i][4:8] |= ((lm[4:] >> 4) << 6)
-
-        if d_scale is None:
-            output_d[i] = max_scale / 63
-        if d_wmin_m is None:
-            output_dmin[i] = max_min / 63
-
-        d_tmp = output_d[i] * ls
-        dm_tmp = output_dmin[i] * lm
-
-        for j in range(d_tmp.size):
-            if d_tmp[j] == 0.:
-                continue
-            else:
-                all_L[j] = np.round((blocks[i][j] + dm_tmp[j]) / d_tmp[j]).astype(np.uint8)
-
-        all_L = np.clip(all_L, 0, 15)
-        output_qs[i] = all_L[::2] | (all_L[1::2] << 4)
+    replace_ids = d_tmp != 0
+    all_L[replace_ids] = np.round(
+        (blocks[replace_ids] + dm_tmp[replace_ids].reshape(-1, 1)) / d_tmp[replace_ids].reshape(-1, 1)).astype(
+            np.uint8)
+    all_L = np.clip(all_L, 0, 15)
+    output_qs = all_L[:,::2] | (all_L[:,1::2] << 4)
 
     output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
     output_dmin = output_dmin.reshape(-1, 1).astype(np.float16).view(np.uint8)

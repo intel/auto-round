@@ -23,7 +23,9 @@ def run_eval():
             device=args.device,
             tasks=args.tasks,
             batch_size=args.eval_bs,
-            trust_remote_code=not args.disable_trust_remote_code)
+            trust_remote_code=not args.disable_trust_remote_code,
+            eval_model_dtype=args.eval_model_dtype
+            )
     else:
         from auto_round.script.llm import eval
         eval(args)

@@ -83,7 +83,7 @@ AutoRound supports several quantization configurations:
 
 ### Hardware Compatibility
 
-CPU, Intel GPU, HPU,and CUDA for both quantization and inference.
+CPU, Intel GPU, HPU and CUDA for both quantization and inference.
 
 ### Command Line Usage
 
@@ -100,7 +100,7 @@ CPU, Intel GPU, HPU,and CUDA for both quantization and inference.
 
   This setting provides the best accuracy in most scenarios but is 4–5× slower than the standard AutoRound recipe. It is especially recommended for 2-bit quantization and is a good choice if sufficient resources are available.
   
-- ```bash
+  ```bash
     auto-round-best --model facebook/opt-125m  --bits 4 --group_size 128  --format "auto_gptq,auto_awq,auto_round"
     ```
 
@@ -267,9 +267,73 @@ output_dir = "./tmp_autoround"
 autoround.quantize_and_save(output_dir, format='gguf:q4_0') # gguf:q4_1
 ```
 
+### Device/Multi-GPU setting in Quantization
+**The tuning device is specified using the `device` argument in AutoRound API, _not_ through the `device_map` 
+parameter used by Transformers.from_pretrained.**
+
+
+There are typically two scenarios that require multi-GPU tuning: one is the calibration phase during LM head quantization, and the other is quantizing extremely large models (e.g., models larger than 100 GB).
+
+#### Enable multiple gpus calibration in lm_head quantization
+For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which requires the entire model to reside on 
+  the GPU for efficient calibration. If the model is too large to fit into a single GPU, AutoRound will prompt the user to use `--device '0,1'` to load the model across multiple GPUs.
+
+#### Enable multiple gpus tuning for extremely large model
+AutoRound tunes the model in a block-by-block manner. Although the block size is much smaller than the model size, it still requires a significant amount of GPU memory for tuning—typically 10 times the block size. This can lead to out-of-memory (OOM) errors when working with extremely large models.
+
+For strategies to reduce GPU memory usage, please refer to the [Reduced GPU Memory Usage](###Adjust Hyperparameters)
+section below, where you 
+can adjust hyperparameters to optimize memory consumption.
+
+If adjusting hyperparameters does not resolve the issue, we also support mapping different layers within a block to 
+different devices by setting the `device_map` argument in the AutoRound API. For reference, we provide an example of 
+quantizing the DeepSeekV3-BF16 (1.4T) model using five 80GB GPUs.
+~~~python
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+model_name = "opensourcerelease/DeepSeek-R1-bf16"
+
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=True, torch_dtype="auto")
+
+block = model.model.layers
+device_map = {}
+
+for n, m in block.named_modules():
+    if isinstance(m, (torch.nn.Linear)):
+        if "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2]) < 63:
+            device = "cuda:1"
+        elif "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2]) >= 63 and int(
+                n.split('.')[-2]) < 128:
+            device = "cuda:2"
+        elif "experts" in n and ("shared_experts" not in n) and int(n.split('.')[-2]) >= 128 and int(
+                n.split('.')[-2]) < 192:
+            device = "cuda:3"
+        elif "experts" in n and ("shared_experts" not in n) and int(
+                n.split('.')[-2]) >= 192:
+            device = "cuda:4"
+        else:
+            device = "cuda:0"
+        n = n[2:]
+
+        device_map.update({n: device})
+
+from auto_round import AutoRound
+
+autoround = AutoRound(model=model, tokenizer=tokenizer, device_map=device_map, nsamples=512,
+                      batch_size=4, low_gpu_mem_usage=True, seqlen=2048,
+                      )
+autoround.quantize()
+autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
+~~~
+  
+  
+
 ### Adjust Hyperparameters
 
 - **Reduced GPU Memory Usage:**
+    
+    - set `enable_torch_compile` to True
 
     - enable `low_gpu_mem_usage`(more tuning cost)
 
@@ -297,6 +361,8 @@ autoround.quantize_and_save(output_dir, format='gguf:q4_0') # gguf:q4_1
 
 
 - **Speedup the tuning:**
+    - set `enable_torch_compile` to True
+
     - use `auto-round-light` configuration
 
     - reduce the seqlen to 512(potential large accuracy drop for some scenarios)
@@ -414,17 +480,17 @@ text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
 ```
-| Name                                 | Devices | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
-|--------------------------------------|---------|---------|-----------|----------|-----------------|-------------------------------|
-| ipex                                 | cpu/xpu | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch   |
-| itrex                                | cpu     | 2,4,8   | BF16/FP16 | 0        | gptq_zp+-1/awq  | intel-extension-for-transformers |
-| marlin                               | cuda    | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                     |
-| exllamav2 or<br/>gptqmodel:exllamav2 | cuda    | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                     |
-| exllamav2 or<br/>gptq:exllamav2      | cuda    | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                     |
-| gptq:cuda                            | cuda    | 2,3,4,8 | FP16      | 0        | gptq_zp+-1      | auto-gptq                     |
-| triton                               | cuda    | 2,4,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                    |
-| awq                                  | cuda    | 4       | FP16      | 5        | awq             | auto-awq                      |
-| hpu                                  | hpu     | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
+| Name                                 | Devices  | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
+|--------------------------------------|----------|---------|-----------|----------|-----------------|-------------------------------|
+| ipex                                 | cpu/xpu  | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch   |
+| itrex                                | cpu      | 2,4,8   | BF16/FP16 | 0        | gptq_zp+-1/awq  | intel-extension-for-transformers |
+| marlin                               | cuda     | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                     |
+| exllamav2 or<br/>gptqmodel:exllamav2 | cuda     | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                     |
+| exllamav2 or<br/>gptq:exllamav2      | cuda     | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                     |
+| gptq:cuda                            | cuda     | 2,3,4,8 | FP16      | 0        | gptq_zp+-1      | auto-gptq                     |
+| triton                               | cuda/xpu | 2,4,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                    |
+| awq                                  | cuda     | 4       | FP16      | 5        | awq             | auto-awq                      |
+| hpu                                  | hpu      | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
 
 
 ### Convert GPTQ/AWQ to AutoRound
