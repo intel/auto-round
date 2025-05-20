@@ -10,26 +10,6 @@ from auto_round_extension.torch.torch_utils.mixin import TritonModuleMixin
 
 logger = getLogger(__name__)
 
-try:
-    from auto_round_extension.triton.triton_utils.dequant import QuantLinearFunction, quant_matmul_248
-except ImportError as e:
-    triton_import_exception = e
-
-    def error_raiser_triton(*args, **kwargs):
-        raise ValueError(
-            f"Trying to use the triton backend, but could not import triton dependencies with the following error: {triton_import_exception}"
-        )
-
-    class FakeTriton:
-        def __getattr__(self, name):
-            raise ImportError(
-                f"Trying to use the triton backend, but could not import triton dependencies with the following error: {triton_import_exception}"
-            )
-
-    quant_matmul_248 = error_raiser_triton
-    QuantLinearFunction = FakeTriton
-    QuantLinearInferenceOnlyFunction = FakeTriton
-
 
 class QuantLinear(nn.Module, TritonModuleMixin):
     """
@@ -40,7 +20,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
     dequant and matmul into single kernel.add()
     """
 
-    QUANT_TYPE = "tritonv2"
+    QUANT_TYPE = "torch"
 
     def __init__(
         self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs
@@ -100,6 +80,8 @@ class QuantLinear(nn.Module, TritonModuleMixin):
                 ],
                 dtype=torch.int32,
             ).reshape(1, 3, 12)
+
+        self.dequant_dtype = torch.int16 if self.bits == 8 else torch.int8
             
 
     def post_init(self):
@@ -212,16 +194,16 @@ class QuantLinear(nn.Module, TritonModuleMixin):
                     i += 1
                     packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32) 
                     shifts = torch.arange(0, 10) * self.bits + 2
-                    shifted = packed_zeros << shifts 
+                    shifted = packed_zeros << shifts
                     qzeros[:, col] |= shifted.sum(dim=-1)
                     i += 10
                     col += 1
 
             self.qzeros = qzeros.cpu()
         else:
+            assert self.bits in [2, 4, 8]
             shape = scales_t.shape
             value = 0
-            # need optimum for bits == 3
             for j in range(0, (32 // self.bits)):
                 value |= zeros << (self.bits * j)
             qzeros = np.ones((shape[0], shape[1] // 32 * self.bits), dtype=np.uint32) * value
@@ -237,19 +219,21 @@ class QuantLinear(nn.Module, TritonModuleMixin):
                     [i // self.group_size for i in range(self.infeatures)], dtype=torch.int32
                 ).to(self.qweight.device)
         if self.bits in [2, 4, 8]:
-            quant_linear_fn = QuantLinearFunction
-            out = quant_linear_fn.apply(
-                x,
-                self.qweight,
-                self.scales,
-                self.qzeros,
-                self.g_idx,
-                self.bits,
-                self.maxq,
+            if self.wf.device != self.qzeros.device:
+                self.wf = self.wf.to(self.qzeros.device)
+            zeros = torch.bitwise_right_shift(
+                torch.unsqueeze(self.qzeros, 2).expand(-1, -1, 32 // self.bits),
+                self.wf.unsqueeze(0),
+            ).to(self.dequant_dtype)
+            zeros = torch.bitwise_and(zeros, self.maxq).reshape(self.scales.shape)
+
+            weight = torch.bitwise_and(
+                torch.bitwise_right_shift(
+                    torch.unsqueeze(self.qweight, 1).expand(-1, 32 // self.bits, -1),
+                    self.wf.unsqueeze(-1),
+                ).to(self.dequant_dtype),
+                self.maxq
             )
-            out = out.half().reshape(out_shape)
-            out = out + self.bias if self.bias is not None else out
-            return out.to(x.dtype)
         elif self.bits == 3:
             if self.wf.device != self.qzeros.device:
                 self.wf = self.wf.to(self.qzeros.device)
@@ -275,69 +259,26 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             weight[:, 1, 11] = (weight[:, 1, 11] & 0x1) | ((weight[:, 2, 0] << 1) & 0x6)
             weight = weight & 0x7
             weight = torch.cat([weight[:, 0, :11], weight[:, 1, 1:12], weight[:, 2, 1:11]], dim=1)
-            weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
-            num_itr = self.g_idx.shape[0] // x.shape[-1]
-            if num_itr == 1: # for dummy g_idx
-                weights = self.scales[self.g_idx.long()] * (weight - zeros[self.g_idx.long()])
-            else:
-                num_dim = self.g_idx.shape[0] // num_itr
-                weights = []
-                for i in range(num_itr):
-                    scale_i = self.scales[:, i * num_dim : (i + 1) * num_dim]
-                    weight_i = weight[:, i * num_dim : (i + 1) * num_dim]
-                    zeros_i = zeros[:, i * num_dim : (i + 1) * num_dim]
-                    g_idx_i = self.g_idx[i * num_dim : (i + 1) * num_dim]
-                    weights.append(scale_i[g_idx_i.long()] * (weight_i - zeros_i[g_idx_i.long()]))
-                weights = torch.cat(weights, dim=1)
-            out = torch.matmul(x, weights)
-            out = out.to(x_dtype)
-            out = out.reshape(out_shape)
-            out = out + self.bias if self.bias is not None else out
-            return out
-            
 
-    @classmethod
-    def warmup(cls, model, transpose=False, seqlen=2048):
-        """
-        Pre-tunes the quantized kernel
-        """
-        from tqdm import tqdm
-
-        kn_values = {}
-
-        for _, m in model.named_modules():
-            if not isinstance(m, cls):
-                continue
-
-            k = m.infeatures
-            n = m.outfeatures
-
-            if (k, n) not in kn_values:
-                kn_values[(k, n)] = (
-                    m.qweight,
-                    m.scales,
-                    m.qzeros,
-                    m.g_idx,
-                    m.bits,
-                    m.maxq,
-                )
-
-        logger.info(f"Found {len(kn_values)} unique KN Linear values.")
-        logger.info("Warming up autotune cache ...")
-        with torch.no_grad():
-            for m in tqdm(range(0, math.ceil(math.log2(seqlen)) + 1)):
-                m = 2**m
-                for (k, n), (
-                    qweight,
-                    scales,
-                    qzeros,
-                    g_idx,
-                    bits,
-                    maxq,
-                ) in kn_values.items():
-                    a = torch.randn(m, k, dtype=torch.float16, device=model.device)
-                    quant_matmul_248(a, qweight, scales, qzeros, g_idx, bits, maxq)
-        del kn_values
+        weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
+        num_itr = self.g_idx.shape[0] // x.shape[-1]
+        if num_itr == 1: # for dummy g_idx
+            weights = self.scales[self.g_idx.long()] * (weight - zeros[self.g_idx.long()])
+        else:
+            num_dim = self.g_idx.shape[0] // num_itr
+            weights = []
+            for i in range(num_itr):
+                scale_i = self.scales[:, i * num_dim : (i + 1) * num_dim]
+                weight_i = weight[:, i * num_dim : (i + 1) * num_dim]
+                zeros_i = zeros[:, i * num_dim : (i + 1) * num_dim]
+                g_idx_i = self.g_idx[i * num_dim : (i + 1) * num_dim]
+                weights.append(scale_i[g_idx_i.long()] * (weight_i - zeros_i[g_idx_i.long()]))
+            weights = torch.cat(weights, dim=1)
+        out = torch.matmul(x, weights)
+        out = out.to(x_dtype)
+        out = out.reshape(out_shape)
+        out = out + self.bias if self.bias is not None else out
+        return out
 
 
 __all__ = ["QuantLinear"]

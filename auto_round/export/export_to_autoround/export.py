@@ -76,8 +76,8 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
             return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
         from auto_round_extension.torch.qlinear_int32 import QuantLinear
         return QuantLinear
-    elif "auto_round" in backend and "gptq" in backend and bits in (2, 4, 8):
-        from auto_round.export.export_to_autoround.qlinear_triton import QuantLinear  ##no g_idx
+    elif "auto_round" in backend and "gptq" in backend:
+        from auto_round_extension.torch.qlinear_int32_zp import QuantLinear
         return QuantLinear
     elif "awq" in backend:
         from ..export_to_awq.utils import WQLinear_GEMM
