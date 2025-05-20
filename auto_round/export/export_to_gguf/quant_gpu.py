@@ -58,6 +58,165 @@ def torch_roundf(n):
     return torch.sign(n) * b
 
 
+def make_qx_quant(data, bits, rmse_type=0, qw = None):
+    nmax = pow(2, bits - 1)
+    imax = abs(data).argmax(axis=-1, keepdims=True)
+    group_max = torch.take_along_dim(data, imax, axis=-1)
+    iscales = torch.where(group_max != 0, -nmax / group_max, 0)
+
+    if rmse_type == 0:
+        L = (torch.round(iscales * data).clip(-nmax, nmax-1) + nmax).to(torch.uint8)
+        scales = torch.where(iscales != 0, 1 / iscales, 0).reshape(iscales.shape[:2])
+        return scales, L
+    
+    return_early = False
+    if rmse_type < 0:
+        rmse_type = -rmse_type
+        return_early = True
+        
+    L = torch.round(iscales * data).clip(-nmax, nmax-1)
+    if qw is not None:
+        w = qw
+    elif rmse_type == 1:
+        w = data ** 2
+    elif rmse_type == 2:
+        w = 1
+    elif rmse_type == 3:
+        w = torch.abs(data)
+    else:
+        w = torch.sqrt(torch.abs(data))
+    sumlx = torch.sum(w * data * L, axis=-1)
+    suml2 = torch.sum(w * L * L, axis=-1)
+    scales = torch.where(suml2 !=0, sumlx / suml2, 0)
+    if return_early:
+        iscales_inv = torch.where(iscales != 0, 1 / iscales, 0).reshape(iscales.shape[:2])
+        scales = torch.where(suml2 > 0, 0.5 * (scales + iscales_inv), iscales_inv)
+        L = (L + nmax).to(torch.uint8)
+        return scales, L
+    best = scales * sumlx
+    for _is in range(-9, 10):
+        if _is == 0:
+            continue
+        iscales = torch.where(group_max != 0, -(nmax + -0.1 * _is) / nmax, 0)
+        tmp_L = torch.round(iscales * data).clip(-nmax, nmax - 1)
+        sumlx = torch.sum(w * data * L, axis=-1)
+        suml2 = torch.sum(w * L * L, axis=-1)
+
+        replace_id = (suml2 > 0) & (sumlx*sumlx > best*suml2)
+        L[replace_id] = tmp_L[replace_id]
+        scales[replace_id] = sumlx[replace_id] / suml2[replace_id]
+        best[replace_id] = scales[replace_id] * sumlx[replace_id]
+
+    L = (L + nmax).to(torch.uint8)
+    return scales, L
+
+
+def make_q3_quants(data, bits, do_rmse=False):
+    nmax = pow(2, bits - 1)
+    imax = abs(data).argmax(axis=-1, keepdims=True)
+    group_max = torch.take_along_dim(data, imax, axis=-1)
+    iscale = torch.where(group_max != 0, -nmax / group_max, 0)
+    if do_rmse:
+        L = torch.round(iscale * data).clip(-nmax, nmax - 1)
+        w = torch.pow(data, 2)
+        sumlx = torch.sum(w * data * L, axis=-1)[0]
+        suml2 = torch.sum(w * L * L, axis=-1)[0]
+
+        for itry in range(5):
+            # w = np.power(data, 2)
+            if len(sumlx.shape) == 2:
+                sumlx = sumlx.unsqueeze(-1)
+            if len(suml2.shape) == 2:
+                suml2 = suml2.unsqueeze(-1)
+            slx = sumlx - w*data*L
+            repalce_idx = slx > 0
+            sl2 = suml2 - w*L*L
+            new_L = torch.round(data * sl2 / slx).clip(-nmax, nmax - 1)
+            tmp_repalce_idx = repalce_idx & (new_L != L)
+            slx[tmp_repalce_idx] += w[tmp_repalce_idx] * data[tmp_repalce_idx] * new_L[tmp_repalce_idx]
+            sl2[tmp_repalce_idx] += w[tmp_repalce_idx] * new_L[tmp_repalce_idx] * new_L[tmp_repalce_idx]
+            repalce_idx &= (sl2 > 0) & (slx * slx * suml2 > sumlx * sumlx * sl2)
+
+            L[repalce_idx] = new_L[repalce_idx]
+            sumlx = slx
+            suml2 = sl2
+
+    L = torch.round(iscale * data).clip(-nmax, nmax - 1) + nmax
+    scales = torch.where(iscale != 0, 1 / iscale, 0).reshape(iscale.shape[:2])
+    return scales, L.to(torch.uint8)
+
+
+def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
+    nmax = pow(2, bits) - 1
+    # data shape (nb, 8, 32) for Q4_K, (nb, 16, 16) for Q2_K
+    if len(data.shape) == 2:
+        if bits in [4, 5]:
+            data_shape = (-1, 8, 32)
+        elif bits in [2, 3]:
+            data_shape = (-1, 16, 16)
+        else:
+            raise NotImplementedError(f"bits = {bits} is not supported")
+        data = data.reshape(data_shape)
+    sum_x2 = torch.sum(torch.pow(data, 2), axis=-1, keepdims=True)
+    av_x = torch.sqrt(sum_x2 / 32)
+    weight = torch.abs(data) + av_x
+
+    group_min = torch.min(data, axis=-1, keepdims=True)[0]
+    group_max = torch.max(data, axis=-1, keepdims=True)[0]
+
+    the_mins = -group_min
+
+    sum_w = torch.sum(weight, axis=-1, keepdims=True)
+    sum_x = torch.sum(weight * data, axis=-1, keepdims=True)
+
+    group_min[group_min > 0] = 0
+
+    scale = (group_max-group_min) / nmax
+    iscale = torch.where(scale == 0, 0, 1 / scale)
+
+    l_values = torch.round(iscale * (data-group_min))
+    L = torch.clip(l_values, 0, nmax).to(torch.uint8)
+
+    diffs = scale*L + group_min - data
+    diffs = torch.abs(diffs) if use_mad else diffs**2
+    best_mad = torch.sum(weight * diffs, axis=-1, keepdims=True)
+
+    if nstep < 1:
+        return scale.reshape(scale.shape[:2]), L, the_mins.reshape(the_mins.shape[:2])
+
+    for step in range(nstep):
+        new_scale = (group_max-group_min) / (rmin + rdelta*step + nmax)
+        new_iscale = torch.where(new_scale == 0, 0, 1 / new_scale)
+
+        l_values = torch.round(new_iscale * (data-group_min))
+        Laux = torch.clip(l_values, 0, nmax).to(torch.uint8)
+
+        sum_l = torch.sum(weight * Laux, axis=-1, keepdims=True)
+        sum_l2 = torch.sum(weight * Laux**2, axis=-1, keepdims=True)
+        sum_xl = torch.sum(weight * Laux * data, axis=-1, keepdims=True)
+
+        D = sum_w*sum_l2 - sum_l*sum_l
+        replace_idx = D > 0
+
+        this_scale = (sum_w*sum_xl - sum_x*sum_l) / D
+        this_min = (sum_l2*sum_x - sum_l*sum_xl) / D
+        this_min[this_min > 0] = 0
+        this_scale[this_min > 0] = (sum_xl / sum_l2)[this_min > 0]
+
+        diffs = this_scale*Laux + this_min - data
+        diffs = torch.abs(diffs) if use_mad else diffs**2
+        mad = torch.sum(weight * diffs, axis=-1, keepdims=True)
+
+        replace_idx &= mad < best_mad
+        best_mad[replace_idx] = mad[replace_idx]
+        L[replace_idx.reshape(replace_idx.shape[:2])] = Laux[replace_idx.reshape(replace_idx.shape[:2])]
+        scale[replace_idx] = this_scale[replace_idx]
+        group_min[replace_idx] = this_min[replace_idx]
+
+    the_mins = -group_min
+    return scale.reshape(scale.shape[:2]), L, the_mins.reshape(the_mins.shape[:2])
+
+
 @register_qtype("bf16")
 def bf16_quant_block(blocks, scale=None, zp=None, **kwargs):
     n = blocks.view(torch.uint32)
@@ -184,77 +343,6 @@ def q8_0_quant_block(blocks, scale=None, zp=None, **kwargs) -> np.ndarray:
     return np.concatenate([d, qs], axis=1)
 
 
-def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
-    nmax = pow(2, bits) - 1
-    # data shape (nb, 8, 32) for Q4_K, (nb, 16, 16) for Q2_K
-    if len(data.shape) == 2:
-        if bits in [4, 5]:
-            data_shape = (-1, 8, 32)
-        elif bits in [2, 3]:
-            data_shape = (-1, 16, 16)
-        else:
-            raise NotImplementedError(f"bits = {bits} is not supported")
-        data = data.reshape(data_shape)
-    sum_x2 = torch.sum(torch.pow(data, 2), axis=-1, keepdims=True)
-    av_x = torch.sqrt(sum_x2 / 32)
-    weight = torch.abs(data) + av_x
-
-    group_min = torch.min(data, axis=-1, keepdims=True)[0]
-    group_max = torch.max(data, axis=-1, keepdims=True)[0]
-
-    the_mins = -group_min
-
-    sum_w = torch.sum(weight, axis=-1, keepdims=True)
-    sum_x = torch.sum(weight * data, axis=-1, keepdims=True)
-
-    group_min[group_min > 0] = 0
-
-    scale = (group_max-group_min) / nmax
-    iscale = torch.where(scale == 0, 0, 1 / scale)
-
-    l_values = torch.round(iscale * (data-group_min))
-    L = torch.clip(l_values, 0, nmax).to(torch.uint8)
-
-    diffs = scale*L + group_min - data
-    diffs = torch.abs(diffs) if use_mad else diffs**2
-    best_mad = torch.sum(weight * diffs, axis=-1, keepdims=True)
-
-    if nstep < 1:
-        return scale.reshape(scale.shape[:2]), L, the_mins.reshape(the_mins.shape[:2])
-
-    for step in range(nstep):
-        new_scale = (group_max-group_min) / (rmin + rdelta*step + nmax)
-        new_iscale = torch.where(new_scale == 0, 0, 1 / new_scale)
-
-        l_values = torch.round(new_iscale * (data-group_min))
-        Laux = torch.clip(l_values, 0, nmax).to(torch.uint8)
-
-        sum_l = torch.sum(weight * Laux, axis=-1, keepdims=True)
-        sum_l2 = torch.sum(weight * Laux**2, axis=-1, keepdims=True)
-        sum_xl = torch.sum(weight * Laux * data, axis=-1, keepdims=True)
-
-        D = sum_w*sum_l2 - sum_l*sum_l
-        replace_idx = D > 0
-
-        this_scale = (sum_w*sum_xl - sum_x*sum_l) / D
-        this_min = (sum_l2*sum_x - sum_l*sum_xl) / D
-        this_min[this_min > 0] = 0
-        this_scale[this_min > 0] = (sum_xl / sum_l2)[this_min > 0]
-
-        diffs = this_scale*Laux + this_min - data
-        diffs = torch.abs(diffs) if use_mad else diffs**2
-        mad = torch.sum(weight * diffs, axis=-1, keepdims=True)
-
-        replace_idx &= mad < best_mad
-        best_mad[replace_idx] = mad[replace_idx]
-        L[replace_idx.reshape(replace_idx.shape[:2])] = Laux[replace_idx.reshape(replace_idx.shape[:2])]
-        scale[replace_idx] = this_scale[replace_idx]
-        group_min[replace_idx] = this_min[replace_idx]
-
-    the_mins = -group_min
-    return scale.reshape(scale.shape[:2]), L, the_mins.reshape(the_mins.shape[:2])
-
-
 @register_qtype("q2_k")
 def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
     nb = blocks.shape[0]
@@ -312,41 +400,6 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
     return np.concatenate([output_scale, output_qs, output_d, output_dmin], axis=-1)
 
 
-def make_q3_quants(data, bits, do_rmse=False):
-    nmax = pow(2, bits - 1)
-    imax = abs(data).argmax(axis=-1, keepdims=True)
-    group_max = torch.take_along_dim(data, imax, axis=-1)
-    iscale = torch.where(group_max != 0, -nmax / group_max, 0)
-    if do_rmse:
-        L = torch.round(iscale * data).clip(-nmax, nmax - 1)
-        w = torch.pow(data, 2)
-        sumlx = torch.sum(w * data * L, axis=-1)[0]
-        suml2 = torch.sum(w * L * L, axis=-1)[0]
-
-        for itry in range(5):
-            # w = np.power(data, 2)
-            if len(sumlx.shape) == 2:
-                sumlx = sumlx.unsqueeze(-1)
-            if len(suml2.shape) == 2:
-                suml2 = suml2.unsqueeze(-1)
-            slx = sumlx - w*data*L
-            repalce_idx = slx > 0
-            sl2 = suml2 - w*L*L
-            new_L = torch.round(data * sl2 / slx).clip(-nmax, nmax - 1)
-            tmp_repalce_idx = repalce_idx & (new_L != L)
-            slx[tmp_repalce_idx] += w[tmp_repalce_idx] * data[tmp_repalce_idx] * new_L[tmp_repalce_idx]
-            sl2[tmp_repalce_idx] += w[tmp_repalce_idx] * new_L[tmp_repalce_idx] * new_L[tmp_repalce_idx]
-            repalce_idx &= (sl2 > 0) & (slx * slx * suml2 > sumlx * sumlx * sl2)
-
-            L[repalce_idx] = new_L[repalce_idx]
-            sumlx = slx
-            suml2 = sl2
-
-    L = torch.round(iscale * data).clip(-nmax, nmax - 1) + nmax
-    scales = torch.where(iscale != 0, 1 / iscale, 0).reshape(iscale.shape[:2])
-    return scales, L.to(torch.uint8)
-
-
 @register_qtype("q3_k")
 def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
     nb = blocks.shape[0]
@@ -354,7 +407,6 @@ def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 
     output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
 
-    # scale = None
     if scale is not None:
         scales = scale.reshape(-1, QK_K // 16)
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
@@ -518,3 +570,41 @@ def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
     output_qs = output_qs.reshape(nb, QK_K // 2)
     # [d, dmin, scale, qh, qs]
     return np.concatenate([output_d, output_dmin, output_scale, output_qh, output_qs], axis=-1)
+
+
+@register_qtype("q6_k")
+def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None):
+    nb = blocks.shape[0]
+    blocks = blocks.reshape((nb, QK_K // 16, 16))
+
+    scale = None
+    if scale is not None:
+        scales = scale.reshape(-1, QK_K // 16)
+        output_d = d_scale.reshape(-1, 1).to(torch.float32)
+        iscales = torch.where(output_d == 0, 0, 1 / output_d)
+        all_L = (torch.round(blocks / scales.reshape(*scales.shape, 1)).clip(-32, 31) + 32).to(torch.uint8)
+    else:
+        scales, all_L = make_qx_quant(blocks, bits=6, rmse_type=1, qw=None)
+        imax = abs(scales).argmax(axis=-1, keepdims=True)
+        max_scales = torch.take_along_dim(scales, imax, axis=-1)
+        iscales = torch.where(max_scales != 0, -128 / max_scales, 0)
+        output_d = torch.where(iscales != 0, 1 / iscales, -1)
+
+    output_scale = torch.round(iscales * scales).clip(max=127).to(torch.int8)
+    d_tmp = output_d * output_scale.to(torch.float32)
+    replace_ids = d_tmp != 0
+    all_L[replace_ids] = torch.round(blocks[replace_ids] / d_tmp[replace_ids].reshape(-1, 1) + 32) \
+        .clip(0, 63).to(torch.uint8)
+
+    all_L = all_L.cpu().numpy()
+    tmp_L = all_L.reshape(nb, 4, 64) & 0xF
+    output_ql = (tmp_L[:, ::2] | (tmp_L[:, 1::2] << 4)).reshape(nb, QK_K // 2)
+    output_qh = np.bitwise_or.reduce(
+        (all_L >> 4).reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1),
+        axis=2).reshape(nb, QK_K // 4).astype(np.uint8)
+
+    output_d = output_d.cpu().numpy().reshape(-1, 1).astype(np.float16).view(np.uint8)
+
+    # [ql, qh, scale, d]
+    output_scale = output_scale.cpu().numpy().view(np.uint8)
+    return np.concatenate([output_ql, output_qh, output_scale, output_d], axis=-1)

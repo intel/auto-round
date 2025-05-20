@@ -77,8 +77,7 @@ def double_quant_tensor_sym(tensor, bits, q_scale_thresh):
     imax = abs(tensor).argmax(axis=-1, keepdims=True)
     wmax = torch.take_along_dim(tensor, imax, axis=-1)
     scale = wmax / -maxq
-    scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
-    qdq_tensor = torch.clamp(round_ste(tensor / scale), min=-maxq, max=maxq-1) * scale
+    qdq_tensor = torch.where(scale != 0, round_ste(tensor / scale), 0).clip(-maxq, maxq -1) * scale
     return qdq_tensor, scale
 
 @register_dtype("int_sym_dq")

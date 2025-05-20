@@ -59,16 +59,57 @@ def np_roundf(n: np.ndarray) -> np.ndarray:
     return np.sign(n) * b
 
 
-def make_qx_quant(data, bits, rmse_type=0):
+def make_qx_quant(data, bits, rmse_type=0, qw = None):
     nmax = pow(2, bits - 1)
     imax = abs(data).argmax(axis=-1, keepdims=True)
     group_max = np.take_along_axis(data, imax, axis=-1)
-    iscale = np.where(group_max != 0, -nmax / group_max, 0)
+    iscales = np.where(group_max != 0, -nmax / group_max, 0)
+
     if rmse_type == 0:
-        L = np.round(iscale * data).clip(-nmax, nmax-1) + nmax
-        L = L.astype(np.uint8)
-        scales = np.where(iscale != 0, 1 / iscale, 0).reshape(iscale.shape[:2])
-        return scales, L.astype(np.uint8)
+        L = (np.round(iscales * data).clip(-nmax, nmax-1) + nmax).astype(np.uint8)
+        scales = np.where(iscales != 0, 1 / iscales, 0).reshape(iscales.shape[:2])
+        return scales, L
+    
+    return_early = False
+    if rmse_type < 0:
+        rmse_type = -rmse_type
+        return_early = True
+        
+    L = np.round(iscales * data).clip(-nmax, nmax-1)
+    if qw is not None:
+        w = qw
+    elif rmse_type == 1:
+        w = data ** 2
+    elif rmse_type == 2:
+        w = 1
+    elif rmse_type == 3:
+        w = np.fabs(data)
+    else:
+        w = np.sqrt(np.fabs(data))
+    sumlx = np.sum(w * data * L, axis=-1)
+    suml2 = np.sum(w * L * L, axis=-1)
+    scales = np.where(suml2 !=0, sumlx / suml2, 0)
+    if return_early:
+        iscales_inv = np.where(iscales != 0, 1 / iscales, 0).reshape(iscales.shape[:2])
+        scales = np.where(suml2 > 0, 0.5 * (scales + iscales_inv), iscales_inv)
+        L = (L + nmax).astype(np.uint8)
+        return scales, L
+    best = scales * sumlx
+    for _is in range(-9, 10):
+        if _is == 0:
+            continue
+        iscales = np.where(group_max != 0, -(nmax + -0.1 * _is) / nmax, 0)
+        tmp_L = np.round(iscales * data).clip(-nmax, nmax - 1)
+        sumlx = np.sum(w * data * L, axis=-1)
+        suml2 = np.sum(w * L * L, axis=-1)
+
+        replace_id = (suml2 > 0) & (sumlx*sumlx > best*suml2)
+        L[replace_id] = tmp_L[replace_id]
+        scales[replace_id] = sumlx[replace_id] / suml2[replace_id]
+        best[replace_id] = scales[replace_id] * sumlx[replace_id]
+
+    L = (L + nmax).astype(np.uint8)
+    return scales, L
 
 
 def make_q3_quants(data, bits, do_rmse=False):
@@ -542,31 +583,32 @@ def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
     nb = blocks.shape[0]
     blocks = blocks.reshape((nb, QK_K // 16, 16))
 
-    scale = None
     if scale is not None:
         scales = scale.reshape(-1, QK_K // 16)
         output_d = d_scale.reshape(-1, 1).astype(np.float32)
         iscales = np.where(output_d == 0, 0, 1 / output_d)
-        all_L = np.round(blocks / scales.reshape(*scales.shape, 1)).clip(-4, 3).astype(np.uint8) + 4
+        all_L = (np.round(blocks / scales.reshape(*scales.shape, 1)).clip(-32, 31) + 32).astype(np.uint8)
     else:
-        scales, all_L = make_qx_quant(blocks, bits=6, rmse_type=0)
+        scales, all_L = make_qx_quant(blocks, bits=6, rmse_type=1, qw=None)
         imax = abs(scales).argmax(axis=-1, keepdims=True)
         max_scales = np.take_along_axis(scales, imax, axis=-1)
         iscales = np.where(max_scales != 0, -128 / max_scales, 0)
-        output_d = np.where(iscales != 0, 1 / iscales, 0)
+        output_d = np.where(iscales != 0, 1 / iscales, -1)
 
-    output_scale = np.round(iscales * scales).clip(max=127).astype(np.uint8)
+    output_scale = np.round(iscales * scales).clip(max=127).astype(np.int8)
     d_tmp = output_d * output_scale.astype(np.float32)
     replace_ids = d_tmp != 0
-    all_L[replace_ids] = np.round(blocks[replace_ids] / d_tmp[replace_ids].reshape(-1, 1)).astype(np.uint8)
+    all_L[replace_ids] = np.round(blocks[replace_ids] / d_tmp[replace_ids].reshape(-1, 1) + 32) \
+        .clip(0, 63).astype(np.uint8)
 
     tmp_L = all_L.reshape(nb, 4, 64) & 0xF
     output_ql = (tmp_L[:, ::2] | (tmp_L[:, 1::2] << 4)).reshape(nb, QK_K // 2)
     output_qh = np.bitwise_or.reduce(
-        all_L.reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1), axis=2).reshape(nb, QK_K // 4)
+        (all_L >> 4).reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1),
+        axis=2).reshape(nb, QK_K // 4).astype(np.uint8)
 
     output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
 
     # [ql, qh, scale, d]
-    breakpoint()
+    output_scale = output_scale.view(np.uint8)
     return np.concatenate([output_ql, output_qh, output_scale, output_d], axis=-1)
