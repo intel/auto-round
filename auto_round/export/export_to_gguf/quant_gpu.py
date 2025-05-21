@@ -435,11 +435,11 @@ def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 
     all_L = all_L.cpu().numpy()
     output_hmask = np.bitwise_or.reduce(
-        all_L.reshape(nb, 8, 32) >> 2 << np.arange(8, dtype=np.uint8).reshape(1, 8, 1), axis=1)
+        all_L.reshape(nb, 8, 32) >> 2 << np.arange(8, dtype=np.uint8).reshape(1, 8, 1), axis=1) # pylint: disable=E1121
     all_L = np.where(all_L > 3, all_L - 4, all_L)
 
     output_qs = np.bitwise_or.reduce(
-        all_L.reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1), axis=2)
+        all_L.reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1), axis=2) # pylint: disable=E1121
 
     output_qs = output_qs.reshape(nb, 64).astype(np.uint8)
     output_d = output_d.cpu().numpy().reshape(-1, 1).astype(np.float16).view(np.uint8)
@@ -561,7 +561,7 @@ def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
 
     output_qs = all_L[:, ::2] | (all_L[:, 1::2] << 4)
     output_qh = np.bitwise_or.reduce(
-        all_L >> 4 << np.arange(8, dtype=np.uint8).reshape(1, 8, 1), axis=1).astype(np.uint8)
+        all_L >> 4 << np.arange(8, dtype=np.uint8).reshape(1, 8, 1), axis=1).astype(np.uint8) # pylint: disable=E1121
 
     output_d = output_d.cpu().numpy()
     output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
@@ -601,7 +601,7 @@ def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
     output_ql = (tmp_L[:, ::2] | (tmp_L[:, 1::2] << 4)).reshape(nb, QK_K // 2)
     output_qh = np.bitwise_or.reduce(
         (all_L >> 4).reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1),
-        axis=2).reshape(nb, QK_K // 4).astype(np.uint8)
+        axis=2).reshape(nb, QK_K // 4).astype(np.uint8) # pylint: disable=E1121
 
     output_d = output_d.cpu().numpy().reshape(-1, 1).astype(np.float16).view(np.uint8)
 

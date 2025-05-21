@@ -245,8 +245,18 @@ def quant_tensor_asym(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_sca
 
 
 @register_dtype("int_asym_float_zp")
-def quant_tensor_asym_float_zp(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-                      tensor_min=None, tensor_max=None, q_scale_thresh=1e-5, **kwargs):
+def quant_tensor_asym_float_zp(
+        tensor,
+        bits=4,
+        group_size=-1,
+        v=0,
+        min_scale=1.0,
+        max_scale=1.0,
+        scale_dtype=torch.float16,
+        tensor_min=None,
+        tensor_max=None,
+        q_scale_thresh=1e-5,
+        **kwargs):
     """Quantize and de-quantize tensor asymmetrically.
 
     Args:
@@ -280,7 +290,7 @@ def quant_tensor_asym_float_zp(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
         wmax = wmax_tmp
     scale = ((wmax - wmin) / maxq).to(scale_dtype)
     scale = torch.clamp(scale, min=q_scale_thresh)
-    zp = -wmin / scale
+    zp = -wmin / scale  # pylint: disable=E1130
     scale = scale.unsqueeze(dim=-1)
     zp = zp.unsqueeze(dim=-1)
     int_w = round_ste(tensor / scale + v)

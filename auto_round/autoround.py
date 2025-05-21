@@ -225,7 +225,7 @@ class AutoRound(object):
         self.act_dynamic = act_dynamic
         self.act_data_type = act_data_type
         if self.act_data_type is None:
-            if data_type in supported_dtypes and self.act_bits <= 16:
+            if data_type in supported_dtypes and self.act_bits < 16:
                 self.act_data_type = data_type
                 logger.info(f"activation adopts {data_type}")
             else:
@@ -452,7 +452,7 @@ class AutoRound(object):
             ValueError: If an unsupported format is specified.
         """
         # Validate and process the specified formats
-        formats = format.replace(' ', '').split(',')
+        formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
         from auto_round.utils import supported_formats
         for format_ in formats:
             if format_ not in supported_formats:
@@ -1623,6 +1623,7 @@ class AutoRound(object):
         Returns:
             object: The compressed model object.
         """
+        format = format.replace("q*_", f"q{self.bits}_")
         # only support to export afp8
         if self.act_bits <= 8:
             if "fp8" not in self.act_data_type or self.act_dynamic:

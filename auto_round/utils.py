@@ -35,16 +35,20 @@ shared_cache_keys = ("position_ids", "cache_position", "position_embeddings")
 
 class SupportedFormats:
     def __init__(self):
-        self._suport_format = (
+        self._support_format = (
             "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel",
             "auto_round:auto_awq", "itrex", "itrex_xpu", "fake")
         self._gguf_format = tuple(GGUF_CONFIG.keys())
+        self._support_list = self._support_format + self._gguf_format
 
     def __contains__(self, key):
-        return True if (key in self._suport_format or key in self._gguf_format) else False
+        return True if key in self._support_list else False
 
     def __str__(self):
-        return "(%s)" % ', '.join(self._suport_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
+        return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
+    
+    def __getitem__(self, key):
+        return self._support_list[key]
 
 supported_formats = SupportedFormats()
 
@@ -1170,6 +1174,8 @@ def _gguf_args_check(args):
     pre_dq_format = ""
     for format in GGUF_CONFIG:
         if format in formats:
+            if format == "q6_k_s":
+                logger.warning("Please not that q6_k_s is q6_k.")
             try:
                 from auto_round.export.export_to_gguf.convert import Model
             except:
