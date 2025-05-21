@@ -6,18 +6,13 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round_extension.torch.torch_utils.mixin import TritonModuleMixin
 
 logger = getLogger(__name__)
 
 
-class QuantLinear(nn.Module, TritonModuleMixin):
+class QuantLinear(nn.Module):
     """
-    Triton v2 quantized linear layer.
-
-    Calls dequant kernel (see triton_utils/dequant) to dequantize the weights then uses
-    torch.matmul to compute the output whereas original `triton` quantized linear layer fused
-    dequant and matmul into single kernel.add()
+    Torch quantized linear layer.
     """
 
     QUANT_TYPE = "torch"
@@ -205,10 +200,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         out_shape = x.shape[:-1] + (self.outfeatures,)
         x = x.reshape(-1, x.shape[-1])
         x_dtype = x.dtype
-        if not hasattr(self, "g_idx"):
-                self.g_idx = torch.tensor(
-                    [i // self.group_size for i in range(self.infeatures)], dtype=torch.int32
-                ).to(self.qweight.device)
+        
         if self.bits in [2, 4, 8]:
             if self.wf.device != self.qzeros.device:
                 self.wf = self.wf.to(self.qzeros.device)
@@ -250,12 +242,10 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             weight[:, 1, 11] = (weight[:, 1, 11] & 0x1) | ((weight[:, 2, 0] << 1) & 0x6)
             weight = weight & 0x7
             weight = torch.cat([weight[:, 0, :11], weight[:, 1, 1:12], weight[:, 2, 1:11]], dim=1)
-
+        
         weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
-        num_itr = self.g_idx.shape[0] // x.shape[-1]
-        if num_itr == 1: # for dummy g_idx
-            weights = self.scales[self.g_idx.long()] * (weight - zeros[self.g_idx.long()])
-        else:
+        if hasattr(self, "g_idx"):
+            num_itr = self.g_idx.shape[0] // x.shape[-1]
             num_dim = self.g_idx.shape[0] // num_itr
             weights = []
             for i in range(num_itr):
@@ -265,6 +255,10 @@ class QuantLinear(nn.Module, TritonModuleMixin):
                 g_idx_i = self.g_idx[i * num_dim : (i + 1) * num_dim]
                 weights.append(scale_i[g_idx_i.long()] * (weight_i - zeros_i[g_idx_i.long()]))
             weights = torch.cat(weights, dim=1)
+        else:
+            group_idx = torch.arange(self.infeatures, device=self.qweight.device) // self.group_size
+            weights = self.scales[group_idx] * (weight - zeros[group_idx])
+            
         out = torch.matmul(x, weights)
         out = out.to(x_dtype)
         out = out.reshape(out_shape)

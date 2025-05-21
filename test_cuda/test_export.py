@@ -243,7 +243,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
 
-    def test_autoround_3bit_gptqmodel_torch_format(self):
+    def test_autoround_3bit_asym_torch_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 3, 128, False
@@ -273,10 +273,10 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
     
     
-    def test_autoround_3bit_format(self):
+    def test_autoround_3bit_sym_torch_format(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        bits, group_size, sym = 3, 128, False
+        bits, group_size, sym = 3, 128, True
         autoround = AutoRound(
             model,
             tokenizer,
@@ -307,3 +307,5 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
 
+if __name__ == "__main__":
+    unittest.main()

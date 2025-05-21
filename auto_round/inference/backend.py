@@ -429,13 +429,14 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
 
     if backend == "auto_round:tritonv2_zp":
         from auto_round_extension.triton.qlinear_tritonv2_zp import QuantLinear
+        return QuantLinear
 
     if backend == "auto_round:torch":
-        from auto_round_extension.torch.qlinear_int32 import QuantLinear
+        from auto_round_extension.torch.qlinear_torch import QuantLinear
         return QuantLinear
 
     if backend == "auto_round:torch_zp":
-        from auto_round_extension.torch.qlinear_int32_zp import QuantLinear
+        from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
         return QuantLinear
 
     raise ValueError(f"unsupported backend {backend}, please set it to `auto` and retry")
