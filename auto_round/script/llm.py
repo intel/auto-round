@@ -343,13 +343,13 @@ def tune(args):
     if args.format is None:
         args.format = "auto_round"
 
+    args = _gguf_args_check(args)
+
     formats = args.format.lower().replace(' ', '').split(",")
     from auto_round.utils import supported_formats
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
-
-    args = _gguf_args_check(args)
 
     if "auto_gptq" in args.format and args.asym is True:
         logger.warning("the auto_gptq kernel has issues with asymmetric quantization. "

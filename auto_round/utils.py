@@ -33,12 +33,20 @@ from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
 shared_cache_keys = ("position_ids", "cache_position", "position_embeddings")
 
-supported_formats = (
-    "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel", "auto_round:auto_awq",
-    "itrex", "itrex_xpu", "fake"
-)
+class SupportedFormats:
+    def __init__(self):
+        self._suport_format = (
+            "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel",
+            "auto_round:auto_awq", "itrex", "itrex_xpu", "fake")
+        self._gguf_format = tuple(GGUF_CONFIG.keys())
 
-supported_formats = supported_formats + tuple(GGUF_CONFIG.keys())
+    def __contains__(self, key):
+        return True if (key in self._suport_format or key in self._gguf_format) else False
+
+    def __str__(self):
+        return "(%s)" % ', '.join(self._suport_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
+
+supported_formats = SupportedFormats()
 
 supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D)
 
@@ -1155,6 +1163,7 @@ def _gguf_args_check(args):
     from auto_round.utils import logger
     from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
+    args.format = args.format.replace("q*_", f"q{args.bits}_")
     formats = args.format.lower().replace(' ', '').split(",")
     formats = sorted(formats, key=lambda x: len(x))
     pattern = re.compile("q\d_k")
@@ -1211,9 +1220,6 @@ def _gguf_args_check(args):
                     f" reset to {', '.join(reset_list)}.")
             logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
 
-            if re.search("q\d_1", format) and args.data_type != "int_asym_float_zp":
-                logger.warning(f"set data_type to int_asym_float_zp for {format}")
-                args.data_type = "int_asym_float_zp" 
     return args
 
 
