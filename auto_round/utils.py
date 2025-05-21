@@ -1214,8 +1214,8 @@ def _gguf_args_check(args):
             gguf_config = GGUF_CONFIG[format]
             for k, v in gguf_config.items():
                 if k == "data_type":
-                    if re.search("q\d_1", format) and len(formats) == 1:
-                        v = "int_asym_float_zp"
+                    if re.search("q\d_1", format) and len(formats) > 1:
+                        v = "int"
                 if getattr(args, k) != v:
                     unsupport_list.append(f"{k}={getattr(args, k)}")
                     reset_list.append(f"{k}={v}")

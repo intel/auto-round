@@ -104,6 +104,51 @@ class TestGGUF(unittest.TestCase):
         # 0.23
         self.assertGreater(result['results']['openbookqa']['acc,none'], 0.22)
         shutil.rmtree("./saved", ignore_errors=True)
+    
+    def test_func(self):
+        bits, group_size, sym = 4, 32, False
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=1,
+            data_type="int_asym_float_zp"
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_1")
+        gguf_file = os.listdir("saved")[0]
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
+        text = "There is a girl who likes adventure,"
+        inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
+        print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
+        shutil.rmtree("./saved", ignore_errors=True)
+    
+        model_name = "Qwen/Qwen2.5-1.5B-Instruct" 
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            self.tokenizer,
+            bits=3,
+            group_size=16,
+            sym=True,
+            iters=0,
+            data_type="int_sym_dq",
+            super_group_size=16,
+            super_bits=6
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize()
+        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
+        from auto_round.eval.evaluation import simple_evaluate_user_model
+        gguf_file = os.listdir("saved")[0]
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="lambada_openai")
+        # 0.23
+        self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.5)
+        shutil.rmtree("./saved", ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

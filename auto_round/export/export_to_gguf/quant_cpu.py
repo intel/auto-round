@@ -605,7 +605,7 @@ def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
     tmp_L = all_L.reshape(nb, 4, 64) & 0xF
     output_ql = (tmp_L[:, ::2] | (tmp_L[:, 1::2] << 4)).reshape(nb, QK_K // 2)
     output_qh = np.bitwise_or.reduce(
-        (all_L >> 4).reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1),
+        (all_L >> 4).reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1), # pylint: disable=E1121
         axis=2).reshape(nb, QK_K // 4).astype(np.uint8) # pylint: disable=E1121
 
     output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
