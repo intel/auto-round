@@ -39,7 +39,6 @@ from logging import getLogger
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
 
 from . import custom_autotune
 
@@ -379,71 +378,85 @@ def transpose_quant_matmul_248_kernel(
 def silu(x):
     return x * tl.sigmoid(x)
 
+def quant_matmul_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq):
+    output = torch.empty((input.shape[0], qweight.shape[1]), device=input.device, dtype=input.dtype)
+    grid = lambda META: (  # noqa: E731
+        triton.cdiv(input.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(qweight.shape[1], META["BLOCK_SIZE_N"]),
+    )
+    quant_matmul_248_kernel[grid](
+        input,
+        qweight,
+        output,
+        scales.to(input.dtype),
+        qzeros,
+        g_idx,
+        input.shape[0],
+        qweight.shape[1],
+        input.shape[1],
+        bits,
+        maxq,
+        input.stride(0),
+        input.stride(1),
+        qweight.stride(0),
+        qweight.stride(1),
+        output.stride(0),
+        output.stride(1),
+        scales.stride(0),
+        qzeros.stride(0),
+    )
+    return output
+
 
 def quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq):
-    with torch.cuda.device(input.device):
-        output = torch.empty((input.shape[0], qweight.shape[1]), device=input.device, dtype=input.dtype)
-        grid = lambda META: (  # noqa: E731
-            triton.cdiv(input.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(qweight.shape[1], META["BLOCK_SIZE_N"]),
-        )
-        quant_matmul_248_kernel[grid](
-            input,
-            qweight,
-            output,
-            scales.to(input.dtype),
-            qzeros,
-            g_idx,
-            input.shape[0],
-            qweight.shape[1],
-            input.shape[1],
-            bits,
-            maxq,
-            input.stride(0),
-            input.stride(1),
-            qweight.stride(0),
-            qweight.stride(1),
-            output.stride(0),
-            output.stride(1),
-            scales.stride(0),
-            qzeros.stride(0),
-        )
-        return output
+    device_type = input.device.type
+    if device_type in {"cuda", "xpu"}:
+        with getattr(torch, device_type).device(input.device):
+            return quant_matmul_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq)
+    else:
+        raise ValueError(f"Unsupported device type: {device_type}")
+
+
+def transpose_quant_matmul_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq):
+    output_dim = (qweight.shape[0] * 32) // bits
+    output = torch.empty((input.shape[0], output_dim), device=input.device, dtype=input.dtype)
+    grid = lambda META: (  # noqa: E731
+        triton.cdiv(input.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(output_dim, META["BLOCK_SIZE_K"]),
+    )
+    transpose_quant_matmul_248_kernel[grid](
+        input,
+        qweight,
+        output,
+        scales.to(input.dtype),
+        qzeros,
+        g_idx,
+        input.shape[0],
+        qweight.shape[1],
+        output_dim,
+        bits,
+        maxq,
+        input.stride(0),
+        input.stride(1),
+        qweight.stride(0),
+        qweight.stride(1),
+        output.stride(0),
+        output.stride(1),
+        scales.stride(0),
+        qzeros.stride(0),
+    )
+    return output
 
 
 def transpose_quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq):
-    with torch.cuda.device(input.device):
-        output_dim = (qweight.shape[0] * 32) // bits
-        output = torch.empty((input.shape[0], output_dim), device=input.device, dtype=input.dtype)
-        grid = lambda META: (  # noqa: E731
-            triton.cdiv(input.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(output_dim, META["BLOCK_SIZE_K"]),
-        )
-        transpose_quant_matmul_248_kernel[grid](
-            input,
-            qweight,
-            output,
-            scales.to(input.dtype),
-            qzeros,
-            g_idx,
-            input.shape[0],
-            qweight.shape[1],
-            output_dim,
-            bits,
-            maxq,
-            input.stride(0),
-            input.stride(1),
-            qweight.stride(0),
-            qweight.stride(1),
-            output.stride(0),
-            output.stride(1),
-            scales.stride(0),
-            qzeros.stride(0),
-        )
-        return output
+    device_type = input.device.type
+    if device_type in {"cuda", "xpu"}:
+        with getattr(torch, device_type).device(input.device):
+            return transpose_quant_matmul_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq)
+    else:
+        raise ValueError(f"Unsupported device type: {device_type}")
 
 
 class QuantLinearFunction(torch.autograd.Function):
     @staticmethod
-    @custom_fwd
     def forward(ctx, input, qweight, scales, qzeros, g_idx, bits, maxq):
         output = quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq)
         ctx.save_for_backward(qweight, scales, qzeros, g_idx)
@@ -451,7 +464,6 @@ class QuantLinearFunction(torch.autograd.Function):
         return output
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, grad_output):
         qweight, scales, qzeros, g_idx = ctx.saved_tensors
         bits, maxq = ctx.bits, ctx.maxq
@@ -462,39 +474,46 @@ class QuantLinearFunction(torch.autograd.Function):
         return grad_input, None, None, None, None, None, None
 
 
+def quant_matmul_inference_only_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq):
+    output = torch.empty((input.shape[0], qweight.shape[1]), device=input.device, dtype=torch.float16)
+    grid = lambda META: (  # noqa: E731
+        triton.cdiv(input.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(qweight.shape[1], META["BLOCK_SIZE_N"]),
+    )
+    quant_matmul_248_kernel[grid](
+        input,
+        qweight,
+        output,
+        scales,
+        qzeros,
+        g_idx,
+        input.shape[0],
+        qweight.shape[1],
+        input.shape[1],
+        bits,
+        maxq,
+        input.stride(0),
+        input.stride(1),
+        qweight.stride(0),
+        qweight.stride(1),
+        output.stride(0),
+        output.stride(1),
+        scales.stride(0),
+        qzeros.stride(0),
+    )
+    return output
+
+
 def quant_matmul_inference_only_248(input, qweight, scales, qzeros, g_idx, bits, maxq):
-    with torch.cuda.device(input.device):
-        output = torch.empty((input.shape[0], qweight.shape[1]), device=input.device, dtype=torch.float16)
-        grid = lambda META: (  # noqa: E731
-            triton.cdiv(input.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(qweight.shape[1], META["BLOCK_SIZE_N"]),
-        )
-        quant_matmul_248_kernel[grid](
-            input,
-            qweight,
-            output,
-            scales,
-            qzeros,
-            g_idx,
-            input.shape[0],
-            qweight.shape[1],
-            input.shape[1],
-            bits,
-            maxq,
-            input.stride(0),
-            input.stride(1),
-            qweight.stride(0),
-            qweight.stride(1),
-            output.stride(0),
-            output.stride(1),
-            scales.stride(0),
-            qzeros.stride(0),
-        )
-        return output
+    device_type = input.device.type
+    if device_type in {"cuda", "xpu"}:
+        with getattr(torch, device_type).device(input.device):
+            return quant_matmul_inference_only_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq)
+    else:
+        raise ValueError(f"Unsupported device type: {device_type}")
 
 
 class QuantLinearInferenceOnlyFunction(torch.autograd.Function):
     @staticmethod
-    @custom_fwd(cast_inputs=torch.float16)
     def forward(ctx, input, qweight, scales, qzeros, g_idx, bits, maxq):
         output = quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq)
         return output

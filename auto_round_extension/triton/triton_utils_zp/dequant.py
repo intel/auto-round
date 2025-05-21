@@ -38,7 +38,6 @@ import itertools
 import torch
 import triton
 import triton.language as tl
-from torch.cuda.amp import custom_bwd, custom_fwd
 
 
 def make_dequant_configs(block_sizes, num_warps):
@@ -110,8 +109,8 @@ def dequant_kernel_248(
     zeros = qzeros >> wf_zeros
     zeros = zeros & maxq
 
-    # # ##Dequantize
-    # zeros = zeros + 1
+    ##Dequantize
+    zeros = zeros + 1
     weights = weights - zeros
     weights = weights.to(tl.float32)
     weights = scales * weights
@@ -119,33 +118,44 @@ def dequant_kernel_248(
     tl.store(out_ptr + (x_index), weights, mask=xmask)
 
 
-def dequant248(qweight, scales, qzeros, g_idx, bits, maxq=None, input_dtype=torch.float16):
+def dequant248_core(qweight, scales, qzeros, g_idx, bits, maxq=None, input_dtype=torch.float16):
     """
     Launcher for triton dequant kernel.  Only valid for bits = 2, 4, 8
     """
-    with torch.cuda.device(qweight.device):
-        num_groups = scales.shape[0]
-        outfeatures = scales.shape[1]
-        infeatures = g_idx.shape[0]
+    num_groups = scales.shape[0]
+    outfeatures = scales.shape[1]
+    infeatures = g_idx.shape[0]
 
-        out = torch.empty((infeatures, outfeatures), device=qweight.device, dtype=input_dtype)
-        numels = out.numel()
-        maxq = 2 ** bits - 1 if maxq is None else maxq
-        grid = lambda meta: (triton.cdiv(numels, meta["X_BLOCK"]),)  # noqa: E731
+    out = torch.empty((infeatures, outfeatures), device=qweight.device, dtype=input_dtype)
+    numels = out.numel()
+    maxq = 2 ** bits - 1 if maxq is None else maxq
+    grid = lambda meta: (triton.cdiv(numels, meta["X_BLOCK"]),)  # noqa: E731
 
-        dequant_kernel_248[grid](
-            g_idx,
-            scales,
-            qweight,
-            qzeros,
-            out,
-            numels,
-            maxq=maxq,
-            bits=bits,
-            outfeatures=outfeatures,
-            num_groups=num_groups,
-        )
-        return out
+    dequant_kernel_248[grid](
+        g_idx,
+        scales,
+        qweight,
+        qzeros,
+        out,
+        numels,
+        maxq=maxq,
+        bits=bits,
+        outfeatures=outfeatures,
+        num_groups=num_groups,
+    )
+    return out
+
+
+def dequant248(qweight, scales, qzeros, g_idx, bits, maxq=None, input_dtype=torch.float16):
+    """
+    Launcher for triton dequant kernel. Only valid for bits = 2, 4, 8
+    """
+    device_type = qweight.device.type
+    if device_type in {"cuda", "xpu"}:
+        with getattr(torch, device_type).device(qweight.device):
+            return dequant248_core(qweight, scales, qzeros, g_idx, bits, maxq=maxq, input_dtype=input_dtype)
+    else:
+        raise ValueError(f"Unsupported device type: {device_type}")
 
 
 def quant_matmul_248(
