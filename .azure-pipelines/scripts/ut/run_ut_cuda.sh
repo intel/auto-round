@@ -8,7 +8,9 @@ LOG_DIR=${REPO_PATH}/ut_log_dir
 
 function create_conda_env() {
     echo "-----[VAL INFO] create conda env -----"
-    export PATH=${HOME}/miniforge3/bin/:$PATH
+    [[ -d ${HOME}/anaconda3/bin ]] && export PATH=${HOME}/anaconda3/bin/:$PATH
+    [[ -d ${HOME}/miniforge3/bin ]] && export PATH=${HOME}/miniforge3/bin/:$PATH
+    [[ -d ${HOME}/miniconda3/bin ]] && export PATH=${HOME}/miniconda3/bin/:$PATH
 
     # create conda env
     source activate base
