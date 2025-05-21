@@ -72,7 +72,7 @@ class TestGGUF(unittest.TestCase):
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
 
         from auto_round.eval.evaluation import simple_evaluate_user_model
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa")
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa", eval_model_dtype="bf16")
         # 0.246
         self.assertGreater(result['results']['openbookqa']['acc,none'], 0.23)
         shutil.rmtree("./saved", ignore_errors=True)
@@ -98,7 +98,7 @@ class TestGGUF(unittest.TestCase):
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
 
         from auto_round.eval.evaluation import simple_evaluate_user_model
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa")
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa", eval_model_dtype="bf16")
         # 0.23
         self.assertGreater(result['results']['openbookqa']['acc,none'], 0.22)
         shutil.rmtree("./saved", ignore_errors=True)
@@ -143,7 +143,7 @@ class TestGGUF(unittest.TestCase):
         from auto_round.eval.evaluation import simple_evaluate_user_model
         gguf_file = os.listdir("saved")[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="lambada_openai")
+        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="lambada_openai", eval_model_dtype="bf16")
         self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.5)
         shutil.rmtree("./saved", ignore_errors=True)
     

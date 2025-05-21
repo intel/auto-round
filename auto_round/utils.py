@@ -1180,6 +1180,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
             logger.error(f"{f} is not supported, please check.")
     pattern = re.compile("q\d_k")
     pre_dq_format = ""
+    unsupport_list, reset_list = [], []
     for format in GGUF_CONFIG:
         if format in formats:
             if format == "q6_k_s":
@@ -1236,7 +1237,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
                     f" reset to {', '.join(reset_list)}.")
     if not isinstance(args_or_ar, argparse.Namespace) and len(unsupport_list) > 0:
         for layer_name in args_or_ar.layer_config:
-            if args_or_ar.layer_config[layer_name]['bits'] != args_or_ar.bits:
+            if args_or_ar.layer_config[layer_name]['bits'] >= 16:
                 continue
             for k in args_or_ar.layer_config[layer_name]:
                 if hasattr(args_or_ar, k):

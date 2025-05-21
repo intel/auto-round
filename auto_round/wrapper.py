@@ -106,7 +106,6 @@ class WrapperLinear(torch.nn.Module):
 
         self.weight_quant_func, self.data_type = get_quant_func(orig_layer.data_type, orig_layer.bits,
                                                                 orig_layer.sym)
-
         if self.enable_act_quant:
             self.act_quant_func, self.act_data_type = get_quant_func(orig_layer.act_data_type,
                                                                      orig_layer.act_bits,

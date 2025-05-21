@@ -295,7 +295,6 @@ class AutoRound(object):
             "data_type",
             "enable_quanted_input",
             "enable_minmax_tuning",
-            "data_type",
             "seqlen",
             "batch_size",
             "scale_dtype",
