@@ -1163,13 +1163,21 @@ def get_layer_features(layer):
     return None, None  # Unsupported layer type
 
 
-def _gguf_args_check(args):
+def _gguf_args_check(args_or_ar, format_str=None):
     from auto_round.utils import logger
     from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+    import argparse
 
-    args.format = args.format.replace("q*_", f"q{args.bits}_")
-    formats = args.format.lower().replace(' ', '').split(",")
+    if format_str is None:
+        args_or_ar.format = args_or_ar.format.replace("q*_", f"q{args_or_ar.bits}_")
+        format_str = args_or_ar.format
+    else:
+        format_str = format_str.replace("q*_", f"q{args_or_ar.bits}_")
+    formats = format_str.lower().replace(' ', '').split(",")
     formats = sorted(formats, key=lambda x: len(x))
+    for f in formats:
+        if f.startswith("gguf") and f not in GGUF_CONFIG:
+            logger.error(f"{f} is not supported, please check.")
     pattern = re.compile("q\d_k")
     pre_dq_format = ""
     for format in GGUF_CONFIG:
@@ -1190,10 +1198,10 @@ def _gguf_args_check(args):
                 else:
                     pre_dq_format = format
 
-            if os.path.isdir(args.model):
+            if isinstance(args_or_ar.model, str) and os.path.isdir(args_or_ar.model):
                 from pathlib import Path
                 from auto_round.export.export_to_gguf.convert import Model
-                hparams = Model.load_hparams(Path(args.model))
+                hparams = Model.load_hparams(Path(args_or_ar.model))
                 model_architecture = hparams["architectures"][0]
                 try:
                     model_class = Model.from_model_architecture(model_architecture)
@@ -1202,7 +1210,7 @@ def _gguf_args_check(args):
                     sys.exit(1)
 
                 if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 != 0):
-                    model_name = args.model.split('/')
+                    model_name = args_or_ar.model.split('/')
                     model_name = model_name[-1] if model_name[-1] else model_name[-2]
                     hidden_size = hparams["hidden_size"]
                     logger.error(
@@ -1213,20 +1221,28 @@ def _gguf_args_check(args):
             unsupport_list, reset_list = [], []
             gguf_config = GGUF_CONFIG[format]
             for k, v in gguf_config.items():
+                if not hasattr(args_or_ar, k):
+                    continue
                 if k == "data_type":
                     if re.search("q\d_1", format) and len(formats) > 1:
                         v = "int"
-                if getattr(args, k) != v:
-                    unsupport_list.append(f"{k}={getattr(args, k)}")
+                if getattr(args_or_ar, k) != v:
+                    unsupport_list.append(f"{k}={getattr(args_or_ar, k)}")
                     reset_list.append(f"{k}={v}")
-                    setattr(args, k, v)
+                    setattr(args_or_ar, k, v)
             if len(unsupport_list) > 0:
                 logger.error(
                     f"format {format} does not support for {', '.join(unsupport_list)},"
                     f" reset to {', '.join(reset_list)}.")
-            logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
-
-    return args
+    if not isinstance(args_or_ar, argparse.Namespace) and len(unsupport_list) > 0:
+        for layer_name in args_or_ar.layer_config:
+            if args_or_ar.layer_config[layer_name]['bits'] != args_or_ar.bits:
+                continue
+            for k in args_or_ar.layer_config[layer_name]:
+                if hasattr(args_or_ar, k):
+                    args_or_ar.layer_config[layer_name][k] = getattr(args_or_ar, k)
+        args_or_ar.has_qlayer_outside_block = args_or_ar.set_layerwise_config(args_or_ar.layer_config)
+    return args_or_ar
 
 
 def _to_model_dtype(model, model_dtype):

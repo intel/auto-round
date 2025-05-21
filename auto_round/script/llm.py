@@ -338,12 +338,10 @@ def tune(args):
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig
 
     from auto_round.utils import detect_device, get_library_version
-    from auto_round.utils import logger, _gguf_args_check
 
     if args.format is None:
         args.format = "auto_round"
 
-    args = _gguf_args_check(args)
 
     formats = args.format.lower().replace(' ', '').split(",")
     from auto_round.utils import supported_formats

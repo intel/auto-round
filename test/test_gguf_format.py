@@ -62,10 +62,9 @@ class TestGGUF(unittest.TestCase):
             iters=1,
             data_type="int"
         )
-        autoround.quantize()
         quantized_model_path = "./saved"
 
-        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q4_0")
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q4_0")
         gguf_file = "Qwen2.5-0.5B-Instruct-494M-Q4_0.gguf"
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
@@ -89,10 +88,9 @@ class TestGGUF(unittest.TestCase):
             iters=1,
             data_type="int"
         )
-        autoround.quantize()
         quantized_model_path = "./saved"
 
-        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q4_1")
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q4_1")
         gguf_file = "Qwen2.5-0.5B-Instruct-494M-Q4_1.gguf"
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
@@ -106,18 +104,20 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
     
     def test_func(self):
-        bits, group_size, sym = 4, 32, False
+        bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             self.model,
             self.tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
-            iters=1,
-            data_type="int_asym_float_zp"
+            iters=0,
+            data_type="int"
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_1")
+        self.assertTrue(autoround.group_size == 32)
+        self.assertFalse(autoround.sym)
         gguf_file = os.listdir("saved")[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
@@ -139,8 +139,7 @@ class TestGGUF(unittest.TestCase):
             super_bits=6
         )
         quantized_model_path = "./saved"
-        autoround.quantize()
-        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
         from auto_round.eval.evaluation import simple_evaluate_user_model
         gguf_file = os.listdir("saved")[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
@@ -163,8 +162,7 @@ class TestGGUF(unittest.TestCase):
             super_bits=6
         )
         quantized_model_path = "./saved"
-        autoround.quantize()
-        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
         gguf_file = os.listdir("saved")[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
@@ -187,8 +185,7 @@ class TestGGUF(unittest.TestCase):
             super_bits=8
         )
         quantized_model_path = "./saved"
-        autoround.quantize()
-        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
         gguf_file = os.listdir("saved")[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"

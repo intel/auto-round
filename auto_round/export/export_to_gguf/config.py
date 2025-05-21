@@ -14,15 +14,15 @@
 
 GGUF_CONFIG = {}
 
-GGUF_CONFIG["gguf:q4_0"] = {"bits": 4, "act_bits": 16, "group_size": 32, "asym": False, "data_type": "int"}
+GGUF_CONFIG["gguf:q4_0"] = {"bits": 4, "act_bits": 16, "group_size": 32, "asym": False, "sym": True, "data_type": "int"}
 
-GGUF_CONFIG["gguf:q4_1"] = {"bits": 4, "act_bits": 16, "group_size": 32, "asym": True, "data_type": "int_asym_float_zp"}
+GGUF_CONFIG["gguf:q4_1"] = {"bits": 4, "act_bits": 16, "group_size": 32, "asym": True, "sym": False, "data_type": "int_asym_float_zp"}
 
-GGUF_CONFIG["gguf:q5_0"] = {"bits": 5, "act_bits": 16, "group_size": 32, "asym": False, "data_type": "int"}
+GGUF_CONFIG["gguf:q5_0"] = {"bits": 5, "act_bits": 16, "group_size": 32, "asym": False, "sym": True, "data_type": "int"}
 
-GGUF_CONFIG["gguf:q5_1"] = {"bits": 5, "act_bits": 16, "group_size": 32, "asym": True, "data_type": "int_asym_float_zp"}
+GGUF_CONFIG["gguf:q5_1"] = {"bits": 5, "act_bits": 16, "group_size": 32, "asym": True, "sym": False, "data_type": "int_asym_float_zp"}
 
-GGUF_CONFIG["gguf:q8_0"] = {"bits": 8, "act_bits": 16, "group_size": 32, "asym": False, "data_type": "int"}
+GGUF_CONFIG["gguf:q8_0"] = {"bits": 8, "act_bits": 16, "group_size": 32, "asym": False, "sym": True, "data_type": "int"}
 
 
 GGUF_CONFIG["gguf:q2_k_s"] = {
@@ -32,6 +32,7 @@ GGUF_CONFIG["gguf:q2_k_s"] = {
     "super_bits": 4,
     "group_size": 16,
     "asym": True,
+    "sym": False,
     "data_type": "int_asym_dq"
 }
 
@@ -42,6 +43,7 @@ GGUF_CONFIG["gguf:q3_k_s"] = {
     "super_bits": 6,
     "group_size": 16,
     "asym": False,
+    "sym": True,
     "data_type": "int_sym_dq"
 }
 
@@ -52,6 +54,7 @@ GGUF_CONFIG["gguf:q4_k_s"] = {
     "super_bits": 6,
     "group_size": 32,
     "asym": True,
+    "sym": False,
     "data_type": "int_asym_dq"
 }
 
@@ -62,6 +65,7 @@ GGUF_CONFIG["gguf:q5_k_s"] = {
     "super_bits": 6,
     "group_size": 32,
     "asym": True,
+    "sym": False,
     "data_type": "int_asym_dq"
 }
 
@@ -72,5 +76,6 @@ GGUF_CONFIG["gguf:q6_k"] = GGUF_CONFIG["gguf:q6_k_s"] = {
     "super_bits": 8,
     "group_size": 16,
     "asym": False,
+    "sym": True,
     "data_type": "int_sym_dq"
 }

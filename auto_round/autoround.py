@@ -52,6 +52,7 @@ from .utils import (
     llm_load_model,
     reset_params,
     init_cache, check_skippable_keywords, get_shared_keys, supported_dtypes, infer_bits_by_data_type,
+    _gguf_args_check
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -452,6 +453,7 @@ class AutoRound(object):
             ValueError: If an unsupported format is specified.
         """
         # Validate and process the specified formats
+        _gguf_args_check(self, format)
         formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
         from auto_round.utils import supported_formats
         for format_ in formats:

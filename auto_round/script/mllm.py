@@ -23,7 +23,6 @@ from auto_round.utils import (
     get_device_and_parallelism,
     set_cuda_visible_devices,
     logger,
-    _gguf_args_check
     )
 
 
@@ -298,9 +297,6 @@ def tune(args):
     for format in formats:
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
-
-    args = _gguf_args_check(args)
-
 
     ##must set this before import torch
     set_cuda_visible_devices(args.device)
