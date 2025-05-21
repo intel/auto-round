@@ -128,7 +128,7 @@ BackendInfos['auto_gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              requirements=["auto-gptq>=0.7.1"]
                                              )
 
-BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda","xpu"], sym=[True, False],
+BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda", "xpu"], sym=[True, False],
                                                   packing_format="int32",
                                                   dtype=["float16", "bfloat16"],
                                                   bits=[2, 4, 8],
@@ -137,13 +137,31 @@ BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda","xpu"], sym=[Tr
                                                   requirements=["triton>=2.0","auto-round>=0.5.0"]
                                                   )
 
-BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda","xpu"], sym=[True],  ## asym has accuracy
+BackendInfos['auto_round:torch'] = BackendInfo(device=["cuda","xpu", "cpu"], sym=[True, False],
+                                                  packing_format="int32",
+                                                  dtype=["float16", "bfloat16"],
+                                                  bits=[2, 3, 4, 8],
+                                                  priority=1, feature_checks=[feature_multiply_checker_32],
+                                                  alias=["auto_round", "torch"],
+                                                  requirements=["triton>=2.0","auto-round>=0.5.0"]
+                                                  )
+
+BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda","xpu"], sym=[True],  ## asym has accuracys
                                                      # issue
                                                      packing_format="int32_zp",
                                                      dtype=["float16", "bfloat16"],
                                                      bits=[2, 4, 8],
                                                      priority=1, feature_checks=[feature_multiply_checker_32],
                                                      alias=["tritonv2", "tritonv2_zp", "triton"],
+                                                     requirements=[ "triton>=2.0","auto-round>=0.5.0"]
+                                                     )
+
+BackendInfos['auto_round:torch_zp'] = BackendInfo(device=["cuda","xpu", "cpu"], sym=[True],
+                                                     packing_format="int32_zp",
+                                                     dtype=["float16", "bfloat16"],
+                                                     bits=[2, 3, 4, 8],
+                                                     priority=1, feature_checks=[feature_multiply_checker_32],
+                                                     alias=["torch", "torch_zp"],
                                                      requirements=[ "triton>=2.0","auto-round>=0.5.0"]
                                                      )
 
@@ -413,6 +431,14 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         from auto_round_extension.triton.qlinear_tritonv2_zp import QuantLinear
         return QuantLinear
 
+    if backend == "auto_round:torch":
+        from auto_round_extension.torch.qlinear_torch import QuantLinear
+        return QuantLinear
+
+    if backend == "auto_round:torch_zp":
+        from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
+        return QuantLinear
+
     raise ValueError(f"unsupported backend {backend}, please set it to `auto` and retry")
 
 
@@ -425,6 +451,8 @@ def get_gptqmodel_infer_linear(backend, bits=4, group_size=128, sym=False):
         return gptqmodel.nn_modules.qlinear.exllamav2.ExllamaV2QuantLinear
     elif "tritonv2" in backend:
         return gptqmodel.nn_modules.qlinear.tritonv2.TritonV2QuantLinear
+    elif "torch" in backend:
+        return gptqmodel.nn_modules.qlinear.torch.TorchQuantLinear
     else:
         raise ValueError(f"Unsupported {backend}")
 
@@ -735,3 +763,4 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
         log(joined_cmds)
         if logger_level == "error":
             exit(-1)
+
