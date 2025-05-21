@@ -199,8 +199,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=None,
             type=str,
             help="the torch_dytpe to load the model for evaluation.")
-        
-        self.add_argument("--float_zp", nargs='?', const=True, default=None, type=str, help="whether to use float zero point.")
 
 class EvalArgumentParser(argparse.ArgumentParser):
 
@@ -462,7 +460,6 @@ def tune(args):
 
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
 
-    args.float_zp = str2bool(args.float_zp) if args.float_zp else None
     autoround = round(
         model,
         tokenizer,
@@ -498,7 +495,6 @@ def tune(args):
         device_map=args.device_map,
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
-        float_zp=args.float_zp
     )
 
     model_name = args.model.rstrip("/")

@@ -1198,6 +1198,9 @@ def _gguf_args_check(args):
             unsupport_list, reset_list = [], []
             gguf_config = GGUF_CONFIG[format]
             for k, v in gguf_config.items():
+                if k == "data_type":
+                    if re.search("q\d_1", format) and len(formats) == 1:
+                        v = "int_asym_float_zp"
                 if getattr(args, k) != v:
                     unsupport_list.append(f"{k}={getattr(args, k)}")
                     reset_list.append(f"{k}={v}")
@@ -1208,9 +1211,9 @@ def _gguf_args_check(args):
                     f" reset to {', '.join(reset_list)}.")
             logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
 
-            if re.search("q\d_1", format) and args.float_zp is None:
-                logger.warning(f"set float_zp to true for {format}")
-                args.float_zp = True
+            if re.search("q\d_1", format) and args.data_type != "int_asym_float_zp":
+                logger.warning(f"set data_type to int_asym_float_zp for {format}")
+                args.data_type = "int_asym_float_zp" 
     return args
 
 
