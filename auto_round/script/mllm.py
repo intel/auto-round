@@ -346,7 +346,7 @@ def tune(args):
     if args.fp_layers != "":
         fp_layers = args.fp_layers.replace(" ", "").split(",")
         for n, m in model.named_modules():
-            if not isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D)):
+            if not isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
                 continue
             for fp_layer in fp_layers:
                 if fp_layer in n:
@@ -359,7 +359,7 @@ def tune(args):
                     logger.warning(f"mixed precision exporting does not support {format} currently")
 
     for n, m in model.named_modules():
-        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
+        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.pytorch_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                 layer_config[n] = {"bits": 32}
                 logger.info(

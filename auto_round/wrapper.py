@@ -93,7 +93,7 @@ class WrapperLinear(torch.nn.Module):
 
         orig_layer = self.orig_layer
         orig_weight = getattr(orig_layer, "get_weight", lambda: orig_layer.weight)()
-        if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
+        if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             orig_weight = orig_weight.t()
         weight_reshape = reshape_and_pad_tensor(orig_weight.data, orig_layer.group_size)
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
@@ -153,7 +153,7 @@ class WrapperLinear(torch.nn.Module):
         weight = self.orig_layer.weight
         if weight.device.type == 'meta':
             weight = self.orig_layer.get_weight().to(self.device)
-        if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
+        if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             weight = weight.t()
 
         quant_kwargs = {}
@@ -176,7 +176,7 @@ class WrapperLinear(torch.nn.Module):
             **quant_kwargs
         )
         weight_q = weight_q.to(weight.dtype)
-        if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
+        if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             weight_q = weight_q.t()
         return weight_q, scale, zp
 
@@ -236,7 +236,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer.weight.grad = None
 
         shape = qdq_weight.shape
-        if isinstance(self.orig_layer, transformers.modeling_utils.Conv1D):
+        if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             shape = qdq_weight.t().shape
 
         def _set_dict_attr(attr_dict, attr_name):
@@ -506,7 +506,7 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
     quantized_layers = []
     unquantized_layers = []
     for n, m in block.named_modules():
-        if isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D)):
+        if isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue

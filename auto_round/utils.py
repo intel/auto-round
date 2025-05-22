@@ -52,7 +52,7 @@ class SupportedFormats:
 
 supported_formats = SupportedFormats()
 
-supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D)
+supported_layer_types = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
 supported_dtypes = ("int", "mx_fp", "fp", "nv_fp")
 
@@ -756,7 +756,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(model, supported_types=(torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D), quant_block_list=None):
+                                                     transformers.pytorch_utils.Conv1D), quant_block_list=None):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -1050,7 +1050,7 @@ def get_fp_layer_names(model, fp_layers):
     fp_layers = fp_layers.replace(" ", "").split(",")
     all_layer_names = []
     for n, m in model.named_modules():
-        if isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D)):
+        if isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
             all_layer_names.append(n)
     not_to_quantized_layers = []
 
@@ -1088,7 +1088,7 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
     if bits != 4:
         return False, f"AutoAWQ GEMM kernel only supports 4 bits"
     for n, m in model.named_modules():
-        if isinstance(m, transformers.modeling_utils.Conv1D):
+        if isinstance(m, transformers.pytorch_utils.Conv1D):
             return False, "AutoAWQ GEMM kernel does not support conv1d"
 
     layer_names = get_layer_names_in_block(model)
