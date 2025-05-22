@@ -1,4 +1,4 @@
 addict
 modelscope
 gguf
-torchvision==0.21
+torchvision
