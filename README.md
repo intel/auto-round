@@ -37,7 +37,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 * [2025/05] AutoRound now supports all GGUF `q*_k_s` formats. Improved algorithms for certain configurations (e.g., q2_k_s) are planned for release in about two months, stay tuned!
 
 * [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with 
-  vLLM versions later than v.0.85.post1.
+  vLLM versions later than v0.85.post1.
 * [2025/04] AutoRound provides some recipes for Qwen3 series, please refer
   to [Qwen3-8B-sym-recipe](./docs/Qwen3-8B-sym-recipe.md) and [Qwen3-14B-sym-recipe](./docs/Qwen3-14B-sym-recipe.md) for
   more details.
