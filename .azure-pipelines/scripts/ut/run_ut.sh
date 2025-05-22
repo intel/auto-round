@@ -6,7 +6,7 @@ echo "set up UT env..."
 export TQDM_MININTERVAL=60
 export TQDM_POSITION=-1
 pip install pytest-cov pytest-html
-pip install -r /auto-round/test/requirements.txt
+pip install -r /auto-round/test/requirements.txt -extra-index-url https://download.pytorch.org/whl/cpu
 pip list
 # install latest gguf for ut test
 git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .
