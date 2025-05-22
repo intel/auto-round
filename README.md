@@ -279,8 +279,8 @@ models. Besides, recently 3 bits may have some accuracy issues in Transformers.
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
 adopted within the community, **only 4-bits quantization is supported**.
 
-**GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community. Mixed bits 
-configs like q4_k_m have not been supported yet.
+**GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community. Mixed-bit 
+configs like `q4_k_m` are not supported yet.
 ### Quantization Costs
 
 Testing was conducted on the Nvidia A100 80G using the nightly version of PyTorch 2.6.0.dev20241029+cu124. Please note
