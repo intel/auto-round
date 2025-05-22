@@ -103,7 +103,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     orig_dtype = tensor.dtype
     shared_exp, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
     if isinstance(max_scale, torch.Tensor):
-        shared_exp *= (max_scale.unsqueeze(dim=-1))
+        shared_exp *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
     else:
         shared_exp *= max_scale
 

@@ -23,7 +23,7 @@ import transformers
 
 import auto_round.export.export_to_autoround.qlinear_triton_act
 
-import auto_round_extension.cuda.qlinear_tritonv2
+import auto_round_extension.triton.qlinear_tritonv2
 from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized, \
     filter_quantization_config
 import threadpoolctl as tctl
@@ -75,7 +75,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
         if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
             return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
 
-        from auto_round_extension.cuda.qlinear_tritonv2 import QuantLinear
+        from auto_round_extension.triton.qlinear_tritonv2 import QuantLinear
         return QuantLinear
     elif "auto_round" in backend and "gptq" in backend and bits in (2, 4, 8):
         from auto_round.export.export_to_autoround.qlinear_triton import QuantLinear  ##no g_idx
@@ -84,7 +84,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
     elif "gptqmodel" in backend:
-        return auto_round_extension.cuda.qlinear_tritonv2.QuantLinear
+        return auto_round_extension.triton.qlinear_tritonv2.QuantLinear
     elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
@@ -194,7 +194,7 @@ def pack_layer(layer_name, model, backend):
         qlayer = new_layer
         import auto_round.export.export_to_autoround.qlinear_triton
         if sym and isinstance(QuantLinear, (auto_round.export.export_to_autoround.qlinear_triton.QuantLinear,
-                                            auto_round_extension.cuda.qlinear_tritonv2.QuantLinear)):
+                                            auto_round_extension.triton.qlinear_tritonv2.QuantLinear)):
             zp = int(zp.flatten()[0])
 
         qlayer.to("cpu")
