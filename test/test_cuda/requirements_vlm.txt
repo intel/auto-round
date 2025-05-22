@@ -1,16 +1,18 @@
 # git+https://github.com/haotian-liu/LLaVA.git@v1.2.2
 # pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git
+# pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
 accelerate
+# autoawq
 bitsandbytes==0.44.0 
 datasets
 einops
-flash-attn==2.6.1
-intel-extension-for-pytorch==2.3.0
+flash-attn==2.5.8
 intel-extension-for-transformers
 lm-eval>=0.4.2,<0.5
 numpy < 2.0
 optimum
 pandas
+protobuf==3.20.1
 pillow
 py-cpuinfo
 torch==2.3.0
