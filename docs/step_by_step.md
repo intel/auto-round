@@ -243,7 +243,8 @@ autoround.quantize_and_save(output_dir, format='auto_round')
 
 ### GGUF format
 
-This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and q4_1 (W4G32) is supported in our repo**.
+This format is well-suited for CPU devices and is widely adopted by the community. Mixed bits 
+configs like q4_k_m have not been supported yet. Please note: In contrast to the official implementation, AutoRound does not quantize the embedding layer or the LM head layer by default.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -398,7 +399,6 @@ Supports 2, 4, and 8 bits. We recommend using intel-extension-for-pytorch (IPEX)
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRoundConfig 
 
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cpu", torch_dtype="auto")
@@ -415,7 +415,6 @@ Supports 4 bits only. We recommend using intel-extension-for-pytorch (IPEX) for 
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRoundConfig 
 
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 model = AutoModelForCausalLM.from_pretrained(model_name, device_map="xpu", torch_dtype="auto")
@@ -431,7 +430,6 @@ Supports 2, 3, 4, and 8 bits. We recommend using GPTQModel for 4 and 8 bits infe
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRoundConfig 
 
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cuda", torch_dtype="auto")
@@ -450,11 +448,11 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 import habana_frameworks.torch.core as htcore
 import habana_frameworks.torch.hpu as hthpu
 from transformers import AutoModelForCausalLM,AutoTokenizer
-from auto_round import AutoRoundConfig
+import torch
 
 model_name = "Intel/Qwen2-7B-int4-inc"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name).to('hpu').to(bfloat16)
+model = AutoModelForCausalLM.from_pretrained(model_name).to('hpu').to(torch.bfloat16)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
