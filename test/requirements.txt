@@ -2,3 +2,4 @@ addict
 modelscope
 gguf
 torchvision
+torch
