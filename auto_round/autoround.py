@@ -52,6 +52,7 @@ from .utils import (
     llm_load_model,
     reset_params,
     init_cache, check_skippable_keywords, get_shared_keys, supported_dtypes, infer_bits_by_data_type,
+    _gguf_args_check
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -225,7 +226,7 @@ class AutoRound(object):
         self.act_dynamic = act_dynamic
         self.act_data_type = act_data_type
         if self.act_data_type is None:
-            if data_type in supported_dtypes and self.act_bits <= 16:
+            if data_type in supported_dtypes and self.act_bits < 16:
                 self.act_data_type = data_type
                 logger.info(f"activation adopts {data_type}")
             else:
@@ -294,7 +295,6 @@ class AutoRound(object):
             "data_type",
             "enable_quanted_input",
             "enable_minmax_tuning",
-            "data_type",
             "seqlen",
             "batch_size",
             "scale_dtype",
@@ -452,7 +452,8 @@ class AutoRound(object):
             ValueError: If an unsupported format is specified.
         """
         # Validate and process the specified formats
-        formats = format.replace(' ', '').split(',')
+        _gguf_args_check(self, format)
+        formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
         from auto_round.utils import supported_formats
         for format_ in formats:
             if format_ not in supported_formats:
@@ -1193,8 +1194,8 @@ class AutoRound(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        wrapper_linear = WrapperLinear(layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device).to(
-            device)
+        wrapper_linear = WrapperLinear(
+            layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device).to(device)
         round_params = []
         minmax_params = []
         for key in wrapper_linear.params.keys():
@@ -1623,6 +1624,7 @@ class AutoRound(object):
         Returns:
             object: The compressed model object.
         """
+        format = format.replace("q*_", f"q{self.bits}_")
         # only support to export afp8
         if self.act_bits <= 8:
             if "fp8" not in self.act_data_type or self.act_dynamic:
