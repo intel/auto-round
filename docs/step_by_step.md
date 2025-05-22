@@ -143,6 +143,8 @@ Auto-GPTQ and Auto-AWQ only support a limited set of mixed-bit configurations. I
 
 Also, avoid setting mixed bits to 3 for asymmetric quantization at this time, as models exported with this setting may not be compatible with future versions of the AutoRound format.
 
+vLLM and SGLang fuse MoE and QKV layers, so it's recommended not to assign different bit widths to these layers.
+
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
@@ -265,7 +267,7 @@ autoround = AutoRound(
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='gguf:q4_0') # gguf:q4_1
+autoround.quantize_and_save(output_dir, format='gguf:q4_0') # gguf:q4_1, gguf:q*_k_s
 ```
 
 ### Device/Multi-GPU setting in Quantization
