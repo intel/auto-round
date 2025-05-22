@@ -375,7 +375,7 @@ Please note that the quantization config will be changed if the model is seriali
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers import AutoRoundConfig 
+from transformers import AutoRoundConfig
 
 model_name = "ybelkada/opt-125m-gptq-4bit"
 quantization_config = AutoRoundConfig()
