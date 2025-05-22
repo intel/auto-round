@@ -34,13 +34,15 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## What's New
 
-* [2025/05] AutoRound now supports all GGUF `q*_k_s` formats. Improved algorithm for certain configurations (e.g., q2_k_s) are planned for release in about two months, stay tuned!
-* [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with 
+* [2025/05] AutoRound now supports all GGUF `q*_k_s` formats. Improved algorithm for certain configurations (e.g.,
+  q2_k_s) are planned for release in about two months, stay tuned!
+* [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
   vLLM versions later than v0.85.post1.
 * [2025/04] AutoRound provides some recipes for **Qwen3** series, please refer
   to [Qwen3-8B-sym-recipe](./docs/Qwen3-8B-sym-recipe.md) and [Qwen3-14B-sym-recipe](./docs/Qwen3-14B-sym-recipe.md) for
   more details.
-* [2025/04] AutoRound has been integrated into **Transformers**. You can run models in the AutoRound format directly with
+* [2025/04] AutoRound has been integrated into **Transformers**. You can run models in the AutoRound format directly
+  with
   Transformers versions later than 4.51.3.
 * [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy. Check
   out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
@@ -277,8 +279,10 @@ models. Besides, recently 3 bits may have some accuracy issues in Transformers.
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
 adopted within the community, **only 4-bits quantization is supported**.
 
-**GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community. Mixed-bit 
-configs like `q4_k_m` are not supported yet.
+**GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community. Mixed-bit
+configs like `q4_k_m` are not supported yet. Please note: In contrast to the official implementation, AutoRound does not
+quantize the embedding layer or the LM head layer by default.
+
 ### Quantization Costs
 
 Testing was conducted on the Nvidia A100 80G using the nightly version of PyTorch 2.6.0.dev20241029+cu124. Please note
