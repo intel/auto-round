@@ -35,7 +35,6 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 ## What's New
 
 * [2025/05] AutoRound now supports all GGUF `q*_k_s` formats. Improved algorithms for certain configurations (e.g., q2_k_s) are planned for release in about two months, stay tuned!
-
 * [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with 
   vLLM versions later than v0.85.post1.
 * [2025/04] AutoRound provides some recipes for **Qwen3** series, please refer
@@ -43,8 +42,8 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
   more details.
 * [2025/04] AutoRound has been integrated into **Transformers**. You can run models in the AutoRound format directly with
   Transformers versions later than 4.51.3.
-  * [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy. Check
-    out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
+* [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy. Check
+  out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
 
 ## Installation
 
