@@ -2,4 +2,3 @@ addict
 modelscope
 gguf
 torchvision==0.21
-triton==3.1.0
