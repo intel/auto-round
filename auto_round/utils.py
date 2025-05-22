@@ -1336,7 +1336,6 @@ def mllm_load_model(
                 cls = getattr(transformers, architectures)
             else:
                 cls = AutoModelForCausalLM
-            breakpoint()
             model = cls.from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=trust_remote_code,
