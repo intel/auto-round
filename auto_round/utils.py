@@ -1329,10 +1329,14 @@ def mllm_load_model(
                 model_name=pretrained_model_name_or_path,
                 torch_dtype=torch_dtype)
         else:
-            if hasattr(transformers, architectures):
+            if architectures.endswith("Model") \
+                and hasattr(transformers, n := architectures.replace("Model", "ForConditionalGeneration")):
+                cls = getattr(transformers, n)
+            elif hasattr(transformers, architectures):
                 cls = getattr(transformers, architectures)
             else:
                 cls = AutoModelForCausalLM
+            breakpoint()
             model = cls.from_pretrained(
                 pretrained_model_name_or_path,
                 trust_remote_code=trust_remote_code,

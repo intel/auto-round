@@ -152,7 +152,8 @@ def _load_preset_template():
 _load_preset_template()
 
 
-def get_template(template_or_path: str, model=None, tokenizer=None, processor=None, image_processor=None):
+def get_template(
+        template_or_path: str, model=None, tokenizer=None, processor=None, image_processor=None, use_rtn=False):
     """Get template by template name or from a json file.
 
     Args:
@@ -172,6 +173,6 @@ def get_template(template_or_path: str, model=None, tokenizer=None, processor=No
             template = TEMPLATES["default"]
             template.model_type = template_or_path
 
-    template.processor.post_init(model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
+    template.processor.post_init(model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor, use_rtn=use_rtn)
 
     return template

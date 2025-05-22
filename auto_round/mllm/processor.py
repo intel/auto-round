@@ -27,6 +27,7 @@ Support Matrix
 
 ✔ means support, - means support but cannot infer or not test infert yet, X means not support.
 """
+import os
 import torch
 from transformers.data.data_collator import default_data_collator
 
@@ -270,10 +271,11 @@ llava_train = LazyImport("llava.train.train")
 
 @register_processor("llava")
 class LlavaProcessor(BasicProcessor):
-    def post_init(self, model, tokenizer, image_processor=None, **kwargs):
+    def post_init(self, model, tokenizer, image_processor=None, use_rtn=False, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
-        assert image_processor is not None, "for llava model, image_processor should not be None"
+        if not use_rtn:
+            assert image_processor is not None, "for llava model, image_processor should not be None"
         self.image_processor = image_processor
         self.collator_func = llava_train.DataCollatorForSupervisedDataset(tokenizer=self.tokenizer)
 
