@@ -79,7 +79,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             self.model_name, trust_remote_code=True, device_map="auto")
         to_quant_block_names = 'visual.*12,layers.0,model.layers.*9'
-        target_blocks = [['visual.blocks.12'], ['model.layers.0', 'model.layers.9', 'model.layers.19']]
+        target_blocks = [['model.visual.blocks.12'], ['model.language_model.layers.0', 'model.language_model.layers.9', 'model.language_model.layers.19']]
         all_blocks = get_block_names(model, quant_vision=True)
         blocks = find_matching_blocks(model, all_blocks, to_quant_block_names)
         assert target_blocks == blocks
