@@ -252,7 +252,7 @@ def quant_tensor_gguf_asym_dq(
     tensor = tensor.to(torch.float32)
     n_blocks = tensor.nelement() // block_size
     # q2_k (nb, 16, 16) q4_k/q5_k: (nb, 8, 32)
-    tensor = tensor.reshape(n_blocks, QK_K // super_group_size, -1)
+    tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
 
     scale, int_w, wmin_m = make_qkx2_quants(tensor, bits=bits, **search_kwargs[bits])
 
@@ -286,7 +286,7 @@ def quant_tensor_gguf_sym_dq(
         tensor_min=None,
         tensor_max=None,
         q_scale_thresh=1e-5,
-        super_group_size=8,
+        super_group_size=16,
         super_bits=6,
         **kwargs):
     """Quantize and de-quantize tensor asymmetrically. For Q3_K, Q6_K.
@@ -321,7 +321,7 @@ def quant_tensor_gguf_sym_dq(
     tensor = tensor.to(torch.float32)
     n_blocks = tensor.nelement() // block_size
     # (nb, 16, 16)
-    tensor = tensor.reshape(n_blocks, QK_K // super_group_size, -1)
+    tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
 
     if bits == 3:
         scale, int_w = make_q3_quants(tensor, bits=3, do_rmse=True)
