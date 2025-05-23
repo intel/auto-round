@@ -34,16 +34,18 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## What's New
 
-* [2025/04] AutoRound provides some recipes for Qwen3 series, please refer
+* [2025/05] AutoRound now supports all GGUF `q*_k_s` formats. Improved algorithm for certain configurations (e.g.,
+  q2_k_s) are planned for release in about two months, stay tuned!
+* [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
+  vLLM versions later than v0.85.post1.
+* [2025/04] AutoRound provides some recipes for **Qwen3** series, please refer
   to [Qwen3-8B-sym-recipe](./docs/Qwen3-8B-sym-recipe.md) and [Qwen3-14B-sym-recipe](./docs/Qwen3-14B-sym-recipe.md) for
   more details.
-* [2025/04] AutoRound has been integrated into Transformers. You can run models in the AutoRound format directly with
+* [2025/04] AutoRound has been integrated into **Transformers**. You can run models in the AutoRound format directly
+  with
   Transformers versions later than 4.51.3.
-* [2025/03] The INT2-mixed R1 model (~200GB) retains 97.9% accuracy. Check
+* [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy. Check
   out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
-* [2025/01] We provide experimental support for GGUF q4_0 and q4_1 formats.
-* [2024/11] We provide experimental support for VLM quantization, please check out
-  the [README](./auto_round/mllm/README.md)
 
 ## Installation
 
@@ -152,12 +154,11 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from auto_round import AutoRound
 
 model_name = "Qwen/Qwen3-0.6B"
 model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-from auto_round import AutoRound
 
 bits, group_size, sym = 4, 128, True
 autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
@@ -268,7 +269,7 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 ### Export Formats
 
 **AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
-inference. **[2,3,4,8] bits are supported**. However, it has not yet gained widespread community adoption.
+inference. **[2,3,4,8] bits are supported**.
 
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
 community, **[2,3,4,8] bits are supported**. However, **the
@@ -278,8 +279,9 @@ models. Besides, recently 3 bits may have some accuracy issues in Transformers.
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
 adopted within the community, **only 4-bits quantization is supported**.
 
-**GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community, **only q4_0 and
-q4_1 (W4G32) is supported in our repo**.
+**GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community. Mixed-bit
+configs like `q4_k_m` are not supported yet. Please note: In contrast to the official implementation, AutoRound does not
+quantize the embedding layer or the LM head layer by default.
 
 ### Quantization Costs
 
@@ -323,7 +325,6 @@ this may cause unexpected exceptions.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRoundConfig  ## must import for auto-round format
 
 quantized_model_path = "./tmp_autoround"
 model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
@@ -356,7 +357,7 @@ to the following table for the details and specify the backend you want.
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRoundConfig
+from transformers import AutoRoundConfig
 
 quantized_model_path = "./tmp_autoround"
 quantization_config = AutoRoundConfig(backend="auto")
@@ -376,7 +377,7 @@ Please note that the quantization config will be changed if the model is seriali
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from auto_round import AutoRoundConfig  ## must import for auto-round format
+from transformers import AutoRoundConfig
 
 model_name = "ybelkada/opt-125m-gptq-4bit"
 quantization_config = AutoRoundConfig()
