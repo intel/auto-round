@@ -158,7 +158,7 @@ def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
             raise NotImplementedError(f"bits = {bits} is not supported")
         data = data.reshape(data_shape)
     sum_x2 = torch.sum(torch.pow(data, 2), axis=-1, keepdims=True)
-    av_x = torch.sqrt(sum_x2 / 32)
+    av_x = torch.sqrt(sum_x2 / data.shape[-1])
     weight = torch.abs(data) + av_x
 
     group_min = torch.min(data, axis=-1, keepdims=True)[0]

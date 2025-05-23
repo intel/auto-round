@@ -1227,6 +1227,8 @@ def _gguf_args_check(args_or_ar, format_str=None):
                 if k == "data_type":
                     if re.search("q\d_1", format) and len(formats) > 1:
                         v = "int"
+                    if re.search("q\d_k", format) and args_or_ar.iters == 0:
+                        v = f"gguf_{v}"
                 if getattr(args_or_ar, k) != v:
                     unsupport_list.append(f"{k}={getattr(args_or_ar, k)}")
                     reset_list.append(f"{k}={v}")
