@@ -27,7 +27,6 @@ Support Matrix
 
 ✔ means support, - means support but cannot infer or not test infert yet, X means not support.
 """
-import os
 import torch
 from transformers.data.data_collator import default_data_collator
 
@@ -49,7 +48,7 @@ class BasicProcessor:
     def __init__(self):
         pass
 
-    def post_init(self, model, tokenizer, processor=None, image_processor=None, **kwargs):
+    def post_init(self, model, tokenizer, processor=None, image_processor=None, use_rtn=False, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
         self.processor = processor
@@ -57,6 +56,8 @@ class BasicProcessor:
             self.image_processor = image_processor
         else:
             self.image_processor = self.default_image_processor
+        self.use_rtn = use_rtn
+        self.check_image_processor()
 
     def get_input(
             self,
@@ -79,6 +80,10 @@ class BasicProcessor:
         for key in ret:
             ret[key] = ret[key][0]
         return ret
+    
+    def check_image_processor(self):
+        if not self.use_rtn and self.image_processor is None:
+            raise ValueError("image processor should not be None.")
 
 
 @register_processor("hf")
@@ -88,15 +93,6 @@ class HFProcessor(BasicProcessor):
     def __init__(self):
         self.process_func = self._process_v1
 
-    def post_init(self, model, tokenizer, processor=None, image_processor=None, **kwargs):
-        self.model = model
-        self.tokenizer = tokenizer
-        self.processor = processor
-        if image_processor is not None:
-            self.image_processor = image_processor
-        else:
-            self.image_processor = self.default_image_processor
-    
     def _process_v1(self, messages, image):
         """support models: Qwen2-VL, gemma-3, granite-vision-3.2, Aria"""
         conversation = []
@@ -274,10 +270,9 @@ class LlavaProcessor(BasicProcessor):
     def post_init(self, model, tokenizer, image_processor=None, use_rtn=False, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
-        if not use_rtn:
-            assert image_processor is not None, "for llava model, image_processor should not be None"
         self.image_processor = image_processor
         self.collator_func = llava_train.DataCollatorForSupervisedDataset(tokenizer=self.tokenizer)
+        self.check_image_processor()
 
     def get_input(
             self, text, images, max_length=None,

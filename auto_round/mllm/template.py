@@ -15,7 +15,7 @@
 import os
 import json
 from dataclasses import dataclass
-from typing import Dict, Optional, List, Union, Sequence
+from typing import Dict, Optional, List
 from enum import Enum, unique
 
 from ..utils import logger
@@ -173,6 +173,7 @@ def get_template(
             template = TEMPLATES["default"]
             template.model_type = template_or_path
 
-    template.processor.post_init(model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor, use_rtn=use_rtn)
+    template.processor.post_init(
+        model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor, use_rtn=use_rtn)
 
     return template
