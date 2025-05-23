@@ -3,6 +3,7 @@ set -xe
 
 # install requirements
 echo "set up UT env..."
+export TQDM_MININTERVAL=60
 pip install pytest-cov pytest-html
 pip list
 
