@@ -195,7 +195,6 @@ class TestGGUF(unittest.TestCase):
     
     def test_gguf_baseline(self):
         model_name = "Qwen/Qwen2.5-1.5B-Instruct" 
-        model_name = "/models/Qwen2.5-1.5B-Instruct" 
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
