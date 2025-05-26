@@ -1,5 +1,5 @@
-1 We evaluate all models using the `fake` format, as the real GGUF format produces inaccurate results, likely due to
-issues with lm-eval.
+1 We evaluate all models using the `fake` format, as lm-eval reports inaccurate accuracy for real GGUF format 
+
 
 lm-eval 0.48
 
