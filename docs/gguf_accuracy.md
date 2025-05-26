@@ -4,7 +4,8 @@
 lm-eval 0.48
 
 ```bash
- lm-eval --model hf --model_args pretrained="./"   --tasks mmlu,leaderboard_ifeval,leaderboard_mmlu_pro,gsm8 --batch_size 16
+ lm-eval --model hf --model_args pretrained="./"   --tasks mmlu,leaderboard_ifeval,leaderboard_mmlu_pro,gsm8k 
+ --batch_size 16
 ```
 
 2 `lm-head` and `embedding` layers are not quantized in any of the following models.
