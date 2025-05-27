@@ -39,9 +39,10 @@ function run_unit_test() {
     create_conda_env
     cd ${REPO_PATH}/test/test_cuda
 
-    uv pip install -r requirements.txt
-    uv pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v2.1.0 --no-build-isolation
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
+    uv pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v2.1.0 --no-build-isolation
+    uv pip install -r requirements.txt
+
     uv pip list
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
@@ -71,10 +72,12 @@ function run_unit_test_vlm() {
 
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2
     local site_path=$(python -c "import site; print(site.getsitepackages()[0])")
+    # reference https://github.com/haotian-liu/LLaVA/issues/1448#issuecomment-2119845242
     sed -i '/inputs\[.*image_sizes.*\] = image_sizes/a\        inputs.pop("cache_position")' ${site_path}/llava/model/language_model/llava_llama.py
     uv pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git
-    uv pip install -r requirements_vlm.txt
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
+    uv pip install -r requirements_vlm.txt
+
     uv pip list
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
     local auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
