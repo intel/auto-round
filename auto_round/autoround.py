@@ -497,6 +497,14 @@ class AutoRound(object):
                 if (self.sym and ("gptq" not in format and "awq" not in format)) or self.bits == 3:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
+                if self.bits == 4 and not self.sym:
+                    enable_awq = all(
+                        config["bits"] == self.bits or config["bits"] >= 16
+                        for config in self.layer_config.values()
+                    )
+                    if enable_awq:
+                        formats[index] = format.replace("auto_round", "auto_round:auto_awq")
+
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
@@ -2182,3 +2190,4 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+
