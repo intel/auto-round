@@ -23,7 +23,7 @@ from transformers.pytorch_utils import Conv1D
 
 from auto_round.utils import (
     get_module, set_module, is_hpu_supported, get_block_names, find_matching_blocks,
-    get_layer_names_in_block, check_to_quantized)
+    get_layer_names_in_block, check_to_quantized, check_start_with_block_name)
 
 from auto_round.inference.backend import (
     get_layer_backend, dynamic_import_inference_linear, find_backend, BackendInfos, get_highest_priority_backend,
@@ -48,7 +48,7 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
     modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
     try:  # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
-    except Exception:
+    except:
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert)
     if modules_to_not_convert:
         for layer_name in layer_names:
@@ -234,17 +234,17 @@ def get_layer_config(model, quantization_config):
             quant_block_list = to_quant_block_names
         elif isinstance(to_quant_block_names, str):
             # Generate quant block names based on the given layer names
-            quant_block_list = [
-                [f'{block}.{i}' for i in range(len(get_module(model, block)))]
-                for block in to_quant_block_names.split(',')
-            ]
+            quant_block_list = to_quant_block_names.split(",")
         else:
             # Find matching blocks if no explicit names are provided
             all_blocks = get_block_names(model, quant_vision=True)
             quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
 
     # Get layer names that will be quantized
-    layer_names = get_layer_names_in_block(model, quant_block_list=quant_block_list)
+    layer_names = []
+    for n,_ in model.named_modules():
+        if check_start_with_block_name(n,quant_block_list):
+            layer_names.append(n)
 
     # Load extra configuration if available
     extra_config = getattr(quantization_config, "extra_config", {})

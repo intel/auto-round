@@ -1513,3 +1513,20 @@ def filter_quantization_config(quantization_config):
         quantization_config.pop("act_sym", None)
         quantization_config.pop("act_group_size", None)
 
+
+
+def check_start_with_block_name(name: str, block_name_to_quantize: list):
+    """
+    Checks if the given layer name starts with any of the block names to be quantized.
+
+    Args:
+        name (str): The name of the layer.
+        block_name_to_quantize (list): A list of block names to check against.
+
+    Returns:
+        bool: True if the layer name starts with any of the block names, False otherwise.
+    """
+    for block_name in block_name_to_quantize:
+        if name.startswith(block_name):
+            return True
+    return False
