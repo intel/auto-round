@@ -128,14 +128,16 @@ def load_template(path: str):
             data["model_type"] = "user_define"
         if "replace_tokens" in data and data["replace_tokens"] is not None:
             if len(data["replace_tokens"]) % 2 != 0:
-                raise ValueError("the format of replace_tokens should be [old_tag1, replace_tag1, old_tag2, replace_tag2]")
+                raise ValueError("the format of replace_tokens should be " \
+                    "[old_tag1, replace_tag1, old_tag2, replace_tag2]")
             temp = []
             for i in range(0, len(data["replace_tokens"]), 2):
                 temp.append((data["replace_tokens"][i], data["replace_tokens"][i + 1]))
             data["replace_tokens"] = temp
         if "processor" in data:
             if data["processor"] not in PROCESSORS.keys():
-                raise ValueError(f"{data['processor']} is not supported, current support: {','.join(PROCESSORS.keys())}")
+                raise ValueError(f"{data['processor']} is not supported, current support: " \
+                    "{','.join(PROCESSORS.keys())}")
             data["processor"] = PROCESSORS[data["processor"]]
         template = _register_template(
             **data

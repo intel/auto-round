@@ -504,11 +504,11 @@ class AutoRound(object):
         # Adjust format settings based on compatibility
         for index in range(len(formats)):
             format = formats[index]
-            if "auto_round" in format:
-                if (self.sym and ("gptq" not in format and "awq" not in format)) or self.bits == 3:
+            if format=="auto_round":
+                if self.sym or self.bits == 3:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
-                if self.bits == 4 and not self.sym and ("gptq" not in format and "awq" not in format):
+                if self.bits == 4 and not self.sym:
                     enable_awq = all(
                         config["bits"] == self.bits or config["bits"] >= 16
                         for config in self.layer_config.values()
