@@ -642,7 +642,7 @@ def convert_dtype_str2torch(str_dtype):
         torch.dtype: The PyTorch dtype.
 
     Raises:
-        AssertionError: If the input str_dtype is unsupported.
+        ValueError: If the input str_dtype is unsupported.
     """
     if isinstance(str_dtype, torch.dtype) or str_dtype is None:
         return str_dtype
@@ -655,7 +655,7 @@ def convert_dtype_str2torch(str_dtype):
     elif str_dtype == "bf16" or str_dtype == "bfloat16":
         return torch.bfloat16
     else:
-        assert False, "Unsupported str dtype {} to torch dtype".format(str_dtype)
+        raise ValueError(f"Unsupported string dtype '{str_dtype}' for conversion to torch dtype.")
 
 
 def convert_dtype_torch2str(dtype):
@@ -668,7 +668,7 @@ def convert_dtype_torch2str(dtype):
         str: The string representation of the dtype.
 
     Raises:
-        AssertionError: If the input dtype is unsupported.
+        ValueError: If the input dtype is unsupported.
     """
     if isinstance(dtype, str) or dtype is None:
         return dtype
@@ -683,7 +683,7 @@ def convert_dtype_torch2str(dtype):
     elif isinstance(dtype, str) and dtype in ["int8", "fp32", "fp16", "bf16"]:
         return dtype
     else:
-        assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
+        raise ValueError(f"Unsupported PyTorch dtype '{dtype}' for conversion to string dtype.")
 
 
 def convert_dtype_torch2str_hf(dtype):
@@ -696,7 +696,7 @@ def convert_dtype_torch2str_hf(dtype):
          str: The string representation of the dtype.
 
     Raises:
-        AssertionError: If the input str_dtype is unsupported.
+        ValueError: If the input str_dtype is unsupported.
     """
     if dtype is None:
         return dtype
@@ -707,7 +707,7 @@ def convert_dtype_torch2str_hf(dtype):
             return dtype
     str_dtype = str(dtype)
     if "." not in str_dtype:
-        assert False, "Unsupported pytorch dtype {} to huggingface str dtype".format(dtype)
+        raise ValueError(f"Unsupported pytorch dtype '{dtype}' for conversion to huggingface str dtype")
     str_dtype = str_dtype.split(".")[1]
     return str_dtype
 
@@ -1512,3 +1512,4 @@ def filter_quantization_config(quantization_config):
         quantization_config.pop("act_dynamic", None)
         quantization_config.pop("act_sym", None)
         quantization_config.pop("act_group_size", None)
+

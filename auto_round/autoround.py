@@ -170,9 +170,11 @@ class AutoRound(object):
         self.model_orig_dtype = model.dtype
         self.seed = seed
         set_seed(self.seed)
-        assert not unsupport_meta_device(model), (
-            "AutoRound does not support for params on meta device."
-            " Please use more gpus by setting `--device 0,1,2,3` or just use one gpu")
+        if unsupport_meta_device(model):
+            raise RuntimeError(
+                "AutoRound does not support parameters on meta device. "
+                "Please use more GPUs by setting `--device 0,1,2,3` or just use one GPU."
+            )
 
         ## important tuning hype-parameters
         self.amp = amp
@@ -384,19 +386,28 @@ class AutoRound(object):
         """Checks if the configurations are valid.
 
         Raises:
-        AssertionError: If any of the configurations are invalid.
+        ValueError, TypeError: If any of the configurations are invalid.
         """
-        assert isinstance(self.model, torch.nn.Module)
-        assert self.bits > 0, "bits must be positive"
-        assert self.act_bits > 0, "bits must be positive"
-        assert self.group_size == -1 or self.group_size >= 1, "only supports positive group_size or -1(per channel)"
-        assert self.act_group_size == -1 or self.act_group_size >= 1, \
-            "only supports positive group_size or -1(per channel)"
-        assert self.batch_size > 0, "batch size must be positive"
-        assert self.iters >= 0, "iters must be non-negative"
-        assert self.seqlen > 0, "seqlen must be positive"
-        assert self.nblocks > 0, "nblocks must be positive"
-        assert self.gradient_accumulate_steps > 0, "gradient accumulate step must be positive"
+        if not isinstance(self.model, torch.nn.Module):
+            raise TypeError("model must be an instance of torch.nn.Module")
+        if self.bits <= 0:
+            raise ValueError("bits must be positive")
+        if self.act_bits <= 0:
+            raise ValueError("act_bits must be positive")
+        if not (self.group_size == -1 or self.group_size >= 1):
+            raise ValueError("group_size must be -1 (per channel) or a positive integer")
+        if not (self.act_group_size == -1 or self.act_group_size >= 1):
+            raise ValueError("act_group_size must be -1 (per channel) or a positive integer")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if self.iters < 0:
+            raise ValueError("iters must be non-negative")
+        if self.seqlen <= 0:
+            raise ValueError("seqlen must be positive")
+        if self.nblocks <= 0:
+            raise ValueError("nblocks must be positive")
+        if self.gradient_accumulate_steps <= 0:
+            raise ValueError("gradient_accumulate_steps must be positive")
         # assert self.tokenizer != None or self.dataloader != None
         if self.act_bits <= 8:
             logger.warning(
@@ -493,10 +504,18 @@ class AutoRound(object):
         # Adjust format settings based on compatibility
         for index in range(len(formats)):
             format = formats[index]
-            if "auto_round" in format:
-                if (self.sym and ("gptq" not in format and "awq" not in format)) or self.bits == 3:
+            if format=="auto_round":
+                if self.sym or self.bits == 3:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
+                if self.bits == 4 and not self.sym:
+                    enable_awq = all(
+                        config["bits"] == self.bits or config["bits"] >= 16
+                        for config in self.layer_config.values()
+                    )
+                    if enable_awq:
+                        formats[index] = format.replace("auto_round", "auto_round:auto_awq")
+
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
@@ -622,8 +641,11 @@ class AutoRound(object):
                 device=self.device,
                 pbar=pbar
             )
-            if self.is_packing_immediate:
-                assert len(self.formats) == 1
+            if self.is_packing_immediate and len(self.formats) != 1:
+                raise ValueError(
+                    f"Expected exactly one packing format when 'is_packing_immediate' is True, "
+                    f"but got {len(self.formats)} formats."
+                )
 
         self.quant_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
@@ -2182,3 +2204,4 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+

@@ -74,7 +74,8 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
             model_name = model_name[-1]
 
         output_type = backend.split(":")[-1]
-        assert output_type.lower() in FTYPE_MAP, f"{output_type} is not supported"
+        if output_type.lower() not in FTYPE_MAP:
+            raise TypeError(f"{output_type} type is not supported")
         output_type = FTYPE_MAP.get(output_type.lower())
 
 
@@ -96,3 +97,4 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
     shutil.rmtree(tmp_work_dir, ignore_errors=True)
 
     return model
+
