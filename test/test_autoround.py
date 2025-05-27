@@ -416,7 +416,10 @@ class TestAutoRound(unittest.TestCase):
             model_name, quantization_config=quantization_config, device_map="cpu", torch_dtype=torch.float16)
         self.assertTrue(isinstance(model.visual.blocks[0].attn.qkv, torch.nn.Linear))
         self.assertFalse(isinstance(model.visual.merger.mlp[0], QuantLinear))
-        self.assertTrue(isinstance(model.model.layers[0].self_attn.v_proj, QuantLinear))
+        if hasattr(model.model, "language_model"):
+            self.assertTrue(isinstance(model.model.language_model.layers[0].self_attn.v_proj, QuantLinear))
+        else: 
+            self.assertTrue(isinstance(model.model.layers[0].self_attn.v_proj, QuantLinear))
 
         processor = AutoProcessor.from_pretrained(model_name, size=None)
         image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
