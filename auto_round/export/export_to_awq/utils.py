@@ -149,10 +149,10 @@ class WQLinear_GEMM(nn.Module):
 
         # quick sanity check (make sure alignment)
         if self.in_features % self.group_size != 0:
-            raise ValueError(f"in_features ({self.in_features}) shape dismatch")
+            raise ValueError(f"in_features ({self.in_features}) shape mismatch")
 
         if out_features % (32 // self.w_bit) != 0:
-            raise ValueError(f"out_features ({out_features}) shape dismatch")
+            raise ValueError(f"out_features ({out_features}) shape mismatch")
 
         self.register_buffer(
             "qweight",
