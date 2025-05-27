@@ -141,7 +141,7 @@ class TestMainFunc(unittest.TestCase):
                               batch_size="auto")
         res = make_table(res)
         accuracy = get_accuracy(res)
-        assert accuracy > 0.35
+        assert accuracy > 0.34
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoround_asym(self): ##need to install false

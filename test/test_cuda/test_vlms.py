@@ -52,7 +52,7 @@ class TestAutoRound(unittest.TestCase):
             ##revision="df7f44c" ##AutoGPTQ format
         )
 
-        image_url = "../docs/imgs/norm_bias_overview.png"
+        image_url = "https://github.com/intel/auto-round/blob/main/docs/imgs/norm_bias_overview.png"
         messages = [
             {
                 "role": "user",
