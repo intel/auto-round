@@ -38,9 +38,10 @@ function run_unit_test() {
     # install unit test dependencies
     create_conda_env
     cd ${REPO_PATH}/test/test_cuda
+    rm -rf .coverage* *.xml *.html
 
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
-    uv pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v2.1.0 --no-build-isolation
+    uv pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v2.2.0 --no-build-isolation
     uv pip install -r requirements.txt
 
     uv pip list
@@ -69,6 +70,7 @@ function run_unit_test_vlm() {
     # install unit test dependencies
     create_conda_env
     cd ${REPO_PATH}/test/test_cuda
+    rm -rf .coverage* *.xml *.html
 
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2
     local site_path=$(python -c "import site; print(site.getsitepackages()[0])")
