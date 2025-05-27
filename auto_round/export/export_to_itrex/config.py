@@ -249,7 +249,7 @@ class QuantConfig(PretrainedConfig):
         self._set_token_in_kwargs(kwargs)
 
         if os.path.isfile(save_directory):
-            raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
+            raise OSError(f"Provided path ({save_directory}) should be a directory, not a file")
 
         os.makedirs(save_directory, exist_ok=True)
 
@@ -301,3 +301,4 @@ class QuantConfig(PretrainedConfig):
         for parameter in remove_parameters:
             if hasattr(self, parameter):
                 delattr(self, parameter)
+

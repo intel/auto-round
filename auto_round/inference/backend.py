@@ -597,15 +597,16 @@ def get_layer_backend(device, backend, orig_backend, bits, group_size, sym, in_f
             The selected backend that is compatible with the layer configuration.
 
     Raises:
-        AssertionError:
-            If the specified backend is not supported.
         ValueError:
+            If the specified backend is not supported.
             If no compatible backend is found for the given layer configuration.
     """
     # Check if the provided backend is in BackendInfos
     backend = find_backend(backend)
-    assert backend in BackendInfos.keys(), \
-        f"Unsupported backend {backend}, please set it to `auto` to try automatic selection"
+    if backend not in BackendInfos.keys():
+        raise ValueError(
+            f"Unsupported backend '{backend}'. Please set it to 'auto' to enable automatic selection."
+        )
 
     packing_format = BackendInfos[orig_backend].packing_format
 
@@ -735,3 +736,4 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
         log(joined_cmds)
         if logger_level == "error":
             exit(-1)
+

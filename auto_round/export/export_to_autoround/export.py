@@ -69,7 +69,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
         class: The dynamically imported QuantLinear class configured according to the specified parameters.
 
     Raises:
-        AssertionError: If the backend is not supported.
+        ValueError: If the backend is not supported.
     """
     if "auto_round" in backend and "awq" not in backend and "gptq" not in backend:
         if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
@@ -88,7 +88,10 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
-        assert False, f"only support auto_gptq, auto_awq and auto_round backend"
+        raise ValueError(
+            f"Unsupported backend: '{backend}'. "
+            "Only 'auto_round', 'auto_round:auto_awq', 'auto_round:auto_gptq', 'awq', and 'gptq' are supported."
+        )
 
 
 def pack_qact_layer(name, model):
@@ -247,7 +250,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         None
 
     Raises:
-        AssertionError: If the backend is not supported.
+        ValueError: If the backend is not supported.
     """
 
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
@@ -367,3 +370,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

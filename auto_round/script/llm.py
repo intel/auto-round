@@ -355,7 +355,7 @@ def tune(args):
                        "It is recommended to use sym quantization or --format='auto_round'")
 
     if "marlin" in args.format and args.asym is True:
-        assert False, "marlin backend only supports sym quantization, please remove --asym"
+        raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
     ##must set this before import torch
     set_cuda_visible_devices(args.device)
@@ -768,3 +768,4 @@ def eval_task_by_task(
         print(make_table(res_all))
 
     print("total eval time:", time.time() - st)
+
