@@ -310,7 +310,7 @@ def quant_tensor_gguf_sym_dq(
     from auto_round.export.export_to_gguf.quant_gpu import make_q3_quants, make_qx_quant
 
     if bits not in [3, 6]:
-        raise KeyError(f"bits={bits} is not supported by gguf_int_asym_dq, please check.")
+        raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = 2 ** (bits - 1)
