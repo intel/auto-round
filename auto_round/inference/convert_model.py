@@ -263,6 +263,7 @@ def get_layer_config(model, quantization_config):
         for layer_name in layer_names:
             if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
+    
 
     # Process AWQ format: exclude specified modules from quantization
     extra_config = skip_not_convert_modules(model, quantization_config, layer_names, extra_config)
@@ -557,3 +558,4 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
             process_requirement(requirements, target_device,"warning")
 
     return model, used_backends
+

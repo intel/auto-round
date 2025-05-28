@@ -20,10 +20,12 @@ import os
 import torch
 import torch.nn as nn
 import transformers
-
+try:
+    import auto_round_extension.triton.qlinear_tritonv2
+except Exception as error:
+    raise ImportError(error)
+import auto_round_extension.torch.qlinear_torch
 import auto_round.export.export_to_autoround.qlinear_triton_act
-
-import auto_round_extension.triton.qlinear_tritonv2
 from auto_round.utils import get_module, logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
     filter_quantization_config
 import threadpoolctl as tctl
@@ -74,17 +76,17 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     if "auto_round" in backend and "awq" not in backend and "gptq" not in backend:
         if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
             return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
-
-        from auto_round_extension.triton.qlinear_tritonv2 import QuantLinear
+        from auto_round_extension.torch.qlinear_torch import QuantLinear
         return QuantLinear
-    elif "auto_round" in backend and "gptq" in backend and bits in (2, 4, 8):
-        from auto_round.export.export_to_autoround.qlinear_triton import QuantLinear  ##no g_idx
+    elif "auto_round" in backend and "gptq" in backend:
+        from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
         return QuantLinear
     elif "awq" in backend:
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
     elif "gptqmodel" in backend:
-        return auto_round_extension.triton.qlinear_tritonv2.QuantLinear
+        from auto_round_extension.torch.qlinear_torch import QuantLinear
+        return QuantLinear
     elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
@@ -190,14 +192,15 @@ def pack_layer(layer_name, model, backend):
 
     if "awq" not in backend:
         new_layer = QuantLinear(  ##pylint: disable=E1123
-            bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
+            bits, group_size, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
         )
         new_layer.device = device
         set_module(model, layer_name, new_layer)
         qlayer = new_layer
         import auto_round.export.export_to_autoround.qlinear_triton
         if sym and isinstance(QuantLinear, (auto_round.export.export_to_autoround.qlinear_triton.QuantLinear,
-                                            auto_round_extension.triton.qlinear_tritonv2.QuantLinear)):
+                                            auto_round_extension.triton.qlinear_tritonv2.QuantLinear,
+                                            auto_round_extension.torch.qlinear_torch.QuantLinear)):
             zp = int(zp.flatten()[0])
 
         qlayer.to("cpu")
@@ -268,8 +271,6 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     quantization_config = kwargs["serialization_dict"]
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
     quantization_config["quant_method"] = "auto-round"
-    if quantization_config["bits"] == 3:
-        backend = "auto_round:auto_gptq"
     quantization_config["packing_format"] = backend
 
     tokenizer = kwargs.get("tokenizer", None)
@@ -380,3 +381,5 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
+
