@@ -1668,7 +1668,7 @@ class AutoRound(object):
                     )
                     format = "auto_round"
 
-        if re.search("q\d_k", format) and not self.data_type.endswith("_dq"):
+        if re.search(r"q\d_k", format) and not self.data_type.endswith("_dq"):
             logger.error(
                 f"datatype<{self.data_type}> not support to export {format} format."
                 " Please change export format or data_type."
@@ -1715,7 +1715,7 @@ class AutoRound(object):
                 "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
                 " particularly for 2-bit quantization and smaller models."
                 " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
-                "the AutoRound format(2/4/8 bits)."
+                "the AutoRound format(2/3/4/8 bits)."
             )
         if "awq" in format and not self.bits == 4:
             raise ValueError("The AWQ format only supports W4 quantization ")
