@@ -1,3 +1,17 @@
+# Copyright (c) 2023 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import math
 from logging import getLogger
 
@@ -77,7 +91,7 @@ class QuantLinear(nn.Module):
             ).reshape(1, 3, 12)
 
         self.dequant_dtype = torch.int16 if self.bits == 8 else torch.int8
-            
+    
 
     def post_init(self):
         pass
@@ -187,7 +201,7 @@ class QuantLinear(nn.Module):
                     col += 1
                     qzeros[:, col] |= (zeros[:, i] >> 1) & 0x3
                     i += 1
-                    packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32) 
+                    packed_zeros = torch.tensor(zeros[:, i : i + 10]).to(dtype=torch.int32)
                     shifts = torch.arange(0, 10) * self.bits + 2
                     shifted = packed_zeros << shifts
                     qzeros[:, col] |= shifted.sum(dim=-1)
@@ -196,7 +210,6 @@ class QuantLinear(nn.Module):
 
             self.qzeros = qzeros.cpu()
         else:
-            assert self.bits in [2, 4, 8]
             shape = scales_t.shape
             value = 0
             for j in range(0, (32 // self.bits)):
@@ -265,8 +278,9 @@ class QuantLinear(nn.Module):
                 weights.append(scale_i[g_idx_i.long()] * (weight_i - zeros_i[g_idx_i.long()]))
             weights = torch.cat(weights, dim=1)
         else:
-            group_idx = torch.arange(self.infeatures, device=self.qweight.device) // self.group_size
-            weights = self.scales[group_idx] * (weight - zeros[group_idx])
+            repeat_scales = self.scales.repeat_interleave(self.group_size, dim=0)
+            repeat_zeros = zeros.repeat_interleave(self.group_size, dim=0)
+            weights = repeat_scales * (weight - repeat_zeros)
             
         out = torch.matmul(x, weights)
         out = out.to(x_dtype)

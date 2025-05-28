@@ -20,10 +20,12 @@ import os
 import torch
 import torch.nn as nn
 import transformers
-
-import auto_round.export.export_to_autoround.qlinear_triton_act
-import auto_round_extension.triton.qlinear_tritonv2
+try:
+    import auto_round_extension.triton.qlinear_tritonv2
+except Exception as error:
+    print(error)
 import auto_round_extension.torch.qlinear_torch
+import auto_round.export.export_to_autoround.qlinear_triton_act
 from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized, \
     filter_quantization_config
 import threadpoolctl as tctl

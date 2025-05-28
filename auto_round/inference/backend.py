@@ -141,9 +141,9 @@ BackendInfos['auto_round:torch'] = BackendInfo(device=["cuda","xpu", "cpu"], sym
                                                   packing_format="int32",
                                                   dtype=["float16", "bfloat16"],
                                                   bits=[2, 3, 4, 8],
-                                                  priority=1, feature_checks=[feature_multiply_checker_32],
+                                                  priority=0, feature_checks=[feature_multiply_checker_32],
                                                   alias=["auto_round", "torch"],
-                                                  requirements=["triton>=2.0","auto-round>=0.5.0"]
+                                                  requirements=["triton>=2.0","auto-round>=0.5.1"]
                                                   )
 
 BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda","xpu"], sym=[True],  ## asym has accuracys
@@ -160,9 +160,9 @@ BackendInfos['auto_round:torch_zp'] = BackendInfo(device=["cuda","xpu", "cpu"], 
                                                      packing_format="int32_zp",
                                                      dtype=["float16", "bfloat16"],
                                                      bits=[2, 3, 4, 8],
-                                                     priority=1, feature_checks=[feature_multiply_checker_32],
+                                                     priority=0, feature_checks=[feature_multiply_checker_32],
                                                      alias=["torch", "torch_zp"],
-                                                     requirements=[ "triton>=2.0","auto-round>=0.5.0"]
+                                                     requirements=[ "triton>=2.0","auto-round>=0.5.1"]
                                                      )
 
 BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
