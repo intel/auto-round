@@ -7,8 +7,7 @@ from auto_round.eval.evaluation import simple_evaluate_user_model
 
 sys.path.insert(0, "..")
 import torch
-import transformers
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
 
 from auto_round import AutoRound
 from _test_helpers import model_infer
@@ -358,7 +357,6 @@ class TestAutoRound(unittest.TestCase):
         )
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-        from auto_round import AutoRoundConfig
         model = AutoModelForCausalLM.from_pretrained(
             self.save_folder,
             torch_dtype=torch.float16,
@@ -391,7 +389,6 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = self.save_folder
 
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
-        from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig(
             backend="ipex"
         )
@@ -408,7 +405,6 @@ class TestAutoRound(unittest.TestCase):
         import requests
         from PIL import Image
         from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-        from auto_round import AutoRoundConfig
         from auto_round_extension.ipex.qlinear_ipex_awq import QuantLinear
         model_name = "Qwen/Qwen2-VL-2B-Instruct-AWQ"
         quantization_config = AutoRoundConfig()
@@ -480,7 +476,6 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = self.save_folder
 
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_awq", inplace=True)
-        from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig()
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
@@ -515,7 +510,6 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = self.save_folder
 
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_gptq", inplace=True)
-        from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig()
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
@@ -550,7 +544,6 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = self.save_folder
 
         autoround.save_quantized(output_dir=quantized_model_path, format="auto_round", inplace=True)
-        from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig()
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path,

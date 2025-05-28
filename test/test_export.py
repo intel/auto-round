@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, "..")
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
 
 from auto_round import AutoRound
 
@@ -75,7 +75,6 @@ class TestAutoRound(unittest.TestCase):
 
 
         device = "auto"  ##cpu, hpu, cuda
-        from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig(
             backend=device
         )
@@ -104,7 +103,6 @@ class TestAutoRound(unittest.TestCase):
 
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:awq")
 
-        from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig(
             backend="cpu"
         )

@@ -131,8 +131,6 @@ class TestAutoRoundMLLM(unittest.TestCase):
         autoround.quantize()
         quantized_model_path = "./saved"
         autoround.save_quantized(quantized_model_path, format="auto_round", inplace=False)
-
-        from auto_round import AutoRoundConfig
         import requests
         from PIL import Image
 
