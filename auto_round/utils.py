@@ -1531,3 +1531,26 @@ def check_start_with_block_name(name: str, block_name_to_quantize: list):
             return True
     return False
 
+
+def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
+    """
+    Check whether the input sequence length is within the limits defined
+    by the tokenizer and the model configuration.
+
+    Args:
+        input_seqlen (int): The length of the input sequence.
+        tokenizer: Optional, a HuggingFace tokenizer object.
+        model: Optional, a HuggingFace model object.
+
+    Returns:
+        ValueError: if the input length is not valid, riase Error.
+    """
+    if model is not None and hasattr(model, 'config'):
+        model_config = model.config
+        if hasattr(model_config, 'max_position_embeddings') and input_seqlen > model_config.max_position_embeddings:
+            raise ValueError(f"seqlen({input_seqlen}) exceeds model.config.max_position_embeddings(" \
+                    f"{model_config.max_position_embeddings}). Please lowering '--seqlen'")
+    if tokenizer is not None and hasattr(tokenizer, 'model_max_length') and input_seqlen > tokenizer.model_max_length:
+        raise ValueError(f"seqlen({input_seqlen}) exceeds tokenizer.model_max_length({tokenizer.model_max_length}). " \
+                "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length.")
+

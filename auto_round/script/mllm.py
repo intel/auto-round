@@ -328,6 +328,17 @@ def tune(args):
 
     from auto_round import AutoRoundMLLM
 
+    seqlen = args.seqlen
+    if seqlen is not None and hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
+        seqlen = min(seqlen, model.config.max_position_embeddings)
+
+    if seqlen is not None and hasattr(tokenizer, "model_max_length"):
+        if tokenizer.model_max_length < seqlen:
+            logger.info(
+                f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length")
+            seqlen = min(seqlen, tokenizer.model_max_length)
+            args.seqlen = seqlen
+
     model = model.eval()
 
     round = AutoRoundMLLM
@@ -420,7 +431,7 @@ def tune(args):
         group_size=args.group_size,
         sym=not args.asym,
         batch_size=args.batch_size,
-        seqlen=args.seqlen,
+        seqlen=seqlen,
         nblocks=args.nblocks,
         iters=args.iters,
         lr=args.lr,
@@ -562,5 +573,6 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+
 
 

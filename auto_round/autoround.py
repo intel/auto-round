@@ -52,7 +52,8 @@ from .utils import (
     llm_load_model,
     reset_params,
     init_cache, check_skippable_keywords, get_shared_keys, SUPPORTED_DTYPES, infer_bits_by_data_type,
-    _gguf_args_check
+    _gguf_args_check,
+    check_seqlen_compatible
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -539,7 +540,7 @@ class AutoRound(object):
                     "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
                     " particularly for 2-bit quantization and smaller models."
                     " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
-                    "the AutoRound format(2/3/4/8 bits)."
+                    "the AutoRound format(2/4/8 bits)."
                 )
             save_format_ = format.replace(":", "-").replace("_", "-")
             save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
@@ -926,10 +927,12 @@ class AutoRound(object):
             except NotImplementedError:
                 pass
             except RuntimeError as error:
-                logger.warning("When quantization encounters tensor" \
-                               " shape mismatch error, you can try to avoid it with batch_size=1")
-                logger.error(error)
-                pass
+                error_msg = str(error)
+                if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
+                    check_seqlen_compatible(self.seqlen, self.tokenizer, self.model)
+                logger.warning("When quantization encounters tensor shape mismatch error, " \
+                               "you can try to avoid it with batch_size=1")
+                raise error
             except Exception as error:
                 raise error
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
@@ -1665,7 +1668,7 @@ class AutoRound(object):
                     )
                     format = "auto_round"
 
-        if re.search(r"q\d_k", format) and not self.data_type.endswith("_dq"):
+        if re.search("q\d_k", format) and not self.data_type.endswith("_dq"):
             logger.error(
                 f"datatype<{self.data_type}> not support to export {format} format."
                 " Please change export format or data_type."
@@ -2204,4 +2207,5 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+
 

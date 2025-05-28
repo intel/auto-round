@@ -392,7 +392,8 @@ def tune(args):
 
     from auto_round import AutoRound, AutoRoundAdam
 
-    seqlen = args.seqlen
+    if hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
+        seqlen = min(args.seqlen, model.config.max_position_embeddings)
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
@@ -400,6 +401,7 @@ def tune(args):
                 f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length")
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
+    
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -768,4 +770,5 @@ def eval_task_by_task(
         print(make_table(res_all))
 
     print("total eval time:", time.time() - st)
+
 
