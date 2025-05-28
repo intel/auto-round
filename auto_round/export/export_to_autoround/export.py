@@ -23,10 +23,9 @@ import transformers
 try:
     import auto_round_extension.triton.qlinear_tritonv2
 except Exception as error:
-    print(error)
+    raise ImportError(error)
 import auto_round_extension.torch.qlinear_torch
 import auto_round.export.export_to_autoround.qlinear_triton_act
-import auto_round_extension.triton.qlinear_tritonv2
 from auto_round.utils import get_module, logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
     filter_quantization_config
 import threadpoolctl as tctl
@@ -382,4 +381,5 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
 
