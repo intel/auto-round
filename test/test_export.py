@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, "..")
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
 
 from auto_round import AutoRound
 
@@ -116,6 +116,7 @@ class TestAutoRound(unittest.TestCase):
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
             shutil.rmtree("./saved", ignore_errors=True)
+
 
     def test_autoawq_format(self):
         for group_size in [-1, 32, 128]:
