@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
 from concurrent.futures import ProcessPoolExecutor
-from .utils import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
+
+import numpy as np
+
+from .utils import GGML_QUANT_SIZES, K_SCALE_SIZE, QK_K
 
 GGML_QUANT_TYPE = {}
 

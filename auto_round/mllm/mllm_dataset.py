@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import json
+import os
 from typing import Dict
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 from transformers import set_seed
 
-from .utils import _extract_data_dir
-from .template import Template
-from ..utils import logger
 from ..special_model_handler import check_mllm_model_batch
+from ..utils import logger
+from .template import Template
+from .utils import _extract_data_dir
 
 MLLM_DATASET: Dict[str, Dataset] = {}
 
@@ -250,7 +250,7 @@ def get_mllm_dataloader(
             tokenizer, seqlen, dataset, seed, bs, nsamples)
         if quant_nontext_module:
             logger.error(
-                f"Text only dataset cannot be used for calibrating non-text modules,"
+                "Text only dataset cannot be used for calibrating non-text modules,"
                  " switching to liuhaotian/llava_conv_58k")
             exit(-1)
         return dataloader, bs, gradient_accumulate_steps

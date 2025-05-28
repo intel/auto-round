@@ -19,12 +19,13 @@
 # since the model classes inherit torch.nn.Module.
 import math
 
+import numpy as np
 import torch
 from packaging.version import Version
 from torch.autograd import Function
 from torch.nn import functional as F
-import numpy as np
-from auto_round.utils import logger, can_pack_with_numba
+
+from auto_round.utils import can_pack_with_numba, logger
 
 NF4 = [
     -1.0,

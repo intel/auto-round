@@ -8,8 +8,8 @@ import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRoundConfig
-from auto_round import AutoRound
+from auto_round import AutoRound, AutoRoundConfig
+
 
 class LLMDataLoader:
     def __init__(self):
@@ -52,7 +52,6 @@ class TestAutoRoundXPU(unittest.TestCase):
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path)
 
-        from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig(
             backend="auto"
         )
@@ -88,7 +87,6 @@ class TestAutoRoundXPU(unittest.TestCase):
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:auto_awq")
 
         quantized_model_path = "./saved"
-        from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig(
             backend="auto"
         )

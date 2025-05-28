@@ -19,12 +19,12 @@ from typing import Dict, List, Optional, Union
 
 import torch
 import transformers
+
 from auto_round.export.register import register_format
-from auto_round.utils import get_module, logger, set_module, detect_device, check_to_quantized
+from auto_round.utils import check_to_quantized, detect_device, get_module, logger, set_module
 
 from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear
-
 
 
 def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):

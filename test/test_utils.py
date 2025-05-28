@@ -1,5 +1,7 @@
 from unittest.mock import patch
+
 import auto_round.utils as auto_round_utils
+
 
 class TestPackingWithNumba:
 

@@ -5,10 +5,12 @@ import unittest
 
 sys.path.insert(0, "..")
 import torch
+from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from _test_helpers import model_infer
+
+
 class LLMDataLoader:
     def __init__(self):
         self.batch_size = 1
@@ -34,7 +36,7 @@ class TestQuantizationConv1d(unittest.TestCase):
     def test_quant(self):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
-        from auto_round import  AutoRoundConfig
+        from auto_round import AutoRoundConfig
         autoround = AutoRound(
             self.model,
             self.tokenizer,

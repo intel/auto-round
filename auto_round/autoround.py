@@ -12,49 +12,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 import re
 import sys
-
-import torch
-import copy
 import time
-from typing import Optional, Union, List
-from transformers import set_seed
+from typing import List, Optional, Union
+
+import accelerate
+import torch
 from torch import autocast
 from tqdm import tqdm
-import accelerate
-from .wrapper import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
+from transformers import set_seed
+
+from .low_cpu_mem.utils import get_layers_before_block
 from .utils import (
+    TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
+    _gguf_args_check,
     block_forward,
     check_is_cpu,
+    check_skippable_keywords,
     check_to_quantized,
+    clear_memory,
     collect_best_params,
+    compile_func,
     convert_dtype_str2torch,
     detect_device,
+    find_matching_blocks,
     get_block_names,
+    get_layer_features,
+    get_layer_names_in_block,
     get_module,
+    get_shared_keys,
     htcore,
+    infer_bits_by_data_type,
+    init_cache,
+    is_debug_mode,
     is_optimum_habana_available,
+    llm_load_model,
     logger,
+    mv_module_from_gpu,
+    reset_params,
+    set_module,
+    supported_dtypes,
+    supported_layer_types,
     to_device,
     to_dtype,
-    get_layer_names_in_block,
-    mv_module_from_gpu,
-    unsupport_meta_device, clear_memory,
-    compile_func,
-    find_matching_blocks, is_debug_mode,
-    TORCH_VERSION_AT_LEAST_2_6,
-    supported_layer_types,
-    get_layer_features,
-    set_module,
-    llm_load_model,
-    reset_params,
-    init_cache, check_skippable_keywords, get_shared_keys, supported_dtypes, infer_bits_by_data_type,
-    _gguf_args_check
+    unsupport_meta_device,
 )
-from .low_cpu_mem.utils import get_layers_before_block
+from .wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
 class AutoRound(object):
@@ -222,9 +229,9 @@ class AutoRound(object):
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
 
         ##activation
-        self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
-        self.act_bits = act_bits if not (act_bits is None) else self.bits
-        self.act_sym = act_sym if not (act_sym is None) else self.sym
+        self.act_group_size = act_group_size if act_group_size is not None else self.group_size
+        self.act_bits = act_bits if act_bits is not None else self.bits
+        self.act_sym = act_sym if act_sym is not None else self.sym
         self.act_dynamic = act_dynamic
         self.act_data_type = act_data_type
         if self.act_data_type is None:
@@ -476,7 +483,7 @@ class AutoRound(object):
             if "fp8" not in self.act_data_type:
                 if len(formats) > 1 or "fake" not in formats:
                     logger.warning(
-                        f"Currently only support to export auto_round format quantized model"
+                        "Currently only support to export auto_round format quantized model"
                         " with fp8 dtype activation for activation quantization."
                         " Change format to fake and save."
                     )
@@ -622,7 +629,7 @@ class AutoRound(object):
             keys = inputs.keys()
             input_id_str = [key for key in keys if key.startswith('hidden_state')]
             if len(input_id_str) != 1:
-                raise RuntimeError(f"hidden_states arg mismatch error,"
+                raise RuntimeError("hidden_states arg mismatch error,"
                                    "please raise an issue in https://github.com/intel/auto-round/issues")
             inputs["input_ids"] = inputs.pop(input_id_str[0], None)
             clear_memory(self.inputs)
@@ -986,11 +993,11 @@ class AutoRound(object):
                 logger.info("switch to cpu to cache block inputs")
                 if (("lm_head" in self.layer_config and self.layer_config["lm_head"]["bits"] < 16) or
                         self.__class__.__name__ == "AutoRoundMLLM"):
-                    logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
-                                   f"set `--device '0,1'` in our cmd line usage or "
-                                   f"load the model with `device_mapping=auto`,"
-                                   f" for optimal performance during calibration "
-                                   f"Otherwise, the process may be significantly slower.")
+                    logger.warning("we strongly recommend using additional CUDA/HPU devices,e.g. "
+                                   "set `--device '0,1'` in our cmd line usage or "
+                                   "load the model with `device_mapping=auto`,"
+                                   " for optimal performance during calibration "
+                                   "Otherwise, the process may be significantly slower.")
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                 clear_memory()
                 all_inputs = self.cache_inter_data(
@@ -1101,10 +1108,10 @@ class AutoRound(object):
                         self.batch_dim = 1
                         if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.batch_size:
                             logger.error(
-                                f"this model has not been supported, "
-                                f"please raise an issue in https://github.com/intel/auto-round/issues"
-                                f" or try to set the `batch_size` to 1 and "
-                                f"`gradient_accumulate_steps` to your current batch size.")
+                                "this model has not been supported, "
+                                "please raise an issue in https://github.com/intel/auto-round/issues"
+                                " or try to set the `batch_size` to 1 and "
+                                "`gradient_accumulate_steps` to your current batch size.")
                             exit(-1)
 
             if hidden_states is not None:
@@ -1618,7 +1625,7 @@ class AutoRound(object):
                     if hasattr(tmp_m, "bits") and check_to_quantized(tmp_m):
                         target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
                         PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.name, self.model, self.formats[0])
-        pbar.set_description(f"Quantizing done")
+        pbar.set_description("Quantizing done")
         pbar.update(1)
         pbar.close()
 
@@ -1652,7 +1659,7 @@ class AutoRound(object):
             if "fp8" not in self.act_data_type or self.act_dynamic:
                 if format != "fake":
                     logger.warning(
-                        f"Currently only support to export auto_round format quantized model"
+                        "Currently only support to export auto_round format quantized model"
                         " with fp8 dtype activation for activation quantization."
                         " Change format to fake and save."
                     )
@@ -1696,9 +1703,9 @@ class AutoRound(object):
                 logger.error(f"{format} need group_size=32, but it is {self.group_size}, cannot export.")
                 return
             if format == "gguf:q4_0" and not self.sym:
-                logger.warning(f"incorrect format choose, will reset to gguf:q4_1")
+                logger.warning("incorrect format choose, will reset to gguf:q4_1")
             if format == "gguf:q4_1" and self.sym:
-                logger.warning(f"incorrect format choose, will reset to gguf:q4_0")
+                logger.warning("incorrect format choose, will reset to gguf:q4_0")
 
         from auto_round.export import EXPORT_FORMAT
         backend = format

@@ -13,13 +13,16 @@
 # limitations under the License.
 
 import os
-import sys
 import shutil
-import torch
-from .convert import Model
-from auto_round.utils import logger, LazyImport
-from pathlib import Path
+import sys
 import time
+from pathlib import Path
+
+import torch
+
+from auto_round.utils import LazyImport, logger
+
+from .convert import Model
 
 gguf = LazyImport("gguf")
 

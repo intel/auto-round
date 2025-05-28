@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Optional, Union
 
 from lm_eval import simple_evaluate as lm_simple_evaluate
-import os
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 

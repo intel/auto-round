@@ -42,7 +42,6 @@ import triton.language as tl
 
 from . import custom_autotune
 
-
 logger = getLogger(__name__)
 
 

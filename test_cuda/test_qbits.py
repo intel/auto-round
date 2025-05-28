@@ -6,7 +6,7 @@ sys.path.insert(0, "..")
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRoundConfig, AutoRound
+from auto_round import AutoRound, AutoRoundConfig
 
 
 class TestAutoRound(unittest.TestCase):
@@ -71,8 +71,9 @@ class TestAutoRound(unittest.TestCase):
         layer_config["model.decoder.layers.0.self_attn.k_proj"] = {"bits": 8}
         layer_config["model.decoder.layers.6.self_attn.out_proj"] = {"bits": 2, "group_size": 32}
         bits, group_size, sym = 4, 128, True
-        from auto_round import  AutoRound
         import torch
+
+        from auto_round import AutoRound
         autoround = AutoRound(
             model,
             tokenizer,

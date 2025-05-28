@@ -9,7 +9,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
 
-
 class LLMDataLoader:
     def __init__(self):
         self.batch_size = 1
@@ -20,7 +19,7 @@ class LLMDataLoader:
 
 def is_hpu_supported():
     try:
-        import habana_frameworks.torch.core as htcore # pylint: disable=E0401
+        import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
     except ImportError as e:
         return False
     return True

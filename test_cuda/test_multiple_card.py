@@ -1,13 +1,15 @@
 import re
+import shutil
 import sys
 import unittest
-import shutil
+
 sys.path.insert(0, "..")
 
 
 import torch
 from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
 

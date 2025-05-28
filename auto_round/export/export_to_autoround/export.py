@@ -14,23 +14,28 @@
 
 
 import copy
+import inspect
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 
+import threadpoolctl as tctl
 import torch
 import torch.nn as nn
 import transformers
+from tqdm import tqdm
 
 import auto_round.export.export_to_autoround.qlinear_triton_act
-
 import auto_round_extension.triton.qlinear_tritonv2
-from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized, \
-    filter_quantization_config
-import threadpoolctl as tctl
-import inspect
-from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
-from auto_round.utils import get_autogptq_packing_qlinear
+from auto_round.utils import (
+    check_to_quantized,
+    filter_quantization_config,
+    get_autogptq_packing_qlinear,
+    get_module,
+    logger,
+    set_module,
+    supported_layer_types,
+)
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -78,14 +83,14 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
         from auto_round_extension.triton.qlinear_tritonv2 import QuantLinear
         return QuantLinear
     elif "auto_round" in backend and "gptq" in backend and bits in (2, 4, 8):
-        from auto_round.export.export_to_autoround.qlinear_triton import QuantLinear  ##no g_idx
+        from auto_round.export.export_to_autoround.qlinear_triton import QuantLinear  # #no g_idx
         return QuantLinear
     elif "awq" in backend:
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
     elif "gptqmodel" in backend:
         return auto_round_extension.triton.qlinear_tritonv2.QuantLinear
-    elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
+    elif "gptq" in backend and "gptqmodel" not in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
         raise ValueError(
