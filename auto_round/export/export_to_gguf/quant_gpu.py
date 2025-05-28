@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
 import numpy as np
+import torch
 
-from .utils import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
+from .utils import GGML_QUANT_SIZES, K_SCALE_SIZE, QK_K
 
 GGML_QUANT_TYPE = {}
 

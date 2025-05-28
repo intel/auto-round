@@ -34,26 +34,27 @@
 
 from __future__ import annotations
 
-import ast
-import logging
 import argparse
+import ast
 import contextlib
 import json
+import logging
+import math
 import os
 import re
 import sys
 from enum import IntEnum
-from pathlib import Path
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any, Callable, ContextManager, Iterable, Iterator, Literal, Sequence, TypeVar, cast
 from itertools import chain
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, ContextManager, Iterable, Iterator, Literal, Sequence, TypeVar, cast
 
-import math
 import numpy as np
 import torch
 
 # autoround import
-from auto_round.utils import logger, LazyImport
+from auto_round.utils import LazyImport, logger
+
 from .quant_cpu import ggml_quant_cpu
 from .quant_gpu import ggml_quant_gpu
 
@@ -3465,8 +3466,7 @@ class BertModel(Model):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
 
-        if name.startswith("bert."):
-            name = name[5:]
+        name = name.removeprefix("bert.")
 
         if name.endswith(".gamma"):
             name = name[:-6] + ".weight"
@@ -3521,8 +3521,7 @@ class RobertaModel(BertModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         # if name starts with "roberta.", remove the prefix
         # e.g. https://huggingface.co/BAAI/bge-reranker-v2-m3/tree/main
-        if name.startswith("roberta."):
-            name = name[8:]
+        name = name.removeprefix("roberta.")
 
         # position embeddings start at pad_token_id + 1, so just chop down the weight tensor
         if name == "embeddings.position_embeddings.weight":
@@ -3662,8 +3661,7 @@ class XLMRobertaModel(BertModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         # if name starts with "roberta.", remove the prefix
         # e.g. https://huggingface.co/BAAI/bge-reranker-v2-m3/tree/main
-        if name.startswith("roberta."):
-            name = name[8:]
+        name = name.removeprefix("roberta.")
 
         # position embeddings start at pad_token_id + 1, so just chop down the weight tensor
         if name == "embeddings.position_embeddings.weight":
@@ -4401,8 +4399,7 @@ class JinaBertV2Model(BertModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         # if name starts with "bert.", remove the prefix
         # e.g. https://huggingface.co/jinaai/jina-reranker-v1-tiny-en
-        if name.startswith("bert."):
-            name = name[5:]
+        name = name.removeprefix("bert.")
 
         return super().modify_tensors(data_torch, name, bid)
 

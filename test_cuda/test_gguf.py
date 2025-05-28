@@ -10,6 +10,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
+
 class LLMDataLoader:
     def __init__(self):
         self.batch_size = 1

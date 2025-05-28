@@ -1,18 +1,20 @@
 import copy
+import re
 import shutil
 import sys
 import unittest
-import re
 
 sys.path.insert(0, "..")
+import os
+
 import torch
 import transformers
+from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
-from lm_eval.utils import make_table  # pylint: disable=E0401
-import os
+
 
 def get_accuracy(data):
     match = re.search(r'\|acc\s+\|[↑↓]\s+\|\s+([\d.]+)\|', data)

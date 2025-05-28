@@ -13,8 +13,9 @@
 # limitations under the License.
 
 import torch
-from auto_round.data_type.utils import get_gaudi_fp8_ste_func, float8_e4m3fn_ste
+
 from auto_round.data_type.register import register_dtype
+from auto_round.data_type.utils import float8_e4m3fn_ste, get_gaudi_fp8_ste_func
 
 
 @register_dtype("fp8_dynamic_per_token_sym")

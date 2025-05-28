@@ -8,10 +8,10 @@ from auto_round.eval.evaluation import simple_evaluate_user_model
 sys.path.insert(0, "..")
 import torch
 import transformers
+from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from _test_helpers import model_infer
 
 
 class LLMDataLoader:
@@ -407,7 +407,8 @@ class TestAutoRound(unittest.TestCase):
     def test_not_convert_modules(self):
         import requests
         from PIL import Image
-        from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+        from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+
         from auto_round import AutoRoundConfig
         from auto_round_extension.ipex.qlinear_ipex_awq import QuantLinear
         model_name = "Qwen/Qwen2-VL-2B-Instruct-AWQ"

@@ -33,7 +33,6 @@ from torch.serialization import (
 )
 
 from ..low_cpu_mem import modified_pickle as pickle
-
 from .utils import torch
 
 torch_version = torch.__version__.split("+")[0]

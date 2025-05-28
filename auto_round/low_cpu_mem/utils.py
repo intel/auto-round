@@ -16,13 +16,13 @@
 # limitations under the License.
 """Utils for layer wise quantization."""
 
-import os
 import gc
 import json
-import pickle
-from functools import partial
 import logging
+import os
+import pickle
 from collections import OrderedDict
+from functools import partial
 
 import torch
 from accelerate import init_empty_weights
@@ -30,8 +30,9 @@ from accelerate.utils import set_module_tensor_to_device
 from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.auto_factory import _BaseAutoModelClass
 
-from .load import load
 from auto_round.utils import detect_device
+
+from .load import load
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s")
 logger = logging.getLogger("low_cpu_mem_tools")

@@ -1,13 +1,14 @@
 import os
-import sys
 import shutil
+import sys
 import unittest
 
 sys.path.insert(0, '..')
 
-from auto_round import AutoRoundConfig ## must import for auto-round format
 import requests
 from PIL import Image
+
+from auto_round import AutoRoundConfig  # # must import for auto-round format
 
 
 class TestSupportVLMS(unittest.TestCase):
@@ -32,7 +33,7 @@ class TestSupportVLMS(unittest.TestCase):
         # test infer
         quantized_model_path = os.path.join(self.save_dir, "Qwen2-VL-2B-Instruct-w4g128-auto_round")
        
-        from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+        from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             quantized_model_path,
             torch_dtype="float16",
@@ -240,7 +241,7 @@ class TestSupportVLMS(unittest.TestCase):
         self.assertFalse(res > 0 or res == -1, msg="llama-3.2 tuning fail")
 
         ## test infer
-        from transformers import MllamaForConditionalGeneration, AutoProcessor
+        from transformers import AutoProcessor, MllamaForConditionalGeneration
         quantized_model_path = os.path.join(self.save_dir, "Llama-3.2-11B-Vision-Instruct-w4g128-auto_round")
         model = MllamaForConditionalGeneration.from_pretrained(
             quantized_model_path,
@@ -343,7 +344,7 @@ class TestSupportVLMS(unittest.TestCase):
         self.assertFalse(res > 0 or res == -1, msg="deepseek vl2 tuning fail")
 
         quantized_model_path = os.path.join(self.save_dir, "deepseek-vl2-tiny-w4g32-auto_round")
-        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM
+        from deepseek_vl2.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor
         from transformers import AutoModelForCausalLM
         vl_chat_processor: DeepseekVLV2Processor = DeepseekVLV2Processor.from_pretrained(quantized_model_path)
         tokenizer = vl_chat_processor.tokenizer

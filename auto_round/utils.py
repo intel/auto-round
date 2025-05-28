@@ -13,23 +13,25 @@
 # limitations under the License.
 
 import copy
+import gc
 import logging
 import os
-import sys
-import subprocess
-from collections import UserDict
 import re
+import subprocess
+import sys
+from collections import UserDict
+from functools import lru_cache
+
 import cpuinfo
 import psutil
 import torch
+import transformers
+from packaging import version
 from torch.amp import autocast
 
-from functools import lru_cache
-from packaging import version
-import gc
-from .special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
-import transformers
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+
+from .special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 
 shared_cache_keys = ("position_ids", "cache_position", "position_embeddings")
 
@@ -105,6 +107,7 @@ fh.setFormatter(AutoRoundFormatter())
 logger.addHandler(fh)
 
 import importlib
+
 import transformers
 
 
@@ -1086,7 +1089,7 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
             - str: An error message describing why the model is incompatible, or an empty string if compatible.
     """
     if bits != 4:
-        return False, f"AutoAWQ GEMM kernel only supports 4 bits"
+        return False, "AutoAWQ GEMM kernel only supports 4 bits"
     for n, m in model.named_modules():
         if isinstance(m, transformers.pytorch_utils.Conv1D):
             return False, "AutoAWQ GEMM kernel does not support conv1d"
@@ -1164,9 +1167,10 @@ def get_layer_features(layer):
 
 
 def _gguf_args_check(args_or_ar, format_str=None):
-    from auto_round.utils import logger
-    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
     import argparse
+
+    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+    from auto_round.utils import logger
 
     if format_str is None:
         args_or_ar.format = args_or_ar.format.replace("q*_", f"q{args_or_ar.bits}_")
@@ -1201,6 +1205,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
 
             if isinstance(args_or_ar.model, str) and os.path.isdir(args_or_ar.model):
                 from pathlib import Path
+
                 from auto_round.export.export_to_gguf.convert import Model
                 hparams = Model.load_hparams(Path(args_or_ar.model))
                 model_architecture = hparams["architectures"][0]
@@ -1273,7 +1278,7 @@ def llm_load_model(
         low_cpu_mem_mode=0,
         low_cpu_mem_tmp_dir=None,
         **kwargs):
-    from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
+    from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
     low_cpu_mem_usage = False
@@ -1331,9 +1336,10 @@ def mllm_load_model(
         model_dtype=None,
         **kwargs):
     import json
+
     import transformers
-    from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
     from huggingface_hub import HfApi, HfFileSystem
+    from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
     if os.path.isdir(pretrained_model_name_or_path):
         config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
@@ -1348,7 +1354,7 @@ def mllm_load_model(
 
     processor, image_processor = None, None
     if "deepseek_vl_v2" == model_type:
-        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM  # pylint: disable=E0401
+        from deepseek_vl2.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor  # pylint: disable=E0401
         processor = DeepseekVLV2Processor.from_pretrained(pretrained_model_name_or_path)
         tokenizer = processor.tokenizer
         model: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(

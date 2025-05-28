@@ -8,7 +8,7 @@ import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRoundOPT, AutoRoundAdam
+from auto_round import AutoRoundAdam, AutoRoundOPT
 
 
 class LLMDataLoader:

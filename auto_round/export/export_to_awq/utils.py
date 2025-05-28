@@ -33,8 +33,9 @@
 # SOFTWARE.
 
 import gc
-import torch
 import warnings
+
+import torch
 import torch.nn as nn
 from torch.autograd import Function
 

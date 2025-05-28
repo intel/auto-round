@@ -4,13 +4,11 @@ import sys
 import unittest
 
 sys.path.insert(0, "..")
-from auto_round.eval.evaluation import simple_evaluate_user_model
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRound
-from auto_round import AutoRoundConfig
+from auto_round import AutoRound, AutoRoundConfig
+from auto_round.eval.evaluation import simple_evaluate_user_model
 
 
 class LLMDataLoader:

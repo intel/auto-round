@@ -1,15 +1,16 @@
 import copy
+import os
+import re
 import shutil
 import sys
 import unittest
-import re
-import os
 
 sys.path.insert(0, "..")
 
-from PIL import Image
-from auto_round import AutoRoundConfig
 import requests
+from PIL import Image
+
+from auto_round import AutoRoundConfig
 
 
 class TestAutoRound(unittest.TestCase):
@@ -41,7 +42,7 @@ class TestAutoRound(unittest.TestCase):
     #             res == """<s> There is a girl who likes adventure, and she is looking for a partner to go on a treasure hunt. She has found a map that leads to a hidden treasure, but she needs a partner to help her decipher the clues and find the treasure. You""")
 
     def qwen_inference(self, quantized_model_dir):
-        from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
+        from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_dir)
         processor = AutoProcessor.from_pretrained(quantized_model_dir, trust_remote_code=True)
         model = Qwen2VLForConditionalGeneration.from_pretrained(
@@ -88,8 +89,9 @@ class TestAutoRound(unittest.TestCase):
         print(output_text[0])
 
     def test_vlm_tune(self):
+        from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
+
         from auto_round import AutoRoundMLLM
-        from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
 
         ## load the model
         model_name = "/models/Qwen2-VL-2B-Instruct"
@@ -162,8 +164,9 @@ class TestAutoRound(unittest.TestCase):
         print(response)
 
     def test_quant_not_text(self):
-        from auto_round import AutoRoundMLLM
         from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+
+        from auto_round import AutoRoundMLLM
 
         ## load the model
         model_name = "/models/Phi-3.5-vision-instruct"
@@ -184,7 +187,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_quant_not_text_fp_layers(self):
-        import  os
+        import os
         python_path = sys.executable
         absolute_path = os.path.abspath(self.save_dir)
         res = os.system(
@@ -198,7 +201,7 @@ class TestAutoRound(unittest.TestCase):
         from auto_round.utils import get_block_names
 
         model_name = "/models/deepseek-vl2-tiny"
-        from deepseek_vl2.models import  DeepseekVLV2ForCausalLM
+        from deepseek_vl2.models import DeepseekVLV2ForCausalLM
         model = DeepseekVLV2ForCausalLM.from_pretrained(
             model_name, trust_remote_code=True, device_map="auto")
         block_name = get_block_names(model, quant_vision=True)
