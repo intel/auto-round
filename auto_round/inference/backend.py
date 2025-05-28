@@ -121,7 +121,7 @@ BackendInfos['auto_gptq:tritonv2'] = BackendInfo(device=["cuda"], sym=[True, Fal
 BackendInfos['auto_gptq:cuda'] = BackendInfo(device=["cuda"], sym=[True, False],
                                              packing_format="int32_zp",
                                              bits=[2, 3, 4, 8], group_size=None,
-                                             priority=0, feature_checks=[exllamav2_feature_check],
+                                             priority=1, feature_checks=[exllamav2_feature_check],
                                              alias=["auto_gptq:cuda"],
                                              dtype=["float16"],
                                              convertable_format=["int32_zp"],
@@ -132,7 +132,7 @@ BackendInfos['auto_round:tritonv2'] = BackendInfo(device=["cuda", "xpu"], sym=[T
                                                   packing_format="int32",
                                                   dtype=["float16", "bfloat16"],
                                                   bits=[2, 4, 8],
-                                                  priority=1, feature_checks=[feature_multiply_checker_32],
+                                                  priority=2, feature_checks=[feature_multiply_checker_32],
                                                   alias=["auto_round", "tritonv2", "triton"],
                                                   requirements=["triton>=2.0","auto-round>=0.5.0"]
                                                   )
@@ -143,7 +143,7 @@ BackendInfos['auto_round:torch'] = BackendInfo(device=["cuda","xpu", "cpu"], sym
                                                   bits=[2, 3, 4, 8],
                                                   priority=0, feature_checks=[feature_multiply_checker_32],
                                                   alias=["auto_round", "torch"],
-                                                  requirements=["triton>=2.0","auto-round>=0.5.1"]
+                                                  requirements=["auto-round>=0.5.1"]
                                                   )
 
 BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda","xpu"], sym=[True],  ## asym has accuracys
@@ -151,7 +151,7 @@ BackendInfos['auto_round:tritonv2_zp'] = BackendInfo(device=["cuda","xpu"], sym=
                                                      packing_format="int32_zp",
                                                      dtype=["float16", "bfloat16"],
                                                      bits=[2, 4, 8],
-                                                     priority=1, feature_checks=[feature_multiply_checker_32],
+                                                     priority=2, feature_checks=[feature_multiply_checker_32],
                                                      alias=["tritonv2", "tritonv2_zp", "triton"],
                                                      requirements=[ "triton>=2.0","auto-round>=0.5.0"]
                                                      )
@@ -162,7 +162,7 @@ BackendInfos['auto_round:torch_zp'] = BackendInfo(device=["cuda","xpu", "cpu"], 
                                                      bits=[2, 3, 4, 8],
                                                      priority=0, feature_checks=[feature_multiply_checker_32],
                                                      alias=["torch", "torch_zp"],
-                                                     requirements=[ "triton>=2.0","auto-round>=0.5.1"]
+                                                     requirements=["auto-round>=0.5.1"]
                                                      )
 
 BackendInfos['gptqmodel:marlin'] = BackendInfo(device=["cuda"], sym=[True],
@@ -207,7 +207,7 @@ BackendInfos['auto_awq:gemm'] = BackendInfo(device=["cuda"], sym=[True, False], 
 BackendInfos['qbits'] = BackendInfo(device=["cpu"], sym=[True, False],
                                     packing_format="qbits",
                                     bits=[2, 4, 8], group_size=None,
-                                    priority=0,
+                                    priority=1,
                                     feature_checks=[],
                                     alias=["itrex", "qbits"],
                                     dtype=["float16", "bfloat16"],
@@ -218,7 +218,7 @@ BackendInfos['qbits_zp'] = BackendInfo(device=["cpu"], sym=[True, False],
                                        packing_format="qbits_zp",
                                        bits=[2, 4, 8], group_size=None,
                                        dtype=["float16", "bfloat16"],
-                                       priority=0,
+                                       priority=1,
                                        feature_checks=[],
                                        alias=["itrex", "qbits"],
                                        convertable_format=["int32_zp"],
@@ -229,7 +229,7 @@ BackendInfos['auto_round:qbits_awq'] = BackendInfo(device=["cpu"], sym=[True, Fa
                                                    packing_format="awq",
                                                    bits=[2, 4, 8], group_size=None,
                                                    dtype=["float16", "bfloat16"],
-                                                   priority=0,
+                                                   priority=1,
                                                    feature_checks=[],
                                                    alias=["itrex", "qbits"],
                                                    requirements=["intel-extension-for-transformers", "torch<2.7.0"]
@@ -764,4 +764,5 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
         log(joined_cmds)
         if logger_level == "error":
             exit(-1)
+
 
