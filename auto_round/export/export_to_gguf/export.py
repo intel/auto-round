@@ -23,7 +23,6 @@ import time
 
 gguf = LazyImport("gguf")
 
-
 FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
         "f32": gguf.LlamaFileType.ALL_F32,
         "f16": gguf.LlamaFileType.MOSTLY_F16,
@@ -31,9 +30,15 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
         "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0,
         "q4_0": gguf.LlamaFileType.MOSTLY_Q4_0,
         "q4_1": gguf.LlamaFileType.MOSTLY_Q4_1,
-        "q4_k_s": gguf.LlamaFileType.MOSTLY_Q4_K_S,
-        "q2_k_s": gguf.LlamaFileType.MOSTLY_Q2_K_S,
+        "q5_0": gguf.LlamaFileType.MOSTLY_Q5_0,
+        "q5_1": gguf.LlamaFileType.MOSTLY_Q5_1,
         "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0,
+        "q2_k_s": gguf.LlamaFileType.MOSTLY_Q2_K_S,
+        "q3_k_s": gguf.LlamaFileType.MOSTLY_Q3_K_S,
+        "q4_k_s": gguf.LlamaFileType.MOSTLY_Q4_K_S,
+        "q5_k_s": gguf.LlamaFileType.MOSTLY_Q5_K_S,
+        "q6_k": gguf.LlamaFileType.MOSTLY_Q6_K,
+        "q6_k_s": gguf.LlamaFileType.MOSTLY_Q6_K,
         "auto": gguf.LlamaFileType.GUESSED,
     }
 
@@ -69,7 +74,8 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
             model_name = model_name[-1]
 
         output_type = backend.split(":")[-1]
-        assert output_type.lower() in FTYPE_MAP, f"{output_type} is not supported"
+        if output_type.lower() not in FTYPE_MAP:
+            raise TypeError(f"{output_type} type is not supported")
         output_type = FTYPE_MAP.get(output_type.lower())
 
 
@@ -91,3 +97,4 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
     shutil.rmtree(tmp_work_dir, ignore_errors=True)
 
     return model
+

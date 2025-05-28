@@ -26,13 +26,14 @@ except Exception as error:
     print(error)
 import auto_round_extension.torch.qlinear_torch
 import auto_round.export.export_to_autoround.qlinear_triton_act
-from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized, \
+import auto_round_extension.triton.qlinear_tritonv2
+from auto_round.utils import get_module, logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
     filter_quantization_config
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
-from auto_round.utils import get_autogptq_packing_qlinear
+from auto_round.utils import get_autogptq_packing_qlinear,check_start_with_block_name
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -71,7 +72,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
         class: The dynamically imported QuantLinear class configured according to the specified parameters.
 
     Raises:
-        AssertionError: If the backend is not supported.
+        ValueError: If the backend is not supported.
     """
     if "auto_round" in backend and "awq" not in backend and "gptq" not in backend:
         if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
@@ -90,7 +91,10 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
-        assert False, f"only support auto_gptq, auto_awq and auto_round backend"
+        raise ValueError(
+            f"Unsupported backend: '{backend}'. "
+            "Only 'auto_round', 'auto_round:auto_awq', 'auto_round:auto_gptq', 'awq', and 'gptq' are supported."
+        )
 
 
 def pack_qact_layer(name, model):
@@ -157,7 +161,7 @@ def pack_layer(layer_name, model, backend):
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
 
-    if not isinstance(layer, supported_layer_types):  ##already packed
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
 
     if int(layer.act_bits) <= 8:
@@ -230,6 +234,8 @@ def pack_layer(layer_name, model, backend):
         set_module(model, layer_name, qlayer)
 
 
+
+
 def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):
     """
     Saves a quantized model in the auto-round format.
@@ -250,7 +256,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         None
 
     Raises:
-        AssertionError: If the backend is not supported.
+        ValueError: If the backend is not supported.
     """
 
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
@@ -271,6 +277,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     extra_config = {}
+    block_name_to_quantize = quantization_config["block_name_to_quantize"]
+    if isinstance(block_name_to_quantize, str): \
+            block_name_to_quantize = block_name_to_quantize.split(",")
+    elif isinstance(block_name_to_quantize,list):
+        for i in range(len(block_name_to_quantize)):
+            block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip('.')
+
     for layer_name in layer_config:
         if not layer_config[layer_name]["in_blocks"] and layer_config[layer_name][
             "bits"] <= 8:  ##lm head ##TODO fix act and so on
@@ -279,7 +292,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
             extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
             extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
-        elif layer_config[layer_name]["in_blocks"]:
+        elif layer_config[layer_name]["in_blocks"] or (
+                block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)):
             neq_keys = check_neq_config(
                 layer_config[layer_name],
                 data_type=quantization_config["data_type"],
@@ -327,7 +341,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if quantization_config.get("act_bits", 16) <= 8:
         dtype = torch.bfloat16
     elif "awq" in quantization_config.get("packing_format", "auto_round:auto_gptq"):
-        dtype = torch.float16 ## awq kernel only supports float16 on cuda
+        dtype = torch.float16  ## awq kernel only supports float16 on cuda
     else:
         dtype = None
     save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)

@@ -35,6 +35,7 @@ from auto_round.utils import (
     clear_memory,
     get_device_and_parallelism,
     get_model_dtype,
+    str2bool,
     set_cuda_visible_devices)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -199,7 +200,6 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             help="the torch_dytpe to load the model for evaluation.")
 
-
 class EvalArgumentParser(argparse.ArgumentParser):
 
     def __init__(self, *args, **kwargs):
@@ -338,25 +338,24 @@ def tune(args):
     from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig
 
     from auto_round.utils import detect_device, get_library_version
-    from auto_round.utils import logger, _gguf_args_check
+    from auto_round.utils import logger
 
     if args.format is None:
         args.format = "auto_round"
 
-    formats = args.format.lower().replace(' ', '').split(",")
-    from auto_round.utils import supported_formats
-    for format in formats:
-        if format not in supported_formats:
-            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
 
-    args = _gguf_args_check(args)
+    formats = args.format.lower().replace(' ', '').split(",")
+    from auto_round.utils import SUPPORTED_FORMATS
+    for format in formats:
+        if format not in SUPPORTED_FORMATS:
+            raise ValueError(f"{format} is not supported, we only support {SUPPORTED_FORMATS}")
 
     if "auto_gptq" in args.format and args.asym is True:
         logger.warning("the auto_gptq kernel has issues with asymmetric quantization. "
                        "It is recommended to use sym quantization or --format='auto_round'")
 
     if "marlin" in args.format and args.asym is True:
-        assert False, "marlin backend only supports sym quantization, please remove --asym"
+        raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
     ##must set this before import torch
     set_cuda_visible_devices(args.device)
@@ -411,7 +410,7 @@ def tune(args):
 
     layer_config = {}
     for n, m in model.named_modules():
-        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
+        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.pytorch_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                 layer_config[n] = {"bits": 16}
                 logger.info(
@@ -447,7 +446,7 @@ def tune(args):
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
-                auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
+                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
 
@@ -539,7 +538,7 @@ def tune(args):
             for file in os.listdir(eval_folder):
                 gguf_file = file
 
-            logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
+            logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
             if eval_model_dtype == "float32" or eval_model_dtype == "auto":
                 logger.warning(
                     "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -642,7 +641,7 @@ def eval(args):
         from lm_eval.utils import make_table  # pylint: disable=E0401
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
 
-        logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
+        logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -706,7 +705,7 @@ def eval_task_by_task(
     eval_model_dtype = get_model_dtype(eval_model_dtype)
     if is_gguf_file:
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        logger.warning("evaluate gguf model is an experimental feature, the accuracy may not be accurate.")
+        logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -769,3 +768,4 @@ def eval_task_by_task(
         print(make_table(res_all))
 
     print("total eval time:", time.time() - st)
+

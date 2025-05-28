@@ -16,6 +16,7 @@ pr:
       - .azure-pipelines/scripts/ut
       - .azure-pipelines/unit-test.yml
       - .azure-pipelines/template/ut-template.yml
+      - .azure-pipelines/template/docker-template.yml
     exclude:
       - test/test*hpu*
       - "*.md"

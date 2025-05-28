@@ -23,7 +23,6 @@ from auto_round.utils import (
     get_device_and_parallelism,
     set_cuda_visible_devices,
     logger,
-    _gguf_args_check
     )
 
 
@@ -299,9 +298,6 @@ def tune(args):
         if format not in supported_formats:
             raise ValueError(f"{format} is not supported, we only support {supported_formats}")
 
-    args = _gguf_args_check(args)
-
-
     ##must set this before import torch
     set_cuda_visible_devices(args.device)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
@@ -350,7 +346,7 @@ def tune(args):
     if args.fp_layers != "":
         fp_layers = args.fp_layers.replace(" ", "").split(",")
         for n, m in model.named_modules():
-            if not isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D)):
+            if not isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
                 continue
             for fp_layer in fp_layers:
                 if fp_layer in n:
@@ -363,7 +359,7 @@ def tune(args):
                     logger.warning(f"mixed precision exporting does not support {format} currently")
 
     for n, m in model.named_modules():
-        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
+        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.pytorch_utils.Conv1D):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                 layer_config[n] = {"bits": 32}
                 logger.info(
@@ -462,7 +458,8 @@ def tune(args):
     format_list = args.format.replace(' ', '').split(',')
     inplace = False if len(format_list) > 1 else True
     for format_ in format_list:
-        eval_folder = f'{export_dir}-{format_}'
+        save_format_ = format_.replace(":", "-").replace("_", "-")
+        eval_folder = os.path.join(export_dir, save_format_) if len(formats) > 1 else export_dir
         safe_serialization = True
         if hasattr(autoround.model, "config") and hasattr(autoround.model.config, "model_type"):
             if "phi3_v" in autoround.model.config.model_type:
@@ -565,4 +562,5 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+
 

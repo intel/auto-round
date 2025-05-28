@@ -13,6 +13,8 @@ pr:
       - setup.py
       - requirements-hpu.txt
       - .azure-pipelines/scripts/ut
+      - .azure-pipelines/template/docker-template.yml
+      - .azure-pipelines/template/ut-template.yml
     exclude:
       - auto_round/export/export_to_autogptq
       - auto_round/export/export_to_awq

@@ -31,22 +31,34 @@ from .special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACH
 import transformers
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
-shared_cache_keys = ("position_ids", "cache_position", "position_embeddings")
+SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
-supported_formats = (
-    "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel", "auto_round:auto_awq",
-    "itrex", "itrex_xpu", "fake"
-)
+class SupportedFormats:
+    def __init__(self):
+        self._support_format = (
+            "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel",
+            "auto_round:auto_awq", "itrex", "itrex_xpu", "fake")
+        self._gguf_format = tuple(GGUF_CONFIG.keys())
+        self._support_list = self._support_format + self._gguf_format
 
-supported_formats = supported_formats + tuple(GGUF_CONFIG.keys())
+    def __contains__(self, key):
+        return True if key in self._support_list else False
 
-supported_layer_types = (torch.nn.Linear, transformers.modeling_utils.Conv1D)
+    def __str__(self):
+        return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
+    
+    def __getitem__(self, key):
+        return self._support_list[key]
 
-supported_dtypes = ("int", "mx_fp", "fp", "nv_fp")
+SUPPORTED_FORMATS = SupportedFormats()
+
+SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
+
+SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 
 
 def infer_bits_by_data_type(data_type: str):
-    for supported_dtype in supported_dtypes:
+    for supported_dtype in SUPPORTED_DTYPES:
         if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
             ##first check the following two bits
             suc_2str = data_type[len(supported_dtype):len(supported_dtype) + 2]
@@ -630,7 +642,7 @@ def convert_dtype_str2torch(str_dtype):
         torch.dtype: The PyTorch dtype.
 
     Raises:
-        AssertionError: If the input str_dtype is unsupported.
+        ValueError: If the input str_dtype is unsupported.
     """
     if isinstance(str_dtype, torch.dtype) or str_dtype is None:
         return str_dtype
@@ -643,7 +655,7 @@ def convert_dtype_str2torch(str_dtype):
     elif str_dtype == "bf16" or str_dtype == "bfloat16":
         return torch.bfloat16
     else:
-        assert False, "Unsupported str dtype {} to torch dtype".format(str_dtype)
+        raise ValueError(f"Unsupported string dtype '{str_dtype}' for conversion to torch dtype.")
 
 
 def convert_dtype_torch2str(dtype):
@@ -656,7 +668,7 @@ def convert_dtype_torch2str(dtype):
         str: The string representation of the dtype.
 
     Raises:
-        AssertionError: If the input dtype is unsupported.
+        ValueError: If the input dtype is unsupported.
     """
     if isinstance(dtype, str) or dtype is None:
         return dtype
@@ -671,7 +683,7 @@ def convert_dtype_torch2str(dtype):
     elif isinstance(dtype, str) and dtype in ["int8", "fp32", "fp16", "bf16"]:
         return dtype
     else:
-        assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
+        raise ValueError(f"Unsupported PyTorch dtype '{dtype}' for conversion to string dtype.")
 
 
 def convert_dtype_torch2str_hf(dtype):
@@ -684,7 +696,7 @@ def convert_dtype_torch2str_hf(dtype):
          str: The string representation of the dtype.
 
     Raises:
-        AssertionError: If the input str_dtype is unsupported.
+        ValueError: If the input str_dtype is unsupported.
     """
     if dtype is None:
         return dtype
@@ -695,7 +707,7 @@ def convert_dtype_torch2str_hf(dtype):
             return dtype
     str_dtype = str(dtype)
     if "." not in str_dtype:
-        assert False, "Unsupported pytorch dtype {} to huggingface str dtype".format(dtype)
+        raise ValueError(f"Unsupported pytorch dtype '{dtype}' for conversion to huggingface str dtype")
     str_dtype = str_dtype.split(".")[1]
     return str_dtype
 
@@ -744,7 +756,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(model, supported_types=(torch.nn.Linear,
-                                                     transformers.modeling_utils.Conv1D), quant_block_list=None):
+                                                     transformers.pytorch_utils.Conv1D), quant_block_list=None):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -1038,7 +1050,7 @@ def get_fp_layer_names(model, fp_layers):
     fp_layers = fp_layers.replace(" ", "").split(",")
     all_layer_names = []
     for n, m in model.named_modules():
-        if isinstance(m, (torch.nn.Linear, transformers.modeling_utils.Conv1D)):
+        if isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
             all_layer_names.append(n)
     not_to_quantized_layers = []
 
@@ -1076,7 +1088,7 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
     if bits != 4:
         return False, f"AutoAWQ GEMM kernel only supports 4 bits"
     for n, m in model.named_modules():
-        if isinstance(m, transformers.modeling_utils.Conv1D):
+        if isinstance(m, transformers.pytorch_utils.Conv1D):
             return False, "AutoAWQ GEMM kernel does not support conv1d"
 
     layer_names = get_layer_names_in_block(model)
@@ -1151,16 +1163,28 @@ def get_layer_features(layer):
     return None, None  # Unsupported layer type
 
 
-def _gguf_args_check(args):
+def _gguf_args_check(args_or_ar, format_str=None):
     from auto_round.utils import logger
     from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+    import argparse
 
-    formats = args.format.lower().replace(' ', '').split(",")
+    if format_str is None:
+        args_or_ar.format = args_or_ar.format.replace("q*_", f"q{args_or_ar.bits}_")
+        format_str = args_or_ar.format
+    else:
+        format_str = format_str.replace("q*_", f"q{args_or_ar.bits}_")
+    formats = format_str.lower().replace(' ', '').split(",")
     formats = sorted(formats, key=lambda x: len(x))
+    for f in formats:
+        if f.startswith("gguf") and f not in GGUF_CONFIG:
+            logger.error(f"{f} is not supported, please check.")
     pattern = re.compile("q\d_k")
     pre_dq_format = ""
+    unsupport_list, reset_list = [], []
     for format in GGUF_CONFIG:
         if format in formats:
+            if format == "q6_k_s":
+                logger.warning("Please not that q6_k_s is q6_k.")
             try:
                 from auto_round.export.export_to_gguf.convert import Model
             except:
@@ -1175,10 +1199,10 @@ def _gguf_args_check(args):
                 else:
                     pre_dq_format = format
 
-            if os.path.isdir(args.model):
+            if isinstance(args_or_ar.model, str) and os.path.isdir(args_or_ar.model):
                 from pathlib import Path
                 from auto_round.export.export_to_gguf.convert import Model
-                hparams = Model.load_hparams(Path(args.model))
+                hparams = Model.load_hparams(Path(args_or_ar.model))
                 model_architecture = hparams["architectures"][0]
                 try:
                     model_class = Model.from_model_architecture(model_architecture)
@@ -1187,7 +1211,7 @@ def _gguf_args_check(args):
                     sys.exit(1)
 
                 if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 != 0):
-                    model_name = args.model.split('/')
+                    model_name = args_or_ar.model.split('/')
                     model_name = model_name[-1] if model_name[-1] else model_name[-2]
                     hidden_size = hparams["hidden_size"]
                     logger.error(
@@ -1198,17 +1222,30 @@ def _gguf_args_check(args):
             unsupport_list, reset_list = [], []
             gguf_config = GGUF_CONFIG[format]
             for k, v in gguf_config.items():
-                if getattr(args, k) != v:
-                    unsupport_list.append(f"{k}={getattr(args, k)}")
+                if not hasattr(args_or_ar, k):
+                    continue
+                if k == "data_type":
+                    if re.search("q\d_1", format) and len(formats) > 1:
+                        v = "int"
+                    if re.search("q\d_k", format) and args_or_ar.iters == 0:
+                        v = f"gguf_{v}"
+                if getattr(args_or_ar, k) != v:
+                    unsupport_list.append(f"{k}={getattr(args_or_ar, k)}")
                     reset_list.append(f"{k}={v}")
-                    setattr(args, k, v)
+                    setattr(args_or_ar, k, v)
             if len(unsupport_list) > 0:
                 logger.error(
                     f"format {format} does not support for {', '.join(unsupport_list)},"
                     f" reset to {', '.join(reset_list)}.")
-            logger.info(f"export format {format}, sym = {not args.asym}, group_size = {args.group_size}")
-
-    return args
+    if not isinstance(args_or_ar, argparse.Namespace) and len(unsupport_list) > 0:
+        for layer_name in args_or_ar.layer_config:
+            if args_or_ar.layer_config[layer_name]['bits'] >= 16:
+                continue
+            for k in args_or_ar.layer_config[layer_name]:
+                if hasattr(args_or_ar, k):
+                    args_or_ar.layer_config[layer_name][k] = getattr(args_or_ar, k)
+        args_or_ar.has_qlayer_outside_block = args_or_ar.set_layerwise_config(args_or_ar.layer_config)
+    return args_or_ar
 
 
 def _to_model_dtype(model, model_dtype):
@@ -1329,7 +1366,10 @@ def mllm_load_model(
                 model_name=pretrained_model_name_or_path,
                 torch_dtype=torch_dtype)
         else:
-            if hasattr(transformers, architectures):
+            if architectures.endswith("Model") \
+                and hasattr(transformers, n := architectures.replace("Model", "ForConditionalGeneration")):
+                cls = getattr(transformers, n)
+            elif hasattr(transformers, architectures):
                 cls = getattr(transformers, architectures)
             else:
                 cls = AutoModelForCausalLM
@@ -1419,7 +1459,7 @@ def get_shared_keys(model):
     Returns:
         tuple: tuple of shared keys.
     """
-    shared_keys = shared_cache_keys
+    shared_keys = SHARED_CACHE_KEYS
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
 
@@ -1438,6 +1478,16 @@ def get_model_dtype(model_dtype, default="auto"):
         model_dtype = default
     return model_dtype
 
+def str2bool(v):
+    import argparse
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def filter_quantization_config(quantization_config):
     default_dict = {"amp": True, "batch_size": 8, "data_type": int, "dataset": "NeelNanda/pile-10k",
@@ -1462,3 +1512,22 @@ def filter_quantization_config(quantization_config):
         quantization_config.pop("act_dynamic", None)
         quantization_config.pop("act_sym", None)
         quantization_config.pop("act_group_size", None)
+
+
+
+def check_start_with_block_name(name: str, block_name_to_quantize: list):
+    """
+    Checks if the given layer name starts with any of the block names to be quantized.
+
+    Args:
+        name (str): The name of the layer.
+        block_name_to_quantize (list): A list of block names to check against.
+
+    Returns:
+        bool: True if the layer name starts with any of the block names, False otherwise.
+    """
+    for block_name in block_name_to_quantize:
+        if name.startswith(block_name):
+            return True
+    return False
+
