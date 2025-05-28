@@ -50,6 +50,7 @@ class TestAutoRound(unittest.TestCase):
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
 
             if group_size == -1:
+                shutil.rmtree("./saved", ignore_errors=True)
                 continue
             quantization_config = AutoRoundConfig(
             )
@@ -80,6 +81,7 @@ class TestAutoRound(unittest.TestCase):
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
             if group_size == -1:
+                shutil.rmtree("./saved", ignore_errors=True)
                 continue
             model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -121,7 +123,7 @@ class TestAutoRound(unittest.TestCase):
             shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoawq_format(self):
-        for group_size in [-1, 32, 129]:
+        for group_size in [-1, 32, 128]:
             bits, sym = 4, False
             autoround = AutoRound(
                 self.model,
@@ -139,6 +141,7 @@ class TestAutoRound(unittest.TestCase):
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, \
                                      format="auto_awq")
             if group_size == -1:
+                shutil.rmtree("./saved", ignore_errors=True)
                 continue
             quantization_config = AutoRoundConfig()
 
@@ -192,7 +195,7 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = self.save_dir
         
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
-        device = "auto"  ##cpu, hpu, cuda
+        device = "cpu"  ##cpu, hpu, cuda
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
