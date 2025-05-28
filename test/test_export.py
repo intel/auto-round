@@ -120,7 +120,7 @@ class TestAutoRound(unittest.TestCase):
             shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoawq_format(self):
-        for group_size in [-1]:
+        for group_size in [-1, 32, 129]:
             bits, sym = 4, False
             autoround = AutoRound(
                 self.model,
