@@ -48,7 +48,7 @@ class TestAutoRound(unittest.TestCase):
             quantized_model_path = "./saved"
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
 
-            if group_size==-1:
+            if group_size == -1:
                 continue
             quantization_config = AutoRoundConfig(
             )
@@ -78,7 +78,7 @@ class TestAutoRound(unittest.TestCase):
             quantized_model_path = "./saved"
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
-            if group_size==-1:
+            if group_size == -1:
                 continue
             model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -86,6 +86,7 @@ class TestAutoRound(unittest.TestCase):
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
             shutil.rmtree("./saved", ignore_errors=True)
+
     #
     def test_autoround_awq_format(self):
         for group_size in [-1, 32, 128]:
@@ -136,7 +137,7 @@ class TestAutoRound(unittest.TestCase):
 
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, \
                                      format="auto_awq")
-            if group_size==-1:
+            if group_size == -1:
                 continue
             quantization_config = AutoRoundConfig()
 
