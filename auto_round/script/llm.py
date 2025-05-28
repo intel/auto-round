@@ -392,8 +392,9 @@ def tune(args):
 
     from auto_round import AutoRound, AutoRoundAdam
 
+    seqlen = args.seqlen
     if hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
-        seqlen = min(args.seqlen, model.config.max_position_embeddings)
+        seqlen = min(seqlen, model.config.max_position_embeddings)
 
     if hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
