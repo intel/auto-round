@@ -31,7 +31,7 @@ from .special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACH
 import transformers
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
-shared_cache_keys = ("position_ids", "cache_position", "position_embeddings")
+SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
 class SupportedFormats:
     def __init__(self):
@@ -50,15 +50,15 @@ class SupportedFormats:
     def __getitem__(self, key):
         return self._support_list[key]
 
-supported_formats = SupportedFormats()
+SUPPORTED_FORMATS = SupportedFormats()
 
-supported_layer_types = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
+SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
-supported_dtypes = ("int", "mx_fp", "fp", "nv_fp")
+SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 
 
 def infer_bits_by_data_type(data_type: str):
-    for supported_dtype in supported_dtypes:
+    for supported_dtype in SUPPORTED_DTYPES:
         if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
             ##first check the following two bits
             suc_2str = data_type[len(supported_dtype):len(supported_dtype) + 2]
@@ -1459,7 +1459,7 @@ def get_shared_keys(model):
     Returns:
         tuple: tuple of shared keys.
     """
-    shared_keys = shared_cache_keys
+    shared_keys = SHARED_CACHE_KEYS
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
 
@@ -1530,3 +1530,4 @@ def check_start_with_block_name(name: str, block_name_to_quantize: list):
         if name.startswith(block_name):
             return True
     return False
+

@@ -24,7 +24,7 @@ import transformers
 import auto_round.export.export_to_autoround.qlinear_triton_act
 
 import auto_round_extension.triton.qlinear_tritonv2
-from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized, \
+from auto_round.utils import get_module, logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
     filter_quantization_config
 import threadpoolctl as tctl
 import inspect
@@ -158,7 +158,7 @@ def pack_layer(layer_name, model, backend):
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
 
-    if not isinstance(layer, supported_layer_types):  ##already packed
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
 
     if int(layer.act_bits) <= 8:
@@ -278,6 +278,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
     if isinstance(block_name_to_quantize, str): \
             block_name_to_quantize = block_name_to_quantize.split(",")
+    elif isinstance(block_name_to_quantize,list):
+        for i in range(len(block_name_to_quantize)):
+            block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip('.')
 
     for layer_name in layer_config:
         if not layer_config[layer_name]["in_blocks"] and layer_config[layer_name][

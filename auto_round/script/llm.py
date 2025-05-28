@@ -345,10 +345,10 @@ def tune(args):
 
 
     formats = args.format.lower().replace(' ', '').split(",")
-    from auto_round.utils import supported_formats
+    from auto_round.utils import SUPPORTED_FORMATS
     for format in formats:
-        if format not in supported_formats:
-            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+        if format not in SUPPORTED_FORMATS:
+            raise ValueError(f"{format} is not supported, we only support {SUPPORTED_FORMATS}")
 
     if "auto_gptq" in args.format and args.asym is True:
         logger.warning("the auto_gptq kernel has issues with asymmetric quantization. "
@@ -446,7 +446,7 @@ def tune(args):
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
-                auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
+                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
 
