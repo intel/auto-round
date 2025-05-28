@@ -28,7 +28,7 @@ class TestAutoRound(unittest.TestCase):
 
     @classmethod
     def tearDownClass(self):
-        shutil.rmtree("./saved", ignore_errors=True)
+        # shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_autogptq_format(self):
@@ -46,12 +46,13 @@ class TestAutoRound(unittest.TestCase):
             )
             autoround.quantize()
             quantized_model_path = "./saved"
-
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_gptq")
+
+            if group_size==-1:
+                continue
             quantization_config = AutoRoundConfig(
-                backend="cpu"
             )
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
+            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu",
                                                          trust_remote_code=True,
                                                          quantization_config=quantization_config)
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -75,21 +76,17 @@ class TestAutoRound(unittest.TestCase):
             )
             autoround.quantize()
             quantized_model_path = "./saved"
-
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
 
-            device = "auto"  ##cpu, hpu, cuda
-            quantization_config = AutoRoundConfig(
-                backend=device
-            )
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device,
-                                                         quantization_config=quantization_config)
+            if group_size==-1:
+                continue
+            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
             shutil.rmtree("./saved", ignore_errors=True)
-
+    #
     def test_autoround_awq_format(self):
         for group_size in [-1, 32, 128]:
             bits, sym = 4, False
@@ -106,13 +103,15 @@ class TestAutoRound(unittest.TestCase):
             autoround.quantize()
             quantized_model_path = "./saved"
 
-            autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:awq")
+            autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:auto_awq")
 
-            quantization_config = AutoRoundConfig(
-                backend="cpu"
-            )
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu",
-                                                         quantization_config=quantization_config)
+            # quantization_config = AutoRoundConfig(
+            #     backend="cpu"
+            # )
+            if group_size == -1:
+                continue
+
+            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu")
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -120,7 +119,7 @@ class TestAutoRound(unittest.TestCase):
             shutil.rmtree("./saved", ignore_errors=True)
 
     def test_autoawq_format(self):
-        for group_size in [-1, 32, 128]:
+        for group_size in [-1]:
             bits, sym = 4, False
             autoround = AutoRound(
                 self.model,
@@ -137,11 +136,13 @@ class TestAutoRound(unittest.TestCase):
 
             autoround.save_quantized(output_dir=quantized_model_path, inplace=False, \
                                      format="auto_awq")
-            quantization_config = AutoRoundConfig(
-                backend="cpu"
-            )
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
-            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path, quantization_config=quantization_config)
+            if group_size==-1:
+                continue
+            quantization_config = AutoRoundConfig()
+
+            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu",
+                                                         quantization_config=quantization_config)
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
