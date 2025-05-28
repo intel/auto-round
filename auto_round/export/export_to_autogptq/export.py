@@ -37,7 +37,7 @@ import torch
 
 import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module, supported_layer_types, filter_quantization_config
+    get_module, logger, set_module, SUPPORTED_LAYER_TYPES, filter_quantization_config
 import copy
 import json
 import os
@@ -64,7 +64,7 @@ def pack_layer(name, model, backend):
         return
     layer = get_module(model, name)
 
-    if not isinstance(layer, supported_layer_types):  ##already packed
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
 
     bits = layer.bits

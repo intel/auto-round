@@ -28,7 +28,7 @@ from auto_round.utils import (logger, get_module,
                               set_module,
                               check_to_quantized,
                               get_block_names,
-                              extract_block_names_to_str, supported_layer_types, filter_quantization_config)
+                              extract_block_names_to_str, SUPPORTED_LAYER_TYPES, filter_quantization_config)
 import copy
 import json
 from .utils import WQLinear_GEMM
@@ -42,7 +42,7 @@ def pack_layer(name, model, backend):
         return
     layer = get_module(model, name)
 
-    if not isinstance(layer, supported_layer_types):  ##already packed
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
 
     bits = layer.bits

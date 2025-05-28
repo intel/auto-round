@@ -46,12 +46,12 @@ from .utils import (
     compile_func,
     find_matching_blocks, is_debug_mode,
     TORCH_VERSION_AT_LEAST_2_6,
-    supported_layer_types,
+    SUPPORTED_LAYER_TYPES,
     get_layer_features,
     set_module,
     llm_load_model,
     reset_params,
-    init_cache, check_skippable_keywords, get_shared_keys, supported_dtypes, infer_bits_by_data_type,
+    init_cache, check_skippable_keywords, get_shared_keys, SUPPORTED_DTYPES, infer_bits_by_data_type,
     _gguf_args_check
 )
 from .low_cpu_mem.utils import get_layers_before_block
@@ -209,7 +209,7 @@ class AutoRound(object):
             logger.warning(
                 f"bits set in 'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
             self.bits = tmp_bits
-        self.supported_types = supported_layer_types
+        self.supported_types = SUPPORTED_LAYER_TYPES
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.device = detect_device(device)
@@ -228,7 +228,7 @@ class AutoRound(object):
         self.act_dynamic = act_dynamic
         self.act_data_type = act_data_type
         if self.act_data_type is None:
-            if data_type in supported_dtypes and self.act_bits < 16:
+            if data_type in SUPPORTED_DTYPES and self.act_bits < 16:
                 self.act_data_type = data_type
                 logger.info(f"activation adopts {data_type}")
             else:
@@ -465,10 +465,10 @@ class AutoRound(object):
         # Validate and process the specified formats
         _gguf_args_check(self, format)
         formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
-        from auto_round.utils import supported_formats
+        from auto_round.utils import SUPPORTED_FORMATS
         for format_ in formats:
-            if format_ not in supported_formats:
-                logger.error(f"Unsupported format {format_}, please choose from {supported_formats}")
+            if format_ not in SUPPORTED_FORMATS:
+                logger.error(f"Unsupported format {format_}, please choose from {SUPPORTED_FORMATS}")
                 exit(-1)
 
         # only support to export afp8

@@ -24,13 +24,13 @@ import transformers
 import auto_round.export.export_to_autoround.qlinear_triton_act
 
 import auto_round_extension.triton.qlinear_tritonv2
-from auto_round.utils import get_module, logger, set_module, supported_layer_types, check_to_quantized, \
+from auto_round.utils import get_module, logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
     filter_quantization_config
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
-from auto_round.utils import get_autogptq_packing_qlinear
+from auto_round.utils import get_autogptq_packing_qlinear,check_start_with_block_name
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -158,7 +158,7 @@ def pack_layer(layer_name, model, backend):
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
 
-    if not isinstance(layer, supported_layer_types):  ##already packed
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
 
     if int(layer.act_bits) <= 8:
@@ -230,6 +230,8 @@ def pack_layer(layer_name, model, backend):
         set_module(model, layer_name, qlayer)
 
 
+
+
 def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):
     """
     Saves a quantized model in the auto-round format.
@@ -273,6 +275,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     extra_config = {}
+    block_name_to_quantize = quantization_config["block_name_to_quantize"]
+    if isinstance(block_name_to_quantize, str): \
+            block_name_to_quantize = block_name_to_quantize.split(",")
+    elif isinstance(block_name_to_quantize,list):
+        for i in range(len(block_name_to_quantize)):
+            block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip('.')
+
     for layer_name in layer_config:
         if not layer_config[layer_name]["in_blocks"] and layer_config[layer_name][
             "bits"] <= 8:  ##lm head ##TODO fix act and so on
@@ -281,7 +290,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
             extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
             extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
             extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
-        elif layer_config[layer_name]["in_blocks"]:
+        elif layer_config[layer_name]["in_blocks"] or (
+                block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)):
             neq_keys = check_neq_config(
                 layer_config[layer_name],
                 data_type=quantization_config["data_type"],
@@ -329,7 +339,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     if quantization_config.get("act_bits", 16) <= 8:
         dtype = torch.bfloat16
     elif "awq" in quantization_config.get("packing_format", "auto_round:auto_gptq"):
-        dtype = torch.float16 ## awq kernel only supports float16 on cuda
+        dtype = torch.float16  ## awq kernel only supports float16 on cuda
     else:
         dtype = None
     save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
@@ -370,4 +380,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
