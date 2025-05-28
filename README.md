@@ -356,6 +356,7 @@ to the following table for the details and specify the backend you want.
 | triton                               | cuda/xpu | 2,4,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                       |
 | awq                                  | cuda     | 4       | FP16      | 5        | awq             | auto-awq                         |
 | hpu                                  | hpu      | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                       |
+| torch                                | cuda/xpu/cpu | 2,3,4,8 | BF16/FP16 | 0    | gptq/gptq_zp+-1 | auto-round                       |
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -513,3 +514,5 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
+
