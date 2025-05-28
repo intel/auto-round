@@ -163,7 +163,7 @@ class TestQuantizationBlocks(unittest.TestCase):
 
         quantized_model_path = "./saved"
         autoround.save_quantized(quantized_model_path, inplace=False, safe_serialization=False, format="auto_round")
-        from auto_round import AutoRoundConfig
+
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
