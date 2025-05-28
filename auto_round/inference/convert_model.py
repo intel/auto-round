@@ -239,6 +239,8 @@ def get_layer_config(model, quantization_config):
             # Find matching blocks if no explicit names are provided
             all_blocks = get_block_names(model, quant_vision=True)
             quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
+            quant_block_list = flatten_list(quant_block_list)
+
 
     # Get layer names that will be quantized
     layer_names = []
