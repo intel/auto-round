@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, "..")
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer,AutoRoundConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
 
 from auto_round import AutoRound
 
