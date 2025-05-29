@@ -205,8 +205,8 @@ class AutoRound(object):
         self.minmax_lr = minmax_lr or self.lr
 
         self.data_type = data_type
-        tmp_bits =  infer_bits_by_data_type(self.data_type)
-        if tmp_bits<16 and tmp_bits!=bits:
+        tmp_bits = infer_bits_by_data_type(self.data_type)
+        if tmp_bits < 16 and tmp_bits != bits:
             logger.warning(
                 f"bits set in 'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
             self.bits = tmp_bits
@@ -440,6 +440,24 @@ class AutoRound(object):
     #     ##check lm_head, mixed_bits, bits, each layer supporting, etc
     #     pass
 
+    def _check_compatibility(self):
+        # Check the legitimacy of seqlen
+        if self.seqlen is not None and hasattr(self.model, "config") and \
+                hasattr(self.model.config, "max_position_embeddings"):
+            if self.model.config.max_position_embeddings < self.seqlen:
+                logger.warning(
+                    f"change sequence length to {self.model.config.max_position_embeddings} " \
+                    "due to the limitation of max_position_embeddings")
+                self.seqlen = min(self.seqlen, self.model.config.max_position_embeddings)
+
+        if self.seqlen is not None and hasattr(self.tokenizer, "model_max_length"):
+            if self.tokenizer.model_max_length < self.seqlen:
+                logger.warning(
+                    f"change sequence length to {self.tokenizer.model_max_length} " \
+                    "due to the limitation of model_max_length. " \
+                    "You can also try to increase the model_max_length to avoid this issue.")
+                self.seqlen = min(self.seqlen, self.tokenizer.model_max_length)
+
     def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
 
@@ -471,23 +489,6 @@ class AutoRound(object):
             if format_ not in SUPPORTED_FORMATS:
                 logger.error(f"Unsupported format {format_}, please choose from {SUPPORTED_FORMATS}")
                 exit(-1)
-        
-        # Check the legitimacy of seqlen
-        if self.seqlen is not None and hasattr(self.model, "config") and \
-                hasattr(self.model.config, "max_position_embeddings"):
-            if self.model.config.max_position_embeddings < self.seqlen:
-                logger.warning(
-                        f"change sequence length to {self.model.config.max_position_embeddings} "\
-                            "due to the limitation of max_position_embeddings")
-                self.seqlen = min(self.seqlen, self.model.config.max_position_embeddings)
-
-        if self.seqlen is not None and hasattr(self.tokenizer, "model_max_length"):
-            if self.tokenizer.model_max_length < self.seqlen:
-                logger.warning(
-                    f"change sequence length to {self.tokenizer.model_max_length} "\
-                        "due to the limitation of model_max_length. "\
-                        "You can also try to increase the model_max_length to avoid this issue.")
-                self.seqlen = min(self.seqlen, self.tokenizer.model_max_length)
 
         # only support to export afp8
         if self.act_bits <= 8:
@@ -522,7 +523,7 @@ class AutoRound(object):
         # Adjust format settings based on compatibility
         for index in range(len(formats)):
             format = formats[index]
-            if format=="auto_round":
+            if format == "auto_round":
                 if self.sym or self.bits == 3:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
@@ -533,7 +534,6 @@ class AutoRound(object):
                     )
                     if enable_awq:
                         formats[index] = format.replace("auto_round", "auto_round:auto_awq")
-
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
@@ -609,6 +609,8 @@ class AutoRound(object):
         The quantized model and layer configurations.
         """
         ## TODO add common check
+
+        self._check_compatibility()
         if self.iters == 0:
             return self.quantize_rtn()
 
@@ -2225,5 +2227,3 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
-
-
