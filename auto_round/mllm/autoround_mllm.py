@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
+from typing import Union
 from tqdm import tqdm
 from copy import deepcopy
 
@@ -174,10 +174,18 @@ class AutoRoundMLLM(AutoRound):
         self.quant_nontext_module = quant_nontext_module
         self.processor = processor
         self.image_processor = image_processor
+        from transformers import PreTrainedModel
+        if model.config.model_type == "llava" and isinstance(model, PreTrainedModel):
+            template = "default"
         self.template = template if template is not None else model.config.model_type
         if not isinstance(dataset, torch.utils.data.DataLoader):
             self.template = get_template(
-                self.template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
+                self.template,
+                model=model,
+                tokenizer=tokenizer,
+                processor=processor,
+                image_processor=image_processor,
+                use_rtn=iters == 0)
             dataset = self.template.default_dataset if dataset is None else dataset
 
         model = _handle_special_model(model)

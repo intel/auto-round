@@ -37,7 +37,7 @@ import torch
 
 import auto_round.export.export_to_autogptq.qlinear_triton
 from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module, supported_layer_types, filter_quantization_config
+    get_module, logger, set_module, SUPPORTED_LAYER_TYPES, filter_quantization_config
 import copy
 import json
 import os
@@ -64,7 +64,7 @@ def pack_layer(name, model, backend):
         return
     layer = get_module(model, name)
 
-    if not isinstance(layer, supported_layer_types):  ##already packed
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
 
     bits = layer.bits
@@ -139,7 +139,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     if common_prefix not in BLOCK_PATTERNS:
         logger.error(f"auto-gptq format may not support loading this quantized model")
         quantization_config['block_name_to_quantize'] = common_prefix
-        quantization_config.pop("to_quant_block_names", None)
+    quantization_config.pop("to_quant_block_names", None)
 
     ## as layers maybe already packed, we need to check in layer_config
     layer_config = kwargs["layer_config"]
@@ -238,3 +238,5 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
+

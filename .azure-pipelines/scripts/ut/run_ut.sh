@@ -2,16 +2,17 @@
 set -xe
 
 # install requirements
-echo "set up UT env..."
+echo "##[group]set up UT env..."
 export TQDM_MININTERVAL=60
-
 pip install pytest-cov pytest-html
-pip install -r /auto-round/test/requirements.txt
+pip install -r /auto-round/test/test_cpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 pip list
 # install latest gguf for ut test
 git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .
+echo "##[endgroup]"
+pip list
 
-cd /auto-round/test || exit 1
+cd /auto-round/test/test_cpu || exit 1
 find . -type f -exec sed -i '/sys\.path\.insert(0, "\.\.")/d' {} +
 
 export LD_LIBRARY_PATH=${HOME}/.local/lib/:$LD_LIBRARY_PATH
@@ -31,7 +32,7 @@ cp report.html ${LOG_DIR}/
 cp coverage.xml ${LOG_DIR}/
 
 if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
-    echo "Find errors in pytest case, please check the output..."
+    echo "##[error]Find errors in pytest case, please check the output..."
     exit 1
 fi
 

@@ -1,0 +1,4 @@
+addict
+modelscope
+gguf
+torchvision
