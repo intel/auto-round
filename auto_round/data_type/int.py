@@ -336,7 +336,7 @@ def quant_tensor_gguf_sym_dq(
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
     int_w[replace_ids] = (torch.round(
         tensor[replace_ids] / scale[replace_ids]).clip(-maxq, maxq - 1) + maxq).to(torch.uint8)
-    qdq_result = (scale * (int_w - zp)).to(tensor.dtype)
+    qdq_result = (scale * (int_w - zp)).to(orig_dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, {"scale": scale, "d_scale": d_scale}, zp
 

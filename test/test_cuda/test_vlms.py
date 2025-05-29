@@ -42,6 +42,7 @@ class TestAutoRound(unittest.TestCase):
     #             res == """<s> There is a girl who likes adventure, and she is looking for a partner to go on a treasure hunt. She has found a map that leads to a hidden treasure, but she needs a partner to help her decipher the clues and find the treasure. You""")
 
     def qwen_inference(self, quantized_model_dir):
+        import requests
         from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_dir)
         processor = AutoProcessor.from_pretrained(quantized_model_dir, trust_remote_code=True)
@@ -70,7 +71,7 @@ class TestAutoRound(unittest.TestCase):
         text = processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        image_inputs = Image.open(image_url)
+        image_inputs = Image.open(requests.get(image_url, stream=True).raw)
         inputs = processor(
             text=[text],
             images=image_inputs,
