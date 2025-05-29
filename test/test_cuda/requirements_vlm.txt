@@ -12,7 +12,7 @@ lm-eval>=0.4.2,<0.5
 numpy < 2.0
 optimum
 pandas
-protobuf==3.20.1
+protobuf==3.20.2
 pillow
 py-cpuinfo
 torch==2.3.0
