@@ -134,10 +134,13 @@ def quant_tensor_sym_dq(
 
     scale = scale.view(-1, 1)
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
+    scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
     int_w = round_ste(tensor / scale + v)
     q = torch.clamp(int_w + zp, 0, 2 ** bits - 1)
     qdq_result = (scale * (q - zp)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+    if qdq_result.isnan().sum() > 0:
+        breakpoint()
     return qdq_result, {"scale": scale, "d_scale": d_scale}, zp
 
 @register_dtype("int_asym_dq")
