@@ -27,7 +27,6 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
         "f32": gguf.LlamaFileType.ALL_F32,
         "f16": gguf.LlamaFileType.MOSTLY_F16,
         "bf16": gguf.LlamaFileType.MOSTLY_BF16,
-        "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0,
         "q4_0": gguf.LlamaFileType.MOSTLY_Q4_0,
         "q4_1": gguf.LlamaFileType.MOSTLY_Q4_1,
         "q5_0": gguf.LlamaFileType.MOSTLY_Q5_0,

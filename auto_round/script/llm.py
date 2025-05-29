@@ -369,7 +369,7 @@ def tune(args):
 
     if args.enable_torch_compile:
         logger.info("`torch.compile` is enabled to reduce tuning costs. "
-                    "If it causes issues, you can disable it by remove `--enable_torch_compile` argument.")
+                    "If it causes issues, you can disable it by removing `--enable_torch_compile` argument.")
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -581,7 +581,7 @@ def tune(args):
                 device=device_str,
                 eval_model_dtype=eval_model_dtype)
             print(make_table(res))
-            print("evaluation running time=", time.time() - st)
+            print("evaluation running time=%ds" % (time.time() - st))
     else:
         if args.eval_task_by_task:
             eval_task_by_task(
@@ -598,7 +598,7 @@ def tune(args):
             res = simple_evaluate(
                 model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
             print(make_table(res))
-            print("evaluation running time=", time.time() - st)
+            print("evaluation running time=%ds" % (time.time() - st))
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype="auto"):
@@ -624,6 +624,8 @@ def eval(args):
     from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
     from auto_round.utils import logger
 
+    if (batch_size := args.eval_bs) is None:
+        batch_size = "auto:8"
     is_gguf_file = False
     if os.path.isfile(args.model) and args.model.endswith(".gguf"):
         is_gguf_file = True
@@ -650,20 +652,18 @@ def eval(args):
         model = AutoModelForCausalLM.from_pretrained(
             model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
         model.eval()
-        if (batch_size := args.eval_bs) is None:
-            batch_size = "auto:8"
         st = time.time()
         res = simple_evaluate_user_model(
                 model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
         print(make_table(res))
-        print("evaluation running time=", time.time() - st)
+        print("evaluation running time=%ds" % (time.time() - st))
     else:
         st = time.time()
         res = simple_evaluate(
-            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=batch_size)
         from lm_eval.utils import make_table  # pylint: disable=E0401
         print(make_table(res))
-        print("evaluation running time=", time.time() - st)
+        print("evaluation running time=%ds" % (time.time() - st))
 
 
 def eval_task_by_task(
