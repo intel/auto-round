@@ -219,10 +219,10 @@ class WQLinear_GEMM(nn.Module):
             device = "cuda:0"
         elif torch.xpu.is_available():
             device = "xpu:0"
-
-        repeat_scales = scales.to(device).t().repeat_interleave(group_size, 1)
+        repeat_size = group_size if group_size != -1 else linear.in_features
+        repeat_scales = scales.to(device).t().repeat_interleave(repeat_size, 1)
         if isinstance(zeros, torch.Tensor):
-            repeat_zeros = zeros.to(device).t().repeat_interleave(group_size, 1)
+            repeat_zeros = zeros.to(device).t().repeat_interleave(repeat_size, 1)
             intweight = torch.round(
                 linear.weight.to(device) / repeat_scales[:, :linear.weight.shape[1]] +
                 repeat_zeros[:, :linear.weight.shape[1]]).to(torch.int).t().contiguous()
