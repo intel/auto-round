@@ -16,4 +16,4 @@ py-cpuinfo
 torch
 torchvision
 tqdm
-transformers==4.51.3
+transformers==4.50.0
