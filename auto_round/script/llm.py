@@ -624,6 +624,8 @@ def eval(args):
     from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
     from auto_round.utils import logger
 
+    if (batch_size := args.eval_bs) is None:
+        batch_size = "auto:8"
     is_gguf_file = False
     if os.path.isfile(args.model) and args.model.endswith(".gguf"):
         is_gguf_file = True
@@ -650,8 +652,6 @@ def eval(args):
         model = AutoModelForCausalLM.from_pretrained(
             model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
         model.eval()
-        if (batch_size := args.eval_bs) is None:
-            batch_size = "auto:8"
         st = time.time()
         res = simple_evaluate_user_model(
                 model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
@@ -660,7 +660,7 @@ def eval(args):
     else:
         st = time.time()
         res = simple_evaluate(
-            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=batch_size)
         from lm_eval.utils import make_table  # pylint: disable=E0401
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
