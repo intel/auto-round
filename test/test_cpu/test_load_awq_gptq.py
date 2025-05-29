@@ -6,7 +6,7 @@ sys.path.insert(0, "../..")
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRoundConfig
+from transformers import AutoRoundConfig
 
 
 class TestAutoRound(unittest.TestCase):

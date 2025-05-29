@@ -46,12 +46,12 @@ from .utils import (
     compile_func,
     find_matching_blocks, is_debug_mode,
     TORCH_VERSION_AT_LEAST_2_6,
-    supported_layer_types,
+    SUPPORTED_LAYER_TYPES,
     get_layer_features,
     set_module,
     llm_load_model,
     reset_params,
-    init_cache, check_skippable_keywords, get_shared_keys, supported_dtypes, infer_bits_by_data_type,
+    init_cache, check_skippable_keywords, get_shared_keys, SUPPORTED_DTYPES, infer_bits_by_data_type,
     _gguf_args_check
 )
 from .low_cpu_mem.utils import get_layers_before_block
@@ -170,9 +170,11 @@ class AutoRound(object):
         self.model_orig_dtype = model.dtype
         self.seed = seed
         set_seed(self.seed)
-        assert not unsupport_meta_device(model), (
-            "AutoRound does not support for params on meta device."
-            " Please use more gpus by setting `--device 0,1,2,3` or just use one gpu")
+        if unsupport_meta_device(model):
+            raise RuntimeError(
+                "AutoRound does not support parameters on meta device. "
+                "Please use more GPUs by setting `--device 0,1,2,3` or just use one GPU."
+            )
 
         ## important tuning hype-parameters
         self.amp = amp
@@ -207,7 +209,7 @@ class AutoRound(object):
             logger.warning(
                 f"bits set in 'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
             self.bits = tmp_bits
-        self.supported_types = supported_layer_types
+        self.supported_types = SUPPORTED_LAYER_TYPES
         self.model = model.eval()
         self.tokenizer = tokenizer
         self.device = detect_device(device)
@@ -226,7 +228,7 @@ class AutoRound(object):
         self.act_dynamic = act_dynamic
         self.act_data_type = act_data_type
         if self.act_data_type is None:
-            if data_type in supported_dtypes and self.act_bits < 16:
+            if data_type in SUPPORTED_DTYPES and self.act_bits < 16:
                 self.act_data_type = data_type
                 logger.info(f"activation adopts {data_type}")
             else:
@@ -384,19 +386,28 @@ class AutoRound(object):
         """Checks if the configurations are valid.
 
         Raises:
-        AssertionError: If any of the configurations are invalid.
+        ValueError, TypeError: If any of the configurations are invalid.
         """
-        assert isinstance(self.model, torch.nn.Module)
-        assert self.bits > 0, "bits must be positive"
-        assert self.act_bits > 0, "bits must be positive"
-        assert self.group_size == -1 or self.group_size >= 1, "only supports positive group_size or -1(per channel)"
-        assert self.act_group_size == -1 or self.act_group_size >= 1, \
-            "only supports positive group_size or -1(per channel)"
-        assert self.batch_size > 0, "batch size must be positive"
-        assert self.iters >= 0, "iters must be non-negative"
-        assert self.seqlen > 0, "seqlen must be positive"
-        assert self.nblocks > 0, "nblocks must be positive"
-        assert self.gradient_accumulate_steps > 0, "gradient accumulate step must be positive"
+        if not isinstance(self.model, torch.nn.Module):
+            raise TypeError("model must be an instance of torch.nn.Module")
+        if self.bits <= 0:
+            raise ValueError("bits must be positive")
+        if self.act_bits <= 0:
+            raise ValueError("act_bits must be positive")
+        if not (self.group_size == -1 or self.group_size >= 1):
+            raise ValueError("group_size must be -1 (per channel) or a positive integer")
+        if not (self.act_group_size == -1 or self.act_group_size >= 1):
+            raise ValueError("act_group_size must be -1 (per channel) or a positive integer")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if self.iters < 0:
+            raise ValueError("iters must be non-negative")
+        if self.seqlen <= 0:
+            raise ValueError("seqlen must be positive")
+        if self.nblocks <= 0:
+            raise ValueError("nblocks must be positive")
+        if self.gradient_accumulate_steps <= 0:
+            raise ValueError("gradient_accumulate_steps must be positive")
         # assert self.tokenizer != None or self.dataloader != None
         if self.act_bits <= 8:
             logger.warning(
@@ -454,10 +465,10 @@ class AutoRound(object):
         # Validate and process the specified formats
         _gguf_args_check(self, format)
         formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
-        from auto_round.utils import supported_formats
+        from auto_round.utils import SUPPORTED_FORMATS
         for format_ in formats:
-            if format_ not in supported_formats:
-                logger.error(f"Unsupported format {format_}, please choose from {supported_formats}")
+            if format_ not in SUPPORTED_FORMATS:
+                logger.error(f"Unsupported format {format_}, please choose from {SUPPORTED_FORMATS}")
                 exit(-1)
 
         # only support to export afp8
@@ -493,10 +504,18 @@ class AutoRound(object):
         # Adjust format settings based on compatibility
         for index in range(len(formats)):
             format = formats[index]
-            if "auto_round" in format:
-                if (self.sym and ("gptq" not in format and "awq" not in format)) or self.bits == 3:
+            if format=="auto_round":
+                if self.sym or self.bits == 3:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
+                if self.bits == 4 and not self.sym:
+                    enable_awq = all(
+                        config["bits"] == self.bits or config["bits"] >= 16
+                        for config in self.layer_config.values()
+                    )
+                    if enable_awq:
+                        formats[index] = format.replace("auto_round", "auto_round:auto_awq")
+
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
@@ -520,7 +539,7 @@ class AutoRound(object):
                     "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
                     " particularly for 2-bit quantization and smaller models."
                     " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
-                    "the AutoRound format(2/4/8 bits)."
+                    "the AutoRound format(2/3/4/8 bits)."
                 )
             save_format_ = format.replace(":", "-").replace("_", "-")
             save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
@@ -622,8 +641,11 @@ class AutoRound(object):
                 device=self.device,
                 pbar=pbar
             )
-            if self.is_packing_immediate:
-                assert len(self.formats) == 1
+            if self.is_packing_immediate and len(self.formats) != 1:
+                raise ValueError(
+                    f"Expected exactly one packing format when 'is_packing_immediate' is True, "
+                    f"but got {len(self.formats)} formats."
+                )
 
         self.quant_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
@@ -1643,7 +1665,7 @@ class AutoRound(object):
                     )
                     format = "auto_round"
 
-        if re.search("q\d_k", format) and not self.data_type.endswith("_dq"):
+        if re.search(r"q\d_k", format) and not self.data_type.endswith("_dq"):
             logger.error(
                 f"datatype<{self.data_type}> not support to export {format} format."
                 " Please change export format or data_type."
@@ -2182,3 +2204,4 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+

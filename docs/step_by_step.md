@@ -141,8 +141,6 @@ autoround.quantize_and_save(output_dir, format='auto_gptq,auto_awq,auto_round')
 #### Mixed bits Usage
 Auto-GPTQ and Auto-AWQ only support a limited set of mixed-bit configurations. If you're unsure about the details, we recommend using the AutoRound format.
 
-Also, avoid setting mixed bits to 3 for asymmetric quantization at this time, as models exported with this setting may not be compatible with future versions of the AutoRound format.
-
 vLLM and SGLang fuse MoE and QKV layers, so it's recommended not to assign different bit widths to these layers.
 
 ```python
@@ -491,6 +489,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | triton                               | cuda/xpu | 2,4,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                    |
 | awq                                  | cuda     | 4       | FP16      | 5        | awq             | auto-awq                      |
 | hpu                                  | hpu      | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
+| torch                                | cuda/xpu/cpu | 2,3,4,8 | BF16/FP16 | 0    | gptq/gptq_zp+-1 | auto-round                    |
 
 
 ### Convert GPTQ/AWQ to AutoRound
@@ -556,3 +555,4 @@ If not explicitly specify '--task', the default value will be used (typically co
 
 * Random quantization results in tuning some models
 * ChatGlm-V1 is not supported
+

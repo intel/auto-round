@@ -5,8 +5,7 @@ import unittest
 
 sys.path.insert(0, "../..")
 import torch
-import transformers
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
 
 from auto_round import AutoRound
 
@@ -52,7 +51,6 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
 
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round", inplace=False)
 
-        from auto_round import AutoRoundConfig
         quantization_config = AutoRoundConfig(
             backend="ipex"
         )

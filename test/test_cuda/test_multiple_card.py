@@ -37,15 +37,6 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree("runs", ignore_errors=True)
 
     @multi_card
-    def test_device_map(self):
-        model_name = "/models/Qwen2-0.5B-Instruct"
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        device_map = {".*q_proj": '0', ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "cpu"}
-        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7,seqlen=32)
-        autoround.quantize()
-
-    @multi_card
     @require_gptqmodel
     def test_device_map_str(self):
         model_name = "/models/Qwen2-0.5B-Instruct"
@@ -107,6 +98,13 @@ class TestAutoRound(unittest.TestCase):
 
     @multi_card
     def test_device_map(self):
+        model_name = "/models/Qwen2-0.5B-Instruct"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        device_map = {".*q_proj": '0', ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "cpu"}
+        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7,seqlen=32)
+        autoround.quantize()
+
         from transformers import AutoModelForCausalLM, AutoTokenizer
         model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
 

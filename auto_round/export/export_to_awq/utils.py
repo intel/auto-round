@@ -148,8 +148,11 @@ class WQLinear_GEMM(nn.Module):
         self.training = training
 
         # quick sanity check (make sure alignment)
-        assert self.in_features % self.group_size == 0
-        assert out_features % (32 // self.w_bit) == 0
+        if self.in_features % self.group_size != 0:
+            raise ValueError(f"in_features ({self.in_features}) shape mismatch")
+
+        if out_features % (32 // self.w_bit) != 0:
+            raise ValueError(f"out_features ({out_features}) shape mismatch")
 
         self.register_buffer(
             "qweight",
@@ -203,7 +206,8 @@ class WQLinear_GEMM(nn.Module):
             return awq_linear
 
         # need scales and zeros info for real quantization
-        assert scales is not None and zeros is not None
+        if scales is None or zeros is None:
+            raise ValueError("Both 'scales' and 'zeros' must be provided (not None)")
 
         awq_linear.scales = scales.clone().half()
         if linear.bias is not None:
@@ -312,3 +316,4 @@ def clear_memory(weight=None):
         del weight
     gc.collect()
     torch.cuda.empty_cache()
+

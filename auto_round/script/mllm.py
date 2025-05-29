@@ -458,7 +458,8 @@ def tune(args):
     format_list = args.format.replace(' ', '').split(',')
     inplace = False if len(format_list) > 1 else True
     for format_ in format_list:
-        eval_folder = f'{export_dir}-{format_}'
+        save_format_ = format_.replace(":", "-").replace("_", "-")
+        eval_folder = os.path.join(export_dir, save_format_) if len(formats) > 1 else export_dir
         safe_serialization = True
         if hasattr(autoround.model, "config") and hasattr(autoround.model.config, "model_type"):
             if "phi3_v" in autoround.model.config.model_type:
@@ -561,4 +562,5 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+
 

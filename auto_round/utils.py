@@ -31,7 +31,7 @@ from .special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACH
 import transformers
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
-shared_cache_keys = ("position_ids", "cache_position", "position_embeddings")
+SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
 class SupportedFormats:
     def __init__(self):
@@ -50,15 +50,15 @@ class SupportedFormats:
     def __getitem__(self, key):
         return self._support_list[key]
 
-supported_formats = SupportedFormats()
+SUPPORTED_FORMATS = SupportedFormats()
 
-supported_layer_types = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
+SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
-supported_dtypes = ("int", "mx_fp", "fp", "nv_fp")
+SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 
 
 def infer_bits_by_data_type(data_type: str):
-    for supported_dtype in supported_dtypes:
+    for supported_dtype in SUPPORTED_DTYPES:
         if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
             ##first check the following two bits
             suc_2str = data_type[len(supported_dtype):len(supported_dtype) + 2]
@@ -642,7 +642,7 @@ def convert_dtype_str2torch(str_dtype):
         torch.dtype: The PyTorch dtype.
 
     Raises:
-        AssertionError: If the input str_dtype is unsupported.
+        ValueError: If the input str_dtype is unsupported.
     """
     if isinstance(str_dtype, torch.dtype) or str_dtype is None:
         return str_dtype
@@ -655,7 +655,7 @@ def convert_dtype_str2torch(str_dtype):
     elif str_dtype == "bf16" or str_dtype == "bfloat16":
         return torch.bfloat16
     else:
-        assert False, "Unsupported str dtype {} to torch dtype".format(str_dtype)
+        raise ValueError(f"Unsupported string dtype '{str_dtype}' for conversion to torch dtype.")
 
 
 def convert_dtype_torch2str(dtype):
@@ -668,7 +668,7 @@ def convert_dtype_torch2str(dtype):
         str: The string representation of the dtype.
 
     Raises:
-        AssertionError: If the input dtype is unsupported.
+        ValueError: If the input dtype is unsupported.
     """
     if isinstance(dtype, str) or dtype is None:
         return dtype
@@ -683,7 +683,7 @@ def convert_dtype_torch2str(dtype):
     elif isinstance(dtype, str) and dtype in ["int8", "fp32", "fp16", "bf16"]:
         return dtype
     else:
-        assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
+        raise ValueError(f"Unsupported PyTorch dtype '{dtype}' for conversion to string dtype.")
 
 
 def convert_dtype_torch2str_hf(dtype):
@@ -696,7 +696,7 @@ def convert_dtype_torch2str_hf(dtype):
          str: The string representation of the dtype.
 
     Raises:
-        AssertionError: If the input str_dtype is unsupported.
+        ValueError: If the input str_dtype is unsupported.
     """
     if dtype is None:
         return dtype
@@ -707,7 +707,7 @@ def convert_dtype_torch2str_hf(dtype):
             return dtype
     str_dtype = str(dtype)
     if "." not in str_dtype:
-        assert False, "Unsupported pytorch dtype {} to huggingface str dtype".format(dtype)
+        raise ValueError(f"Unsupported pytorch dtype '{dtype}' for conversion to huggingface str dtype")
     str_dtype = str_dtype.split(".")[1]
     return str_dtype
 
@@ -1227,6 +1227,8 @@ def _gguf_args_check(args_or_ar, format_str=None):
                 if k == "data_type":
                     if re.search("q\d_1", format) and len(formats) > 1:
                         v = "int"
+                    if re.search("q\d_k", format) and args_or_ar.iters == 0:
+                        v = f"gguf_{v}"
                 if getattr(args_or_ar, k) != v:
                     unsupport_list.append(f"{k}={getattr(args_or_ar, k)}")
                     reset_list.append(f"{k}={v}")
@@ -1457,7 +1459,7 @@ def get_shared_keys(model):
     Returns:
         tuple: tuple of shared keys.
     """
-    shared_keys = shared_cache_keys
+    shared_keys = SHARED_CACHE_KEYS
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
 
@@ -1510,3 +1512,22 @@ def filter_quantization_config(quantization_config):
         quantization_config.pop("act_dynamic", None)
         quantization_config.pop("act_sym", None)
         quantization_config.pop("act_group_size", None)
+
+
+
+def check_start_with_block_name(name: str, block_name_to_quantize: list):
+    """
+    Checks if the given layer name starts with any of the block names to be quantized.
+
+    Args:
+        name (str): The name of the layer.
+        block_name_to_quantize (list): A list of block names to check against.
+
+    Returns:
+        bool: True if the layer name starts with any of the block names, False otherwise.
+    """
+    for block_name in block_name_to_quantize:
+        if name.startswith(block_name):
+            return True
+    return False
+

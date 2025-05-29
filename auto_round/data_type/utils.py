@@ -83,7 +83,7 @@ def get_quant_func(dtype, bits, sym):
 
        This function returns the appropriate quantization function from the QUANT_FUNC_WITH_DTYPE
        dictionary based on the provided data type (`dtype`), bit width (`bits`), and whether
-       the quantization is symmetric (`sym`). If the function does not exist, it asserts False.
+       the quantization is symmetric (`sym`). If the function does not exist, raise ValueError.
 
        Args:
            dtype (str): The data type for the quantization (e.g., 'int', 'mxfp4').
@@ -130,7 +130,7 @@ def get_quant_func(dtype, bits, sym):
     if key in QUANT_FUNC_WITH_DTYPE.keys():
         return QUANT_FUNC_WITH_DTYPE[key], key
 
-    assert False, f"{dtype} is not supported"
+    raise ValueError(f"{dtype} is not supported")
 
 
 def round_ste(x: torch.Tensor):
@@ -202,6 +202,7 @@ def get_gaudi_fp8_ste_func():
         fn = float8_e4m3fn_ste
         logger.warning_once("Using CUDA/CPU STE for FP8")
     return fn
+
 
 
 

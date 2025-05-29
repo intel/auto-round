@@ -27,7 +27,6 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
         "f32": gguf.LlamaFileType.ALL_F32,
         "f16": gguf.LlamaFileType.MOSTLY_F16,
         "bf16": gguf.LlamaFileType.MOSTLY_BF16,
-        "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0,
         "q4_0": gguf.LlamaFileType.MOSTLY_Q4_0,
         "q4_1": gguf.LlamaFileType.MOSTLY_Q4_1,
         "q5_0": gguf.LlamaFileType.MOSTLY_Q5_0,
@@ -74,7 +73,8 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
             model_name = model_name[-1]
 
         output_type = backend.split(":")[-1]
-        assert output_type.lower() in FTYPE_MAP, f"{output_type} is not supported"
+        if output_type.lower() not in FTYPE_MAP:
+            raise TypeError(f"{output_type} type is not supported")
         output_type = FTYPE_MAP.get(output_type.lower())
 
 
@@ -96,3 +96,4 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
     shutil.rmtree(tmp_work_dir, ignore_errors=True)
 
     return model
+
