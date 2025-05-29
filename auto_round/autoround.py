@@ -52,7 +52,8 @@ from .utils import (
     llm_load_model,
     reset_params,
     init_cache, check_skippable_keywords, get_shared_keys, SUPPORTED_DTYPES, infer_bits_by_data_type,
-    _gguf_args_check
+    _gguf_args_check,
+    check_seqlen_compatible
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -204,8 +205,8 @@ class AutoRound(object):
         self.minmax_lr = minmax_lr or self.lr
 
         self.data_type = data_type
-        tmp_bits =  infer_bits_by_data_type(self.data_type)
-        if tmp_bits<16 and tmp_bits!=bits:
+        tmp_bits = infer_bits_by_data_type(self.data_type)
+        if tmp_bits < 16 and tmp_bits != bits:
             logger.warning(
                 f"bits set in 'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
             self.bits = tmp_bits
@@ -439,6 +440,24 @@ class AutoRound(object):
     #     ##check lm_head, mixed_bits, bits, each layer supporting, etc
     #     pass
 
+    def _check_compatibility(self):
+        # Check the legitimacy of seqlen
+        if self.seqlen is not None and hasattr(self.model, "config") and \
+                hasattr(self.model.config, "max_position_embeddings"):
+            if self.model.config.max_position_embeddings < self.seqlen:
+                logger.warning(
+                    f"change sequence length to {self.model.config.max_position_embeddings} " \
+                    "due to the limitation of max_position_embeddings")
+                self.seqlen = min(self.seqlen, self.model.config.max_position_embeddings)
+
+        if self.seqlen is not None and hasattr(self.tokenizer, "model_max_length"):
+            if self.tokenizer.model_max_length < self.seqlen:
+                logger.warning(
+                    f"change sequence length to {self.tokenizer.model_max_length} " \
+                    "due to the limitation of model_max_length. " \
+                    "You can also try to increase the model_max_length to avoid this issue.")
+                self.seqlen = min(self.seqlen, self.tokenizer.model_max_length)
+
     def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
 
@@ -504,7 +523,7 @@ class AutoRound(object):
         # Adjust format settings based on compatibility
         for index in range(len(formats)):
             format = formats[index]
-            if format=="auto_round":
+            if format == "auto_round":
                 if self.sym or self.bits == 3:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
@@ -515,7 +534,6 @@ class AutoRound(object):
                     )
                     if enable_awq:
                         formats[index] = format.replace("auto_round", "auto_round:auto_awq")
-
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
@@ -590,6 +608,9 @@ class AutoRound(object):
         Returns:
         The quantized model and layer configurations.
         """
+        ## TODO add common check
+
+        self._check_compatibility()
         if self.iters == 0:
             return self.quantize_rtn()
 
@@ -926,10 +947,12 @@ class AutoRound(object):
             except NotImplementedError:
                 pass
             except RuntimeError as error:
-                logger.warning("When quantization encounters tensor" \
-                               " shape mismatch error, you can try to avoid it with batch_size=1")
-                logger.error(error)
-                pass
+                error_msg = str(error)
+                if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
+                    check_seqlen_compatible(self.seqlen, self.tokenizer, self.model)
+                logger.warning("When quantization encounters tensor shape mismatch error, " \
+                               "you can try to avoid it with batch_size=1")
+                raise error
             except Exception as error:
                 raise error
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
@@ -1712,7 +1735,7 @@ class AutoRound(object):
                 "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
                 " particularly for 2-bit quantization and smaller models."
                 " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
-                "the AutoRound format(2/4/8 bits)."
+                "the AutoRound format(2/3/4/8 bits)."
             )
         if "awq" in format and not self.bits == 4:
             raise ValueError("The AWQ format only supports W4 quantization ")
@@ -2204,4 +2227,3 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
-
