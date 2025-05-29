@@ -473,16 +473,19 @@ class AutoRound(object):
                 exit(-1)
         
         # Check the legitimacy of seqlen
-        if self.seqlen is not None and hasattr(self.model, "config") and hasattr(self.model.config, "max_position_embeddings"):
+        if self.seqlen is not None and hasattr(self.model, "config") and \
+                hasattr(self.model.config, "max_position_embeddings"):
             if self.model.config.max_position_embeddings < self.seqlen:
                 logger.warning(
-                        f"change sequence length to {self.model.config.max_position_embeddings} due to the limitation of max_position_embeddings")
+                        f"change sequence length to {self.model.config.max_position_embeddings} "\
+                            "due to the limitation of max_position_embeddings")
                 self.seqlen = min(self.seqlen, self.model.config.max_position_embeddings)
 
         if self.seqlen is not None and hasattr(self.tokenizer, "model_max_length"):
             if self.tokenizer.model_max_length < self.seqlen:
                 logger.warning(
-                    f"change sequence length to {self.tokenizer.model_max_length} due to the limitation of model_max_length. "\
+                    f"change sequence length to {self.tokenizer.model_max_length} "\
+                        "due to the limitation of model_max_length. "\
                         "You can also try to increase the model_max_length to avoid this issue.")
                 self.seqlen = min(self.seqlen, self.tokenizer.model_max_length)
 
