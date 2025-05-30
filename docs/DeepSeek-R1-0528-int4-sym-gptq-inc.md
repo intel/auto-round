@@ -14,6 +14,7 @@ Please follow the license of the original model. This model could **NOT** run on
 ## How To Use
 
 ### INT4 Inference(CPU/CUDA/INTEL GPU)
+for intel gpu, requires auto-round>0.5.1
 
 ~~~python
 import transformers
@@ -29,8 +30,6 @@ model = AutoModelForCausalLM.from_pretrained(
     trust_remote_code=True,
     device_map="auto"
 )
-
-
 
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_dir, trust_remote_code=True)
 prompts = [
