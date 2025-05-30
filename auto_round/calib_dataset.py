@@ -247,7 +247,7 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
 
     tokenizer_function = get_default_tokenizer_function()
 
-    calib_dataset = load_dataset(dataset_name, split='train', streaming=True)
+    calib_dataset = load_dataset(dataset_name, split='train', streaming=True, trust_remote_code=True)
     calib_dataset = calib_dataset.take(10000)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
@@ -408,7 +408,8 @@ def get_local_dataset(tokenizer, seqlen, dataset_name="./tmp.json", split=None, 
             text = data["text"]
         elif isinstance(data, dict) and "input_ids" in data.keys():
             text = data["input_ids"]
-        assert isinstance(text, str), "data must be string"
+        if not isinstance(text, str):
+            raise TypeError("data must be a string")
         text = text.rstrip()
         text = text.rstrip("\n")
         samples.append({"text": text})
@@ -696,3 +697,4 @@ def get_dataloader(
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
+

@@ -345,17 +345,17 @@ def tune(args):
 
 
     formats = args.format.lower().replace(' ', '').split(",")
-    from auto_round.utils import supported_formats
+    from auto_round.utils import SUPPORTED_FORMATS
     for format in formats:
-        if format not in supported_formats:
-            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+        if format not in SUPPORTED_FORMATS:
+            raise ValueError(f"{format} is not supported, we only support {SUPPORTED_FORMATS}")
 
     if "auto_gptq" in args.format and args.asym is True:
         logger.warning("the auto_gptq kernel has issues with asymmetric quantization. "
                        "It is recommended to use sym quantization or --format='auto_round'")
 
     if "marlin" in args.format and args.asym is True:
-        assert False, "marlin backend only supports sym quantization, please remove --asym"
+        raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
 
     ##must set this before import torch
     set_cuda_visible_devices(args.device)
@@ -369,7 +369,7 @@ def tune(args):
 
     if args.enable_torch_compile:
         logger.info("`torch.compile` is enabled to reduce tuning costs. "
-                    "If it causes issues, you can disable it by remove `--enable_torch_compile` argument.")
+                    "If it causes issues, you can disable it by removing `--enable_torch_compile` argument.")
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -391,15 +391,6 @@ def tune(args):
         model_dtype=args.model_dtype)
 
     from auto_round import AutoRound, AutoRoundAdam
-
-    seqlen = args.seqlen
-
-    if hasattr(tokenizer, "model_max_length"):
-        if tokenizer.model_max_length < seqlen:
-            logger.info(
-                f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length")
-            seqlen = min(seqlen, tokenizer.model_max_length)
-            args.seqlen = seqlen
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -446,7 +437,7 @@ def tune(args):
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
-                auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
+                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
 
@@ -467,7 +458,7 @@ def tune(args):
         sym=not args.asym,
         batch_size=args.batch_size,
         dataset=args.dataset,
-        seqlen=seqlen,
+        seqlen=args.seqlen,
         nblocks=args.nblocks,
         iters=args.iters,
         lr=args.lr,
@@ -581,7 +572,7 @@ def tune(args):
                 device=device_str,
                 eval_model_dtype=eval_model_dtype)
             print(make_table(res))
-            print("evaluation running time=", time.time() - st)
+            print("evaluation running time=%ds" % (time.time() - st))
     else:
         if args.eval_task_by_task:
             eval_task_by_task(
@@ -598,7 +589,7 @@ def tune(args):
             res = simple_evaluate(
                 model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
             print(make_table(res))
-            print("evaluation running time=", time.time() - st)
+            print("evaluation running time=%ds" % (time.time() - st))
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype="auto"):
@@ -624,6 +615,8 @@ def eval(args):
     from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
     from auto_round.utils import logger
 
+    if (batch_size := args.eval_bs) is None:
+        batch_size = "auto:8"
     is_gguf_file = False
     if os.path.isfile(args.model) and args.model.endswith(".gguf"):
         is_gguf_file = True
@@ -650,20 +643,18 @@ def eval(args):
         model = AutoModelForCausalLM.from_pretrained(
             model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
         model.eval()
-        if (batch_size := args.eval_bs) is None:
-            batch_size = "auto:8"
         st = time.time()
         res = simple_evaluate_user_model(
                 model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
         print(make_table(res))
-        print("evaluation running time=", time.time() - st)
+        print("evaluation running time=%ds" % (time.time() - st))
     else:
         st = time.time()
         res = simple_evaluate(
-            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=batch_size)
         from lm_eval.utils import make_table  # pylint: disable=E0401
         print(make_table(res))
-        print("evaluation running time=", time.time() - st)
+        print("evaluation running time=%ds" % (time.time() - st))
 
 
 def eval_task_by_task(
@@ -768,3 +759,5 @@ def eval_task_by_task(
         print(make_table(res_all))
 
     print("total eval time:", time.time() - st)
+
+

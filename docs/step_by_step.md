@@ -101,7 +101,7 @@ CPU, Intel GPU, HPU and CUDA for both quantization and inference.
   This setting provides the best accuracy in most scenarios but is 4–5× slower than the standard AutoRound recipe. It is especially recommended for 2-bit quantization and is a good choice if sufficient resources are available.
   
   ```bash
-    auto-round-best --model facebook/opt-125m  --bits 4 --group_size 128  --format "auto_gptq,auto_awq,auto_round"
+  auto-round-best --model facebook/opt-125m  --bits 4 --group_size 128  --format "auto_gptq,auto_awq,auto_round"
     ```
 
 - **Light Settings:**
@@ -140,8 +140,6 @@ autoround.quantize_and_save(output_dir, format='auto_gptq,auto_awq,auto_round')
 
 #### Mixed bits Usage
 Auto-GPTQ and Auto-AWQ only support a limited set of mixed-bit configurations. If you're unsure about the details, we recommend using the AutoRound format.
-
-Also, avoid setting mixed bits to 3 for asymmetric quantization at this time, as models exported with this setting may not be compatible with future versions of the AutoRound format.
 
 vLLM and SGLang fuse MoE and QKV layers, so it's recommended not to assign different bit widths to these layers.
 
@@ -483,14 +481,15 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | Name                                 | Devices  | Bits    | Dtypes    | Priority | Packing format  | Requirements                  |
 |--------------------------------------|----------|---------|-----------|----------|-----------------|-------------------------------|
 | ipex                                 | cpu/xpu  | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch   |
-| itrex                                | cpu      | 2,4,8   | BF16/FP16 | 0        | gptq_zp+-1/awq  | intel-extension-for-transformers |
+| itrex                                | cpu      | 2,4,8   | BF16/FP16 | 1        | gptq_zp+-1/awq  | <br/>intel-extension-for-transformers |
 | marlin                               | cuda     | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                     |
 | exllamav2 or<br/>gptqmodel:exllamav2 | cuda     | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                     |
 | exllamav2 or<br/>gptq:exllamav2      | cuda     | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                     |
-| gptq:cuda                            | cuda     | 2,3,4,8 | FP16      | 0        | gptq_zp+-1      | auto-gptq                     |
-| triton                               | cuda/xpu | 2,4,8   | BF16/FP16 | 1        | gptq/gptq_zp+-1 | auto-round                    |
+| gptq:cuda                            | cuda     | 2,3,4,8 | FP16      | 1        | gptq_zp+-1      | auto-gptq     <br/>                |
+| triton                               | xpu/cuda | 2,4,8   | BF16/FP16 | 2        | gptq/gptq_zp+-1 | <br/>auto-round                    |
 | awq                                  | cuda     | 4       | FP16      | 5        | awq             | auto-awq                      |
 | hpu                                  | hpu      | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                    |
+| torch                                | xpu/cpu/cuda | 2,3,4,8 | BF16/FP16 | 0        | gptq/gptq_zp+-1 | auto-round                    |
 
 
 ### Convert GPTQ/AWQ to AutoRound
@@ -556,3 +555,4 @@ If not explicitly specify '--task', the default value will be used (typically co
 
 * Random quantization results in tuning some models
 * ChatGlm-V1 is not supported
+

@@ -286,7 +286,8 @@ def mllm_eval(
             if mode == 'all':
                 eval_results = dataset.evaluate(result_file, **judge_kwargs)
                 if eval_results is not None:
-                    assert isinstance(eval_results, dict) or isinstance(eval_results, pd.DataFrame)
+                    if not isinstance(eval_results, dict) and not isinstance(eval_results, pd.DataFrame):
+                        raise TypeError("Unsupported eval result type")
                     logger.info(f'The evaluation of model {model_name} x dataset {dataset_name} has finished! ')
                     logger.info('Evaluation Results:')
                 if isinstance(eval_results, dict):
@@ -372,7 +373,8 @@ def lmms_eval(
         config = AutoConfig.from_pretrained(model, trust_remote_code=True)
         model_type = config.model_type
 
-    assert model_type in MODEL_TYPE_TO_LMMS_MODEL, f"{model_type} is not support by lmms."
+    if model_type not in MODEL_TYPE_TO_LMMS_MODEL:
+        raise ValueError(f"{model_type} is not support by lmms.")
 
     if MODEL_TYPE_TO_LMMS_MODEL[model_type] == "phi3v":
         model_args = f"model_id_name={model}"
@@ -409,4 +411,5 @@ def lmms_eval(
         json.dump(results, open(output_file, 'w'), indent=4, default=_handle_non_serializable)
 
     return results
+
 
