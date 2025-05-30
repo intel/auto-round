@@ -914,7 +914,7 @@ class AutoRound(object):
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
-                input_ids = data.to(self.device)
+                input_ids = data.to(self.model.device)
                 data_new = input_ids
             elif isinstance(data, str):
                 if self.tokenizer is None:
@@ -923,7 +923,7 @@ class AutoRound(object):
                 data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
                 data_new = {}
                 for key in data.keys():
-                    data_new[key] = data[key].to(self.device)
+                    data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
                 data_new = data
