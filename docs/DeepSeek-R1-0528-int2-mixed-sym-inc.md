@@ -202,7 +202,7 @@ But the question doesn't provide information about the other birds' behavior. So
 
 ### Generate the model
 
-5*80g and 1.4T-1.6T memory is required
+5*80g is required
 
 ~~~python
 import torch
