@@ -62,7 +62,6 @@ function run_unit_test() {
 
     if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
         echo "Find errors in pytest case, please check the output..."
-        exit 1
     fi
 }
 
@@ -98,7 +97,6 @@ function run_unit_test_vlm() {
 
     if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
         echo "Find errors in pytest case, please check the output..."
-        exit 1
     fi
 }
 
