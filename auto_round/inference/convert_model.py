@@ -37,8 +37,8 @@ supported_devices = ("cpu", "hpu", "xpu", "cuda")
 def flatten_list(nested_list):
     flattened = []
     for item in nested_list:
-        if isinstance(item, list):
-            flattened.extend(flatten_list(item))
+        if isinstance(item, (list, tuple)):
+            flattened.extend(list(flatten_list(item)))
         else:
             flattened.append(item)
     return flattened
@@ -231,7 +231,7 @@ def get_layer_config(model, quantization_config):
         if to_quant_block_names is None:
             to_quant_block_names = getattr(quantization_config, "to_quant_block_names", None)
         if isinstance(to_quant_block_names, (list, tuple)):
-            quant_block_list = to_quant_block_names
+            quant_block_list = flatten_list(to_quant_block_names)
         elif isinstance(to_quant_block_names, str):
             # Generate quant block names based on the given layer names
             quant_block_list = to_quant_block_names.split(",")
@@ -243,14 +243,12 @@ def get_layer_config(model, quantization_config):
             for i in range(len(quant_block_list)):
                 quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip('.')
 
-
-
     # Get layer names that will be quantized
     layer_names = []
-    for n,m in model.named_modules():
-        if not isinstance(m,SUPPORTED_LAYER_TYPES):
+    for n, m in model.named_modules():
+        if not isinstance(m, SUPPORTED_LAYER_TYPES):
             continue
-        if check_start_with_block_name(n,quant_block_list):
+        if check_start_with_block_name(n, quant_block_list):
             layer_names.append(n)
 
     # Load extra configuration if available
@@ -263,7 +261,6 @@ def get_layer_config(model, quantization_config):
         for layer_name in layer_names:
             if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
-    
 
     # Process AWQ format: exclude specified modules from quantization
     extra_config = skip_not_convert_modules(model, quantization_config, layer_names, extra_config)
@@ -555,7 +552,6 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
                                                     BackendInfos[orig_backend].packing_format)
         if best_backend is not None and best_backend not in used_backends:
             requirements = BackendInfos[best_backend].requirements
-            process_requirement(requirements, target_device,"warning")
+            process_requirement(requirements, target_device, "warning")
 
     return model, used_backends
-
