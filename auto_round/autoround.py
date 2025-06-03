@@ -167,7 +167,7 @@ class AutoRound(object):
             model_kwargs: dict = None,
             **kwargs,
     ):
-        if kwargs is not None and len(kwargs) > 0:
+        if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
         self.quantized = False
         self.model_orig_dtype = model.dtype
