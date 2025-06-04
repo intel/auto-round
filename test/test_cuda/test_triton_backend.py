@@ -78,7 +78,7 @@ class TestAutoRoundTritonBackend(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path)
+        autoround.quantize_and_save(output_dir=quantized_model_path,format="auto_round:gptqmodel")
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(

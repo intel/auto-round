@@ -77,10 +77,10 @@ class TestAutoRoundMarlinBackend(unittest.TestCase):
             sym=sym,
             iters=1,
             seqlen=2,
-            dataset=self.llm_dataloader,
+            dataset=self.llm_dataloader
         )
         quantized_model_path = self.save_folder
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:gptqmodel")
 
         quantization_config = AutoRoundConfig(backend="gptqmodel:exllamav2")
         model = AutoModelForCausalLM.from_pretrained(
