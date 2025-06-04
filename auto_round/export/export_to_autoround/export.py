@@ -20,6 +20,7 @@ import os
 import torch
 import torch.nn as nn
 import transformers
+
 try:
     import auto_round_extension.triton.qlinear_tritonv2
 except Exception as error:
@@ -27,12 +28,12 @@ except Exception as error:
 import auto_round_extension.torch.qlinear_torch
 import auto_round.export.export_to_autoround.qlinear_triton_act
 from auto_round.utils import get_module, logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
-    filter_quantization_config
+    filter_quantization_config, SUPPORTED_FORMATS
 import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
-from auto_round.utils import get_autogptq_packing_qlinear,check_start_with_block_name
+from auto_round.utils import get_autogptq_packing_qlinear, check_start_with_block_name
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -78,22 +79,20 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
             return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
         from auto_round_extension.torch.qlinear_torch import QuantLinear
         return QuantLinear
-    elif "auto_round" in backend and "gptq" in backend:
+    elif "gptqmodel" in backend:
+        from auto_round_extension.torch.qlinear_torch import QuantLinear
+        return QuantLinear
+    elif "auto_round" in backend and "gptq" in backend and "gptqmodel" not in backend:
         from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
         return QuantLinear
     elif "awq" in backend:
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
-    elif "gptqmodel" in backend:
-        from auto_round_extension.torch.qlinear_torch import QuantLinear
-        return QuantLinear
     elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
         raise ValueError(
-            f"Unsupported backend: '{backend}'. "
-            "Only 'auto_round', 'auto_round:auto_awq', 'auto_round:auto_gptq', 'awq', and 'gptq' are supported."
-        )
+            f"unsupported backend: '{backend}'. Supported backends are: {', '.join(SUPPORTED_FORMATS)}")
 
 
 def pack_qact_layer(name, model):
@@ -197,9 +196,7 @@ def pack_layer(layer_name, model, backend):
         new_layer.device = device
         set_module(model, layer_name, new_layer)
         qlayer = new_layer
-        import auto_round.export.export_to_autoround.qlinear_triton
-        if sym and isinstance(QuantLinear, (auto_round.export.export_to_autoround.qlinear_triton.QuantLinear,
-                                            auto_round_extension.triton.qlinear_tritonv2.QuantLinear,
+        if sym and isinstance(QuantLinear, (auto_round_extension.triton.qlinear_tritonv2.QuantLinear,
                                             auto_round_extension.torch.qlinear_torch.QuantLinear)):
             zp = int(zp.flatten()[0])
 
@@ -231,8 +228,6 @@ def pack_layer(layer_name, model, backend):
         )
         qlayer.to(device)
         set_module(model, layer_name, qlayer)
-
-
 
 
 def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):
@@ -279,7 +274,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
     if isinstance(block_name_to_quantize, str): \
             block_name_to_quantize = block_name_to_quantize.split(",")
-    elif isinstance(block_name_to_quantize,list):
+    elif isinstance(block_name_to_quantize, list):
         for i in range(len(block_name_to_quantize)):
             block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip('.')
 
@@ -381,5 +376,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-
