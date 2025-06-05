@@ -578,6 +578,54 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if check_to_quantized(m):
                 all_to_quantized_module_names.append(n)
+
+        from .calib_dataset import get_dataloader
+        if isinstance(self.dataset, str):
+            dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
+
+            self.dataloader = get_dataloader(
+                self.tokenizer,
+                self.seqlen,
+                dataset,
+                self.seed,
+                self.batch_size,
+                self.nsamples,
+            )
+        else:
+            self.dataloader = self.dataset
+        model = self.model.to(self.device)
+
+        def register_act_hook(model):
+            def get_act_max_hook(module, input, output):
+                if isinstance(input, (tuple, list)):
+                    input = input[0]
+                if not hasattr(module, "imatrix"):
+                    module.imatrix = (torch.sum(input.reshape(-1, input.shape[-1]).to(torch.float32) ** 2, dim=0)).to(
+                        torch.float32)
+                else:
+                    module.imatrix = module.imatrix + (
+                        torch.sum(input.reshape(-1, input.shape[-1]).to(torch.float32) ** 2, dim=0)).to(torch.float32)
+
+            hook_handles = []
+
+            for n, m in model.named_modules():
+                if isinstance(m, torch.nn.Linear):
+                    hook = m.register_forward_hook(get_act_max_hook)
+                    hook_handles.append(hook)
+            return hook_handles
+
+        hooks = register_act_hook(self.model)
+        cnt = 0
+        for data in self.dataloader:
+            cnt += data["input_ids"].shape[0]
+            data = to_device(data, self.model.device)
+            model(**data)
+            if cnt > self.nsamples:
+                break
+        for hook in hooks:
+            hook.remove()
+
+        model.to("cpu")
         pbar = tqdm(all_to_quantized_module_names)
 
         for name in pbar:

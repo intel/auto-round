@@ -173,6 +173,7 @@ class WrapperLinear(torch.nn.Module):
             tensor_max=self.weight_max,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
+            imatrix = self.orig_layer.imatrix,
             **quant_kwargs
         )
         weight_q = weight_q.to(weight.dtype)

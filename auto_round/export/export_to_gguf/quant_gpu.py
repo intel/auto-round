@@ -146,7 +146,7 @@ def make_q3_quants(data, bits, do_rmse=False):
     return scales, L.to(torch.uint8)
 
 
-def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
+def make_qkx2_quants(data, bits,imatrix=None, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
     nmax = pow(2, bits) - 1
     # data shape (nb, 8, 32) for Q4_K, (nb, 16, 16) for Q2_K
     if len(data.shape) == 2:
@@ -160,6 +160,11 @@ def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
     sum_x2 = torch.sum(torch.pow(data, 2), axis=-1, keepdims=True)
     av_x = torch.sqrt(sum_x2 / data.shape[-1])
     weight = torch.abs(data) + av_x
+    if imatrix is not None:
+        orig_shape = weight.shape
+        weight  = weight.reshape(-1,imatrix.shape[-1])
+        weight  = weight*imatrix
+        weight = weight.reshape(orig_shape)
 
     group_min = torch.min(data, axis=-1, keepdims=True)[0]
     group_max = torch.max(data, axis=-1, keepdims=True)[0]
