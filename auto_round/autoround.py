@@ -1399,8 +1399,9 @@ class AutoRound(object):
                                             device,
                                             self.cache_device)
             hook_handles = self.register_act_max_hook(block)
-            self.get_block_outputs(block, q_input, input_others, self.batch_size * self.infer_bs_coeff,
-                                   device, self.cache_device, save_output=False)
+            if hook_handles:
+                self.get_block_outputs(block, q_input, input_others, self.batch_size * self.infer_bs_coeff,
+                                       device, self.cache_device, save_output=False)
 
             for handle in hook_handles:
                 handle.remove()
