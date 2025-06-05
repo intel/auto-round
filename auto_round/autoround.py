@@ -578,8 +578,8 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if check_to_quantized(m):
                 all_to_quantized_module_names.append(n)
-        ##TODO enbale only at gguf
-        ##TODO swith to blockwise way when oom
+        ##TODO enable only at gguf
+        ##TODO switch to blockwise way when oom
         from .calib_dataset import get_dataloader
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
