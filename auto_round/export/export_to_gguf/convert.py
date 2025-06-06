@@ -67,7 +67,6 @@ if 'NO_LOCAL_GGUF' not in os.environ:
 
 ###### MODEL DEFINITIONS ######
 
-
 class SentencePieceTokenTypes(IntEnum):
     NORMAL = 1
     UNKNOWN = 2
@@ -1092,10 +1091,10 @@ class OriModel:
 
 
 class Model(OriModel):
-
     def __init__(
             self,
             model,
+            layer_config: dict,
             dir_model: Path,
             ftype: gguf.LlamaFileType,
             fname_out: Path,
@@ -1110,6 +1109,7 @@ class Model(OriModel):
             small_first_shard: bool = False,
             hparams: dict[str, Any] | None = None):
         self.model = model
+        self.layer_config = layer_config
         super().__init__(
             dir_model=dir_model,
             ftype=ftype,
@@ -1180,6 +1180,37 @@ class Model(OriModel):
             data = data_torch.squeeze().cpu().numpy()
         return data, data_qtype
 
+    def get_qtype_by_layer_config(self, layer_config, name, data_qtype):
+        name = name[:-len('.weight')]
+        if name not in layer_config or layer_config[name]['bits'] >= 16:
+            return data_qtype
+        bits = layer_config[name]['bits']
+        data_qtype = re.sub(r"Q\d", f"Q{bits}", self.ftype.name)
+
+        if data_qtype == "MOSTLY_Q8_0":
+            data_qtype = gguf.GGMLQuantizationType.Q8_0
+        elif data_qtype == "MOSTLY_Q4_0":
+            data_qtype = gguf.GGMLQuantizationType.Q4_0
+        elif data_qtype == "MOSTLY_Q4_1":
+            data_qtype = gguf.GGMLQuantizationType.Q4_1
+        elif data_qtype == "MOSTLY_Q5_0":
+            data_qtype = gguf.GGMLQuantizationType.Q5_0
+        elif data_qtype == "MOSTLY_Q5_1":
+            data_qtype = gguf.GGMLQuantizationType.Q5_1
+        elif data_qtype.startswith("MOSTLY_Q2_K"):
+            data_qtype = gguf.GGMLQuantizationType.Q2_K
+        elif data_qtype.startswith("MOSTLY_Q3_K"):
+            data_qtype = gguf.GGMLQuantizationType.Q3_K
+        elif data_qtype.startswith("MOSTLY_Q4_K"):
+            data_qtype = gguf.GGMLQuantizationType.Q4_K
+        elif data_qtype.startswith("MOSTLY_Q5_K"):
+            data_qtype = gguf.GGMLQuantizationType.Q5_K
+        elif data_qtype.startswith("MOSTLY_Q6_K"):
+            data_qtype = gguf.GGMLQuantizationType.Q6_K
+        else:
+            raise ValueError(f"Unknown file type: {data_qtype}")
+        return data_qtype
+
     def prepare_tensors(self):
         max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
 
@@ -1241,6 +1272,9 @@ class Model(OriModel):
                         # TODO: use Q4_K and Q6_K
                         data_qtype = gguf.GGMLQuantizationType.F16
                         # data_qtype = gguf.GGMLQuantizationType.Q8_0  # llama.cpp:llama_tensor_get_type
+                
+                # get data_qtype by layer_config
+                data_qtype = self.get_qtype_by_layer_config(self.layer_config, name, data_qtype)
 
                 # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
                 if isinstance(data_qtype, bool):
@@ -1265,6 +1299,8 @@ class Model(OriModel):
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_S:
                         data_qtype = gguf.GGMLQuantizationType.Q3_K
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S:
+                        data_qtype = gguf.GGMLQuantizationType.Q4_K
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_M:
                         data_qtype = gguf.GGMLQuantizationType.Q4_K
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_S:
                         data_qtype = gguf.GGMLQuantizationType.Q5_K
