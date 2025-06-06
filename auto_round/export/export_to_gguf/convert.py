@@ -67,8 +67,6 @@ if 'NO_LOCAL_GGUF' not in os.environ:
 
 ###### MODEL DEFINITIONS ######
 
-import gguf
-
 class SentencePieceTokenTypes(IntEnum):
     NORMAL = 1
     UNKNOWN = 2

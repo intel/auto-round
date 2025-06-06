@@ -1561,8 +1561,8 @@ def _use_more_bits(i_layer: int, n_layer: int):
     return (i_layer < n_layer // 8) or (i_layer >= 7 * n_layer // 8) or ((i_layer - n_layer//8) % 3 == 2)
 
 def _get_digital_in_layer_name(layer_name):
-    patten = re.compile("([a-zA-Z]+\.){1,}(\d+)")
-    res = re.search(patten, layer_name)
+    pattern = re.compile("([a-zA-Z]+\.){1,}(\d+)")
+    res = re.search(pattern, layer_name)
     if res:
         return int(res[2])
     else:
@@ -1571,16 +1571,16 @@ def _get_digital_in_layer_name(layer_name):
 def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
     # TODO: support for other format later
     if "q4_k_m" not in gguf_format:
-        return layer_config
+        return layer_config, {}
 
-    import gguf
+    import gguf # pylint: disable=E0401
     from auto_round.export.export_to_gguf.convert import Model
     from auto_round.export.export_to_gguf.config import GGUF_CONFIG
     model_architecture = model.config.architectures[0]
     try:
         model_class = Model.from_model_architecture(model_architecture)
     except NotImplementedError:
-        return layer_config
+        return layer_config, {}
     model_type = model.config.model_type
 
     n_layer = None
@@ -1588,7 +1588,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
         if hasattr(model.config, name):
             n_layer = getattr(model.config, name)
     if n_layer is None:
-        return layer_config
+        return layer_config, {}
 
     tensor_map = gguf.get_tensor_name_map(model_class.model_arch, n_layer)
 
@@ -1598,9 +1598,11 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
                 config[k] = v
         return config
         
+    gguf_format_config = {}
     for layer_name, config in layer_config.items():
         if config["bits"] >= 16:
             continue
+        gguf_format_config[layer_name] = gguf_format
         i_layer = _get_digital_in_layer_name(layer_name)
         if i_layer is None:
             continue
@@ -1612,28 +1614,33 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             if _use_more_bits(i_layer, n_layer):
                 # q6_k
                 config = _set_config(config, GGUF_CONFIG["gguf:q6_k"])
+                gguf_format_config[layer_name] = "gguf:q6_k"
 
         # ffn_down
         if "ffn_down" in gguf_name:
-            if "falcon" in model_type:
+            if gguf.MODEL_ARCH.FALCON == model_class.model_arch:
                 if i_layer < n_layer // 16:
-                    config = _set_config(config, GGUF_CONFIG["gguf:q6_k"])
+                    format = "gguf:q6_k"
                 elif _use_more_bits(i_layer, n_layer):
-                    config = _set_config(config, GGUF_CONFIG["gguf:q5_k_s"])
+                    format = "gguf:q5_k_s"
                 else:
-                    config = _set_config(config, GGUF_CONFIG["gguf:q4_k_s"])
+                    format = "gguf:q4_k_s"
+                config = _set_config(config, GGUF_CONFIG[format])
+                gguf_format_config[layer_name] = format
             else:
                 if _use_more_bits(i_layer, n_layer):
                     config = _set_config(config, GGUF_CONFIG["gguf:q6_k"])
+                    gguf_format_config[layer_name] = "gguf:q6_k"
 
         # attn_output
-        if "attn_output" in gguf_name and "falcon" not in model_type:
+        if "attn_output" in gguf_name and gguf.MODEL_ARCH.FALCON != model_class.model_arch:
             n_export = 0
             for name in ["num_experts", "num_local_experts", "n_routed_experts"]:
                 if hasattr(model.config, name):
                     n_export = getattr(model.config, name)
             if n_export == 8:
-                config = _set_config(config, GGUF_CONFIG["gguf:q5_k"])
+                config = _set_config(config, GGUF_CONFIG["gguf:q5_k_s"])
+                gguf_format_config[layer_name] = "gguf:q5_k_s"
 
         # attn_qkv
         if "attn_qkv" in gguf_name:
