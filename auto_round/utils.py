@@ -1581,7 +1581,6 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
         model_class = Model.from_model_architecture(model_architecture)
     except NotImplementedError:
         return layer_config, {}
-    model_type = model.config.model_type
 
     n_layer = None
     for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers"]:
@@ -1594,8 +1593,11 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
 
     def _set_config(config, gguf_config):
         for k, v in gguf_config.items():
-            if k in config and k != "data_type":
-                config[k] = v
+            if k in config:
+                if k == "data_type" and config[k].startswith("gguf_"):
+                    config[k] = "gguf_" + v
+                else:
+                    config[k] = v
         return config
         
     gguf_format_config = {}
@@ -1647,4 +1649,4 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             config = _set_config(config, GGUF_CONFIG["gguf:q5_k_s"])
         
         layer_config[layer_name] = config
-    return layer_config
+    return layer_config, gguf_format_config
