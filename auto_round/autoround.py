@@ -53,7 +53,8 @@ from .utils import (
     reset_params,
     init_cache, check_skippable_keywords, get_shared_keys, SUPPORTED_DTYPES, infer_bits_by_data_type,
     _gguf_args_check,
-    check_seqlen_compatible
+    check_seqlen_compatible,
+    get_layer_config_by_gguf_format
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -485,6 +486,8 @@ class AutoRound(object):
         """
         # Validate and process the specified formats
         _gguf_args_check(self, format)
+        if "gguf" in format:
+            self.layer_config = get_layer_config_by_gguf_format(self.layer_config, format, self.model)
         formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
         from auto_round.utils import SUPPORTED_FORMATS
         for format_ in formats:

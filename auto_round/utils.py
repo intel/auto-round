@@ -46,7 +46,7 @@ class SupportedFormats:
 
     def __str__(self):
         return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
-    
+
     def __getitem__(self, key):
         return self._support_list[key]
 
@@ -1194,7 +1194,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
                 sys.exit(-1)
             if re.search(pattern, format):
                 if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
-                    logger.error(f"Cannot eport {pre_dq_format} and {format} at the same time.")
+                    logger.error(f"Cannot export {pre_dq_format} and {format} at the same time.")
                     sys.exit(-1)
                 else:
                     pre_dq_format = format
@@ -1229,6 +1229,9 @@ def _gguf_args_check(args_or_ar, format_str=None):
                         v = "int"
                     if re.search("q\d_k", format) and args_or_ar.iters == 0:
                         v = f"gguf_{v}"
+                if k == "sym" and isinstance(args_or_ar, argparse.Namespace):
+                    k = "asym"
+                    v = not v
                 if getattr(args_or_ar, k) != v:
                     unsupport_list.append(f"{k}={getattr(args_or_ar, k)}")
                     reset_list.append(f"{k}={v}")
@@ -1554,3 +1557,87 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
         raise ValueError(f"seqlen({input_seqlen}) exceeds tokenizer.model_max_length({tokenizer.model_max_length}). " \
                 "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length.")
 
+def _use_more_bits(i_layer: int, n_layer: int):
+    return (i_layer < n_layer // 8) or (i_layer >= 7 * n_layer // 8) or ((i_layer - n_layer//8) % 3 == 2)
+
+def _get_digital_in_layer_name(layer_name):
+    patten = re.compile("([a-zA-Z]+\.){1,}(\d+)")
+    res = re.search(patten, layer_name)
+    if res:
+        return int(res[2])
+    else:
+        return None
+
+def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
+    # TODO: support for other format later
+    if "q4_k_m" not in gguf_format:
+        return layer_config
+
+    import gguf
+    from auto_round.export.export_to_gguf.convert import Model
+    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+    model_architecture = model.config.architectures[0]
+    try:
+        model_class = Model.from_model_architecture(model_architecture)
+    except NotImplementedError:
+        return layer_config
+    model_type = model.config.model_type
+
+    n_layer = None
+    for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers"]:
+        if hasattr(model.config, name):
+            n_layer = getattr(model.config, name)
+    if n_layer is None:
+        return layer_config
+
+    tensor_map = gguf.get_tensor_name_map(model_class.model_arch, n_layer)
+
+    def _set_config(config, gguf_config):
+        for k, v in gguf_config.items():
+            if k in config and k != "data_type":
+                config[k] = v
+        return config
+        
+    for layer_name, config in layer_config.items():
+        if config["bits"] >= 16:
+            continue
+        i_layer = _get_digital_in_layer_name(layer_name)
+        if i_layer is None:
+            continue
+        gguf_name = tensor_map.get_name(layer_name)
+        if gguf_name is None:
+            continue
+        # attn_v
+        if "attn_v" in gguf_name:
+            if _use_more_bits(i_layer, n_layer):
+                # q6_k
+                config = _set_config(config, GGUF_CONFIG["gguf:q6_k"])
+
+        # ffn_down
+        if "ffn_down" in gguf_name:
+            if "falcon" in model_type:
+                if i_layer < n_layer // 16:
+                    config = _set_config(config, GGUF_CONFIG["gguf:q6_k"])
+                elif _use_more_bits(i_layer, n_layer):
+                    config = _set_config(config, GGUF_CONFIG["gguf:q5_k_s"])
+                else:
+                    config = _set_config(config, GGUF_CONFIG["gguf:q4_k_s"])
+            else:
+                if _use_more_bits(i_layer, n_layer):
+                    config = _set_config(config, GGUF_CONFIG["gguf:q6_k"])
+
+        # attn_output
+        if "attn_output" in gguf_name and "falcon" not in model_type:
+            n_export = 0
+            for name in ["num_experts", "num_local_experts", "n_routed_experts"]:
+                if hasattr(model.config, name):
+                    n_export = getattr(model.config, name)
+            if n_export == 8:
+                config = _set_config(config, GGUF_CONFIG["gguf:q5_k"])
+
+        # attn_qkv
+        if "attn_qkv" in gguf_name:
+            config = _set_config(config, GGUF_CONFIG["gguf:q5_k_s"])
+        
+        layer_config[layer_name] = config
+    return layer_config
