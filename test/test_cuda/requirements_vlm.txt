@@ -15,7 +15,7 @@ pandas
 protobuf==3.20.2
 pillow
 py-cpuinfo
-torch==2.3.0
+torch==2.7.0
 torchvision
 triton==2.3.0
 tqdm
