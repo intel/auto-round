@@ -152,14 +152,18 @@ def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
     if len(data.shape) == 2:
         if bits in [4, 5]:
             data_shape = (-1, 8, 32)
-        elif bits in [2, 3]:
+        elif bits in [2]:
             data_shape = (-1, 16, 16)
         else:
             raise NotImplementedError(f"bits = {bits} is not supported")
         data = data.reshape(data_shape)
-    sum_x2 = torch.sum(torch.pow(data, 2), axis=-1, keepdims=True)
-    av_x = torch.sqrt(sum_x2 / data.shape[-1])
-    weight = torch.abs(data) + av_x
+    if weights is None:
+        sum_x2 = torch.sum(torch.pow(data, 2), axis=-1, keepdims=True)
+        if bits == 2:
+            av_x = 0
+        else:
+            av_x = torch.sqrt(sum_x2 / data.shape[-1])
+        weights = torch.abs(data) + av_x
 
     group_min = torch.min(data, axis=-1, keepdims=True)[0]
     group_max = torch.max(data, axis=-1, keepdims=True)[0]
