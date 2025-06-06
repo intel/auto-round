@@ -569,6 +569,12 @@ class AutoRound(object):
 
         return model, folders
 
+    # def model_forward
+    #
+    # def model_forward_wo_quantization(self, model,dataloader, hooks):
+    #     try:
+
+
     @torch.inference_mode
     def quantize_rtn(self):
         if self.amp:
@@ -610,7 +616,7 @@ class AutoRound(object):
             hook_handles = []
 
             for n, m in model.named_modules():
-                if isinstance(m, torch.nn.Linear):
+                if isinstance(m, self.supported_types):
                     hook = m.register_forward_hook(get_act_max_hook)
                     hook_handles.append(hook)
             return hook_handles

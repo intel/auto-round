@@ -288,6 +288,7 @@ def quant_tensor_gguf_sym_dq(
         q_scale_thresh=1e-5,
         super_group_size=16,
         super_bits=6,
+        imatrix=None,
         **kwargs):
     """Quantize and de-quantize tensor asymmetrically. For Q3_K, Q6_K.
 
@@ -324,9 +325,9 @@ def quant_tensor_gguf_sym_dq(
     tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
 
     if bits == 3:
-        scale, int_w = make_q3_quants(tensor, bits=3, do_rmse=True)
+        scale, int_w = make_q3_quants(tensor, bits=3, do_rmse=True, imatrix=imatrix)
     else:
-        scale, int_w = make_qx_quant(tensor, bits=6, rmse_type=1, qw=None)
+        scale, int_w = make_qx_quant(tensor, bits=6, rmse_type=1, qw=imatrix)
     
     #conduct double quant
     scale, d_scale = double_quant_tensor_sym(scale, super_bits, q_scale_thresh)

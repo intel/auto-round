@@ -111,7 +111,7 @@ def make_qx_quant(data, bits, rmse_type=0, qw = None):
     return scales, L
 
 
-def make_q3_quants(data, bits, do_rmse=False):
+def make_q3_quants(data, bits, do_rmse=False,imatrix=None):
     nmax = pow(2, bits - 1)
     imax = abs(data).argmax(axis=-1, keepdims=True)
     group_max = torch.take_along_dim(data, imax, axis=-1)
@@ -119,6 +119,11 @@ def make_q3_quants(data, bits, do_rmse=False):
     if do_rmse:
         L = torch.round(iscale * data).clip(-nmax, nmax - 1)
         w = torch.pow(data, 2)
+        if imatrix is not None:
+            orig_shape = w.shape
+            w = w.reshape(-1, imatrix.shape[-1])
+            w = w * imatrix
+            w = w.reshape(orig_shape)
         sumlx = torch.sum(w * data * L, axis=-1)[0]
         suml2 = torch.sum(w * L * L, axis=-1)[0]
 

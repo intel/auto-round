@@ -80,8 +80,6 @@ class WrapperLinear(torch.nn.Module):
         self._init_tuning_params_and_quant_func()
         self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
 
-
-
     def _init_tuning_params_and_quant_func(self):
         """Initializes tuning parameters and quantization functions.
 
@@ -173,7 +171,7 @@ class WrapperLinear(torch.nn.Module):
             tensor_max=self.weight_max,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
-            imatrix = self.orig_layer.imatrix,
+            imatrix = self.orig_layer.imatrix if hasattr(self.orig_layer) else None,
             **quant_kwargs
         )
         weight_q = weight_q.to(weight.dtype)
