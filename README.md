@@ -34,10 +34,6 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## What's New
 * [2025.05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer to [DeepSeek-R1-0528-int2-mixed-sym-inc](./docs/DeepSeek-R1-0528-int2-mixed-sym-inc.md), [DeepSeek-R1-0528-int4-sym-gptq-inc](./docs/DeepSeek-R1-0528-int4-sym-gptq-inc.md) and [DeepSeek-R1-0528-int4-asym-awq-inc](./docs/DeepSeek-R1-0528-int4-asym-awq-inc.md) for more details.
-* [2025/05] AutoRound now supports all GGUF `q*_k_s` formats. Please check out this [doc](./docs/gguf_accuracy.md) 
-  for some accuracy data. AutoRound shows clear advantage in most `q4_k_s` scenarios and up to **2.0x accuracy gain** in `q2_k_s`. Improved
-  algorithm for certain
-  configurations (e.g., q2_k_s) is planned for release in about two months, stay tuned!
 * [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
   vLLM versions later than v0.85.post1.
 * [2025/04] AutoRound provides some recipes for **Qwen3** series, please refer
