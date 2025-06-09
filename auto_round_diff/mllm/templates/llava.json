@@ -1,0 +1,7 @@
+{
+    "model_type": "llava",
+    "replace_tokens": null,
+    "processor": "llava",
+    "extra_encode" : false,
+    "default_dataset": "NeelNanda/pile-10k"
+}

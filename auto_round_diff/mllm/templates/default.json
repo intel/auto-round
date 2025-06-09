@@ -1,0 +1,14 @@
+{
+    "model_type": "default",
+    "format_user": "{{content}}",
+    "format_assistant": "{{content}}",
+    "format_system": "{{content}}",
+    "format_function": "",
+    "format_observation": "",
+    "format_separator": "\n",
+    "default_system": "You are a helpful assistant.",
+    "replace_tokens": null,
+    "extra_encode" : false,
+    "default_dataset": "NeelNanda/pile-10k",
+    "processor": "hf"
+}
