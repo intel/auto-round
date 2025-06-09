@@ -150,7 +150,7 @@ def make_q3_quants(data, bits, do_rmse=False):
     return scales, L
 
 
-def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
+def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False, weights=None):
     # data shape (nb, 8, 32) for Q4_K, (nb, 16, 16) for Q2_K
     nmax = pow(2, bits) - 1
     if len(data.shape) == 2:
