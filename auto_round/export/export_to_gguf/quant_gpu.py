@@ -146,28 +146,32 @@ def make_q3_quants(data, bits, do_rmse=False):
     return scales, L.to(torch.uint8)
 
 
-def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
+def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False, weights=None):
     nmax = pow(2, bits) - 1
     # data shape (nb, 8, 32) for Q4_K, (nb, 16, 16) for Q2_K
     if len(data.shape) == 2:
         if bits in [4, 5]:
             data_shape = (-1, 8, 32)
-        elif bits in [2, 3]:
+        elif bits in [2]:
             data_shape = (-1, 16, 16)
         else:
             raise NotImplementedError(f"bits = {bits} is not supported")
         data = data.reshape(data_shape)
-    sum_x2 = torch.sum(torch.pow(data, 2), axis=-1, keepdims=True)
-    av_x = torch.sqrt(sum_x2 / data.shape[-1])
-    weight = torch.abs(data) + av_x
+    if weights is None:
+        sum_x2 = torch.sum(torch.pow(data, 2), axis=-1, keepdims=True)
+        if bits == 2:
+            av_x = 0
+        else:
+            av_x = torch.sqrt(sum_x2 / data.shape[-1])
+        weights = torch.abs(data) + av_x
 
     group_min = torch.min(data, axis=-1, keepdims=True)[0]
     group_max = torch.max(data, axis=-1, keepdims=True)[0]
 
     the_mins = -group_min
 
-    sum_w = torch.sum(weight, axis=-1, keepdims=True)
-    sum_x = torch.sum(weight * data, axis=-1, keepdims=True)
+    sum_w = torch.sum(weights, axis=-1, keepdims=True)
+    sum_x = torch.sum(weights * data, axis=-1, keepdims=True)
 
     group_min[group_min > 0] = 0
 
@@ -179,7 +183,7 @@ def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
 
     diffs = scale*L + group_min - data
     diffs = torch.abs(diffs) if use_mad else diffs**2
-    best_mad = torch.sum(weight * diffs, axis=-1, keepdims=True)
+    best_mad = torch.sum(weights * diffs, axis=-1, keepdims=True)
 
     if nstep < 1:
         return scale.reshape(scale.shape[:2]), L, the_mins.reshape(the_mins.shape[:2])
@@ -191,9 +195,9 @@ def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
         l_values = torch.round(new_iscale * (data-group_min))
         Laux = torch.clip(l_values, 0, nmax).to(torch.uint8)
 
-        sum_l = torch.sum(weight * Laux, axis=-1, keepdims=True)
-        sum_l2 = torch.sum(weight * Laux**2, axis=-1, keepdims=True)
-        sum_xl = torch.sum(weight * Laux * data, axis=-1, keepdims=True)
+        sum_l = torch.sum(weights * Laux, axis=-1, keepdims=True)
+        sum_l2 = torch.sum(weights * Laux**2, axis=-1, keepdims=True)
+        sum_xl = torch.sum(weights * Laux * data, axis=-1, keepdims=True)
 
         D = sum_w*sum_l2 - sum_l*sum_l
         replace_idx = D > 0
@@ -205,7 +209,7 @@ def make_qkx2_quants(data, bits, rmin=-1, rdelta=0.1, nstep=20, use_mad=False):
 
         diffs = this_scale*Laux + this_min - data
         diffs = torch.abs(diffs) if use_mad else diffs**2
-        mad = torch.sum(weight * diffs, axis=-1, keepdims=True)
+        mad = torch.sum(weights * diffs, axis=-1, keepdims=True)
 
         replace_idx &= mad < best_mad
         best_mad[replace_idx] = mad[replace_idx]
