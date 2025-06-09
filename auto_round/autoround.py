@@ -1643,7 +1643,8 @@ class AutoRound(object):
             return
         if format == "fake" or format == "qdq":  ##TODO fix act quantizaiton later
             self.model = self.model.to("cpu")
-            if "llama4" and "qwen3" not in str(self.model.__class__.__name__).lower():
+            class_name = str(self.model.__class__.__name__).lower()
+            if "llama4" not in class_name and "qwen3" not in class_name:
                 os.makedirs(output_dir, exist_ok=True)
                 self.model.save_pretrained(output_dir)
             else:
