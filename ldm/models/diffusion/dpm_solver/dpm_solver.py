@@ -1012,7 +1012,7 @@ class DPM_Solver:
 
         =====================================================
 
-        Some advices for choosing the algorithm:
+        Some advice for choosing the algorithm:
             - For **unconditional sampling** or **guided sampling with small guidance scale** by DPMs:
                 Use singlestep DPM-Solver ("DPM-Solver-fast" in the paper) with `order = 3`.
                 e.g.
