@@ -53,7 +53,8 @@ from .utils import (
     reset_params,
     init_cache, check_skippable_keywords, get_shared_keys, SUPPORTED_DTYPES, infer_bits_by_data_type,
     _gguf_args_check,
-    check_seqlen_compatible
+    check_seqlen_compatible,
+    get_layer_config_by_gguf_format
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -117,7 +118,7 @@ class AutoRound(object):
         to_quant_block_names (str|list): A string or list whose elements are list of
                             block's layer names to be quantized.
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
-        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer, torch>=2.6 True.
+        enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer (default it False).
         device_map (str|dict): device map for each block
     Returns:
         The quantized model.
@@ -485,6 +486,10 @@ class AutoRound(object):
         """
         # Validate and process the specified formats
         _gguf_args_check(self, format)
+        if "gguf" in format:
+            self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(self.layer_config, format,
+                                                                                    self.model)
+            self.has_qlayer_outside_block = self.set_layerwise_config(self.layer_config)
         formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
         from auto_round.utils import SUPPORTED_FORMATS
         for format_ in formats:
@@ -1399,8 +1404,9 @@ class AutoRound(object):
                                             device,
                                             self.cache_device)
             hook_handles = self.register_act_max_hook(block)
-            self.get_block_outputs(block, q_input, input_others, self.batch_size * self.infer_bs_coeff,
-                                   device, self.cache_device, save_output=False)
+            if hook_handles:
+                self.get_block_outputs(block, q_input, input_others, self.batch_size * self.infer_bs_coeff,
+                                       device, self.cache_device, save_output=False)
 
             for handle in hook_handles:
                 handle.remove()

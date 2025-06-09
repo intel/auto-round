@@ -33,7 +33,7 @@ class TestSupportVLMS(unittest.TestCase):
     #     self.assertFalse(res > 0 or res == -1, msg="qwen2 tuning fail")
 
     #     # test infer
-    #     quantized_model_path = os.path.join(self.save_dir, "Qwen2-VL-2B-Instruct-w4g128-auto_round")
+    #     quantized_model_path = os.path.join(self.save_dir, "Qwen2-VL-2B-Instruct-w4g128")
        
     #     from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
     #     model = Qwen2VLForConditionalGeneration.from_pretrained(
@@ -90,7 +90,7 @@ class TestSupportVLMS(unittest.TestCase):
 
         ## test infer
         from transformers import AutoModelForCausalLM, AutoProcessor
-        quantized_model_path = os.path.join(self.save_dir, "Phi-3.5-vision-instruct-w4g128-auto_round")
+        quantized_model_path = os.path.join(self.save_dir, "Phi-3.5-vision-instruct-w4g128")
         res = os.system(f"cp /models/Phi-3.5-vision-instruct/*.py {quantized_model_path}")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, 
@@ -150,7 +150,7 @@ class TestSupportVLMS(unittest.TestCase):
 
         ## test infer
         from transformers import AutoModelForCausalLM, AutoProcessor
-        quantized_model_path = os.path.join(self.save_dir, "Phi-3.5-vision-instruct-w4g128-auto_awq")
+        quantized_model_path = os.path.join(self.save_dir, "Phi-3.5-vision-instruct-w4g128")
         res = os.system(f"cp /models/Phi-3.5-vision-instruct/*.py {quantized_model_path}")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, 
@@ -216,7 +216,7 @@ class TestSupportVLMS(unittest.TestCase):
             is_multimodal = True
             mm_use_im_start_end = False
 
-        quantized_model_path = os.path.join(self.save_dir, "llava-v1.5-7b-w4g128-auto_round")
+        quantized_model_path = os.path.join(self.save_dir, "llava-v1.5-7b-w4g128")
         tokenizer, model, image_processor, _ = load_pretrained_model(
             quantized_model_path,
             model_base=None,
@@ -248,7 +248,7 @@ class TestSupportVLMS(unittest.TestCase):
 
     #     ## test infer
     #     from transformers import MllamaForConditionalGeneration, AutoProcessor
-    #     quantized_model_path = os.path.join(self.save_dir, "Llama-3.2-11B-Vision-Instruct-w4g128-auto_round")
+    #     quantized_model_path = os.path.join(self.save_dir, "Llama-3.2-11B-Vision-Instruct-w4g128")
     #     model = MllamaForConditionalGeneration.from_pretrained(
     #         quantized_model_path,
     #         torch_dtype="float16",
@@ -289,7 +289,7 @@ class TestSupportVLMS(unittest.TestCase):
         ## test infer
         DEVICE = f"cuda:{self.device}"
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        quantized_model_path = os.path.join(self.save_dir, "cogvlm2-llama3-chat-19B-w4g128-auto_round")
+        quantized_model_path = os.path.join(self.save_dir, "cogvlm2-llama3-chat-19B-w4g128")
         tokenizer = AutoTokenizer.from_pretrained(
             quantized_model_path,
             trust_remote_code=True
@@ -351,7 +351,7 @@ class TestSupportVLMS(unittest.TestCase):
             )
         self.assertFalse(res > 0 or res == -1, msg="deepseek vl2 tuning fail")
 
-        quantized_model_path = os.path.join(self.save_dir, "deepseek-vl2-tiny-w4g32-auto_round")
+        quantized_model_path = os.path.join(self.save_dir, "deepseek-vl2-tiny-w4g32")
         from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM
         from transformers import AutoModelForCausalLM
         vl_chat_processor: DeepseekVLV2Processor = DeepseekVLV2Processor.from_pretrained(quantized_model_path)
@@ -408,4 +408,5 @@ class TestSupportVLMS(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

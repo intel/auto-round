@@ -53,7 +53,7 @@ class TestAutoRound(unittest.TestCase):
             ##revision="df7f44c" ##AutoGPTQ format
         )
 
-        image_url = "https://github.com/intel/auto-round/blob/main/docs/imgs/norm_bias_overview.png"
+        image_url = "https://github.com/intel/auto-round/raw/main/docs/imgs/norm_bias_overview.png"
         messages = [
             {
                 "role": "user",
@@ -118,50 +118,50 @@ class TestAutoRound(unittest.TestCase):
 
     def phi3_infernece(self, quantized_model_dir):
         from transformers import AutoModelForCausalLM, AutoProcessor
-        quantized_model_path = os.path.join(quantized_model_dir, "Phi-3.5-vision-instruct-w4g128-auto_round")
+        quantized_model_path = os.path.join(quantized_model_dir, "Phi-3.5-vision-instruct-w4g128")
         res = os.system(f"cp /models/Phi-3.5-vision-instruct/*.py {quantized_model_path}")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, 
-            device_map="auto", 
-            trust_remote_code=True, 
+            quantized_model_path,
+            device_map="auto",
+            trust_remote_code=True,
             torch_dtype="float16",
             )
-        processor = AutoProcessor.from_pretrained(quantized_model_path, 
-        trust_remote_code=True, 
+        processor = AutoProcessor.from_pretrained(quantized_model_path,
+        trust_remote_code=True,
         num_crops=4
         )
 
         image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
         content = "Describe this image."
         messages = [
-            {"role": "user", 
+            {"role": "user",
             "content": "<|image_1|>\n"+content},
         ]
 
         prompt = processor.tokenizer.apply_chat_template(
-        messages, 
-        tokenize=False, 
+        messages,
+        tokenize=False,
         add_generation_prompt=True
         )
         image_inputs = Image.open(requests.get(image_url, stream=True).raw)
-        inputs = processor(prompt, image_inputs, return_tensors="pt").to(model.device) 
+        inputs = processor(prompt, image_inputs, return_tensors="pt").to(model.device)
 
-        generation_args = { 
-            "max_new_tokens": 1000, 
-            "temperature": 0.0, 
-            "do_sample": False, 
-        } 
+        generation_args = {
+            "max_new_tokens": 1000,
+            "temperature": 0.0,
+            "do_sample": False,
+        }
 
-        generate_ids = model.generate(**inputs, 
-        eos_token_id=processor.tokenizer.eos_token_id, 
+        generate_ids = model.generate(**inputs,
+        eos_token_id=processor.tokenizer.eos_token_id,
         **generation_args
         )
 
-        # remove input tokens 
+        # remove input tokens
         generate_ids = generate_ids[:, inputs['input_ids'].shape[1]:]
-        response = processor.batch_decode(generate_ids, 
-        skip_special_tokens=True, 
-        clean_up_tokenization_spaces=False)[0] 
+        response = processor.batch_decode(generate_ids,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False)[0]
 
         print(response)
 
@@ -183,10 +183,10 @@ class TestAutoRound(unittest.TestCase):
                                   bits=bits, group_size=group_size, sym=sym, iters=1, nsamples=1,quant_nontext_module=True)
         autoround.quantize()
 
-        quantized_model_path = "./saved/Phi-3.5-vision-instruct-w4g128-auto_round"
+        quantized_model_path = "./saved/Phi-3.5-vision-instruct-w4g128"
         autoround.save_quantized(quantized_model_path, format='auto_round', inplace=False, safe_serialization=False)
-        self.phi3_infernece("./saved")
-        shutil.rmtree("./saved", ignore_errors=True)
+        self.phi3_infernece(os.path.abspath(self.save_dir))
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_vlm_env
     def test_quant_not_text_fp_layers(self):
@@ -199,7 +199,7 @@ class TestAutoRound(unittest.TestCase):
             f"--quant_nontext_module --iters 1 --nsamples 1 --output_dir {absolute_path}")
         self.phi3_infernece(absolute_path)
         shutil.rmtree(absolute_path, ignore_errors=True)
-    
+
     @require_vlm_env
     def test_mm_block_name(self):
         from auto_round.utils import get_block_names
@@ -226,11 +226,12 @@ class TestAutoRound(unittest.TestCase):
         block_name = get_block_names(model, quant_vision=False)
         self.assertTrue(len(block_name) == 1)
         self.assertTrue(get_block_names(model) == block_name)
-        
+
 
 
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

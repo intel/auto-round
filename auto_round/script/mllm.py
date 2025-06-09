@@ -370,7 +370,7 @@ def tune(args):
                     logger.warning(f"mixed precision exporting does not support {format} currently")
 
     for n, m in model.named_modules():
-        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.pytorch_utils.Conv1D):
+        if isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
             if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                 layer_config[n] = {"bits": 32}
                 logger.info(
