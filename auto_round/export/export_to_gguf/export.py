@@ -34,14 +34,18 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
         "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0,
         "q2_k_s": gguf.LlamaFileType.MOSTLY_Q2_K_S,
         "q3_k_s": gguf.LlamaFileType.MOSTLY_Q3_K_S,
+        "q3_k_m": gguf.LlamaFileType.MOSTLY_Q3_K_M,
+        "q3_k_l": gguf.LlamaFileType.MOSTLY_Q3_K_L,
         "q4_k_s": gguf.LlamaFileType.MOSTLY_Q4_K_S,
+        "q4_k_m": gguf.LlamaFileType.MOSTLY_Q4_K_M,
         "q5_k_s": gguf.LlamaFileType.MOSTLY_Q5_K_S,
+        "q5_k_m": gguf.LlamaFileType.MOSTLY_Q5_K_M,
         "q6_k": gguf.LlamaFileType.MOSTLY_Q6_K,
         "q6_k_s": gguf.LlamaFileType.MOSTLY_Q6_K,
         "auto": gguf.LlamaFileType.GUESSED,
     }
 
-def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
+def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, **kwargs):
     """Export the model to gguf format."""
     if output_dir is not None and os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
@@ -80,6 +84,7 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", **kwargs):
 
         model_instance = model_class(
             model,
+            layer_config,
             dir_model=tmp_work_dir,
             ftype=output_type,
             fname_out=Path(output_dir),
