@@ -899,7 +899,7 @@ class AutoRound(object):
         Returns:
         Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
         """
-
+        logger.info("start get output")
         output = self.get_block_outputs(block, input_ids, input_others, self.train_bs * self.infer_bs_coeff, device,
                                         self.cache_device)
 
@@ -938,11 +938,11 @@ class AutoRound(object):
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters, verbose=False
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
-
+        
         pick_samples = self.train_bs * self.gradient_accumulate_steps
         nsamples = len(input_ids)
         if self.sampler != "rand":
@@ -953,7 +953,9 @@ class AutoRound(object):
         scaler = self.get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
         best_params = {}
+        logger.info('start quant')
         for i in range(self.iters):
+            logger.info(f"running {i} % {self.iters}...")
             total_loss = 0
             if self.sampler == "rand":
                 whole_indices = torch.randperm(nsamples)[:pick_samples]

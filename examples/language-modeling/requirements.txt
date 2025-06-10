@@ -1,4 +1,3 @@
-transformers
 torch
 lm-eval==0.4.2
 ##for lm-eval 0.4.1 we usually used
@@ -19,3 +18,5 @@ wandb
 py-cpuinfo
 numpy < 2.0
 threadpoolctl
+transformers==4.43.2
+optimum==1.22.0

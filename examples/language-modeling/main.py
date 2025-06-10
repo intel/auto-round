@@ -8,7 +8,7 @@ from packaging import version
 import logging
 
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 from auto_round.utils import logger
 
 sys.path.insert(0, '../..')
