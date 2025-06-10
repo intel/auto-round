@@ -1224,6 +1224,8 @@ def _gguf_args_check(args_or_ar, format_str=None):
             for k, v in gguf_config.items():
                 if not hasattr(args_or_ar, k):
                     continue
+                if k == "data_type" and getattr(args_or_ar, k) !="int":
+                    continue
                 if k == "data_type":
                     if re.search("q\d_1", format) and len(formats) > 1:
                         v = "int"
