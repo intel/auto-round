@@ -636,6 +636,9 @@ class AutoRound(object):
                 break
         for hook in hooks:
             hook.remove()
+        for n,m in model.named_modules():
+            if hasattr(m,"imatrix"):
+                m.imatrix/=cnt
 
         model.to("cpu")
         clear_memory()
