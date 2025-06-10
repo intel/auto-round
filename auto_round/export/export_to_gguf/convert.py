@@ -1173,11 +1173,20 @@ class Model(OriModel):
                 else:
                     data = ggml_quant(data_torch, data_qtype.name.lower(), scale, zp)
             else:
-                data_qtype = gguf.GGMLQuantizationType.F32
-                data = data_torch.squeeze().cpu().numpy()
+                # if data_torch.dtype ==torch.float32:
+                #     data_qtype = gguf.GGMLQuantizationType.F32
+                # else:
+                #     data_qtype = gguf.GGMLQuantizationType.F16
+                data_qtype = gguf.GGMLQuantizationType.F32 ##TODO checke fp16 is ok or not
+                data = data_torch.to(torch.float32).squeeze().cpu().numpy()
         else:
+            # if data_torch.dtype == torch.float32:
+            #     data_qtype = gguf.GGMLQuantizationType.F32
+            # else:
+            #     data_qtype = gguf.GGMLQuantizationType.F16
+            # data = data_torch.squeeze().cpu().numpy()
             data_qtype = gguf.GGMLQuantizationType.F32
-            data = data_torch.squeeze().cpu().numpy()
+            data = data_torch.to(torch.float32).squeeze().cpu().numpy()
         return data, data_qtype
 
     def get_qtype_by_layer_config(self, layer_config, name, data_qtype):

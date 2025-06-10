@@ -244,24 +244,11 @@ def make_qp_quants(nmax, data, quant_weights, q_scale_thresh):
 
     return sumlx / suml2, L
 
-
-@register_dtype("gguf_int_asym_dq")
-def quant_tensor_gguf_asym_dq(
-        tensor,
-        bits=4,
-        group_size=-1,
-        v=0,
-        min_scale=1.0,
-        max_scale=1.0,
-        scale_dtype=torch.float16,
-        tensor_min=None,
-        tensor_max=None,
-        q_scale_thresh=1e-5,
-        super_group_size=8,
-        super_bits=6,
-        imatrix=None,
-        **kwargs):
-    """Quantize and de-quantize tensor asymmetrically. For Q2_K, Q4_K, Q5_K.
+@register_dtype("int_asym_dq")
+def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
+                         tensor_min=None, tensor_max=None, q_scale_thresh=1e-5, super_group_size=8, super_bits=6,
+                         **kwargs):
+    """Quantize and de-quantize tensor asymmetrically.
 
     Args:
         tensor: Tensor containing the tensor to be quantized
@@ -278,128 +265,183 @@ def quant_tensor_gguf_asym_dq(
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+
+    maxq = 2 ** bits - 1
+    if tensor_min is None or tensor_max is None:
+        wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
+        wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
+    else:
+        wmin_tmp = tensor_min
+        wmax_tmp = tensor_max
+    if isinstance(min_scale, torch.Tensor):
+        wmin = wmin_tmp * min_scale
+        wmax = wmax_tmp * max_scale
+    else:
+        wmin = wmin_tmp
+        wmax = wmax_tmp
+    scale = ((wmax - wmin) / maxq).to(scale_dtype)
+    scale = torch.clamp(scale, min=q_scale_thresh)
+    scale = scale.view(-1, super_group_size)
+    wmin_m = -wmin  # pylint: disable=E1130
+    wmin_m = wmin_m.view(-1, super_group_size)
+
+    ##conduct double quant
+    scale, d_scale = double_quant_tensor(scale, super_bits, q_scale_thresh)
+    wmin_m, d_wmin_m = double_quant_tensor(wmin_m, super_bits, q_scale_thresh)
+
+    scale = scale.view(-1, 1)
+    scale = torch.clamp(scale, q_scale_thresh)
+    wmin_m = wmin_m.view(-1, 1)
+
+    int_w = round_ste((tensor + wmin_m) / scale + v)
+    q = torch.clamp(int_w, 0, maxq)
+    qdq_result = (scale * q - wmin_m).to(tensor.dtype)
+    qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+    # zp = round_ste(wmin_m / scale)  # remove this later
+    return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
+
+@register_dtype("imatrix_gguf_int_asym_dq")
+def quant_tensor_gguf_asym_dq(
+        tensor,
+        bits=4,
+        group_size=-1,
+        v=0,
+        min_scale=1.0,
+        max_scale=1.0,
+        scale_dtype=torch.float16,
+        tensor_min=None,
+        tensor_max=None,
+        q_scale_thresh=1e-5,
+        super_group_size=8,
+        super_bits=6,
+        imatrix=None,
+        **kwargs):
+    """Quantizes and dequantizes a tensor using asymmetric integer quantization for formats like Q2_K, Q4_K, and Q5_K.
+
+    Args:
+        tensor (torch.Tensor): Input tensor to quantize.
+        bits (int): Number of bits for quantization.
+        group_size (int): Group size for per-group quantization.
+        v (float): Perturbation added before rounding.
+        min_scale (float): Minimum allowed scale value.
+        max_scale (float): Maximum allowed scale value.
+        scale_dtype (torch.dtype): Data type for quantized scale.
+        tensor_min (torch.Tensor, optional): Minimum values for the tensor groups.
+        tensor_max (torch.Tensor, optional): Maximum values for the tensor groups.
+        q_scale_thresh (float): Threshold to clamp the quantized scale.
+        super_group_size (int): Number of groups to bundle for secondary quantization.
+        super_bits (int): Number of bits used in secondary quantization.
+        imatrix (torch.Tensor, optional): Importance matrix for weighted quantization.
+
+    Returns:
+        Tuple: (Quantized-dequantized tensor, scale dictionary, zero-point dictionary)
+    """
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
     search_kwargs = {
         2: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
         4: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
-        # 5: {"rmin": -0.5, "rdelta": 0.1, "nstep": 15, "use_mad": False}
+        5: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
     }
     if bits not in search_kwargs:
-        raise ValueError(f"bits={bits} is not supported by gguf_int_asym_dq_imatrix, please check.")
+        raise ValueError(f"bits={bits} not supported by gguf_int_asym_dq")
 
     maxq = 2 ** bits - 1
-
-    rrmin = search_kwargs[bits]["rmin"]
-    rdelta = search_kwargs[bits]["rdelta"]
-    nstep = search_kwargs[bits]["nstep"]
-    use_mad = search_kwargs[bits]["use_mad"]
-    quant_weights = None
     QK_K = 256
+    params = search_kwargs[bits]
+    quant_weights = None
+
     if bits == 2:
-        sumx2 = torch.sum(tensor ** 2, dim=-1, keepdim=True)
-        sigma2 = sumx2 / QK_K
-        imatrix = imatrix.reshape(1, -1)
-        imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
-        imatrix = imatrix.reshape(tensor.shape)
+        sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+        imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
         quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
-    elif bits == 4:
-        sumx2 = torch.sum(tensor ** 2, dim=-1, keepdim=True)
-        sigma2 = 2 * sumx2 / QK_K
+    elif bits == 4 or bits == 5:
+        sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
         av_x = torch.sqrt(sigma2)
-
-        imatrix = imatrix.reshape(1, -1)
-        imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
-        imatrix = imatrix.reshape(tensor.shape)
-
+        imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
         quant_weights = imatrix * torch.sqrt(av_x + tensor * tensor)
 
-    scale, wmin_m = iterative_wls_quant_search(tensor, bits=bits, rrmin=rrmin, rdelta=rdelta, nstep=nstep,
-                                               use_mad=use_mad, weights=quant_weights)
+    scale, wmin_m = iterative_wls_quant_search(
+        tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
+        use_mad=params["use_mad"], weights=quant_weights
+    )
 
     nmax = 2 ** super_bits - 1
     scale = scale.reshape(-1, super_group_size)
     wmin_m = wmin_m.reshape(-1, super_group_size)
-    ##conduct double quant
     sum_quant_weights = quant_weights.sum(-1, keepdim=True).reshape(-1, super_group_size)
+
     d_scale, q_scale = make_qp_quants(nmax, scale, sum_quant_weights, q_scale_thresh)
     d_wmin_m, q_wmin_m = make_qp_quants(nmax, wmin_m, sum_quant_weights, q_scale_thresh)
     d_scale = d_scale.unsqueeze(-1)
     d_wmin_m = d_wmin_m.unsqueeze(-1)
-    scale = (d_scale * q_scale).view(-1, 1)
+    scale = ( d_scale* q_scale).view(-1, 1)
+    wmin_m = ( d_wmin_m* q_wmin_m).view(-1, 1)
     inverse_scale = torch.where(scale == 0, 0, 1 / scale)
-    wmin_m = (d_wmin_m * q_wmin_m).view(-1, 1)
-    int_w = round_ste((tensor + wmin_m) * inverse_scale + v)
-    int_w = torch.clamp(int_w, 0, maxq)
+
+    int_w = torch.clamp(round_ste((tensor + wmin_m) * inverse_scale + v), 0, maxq)
     qdq_result = (scale * int_w - wmin_m).to(orig_dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
 
+def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None):
+    """Performs iterative weighted least squares quantization search.
 
-def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False,
-                               weights=None,
-                               ):
+    Args:
+        data (torch.Tensor): Input tensor to quantize.
+        bits (int): Number of quantization bits.
+        rrmin (float): Initial range scaling factor.
+        rdelta (float): Step size for range scaling.
+        nstep (int): Number of search steps.
+        use_mad (bool): Whether to use mean absolute deviation instead of squared error.
+        weights (torch.Tensor): Weight matrix for each element.
+
+    Returns:
+        Tuple: (Optimal scale tensor, optimal minimum value tensor)
+    """
     data = data.to(torch.float32)
-    # data = data.reshape((-1, group_size))  # nb = data.shape[0], (nb, group_size)
     maxq = 2 ** bits - 1
     minq = 0
+    weights = torch.ones_like(data) if weights is None else weights
 
-    if weights is None:
-        weights = torch.ones_like(data, device=data.device)
-    else:
-        weights = weights
+    rmin = torch.min(data, dim=1, keepdim=True)[0]
+    rmax = torch.max(data, dim=1, keepdim=True)[0]
 
-    rmin = torch.min(data, dim=1, keepdim=True)[0]  # (nb, 1)
-    rmax = torch.max(data, dim=1, keepdim=True)[0]  # (nb, 1)
+    sum_w = torch.sum(weights, dim=1, keepdim=True)
+    sum_x = torch.sum(weights * data, dim=1, keepdim=True)
 
-    sum_w = torch.sum(weights, dim=1, keepdim=True)  # (nb, 1)
-    sum_x = torch.sum(weights * data, dim=1, keepdim=True)  # (nb, group_size)
-
-    iscale = torch.ones_like(rmax, dtype=data.dtype)  # (nb, 1)
-    mask = rmin != rmax
-    iscale[mask] = (maxq - minq) / (rmax[mask] - rmin[mask])
-    scale = 1 / iscale
-    quant_data = torch.clamp(torch.round(iscale * (data - rmin)), minq, maxq)  # (nb, group_size)
-    diff = scale * quant_data + rmin - data  # (nb, group_size)
-    if use_mad:
-        best_mad = torch.sum(weights * torch.abs(diff), dim=1, keepdim=True)  # (nb, 1)
-    else:
-        best_mad = torch.sum(weights * diff ** 2, dim=1, keepdim=True)  # (nb, 1)
+    scale = 1 / ((maxq - minq) / (rmax - rmin + 1e-8))
+    quant_data = torch.clamp(torch.round((maxq - minq) / (rmax - rmin + 1e-8) * (data - rmin)), minq, maxq)
+    diff = scale * quant_data + rmin - data
+    best_mad = torch.sum(weights * (torch.abs(diff) if use_mad else diff ** 2), dim=1, keepdim=True)
 
     for is_ in range(nstep):
-        iscale_new = torch.ones_like(rmax, dtype=data.dtype)  # (nb, 1)
         factor = rrmin + rdelta * is_ + maxq - minq
-        iscale_new[mask] = factor / (rmax[mask] - rmin[mask])
+        iscale_new = factor / (rmax - rmin + 1e-8)
+        quant_data_new = torch.clamp(torch.round(iscale_new * (data - rmin)), minq, maxq)
 
-        quant_data_new = torch.clamp(torch.round(iscale_new * (data - rmin)), minq, maxq)  # (nb, group_size)
-        mul_weights_quant_data_new = weights * quant_data_new
+        mul_weights_quant_data = weights * quant_data_new
+        sum_l = torch.sum(mul_weights_quant_data, dim=1, keepdim=True)
+        sum_l2 = torch.sum(mul_weights_quant_data * quant_data_new, dim=1, keepdim=True)
+        sum_xl = torch.sum(mul_weights_quant_data * data, dim=1, keepdim=True)
 
-        sum_l = torch.sum(mul_weights_quant_data_new, dim=1, keepdim=True)  # (nb, 1)
-        sum_l2 = torch.sum(mul_weights_quant_data_new * quant_data_new, dim=1, keepdim=True)  # (nb, 1)
-        sum_xl = torch.sum(mul_weights_quant_data_new * data, dim=1, keepdim=True)  # (nb, 1)
+        D = sum_w * sum_l2 - sum_l ** 2
+        this_scale = (sum_w * sum_xl - sum_x * sum_l) / D
+        this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
 
-        D = sum_w * sum_l2 - sum_l ** 2  # (nb, 1)
-
-        this_scale = (sum_w * sum_xl - sum_x * sum_l) / D  # (nb, 1)
-        this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D  # (nb, 1)
-
-        quant_data = torch.clamp(torch.round((1 / this_scale) * (data - this_min)), minq, maxq)  ## Different from gguf
-        diff = this_scale * quant_data + this_min - data  # (nb, group_size)
-        if use_mad:
-            mad = torch.sum(weights * torch.abs(diff), dim=1, keepdim=True)
-        else:
-            mad = torch.sum(weights * diff ** 2, dim=1, keepdim=True)
+        quant_data = torch.clamp(torch.round((1 / this_scale) * (data - this_min)), minq, maxq)
+        diff = this_scale * quant_data + this_min - data
+        mad = torch.sum(weights * (torch.abs(diff) if use_mad else diff ** 2), dim=1, keepdim=True)
 
         idx_to_replace = torch.where((mad < best_mad) & (D > 0))[0]
         best_mad[idx_to_replace] = mad[idx_to_replace]
         scale[idx_to_replace] = this_scale[idx_to_replace]
         rmin[idx_to_replace] = this_min[idx_to_replace]
 
-    scale = scale.to(torch.float32)
-    rmin = rmin.to(torch.float32)
-
-    return scale, -rmin
+    return scale.to(torch.float32), -rmin.to(torch.float32)
 
 
 @register_dtype("gguf_int_sym_dq")
