@@ -5,6 +5,7 @@ CONDA_ENV_NAME="unittest_cuda"
 PYTHON_VERSION="3.10"
 REPO_PATH=$(git rev-parse --show-toplevel)
 LOG_DIR=${REPO_PATH}/ut_log_dir
+[[ -z "$CUDA_VISIBLE_DEVICES" ]] && export CUDA_VISIBLE_DEVICES=0
 
 function create_conda_env() {
     echo "-----[VAL INFO] create conda env -----"
@@ -17,8 +18,7 @@ function create_conda_env() {
     if conda info --envs | grep -q "^$CONDA_ENV_NAME\s"; then conda remove -n ${CONDA_ENV_NAME} --all -y; fi
     conda create -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools=69.5.1 -y
     source activate ${CONDA_ENV_NAME}
-    conda install -c conda-forge git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc -y
-    pip install uv
+    conda install -c conda-forge git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc uv -y
     export LD_PRELOAD=${CONDA_PREFIX}/lib/libstdc++.so.6
 
     # install AutoRound
@@ -37,11 +37,14 @@ function create_conda_env() {
 function run_unit_test() {
     # install unit test dependencies
     create_conda_env
+
     cd ${REPO_PATH}/test/test_cuda
     rm -rf .coverage* *.xml *.html
 
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
     uv pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v2.2.0 --no-build-isolation
+    CMAKE_ARGS="-DGGML_CUDA=on" uv pip install llama-cpp-python
+    uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r requirements.txt
 
     uv pip list
