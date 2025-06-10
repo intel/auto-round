@@ -9,3 +9,4 @@ dist/
 .clangd
 CMakeUserPresets.json
 tmp_autoround/
+ut_log_dir/
