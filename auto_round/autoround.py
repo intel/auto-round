@@ -638,6 +638,7 @@ class AutoRound(object):
             hook.remove()
 
         model.to("cpu")
+        clear_memory()
         pbar = tqdm(all_to_quantized_module_names)
 
         for name in pbar:
