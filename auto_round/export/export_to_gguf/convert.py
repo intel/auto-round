@@ -1177,7 +1177,7 @@ class Model(OriModel):
                 #     data_qtype = gguf.GGMLQuantizationType.F32
                 # else:
                 #     data_qtype = gguf.GGMLQuantizationType.F16
-                data_qtype = gguf.GGMLQuantizationType.F32 ##TODO checke fp16 is ok or not
+                data_qtype = gguf.GGMLQuantizationType.F32 ##TODO check fp16 is ok or not
                 data = data_torch.to(torch.float32).squeeze().cpu().numpy()
         else:
             # if data_torch.dtype == torch.float32:
