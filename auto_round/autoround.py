@@ -594,47 +594,53 @@ class AutoRound(object):
         return model, folders
 
     @torch.inference_mode
-    def quantize_embedding_layer(self, layer, layer_name):
+    def quantize_embedding_layer(self):
         formats = [f for f in self.formats if "fake" not in f]
         if not (len(formats) == 1 and "gguf" in formats[0]):
             return False
+        for n,m in self.model.named_modules():
+            if not isinstance(m,torch.nn.Embedding):
+                continue
 
-        format = formats[0]
-        tie = getattr(getattr(self.model, "config", {}), "tie_word_embeddings", True)
-        cfg_name = GGUF_CONFIG[format]["lm_head" if tie else "embedding"]
-        cfg = GGUF_CONFIG[cfg_name]
-        act_bits = 16
+            layer = m
+            layer_name = n
+            format = formats[0]
+            tie = getattr(getattr(self.model, "config", {}), "tie_word_embeddings", True)
+            cfg_name = GGUF_CONFIG[format]["lm_head" if tie else "embedding"]
+            cfg = GGUF_CONFIG[cfg_name]
+            act_bits = 16
 
-        keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
-        config = {k: cfg.get(k) for k in keys}
-        config["act_bits"] = act_bits
+            keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
+            config = {k: cfg.get(k) for k in keys}
+            config["act_bits"] = act_bits
+            config["scale_dtype"] = self.scale_dtype
 
-        from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-        dtype = config["data_type"]
-        if "rtn_" + dtype in QUANT_FUNC_WITH_DTYPE:
-            dtype = "rtn_" + dtype
-        quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
+            from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+            dtype = config["data_type"]
+            if "rtn_" + dtype in QUANT_FUNC_WITH_DTYPE:
+                dtype = "rtn_" + dtype
+            quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
 
-        try:
-            weight, scale, zp = quant_func(layer.weight.to(self.device), **{k: config[k] for k in
-                                                                            ["bits", "group_size", "super_bits",
-                                                                             "super_group_size"]})
-        except:
-            logger.info("out of vram, fallback to cpu")
-            weight, scale, zp = quant_func(layer.weight.to("cpu"), **{k: config[k] for k in
-                                                                      ["bits", "group_size", "super_bits",
-                                                                       "super_group_size"]})
-        layer.weight.data.copy_(weight.cpu())
+            try:
+                weight, scale, zp = quant_func(layer.weight.to(self.device), **{k: config[k] for k in
+                                                                                ["bits", "group_size", "super_bits",
+                                                                                 "super_group_size","scale_dtype"]})
+            except:
+                logger.info("out of vram, fallback to cpu")
+                weight, scale, zp = quant_func(layer.weight.to("cpu"), **{k: config[k] for k in
+                                                                          ["bits", "group_size", "super_bits",
+                                                                           "super_group_size","scale_dtype"]})
+            layer.weight.data.copy_(weight.cpu())
 
-        for name, val in zip(["scale", "zp"], [scale, zp]):
-            if isinstance(val, dict):
-                for k, v in val.items():
-                    setattr(layer, k if k == "scale" else "w_" + k, v.cpu())
-            else:
-                setattr(layer, name, val.cpu())
+            for name, val in zip(["scale", "zp"], [scale, zp]):
+                if isinstance(val, dict):
+                    for k, v in val.items():
+                        setattr(layer, k if k == "scale" else "w_" + k, v.cpu())
+                else:
+                    setattr(layer, name, val.cpu())
 
-        self.layer_config.setdefault(layer_name, {}).update(config)
-        clear_memory()
+            self.layer_config.setdefault(layer_name, {}).update(config)
+            clear_memory()
         return True
 
     def get_imatrix(self):
@@ -690,7 +696,7 @@ class AutoRound(object):
                 model(**data)
                 if cnt > self.nsamples:
                     break
-        except e:
+        except:
             logger.warning("out of vram, fallback to cpu, pleaser use more gpus by setting `--device 0,1,2,3`")
             model = self.model.to("cpu")
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
@@ -745,15 +751,20 @@ class AutoRound(object):
                 lm_head_name = get_lm_head_name(self.model)
                 config = GGUF_CONFIG[GGUF_CONFIG[formats[0]]["lm_head"]]
                 act_bits = 16
+                scale_dtype = self.scale_dtype
 
                 keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
                 for key in keys:
                     self.layer_config[lm_head_name][key] = getattr(config, "get")(key)
                     setattr(get_module(self.model, lm_head_name), key, config.get(key))
                 self.layer_config[lm_head_name]["act_bits"] = act_bits
+                self.layer_config[lm_head_name]["scale_dtype"] = scale_dtype
+
                 setattr(get_module(self.model, lm_head_name), "act_bits", act_bits)
+                setattr(get_module(self.model, lm_head_name), "scale_dtype", scale_dtype)
                 return True
-            return False
+        return False
+
 
     @torch.inference_mode
     def quantize_rtn(self):
@@ -763,7 +774,7 @@ class AutoRound(object):
         all_to_quantized_module_names = []
 
         for n, m in self.model.named_modules():
-            if (check_to_quantized(m) or isinstance(m, torch.nn.Embedding)):
+            if (check_to_quantized(m)):
                 all_to_quantized_module_names.append(n)
 
         has_gguf_k = False
@@ -772,32 +783,29 @@ class AutoRound(object):
                 has_gguf_k = True
         if has_gguf_k:
             self.get_imatrix()
-
+        self.quantize_embedding_layer()
         pbar = tqdm(all_to_quantized_module_names)
 
         for name in pbar:
             pbar.set_description(f"Quantizing {name}")
             m = get_module(self.model, name)
-            if isinstance(m, torch.nn.Embedding):
-                self.quantize_embedding_layer(m, name)
-            else:
-                if not (m.data_type.startswith("rtn_")):  ## use rtn version first
-                    from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-                    if "rtn_" + m.data_type in QUANT_FUNC_WITH_DTYPE:
-                        m.data_type = "rtn_" + m.data_type
-                        self.layer_config[name]["data_type"] = m.data_type
-                try:
-                    m.to(self.device)
-                    m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
-                                      enable_round_tuning=False)
-                    m = m.unwrapper({})
-                    m.to("cpu")
-                except:
-                    logger.warning("out of vram, fallback to cpu")
-                    m.to("cpu")
-                    m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
-                                      enable_round_tuning=False)
-                    m = m.unwrapper({})
+            if not (m.data_type.startswith("rtn_")):  ## use rtn version first
+                from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+                if "rtn_" + m.data_type in QUANT_FUNC_WITH_DTYPE:
+                    m.data_type = "rtn_" + m.data_type
+                    self.layer_config[name]["data_type"] = m.data_type
+            try:
+                m.to(self.device)
+                m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
+                                  enable_round_tuning=False)
+                m = m.unwrapper({})
+                m.to("cpu")
+            except:
+                logger.warning("out of vram, fallback to cpu")
+                m.to("cpu")
+                m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
+                                  enable_round_tuning=False)
+                m = m.unwrapper({})
             if self.low_gpu_mem_usage:
                 clear_memory()
             if self.is_packing_immediate:
@@ -846,6 +854,9 @@ class AutoRound(object):
         all_first_block_names = [block[0] for block in all_blocks]
         logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
+        is_quantized_embedding = self.quantize_embedding_layer()
+        if is_quantized_embedding:
+            q_all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
@@ -854,6 +865,7 @@ class AutoRound(object):
 
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
+
             all_inputs.pop(block_names[0])
             keys = inputs.keys()
             input_id_str = [key for key in keys if key.startswith('hidden_state')]
@@ -1240,15 +1252,16 @@ class AutoRound(object):
                 logger.info("switch to cpu to cache block inputs")
                 if (self.has_qlayer_outside_block or
                         self.__class__.__name__ == "AutoRoundMLLM"):
-                    logger.warning(f"we strongly recommend using additional CUDA/HPU devices,e.g. "
+                    logger.warning(f"we strongly recommend using additional CUDA/HPU devices for better accuracy,e.g. "
                                    f"set `--device '0,1'` in our cmd line usage or "
                                    f"load the model with `device_mapping=auto`,"
                                    f" for optimal performance during calibration "
                                    f"Otherwise, the process may be significantly slower.")
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                 clear_memory()
+                ## Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
                 all_inputs = self.cache_inter_data(
-                    block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
+                    block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
                 )
             else:
                 raise

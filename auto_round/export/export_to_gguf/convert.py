@@ -1360,7 +1360,7 @@ class Model(OriModel):
                             if arr_name[i].isdecimal() and int(arr_name[i]) == (data_torch.shape[0] - 1):
                                 arr_name[i] = str(idx)
                         arr_name = ".".join(arr_name)
-                        arr, data_qtype = self._quant_data(arr, data_qtype, name, bid)
+                        arr, data_qtype = self._quant_data(arr, data_qtype, arr_name, bid)
                         new_data.append(arr)
                     data = np.array(new_data)
                     del new_data

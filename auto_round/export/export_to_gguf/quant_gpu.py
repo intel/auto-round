@@ -587,7 +587,6 @@ def q4_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
 
     d_tmp = output_d * q_scales
     dm_tmp = output_dmin * q_mins
-
     q_scales = q_scales.cpu().numpy().astype(np.uint8)
     q_mins = q_mins.cpu().numpy().astype(np.uint8)
     output_scale[:, :4] = q_scales[:, :4]
