@@ -59,7 +59,7 @@ def np_roundf(n: np.ndarray) -> np.ndarray:
     return np.sign(n) * b
 
 
-def make_qx_quant(data, bits, rmse_type=0, qw = None):
+def make_qx_quants(data, bits, rmse_type=0, qw = None):
     nmax = pow(2, bits - 1)
     imax = abs(data).argmax(axis=-1, keepdims=True)
     group_max = np.take_along_axis(data, imax, axis=-1)
@@ -593,7 +593,7 @@ def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         iscales = np.where(output_d == 0, 0, 1 / output_d)
         all_L = (np.round(blocks / scales.reshape(*scales.shape, 1)).clip(-32, 31) + 32).astype(np.uint8)
     else:
-        scales, all_L = make_qx_quant(blocks, bits=6, rmse_type=1, qw=None)
+        scales, all_L = make_qx_quants(blocks, bits=6, rmse_type=1, qw=None)
         imax = abs(scales).argmax(axis=-1, keepdims=True)
         max_scales = np.take_along_axis(scales, imax, axis=-1)
         iscales = np.where(max_scales != 0, -128 / max_scales, 0)

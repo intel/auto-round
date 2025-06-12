@@ -63,7 +63,7 @@ def torch_roundf(n):
     return torch.sign(n) * b
 
 
-def make_qx_quant(data, bits, rmse_type=0, qw=None):
+def make_qx_quants(data, bits, rmse_type=0, qw=None):
     nmax = pow(2, bits - 1)
     imax = abs(data).argmax(axis=-1, keepdims=True)
     group_max = torch.take_along_dim(data, imax, dim=-1)
@@ -744,7 +744,7 @@ def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         iscales = torch.where(output_d == 0, 0, 1 / output_d)
         all_L = (torch.round(blocks / scales.reshape(*scales.shape, 1)).clip(-32, 31) + 32).to(torch.uint8)
     else:
-        scales, all_L = make_qx_quant(blocks, bits=6, rmse_type=1, qw=None)
+        scales, all_L = make_qx_quants(blocks, bits=6, rmse_type=1, qw=None)
         imax = abs(scales).argmax(dim=-1, keepdim=True)
         max_scales = torch.take_along_dim(scales, imax, dim=-1)
         iscales = torch.where(max_scales != 0, -128 / max_scales, 0)

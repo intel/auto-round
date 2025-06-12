@@ -400,6 +400,10 @@ def quant_tensor_gguf_asym_dq(
             av_x = torch.sqrt(sigma2)
             imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
             quant_weights = imatrix * torch.sqrt(av_x + tensor * tensor)
+        # weights = imatrix.reshape(1, -1)
+        # weights = weights.expand(tensor.numel() // weights.numel(), -1)
+        # quant_weights = weights.reshape(tensor.shape)
+
         params = search_kwargs[bits]
 
         scale, wmin_m = iterative_wls_quant_search(
@@ -519,7 +523,7 @@ def quant_tensor_gguf_sym_dq(
         Quantized and de-quantized tensor, scale, zero-point
     """
     from auto_round.export.export_to_gguf.utils import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
-    from auto_round.export.export_to_gguf.quant_gpu import make_q3_quants, make_qx_quant
+    from auto_round.export.export_to_gguf.quant_gpu import make_q3_quants, make_qx_quants
 
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
@@ -534,11 +538,22 @@ def quant_tensor_gguf_sym_dq(
     n_blocks = tensor.nelement() // block_size
     # (nb, 16, 16)
     tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
-
-    if bits == 3:
-        scale, int_w = make_q3_quants(tensor, bits=3, do_rmse=True, imatrix=imatrix)
+    if imatrix is None:
+        if bits == 3:
+            scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)
+        elif bits == 6:
+            scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
     else:
-        scale, int_w = make_qx_quant(tensor, bits=6, rmse_type=1, qw=imatrix)
+        if bits == 3:
+            sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+            imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
+            quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
+            scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
+        elif bits == 6:
+            weights = imatrix.reshape(1, -1)
+            weights = weights.expand(tensor.numel() // weights.numel(), -1)
+            quant_weights = weights.reshape(tensor.shape)
+            scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
 
     # conduct double quant
     scale, d_scale = double_quant_tensor_sym(scale, super_bits)
