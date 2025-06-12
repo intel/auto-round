@@ -1194,31 +1194,57 @@ class Model(OriModel):
         if name not in layer_config or layer_config[name]['bits'] >= 16:
             return data_qtype
         bits = layer_config[name]['bits']
-        data_qtype = re.sub(r"Q\d", f"Q{bits}", self.ftype.name)
+        super_bits = layer_config[name]["super_bits"]
+        sym = layer_config[name]["sym"]
+        if bits==2:
+            return gguf.GGMLQuantizationType.Q2_K
+        if bits==3:
+            return gguf.GGMLQuantizationType.Q3_K
+        if bits==4:
+            if super_bits is not None:
+                return gguf.GGMLQuantizationType.Q4_K
+            if super_bits is None and sym:
+                return gguf.GGMLQuantizationType.Q4_0
+            if super_bits is None and not sym:
+                return gguf.GGMLQuantizationType.Q4_1
+        if bits == 5:
+            if super_bits is not None:
+                return gguf.GGMLQuantizationType.Q5_K
+            if super_bits is None and sym:
+                return gguf.GGMLQuantizationType.Q5_0
+            if super_bits is None and not sym:
+                return gguf.GGMLQuantizationType.Q5_1
+        if bits==6:
+            return gguf.GGMLQuantizationType.Q6_K
+        if bits==8:
+            return gguf.GGMLQuantizationType.Q8_0
+        raise ValueError(f"Unknown file type: {data_qtype}")
 
-        if data_qtype == "MOSTLY_Q8_0":
-            data_qtype = gguf.GGMLQuantizationType.Q8_0
-        elif data_qtype == "MOSTLY_Q4_0":
-            data_qtype = gguf.GGMLQuantizationType.Q4_0
-        elif data_qtype == "MOSTLY_Q4_1":
-            data_qtype = gguf.GGMLQuantizationType.Q4_1
-        elif data_qtype == "MOSTLY_Q5_0":
-            data_qtype = gguf.GGMLQuantizationType.Q5_0
-        elif data_qtype == "MOSTLY_Q5_1":
-            data_qtype = gguf.GGMLQuantizationType.Q5_1
-        elif data_qtype.startswith("MOSTLY_Q2_K"):
-            data_qtype = gguf.GGMLQuantizationType.Q2_K
-        elif data_qtype.startswith("MOSTLY_Q3_K"):
-            data_qtype = gguf.GGMLQuantizationType.Q3_K
-        elif data_qtype.startswith("MOSTLY_Q4_K"):
-            data_qtype = gguf.GGMLQuantizationType.Q4_K
-        elif data_qtype.startswith("MOSTLY_Q5_K"):
-            data_qtype = gguf.GGMLQuantizationType.Q5_K
-        elif data_qtype.startswith("MOSTLY_Q6_K"):
-            data_qtype = gguf.GGMLQuantizationType.Q6_K
-        else:
-            raise ValueError(f"Unknown file type: {data_qtype}")
-        return data_qtype
+        # data_qtype = re.sub(r"Q\d", f"Q{bits}", self.ftype.name)
+        #
+        # if data_qtype == "MOSTLY_Q8_0":
+        #     data_qtype = gguf.GGMLQuantizationType.Q8_0
+        # elif data_qtype == "MOSTLY_Q4_0":
+        #     data_qtype = gguf.GGMLQuantizationType.Q4_0
+        # elif data_qtype == "MOSTLY_Q4_1":
+        #     data_qtype = gguf.GGMLQuantizationType.Q4_1
+        # elif data_qtype == "MOSTLY_Q5_0":
+        #     data_qtype = gguf.GGMLQuantizationType.Q5_0
+        # elif data_qtype == "MOSTLY_Q5_1":
+        #     data_qtype = gguf.GGMLQuantizationType.Q5_1
+        # elif data_qtype.startswith("MOSTLY_Q2_K"):
+        #     data_qtype = gguf.GGMLQuantizationType.Q2_K
+        # elif data_qtype.startswith("MOSTLY_Q3_K"):
+        #     data_qtype = gguf.GGMLQuantizationType.Q3_K
+        # elif data_qtype.startswith("MOSTLY_Q4_K"):
+        #     data_qtype = gguf.GGMLQuantizationType.Q4_K
+        # elif data_qtype.startswith("MOSTLY_Q5_K"):
+        #     data_qtype = gguf.GGMLQuantizationType.Q5_K
+        # elif data_qtype.startswith("MOSTLY_Q6_K"):
+        #     data_qtype = gguf.GGMLQuantizationType.Q6_K
+        # else:
+        #     raise ValueError(f"Unknown file type: {data_qtype}")
+        # return data_qtype
 
     def prepare_tensors(self):
         max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")

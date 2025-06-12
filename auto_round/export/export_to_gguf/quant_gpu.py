@@ -90,8 +90,8 @@ def make_qx_quant(data, bits, rmse_type=0, qw=None):
         w = torch.abs(data)
     else:
         w = torch.sqrt(torch.abs(data))
-    sumlx = torch.sum(w * data * L, axis=-1)
-    suml2 = torch.sum(w * L * L, axis=-1)
+    sumlx = torch.sum(w * data * L, dim=-1)
+    suml2 = torch.sum(w * L * L, dim=-1)
     scales = torch.where(suml2 != 0, sumlx / suml2, 0)
     if return_early:
         iscales_inv = torch.where(iscales != 0, 1 / iscales, 0).reshape(iscales.shape[:2])
@@ -104,8 +104,8 @@ def make_qx_quant(data, bits, rmse_type=0, qw=None):
             continue
         iscales = torch.where(group_max != 0, -(nmax + -0.1 * _is) / nmax, 0)
         tmp_L = torch.round(iscales * data).clip(-nmax, nmax - 1)
-        sumlx = torch.sum(w * data * L, axis=-1)
-        suml2 = torch.sum(w * L * L, axis=-1)
+        sumlx = torch.sum(w * data * L, dim=-1)
+        suml2 = torch.sum(w * L * L, dim=-1)
 
         replace_id = (suml2 > 0) & (sumlx * sumlx > best * suml2)
         L[replace_id] = tmp_L[replace_id]
