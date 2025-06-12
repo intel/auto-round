@@ -381,10 +381,10 @@ def quant_tensor_gguf_asym_dq(
         )
         scale = scale.reshape(-1, super_group_size)
         wmin_m = wmin_m.reshape(-1, super_group_size)
-        scale, d_scale=double_quant_tensor(scale,super_bits)
+        scale, d_scale = double_quant_tensor(scale, super_bits)
         wmin_m, d_wmin_m = double_quant_tensor(wmin_m, super_bits)
-        wmin_m = wmin_m.view(-1,1)
-        scale = scale.view(-1,1)
+        wmin_m = wmin_m.view(-1, 1)
+        scale = scale.view(-1, 1)
     else:
         search_kwargs = {
             2: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},

@@ -451,7 +451,7 @@ class AutoRound(object):
         has_gguf_k = False
         has_bisides_ggufk = False
         for format_ in self.formats:
-            if "gguf" and "k" in format_:
+            if "gguf" in format_ and "k" in format_:
                 has_gguf_k = True
             elif format_ != "fake":
                 has_bisides_ggufk = True
