@@ -1246,7 +1246,6 @@ def _gguf_args_check(args_or_ar, format_str=None):
             for k in args_or_ar.layer_config[layer_name]:
                 if hasattr(args_or_ar, k):
                     args_or_ar.layer_config[layer_name][k] = getattr(args_or_ar, k)
-        args_or_ar.has_qlayer_outside_block = args_or_ar.set_layerwise_config(args_or_ar.layer_config)
     return args_or_ar
 
 

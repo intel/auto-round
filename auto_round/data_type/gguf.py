@@ -386,6 +386,7 @@ def quant_tensor_gguf_asym_dq(
         wmin_m = wmin_m.view(-1, 1)
         scale = scale.view(-1, 1)
     else:
+        imatrix = imatrix.to(tensor.device)
         search_kwargs = {
             2: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
             4: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
@@ -544,6 +545,7 @@ def quant_tensor_gguf_sym_dq(
         elif bits == 6:
             scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
     else:
+        imatrix = imatrix.to(tensor.device)
         if bits == 3:
             sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
             imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
