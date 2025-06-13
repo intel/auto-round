@@ -52,9 +52,7 @@ import math
 import numpy as np
 import torch
 
-# autoround import
 from auto_round.utils import logger, LazyImport
-from .quant_cpu import ggml_quant_cpu
 from .quant_gpu import ggml_quant_gpu
 
 gguf = LazyImport("gguf")
@@ -64,6 +62,7 @@ if TYPE_CHECKING:
 
 if 'NO_LOCAL_GGUF' not in os.environ:
     sys.path.insert(1, str(Path(__file__).parent / 'gguf-py'))
+
 
 ###### MODEL DEFINITIONS ######
 
@@ -189,7 +188,7 @@ class OriModel:
     def set_vocab(self):
         self._set_vocab_gpt2()
 
-    def get_tensors(self) -> Iterator[tuple[str, Tensor]]: # pylint: disable=E0202
+    def get_tensors(self) -> Iterator[tuple[str, Tensor]]:  # pylint: disable=E0202
         tensor_names_from_parts: set[str] = set()
 
         index_name = "model.safetensors" if self.is_safetensors else "pytorch_model.bin"
@@ -650,7 +649,7 @@ class OriModel:
         # we will use this unique identifier to write a "tokenizer.ggml.pre" entry in the GGUF file which we can
         # use in llama.cpp to implement the same pre-tokenizer
 
-        chktxt = '\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български \'\'\'\'\'\'```````""""......!!!!!!?????? I\'ve been \'told he\'s there, \'RE you sure? \'M not sure I\'ll make it, \'D you like some tea? We\'Ve a\'lL' # pylint: disable=C0301
+        chktxt = '\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български \'\'\'\'\'\'```````""""......!!!!!!?????? I\'ve been \'told he\'s there, \'RE you sure? \'M not sure I\'ll make it, \'D you like some tea? We\'Ve a\'lL'  # pylint: disable=C0301
 
         chktok = tokenizer.encode(chktxt)
         chkhsh = sha256(str(chktok).encode()).hexdigest()
@@ -733,7 +732,7 @@ class OriModel:
             # ref: https://huggingface.co/jinaai/jina-embeddings-v2-base-code
             res = "jina-v2-code"
         if chkhsh == "b6e8e1518dc4305be2fe39c313ed643381c4da5db34a98f6a04c093f8afbe99b" \
-            or chkhsh == "81d72c7348a9f0ebe86f23298d37debe0a5e71149e29bd283904c02262b27516":
+                or chkhsh == "81d72c7348a9f0ebe86f23298d37debe0a5e71149e29bd283904c02262b27516":
             # ref: https://huggingface.co/THUDM/glm-4-9b-chat
             res = "chatglm-bpe"
         if chkhsh == "7fc505bd3104ca1083b150b17d088b59534ede9bde81f0dd2090967d7fe52cee":
@@ -1135,7 +1134,7 @@ class Model(OriModel):
     def get_tensors(self) -> Iterator[tuple[str, Tensor]]:
         for name, tensor in self.model.named_parameters():
             yield name, tensor
-    
+
     def _quant_data(self, data_torch, data_qtype, name, bid):
         from auto_round.utils import get_module
         suffix = '.weight'
@@ -1144,7 +1143,7 @@ class Model(OriModel):
             module = get_module(self.model, layer_name)
             if hasattr(module, "scale"):
                 if hasattr(self, "permute"):
-                    bs = module.scale.shape[0]
+                    bs = module.weight.shape[0]
                     for attr in ["scale", "zp", "w_d_scale", "w_d_wmin_m", "w_wmin_m"]:
                         if hasattr(module, attr) and getattr(module, attr) is not None:
                             attr_tensor = getattr(module, attr)
@@ -1154,30 +1153,35 @@ class Model(OriModel):
                             setattr(module, attr, attr_tensor)
                 scale = module.scale
                 zp = module.zp if hasattr(module, "zp") else None
-                ggml_quant = ggml_quant_gpu if torch.cuda.is_available() else ggml_quant_cpu
-                # ggml_quant = ggml_quant_cpu
+                if torch.cuda.is_available():
+                    device = "cuda"
+                elif torch.xpu.is_available():
+                    device = "xpu"
+                else:
+                    device = "cpu"
 
                 if data_qtype.name.lower().endswith("_k"):
                     d_scale = module.w_d_scale.to(torch.float32)
                     d_wmin_m = module.w_d_wmin_m.to(torch.float32) if hasattr(module, "w_d_wmin_m") else None
                     wmin_m = module.w_wmin_m.to(torch.float32) if hasattr(module, "w_wmin_m") else None
-                    data = ggml_quant(
+                    data = ggml_quant_gpu(
                         data_torch,
                         data_qtype.name.lower(),
                         scale,
                         zp,
                         wmin_m=wmin_m,
                         d_scale=d_scale,
-                        d_wmin_m=d_wmin_m
+                        d_wmin_m=d_wmin_m,
+                        device=device
                     )
                 else:
-                    data = ggml_quant(data_torch, data_qtype.name.lower(), scale, zp)
+                    data = ggml_quant_gpu(data_torch, data_qtype.name.lower(), scale, zp, device=device)
             else:
                 # if data_torch.dtype ==torch.float32:
                 #     data_qtype = gguf.GGMLQuantizationType.F32
                 # else:
                 #     data_qtype = gguf.GGMLQuantizationType.F16
-                data_qtype = gguf.GGMLQuantizationType.F32 ##FP16 has issues at inference
+                data_qtype = gguf.GGMLQuantizationType.F32  ##FP16 has issues at inference
                 data = data_torch.to(torch.float32).squeeze().cpu().numpy()
         else:
             # if data_torch.dtype == torch.float32:
@@ -1196,11 +1200,11 @@ class Model(OriModel):
         bits = layer_config[name]['bits']
         super_bits = layer_config[name]["super_bits"]
         sym = layer_config[name]["sym"]
-        if bits==2:
+        if bits == 2:
             return gguf.GGMLQuantizationType.Q2_K
-        if bits==3:
+        if bits == 3:
             return gguf.GGMLQuantizationType.Q3_K
-        if bits==4:
+        if bits == 4:
             if super_bits is not None:
                 return gguf.GGMLQuantizationType.Q4_K
             if super_bits is None and sym:
@@ -1214,9 +1218,9 @@ class Model(OriModel):
                 return gguf.GGMLQuantizationType.Q5_0
             if super_bits is None and not sym:
                 return gguf.GGMLQuantizationType.Q5_1
-        if bits==6:
+        if bits == 6:
             return gguf.GGMLQuantizationType.Q6_K
-        if bits==8:
+        if bits == 8:
             return gguf.GGMLQuantizationType.Q8_0
         raise ValueError(f"Unknown file type: {data_qtype}")
 
@@ -1307,65 +1311,68 @@ class Model(OriModel):
                         # TODO: use Q4_K and Q6_K
                         data_qtype = gguf.GGMLQuantizationType.F16
                         # data_qtype = gguf.GGMLQuantizationType.Q8_0  # llama.cpp:llama_tensor_get_type
-                
+
                 # get data_qtype by layer_config
                 data_qtype = self.get_qtype_by_layer_config(self.layer_config, name, data_qtype)
 
-                # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
-                if isinstance(data_qtype, bool):
-                    if self.ftype == gguf.LlamaFileType.ALL_F32:
-                        data_qtype = gguf.GGMLQuantizationType.F32
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_F16:
+                # # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
+                # if isinstance(data_qtype, bool):
+                #     if self.ftype == gguf.LlamaFileType.ALL_F32:
+                #         data_qtype = gguf.GGMLQuantizationType.F32
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_F16:
+                #         data_qtype = gguf.GGMLQuantizationType.F16
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_BF16:
+                #         data_qtype = gguf.GGMLQuantizationType.BF16
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q8_0:
+                #         data_qtype = gguf.GGMLQuantizationType.Q8_0
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_0:
+                #         data_qtype = gguf.GGMLQuantizationType.Q4_0
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_1:
+                #         data_qtype = gguf.GGMLQuantizationType.Q4_1
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_0:
+                #         data_qtype = gguf.GGMLQuantizationType.Q5_0
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_1:
+                #         data_qtype = gguf.GGMLQuantizationType.Q5_1
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K_S:
+                #         data_qtype = gguf.GGMLQuantizationType.Q2_K
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_S:
+                #         data_qtype = gguf.GGMLQuantizationType.Q3_K
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S:
+                #         data_qtype = gguf.GGMLQuantizationType.Q4_K
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_M:
+                #         data_qtype = gguf.GGMLQuantizationType.Q4_K
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_S:
+                #         data_qtype = gguf.GGMLQuantizationType.Q5_K
+                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q6_K:
+                #         data_qtype = gguf.GGMLQuantizationType.Q6_K
+                #     else:
+                #         raise ValueError(f"Unknown file type: {self.ftype.name}")
+
+                if isinstance(data_qtype, bool) or data_qtype in [gguf.GGMLQuantizationType.F16,
+                                                                  gguf.GGMLQuantizationType.BF16,
+                                                                  gguf.GGMLQuantizationType.F32]:
+                    try:
+                        data = gguf.quants.quantize(data, data_qtype)
+                    except gguf.QuantError as e:
+                        logger.warning("%s, %s", e, "falling back to F16")
                         data_qtype = gguf.GGMLQuantizationType.F16
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_BF16:
-                        data_qtype = gguf.GGMLQuantizationType.BF16
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q8_0:
-                        data_qtype = gguf.GGMLQuantizationType.Q8_0
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_0:
-                        data_qtype = gguf.GGMLQuantizationType.Q4_0
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_1:
-                        data_qtype = gguf.GGMLQuantizationType.Q4_1
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_0:
-                        data_qtype = gguf.GGMLQuantizationType.Q5_0
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_1:
-                        data_qtype = gguf.GGMLQuantizationType.Q5_1
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K_S:
-                        data_qtype = gguf.GGMLQuantizationType.Q2_K
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_S:
-                        data_qtype = gguf.GGMLQuantizationType.Q3_K
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S:
-                        data_qtype = gguf.GGMLQuantizationType.Q4_K
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_M:
-                        data_qtype = gguf.GGMLQuantizationType.Q4_K
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_S:
-                        data_qtype = gguf.GGMLQuantizationType.Q5_K
-                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q6_K:
-                        data_qtype = gguf.GGMLQuantizationType.Q6_K
-                    else:
-                        raise ValueError(f"Unknown file type: {self.ftype.name}")
-
-                # try:
-                #     data = gguf.quants.quantize(data, data_qtype)
-                # except gguf.QuantError as e:
-                #     logger.warning("%s, %s", e, "falling back to F16")
-                #     data_qtype = gguf.GGMLQuantizationType.F16
-                #     data = gguf.quants.quantize(data, data_qtype)
-
-                # for MOE model
-                if len(data_torch.shape) == 3:
-                    new_data = []
-                    for idx, arr in enumerate(data_torch):
-                        arr_name = name.split('.')
-                        for i in range(len(arr_name) - 1, -1, -1):
-                            if arr_name[i].isdecimal() and int(arr_name[i]) == (data_torch.shape[0] - 1):
-                                arr_name[i] = str(idx)
-                        arr_name = ".".join(arr_name)
-                        arr, data_qtype = self._quant_data(arr, data_qtype, arr_name, bid)
-                        new_data.append(arr)
-                    data = np.array(new_data)
-                    del new_data
+                        data = gguf.quants.quantize(data, data_qtype)
                 else:
-                    data, data_qtype = self._quant_data(data_torch, data_qtype, name, bid)
+                    # for MOE model
+                    if len(data_torch.shape) == 3:
+                        new_data = []
+                        for idx, arr in enumerate(data_torch):
+                            arr_name = name.split('.')
+                            for i in range(len(arr_name) - 1, -1, -1):
+                                if arr_name[i].isdecimal() and int(arr_name[i]) == (data_torch.shape[0] - 1):
+                                    arr_name[i] = str(idx)
+                            arr_name = ".".join(arr_name)
+                            arr, data_qtype = self._quant_data(arr, data_qtype, arr_name, bid)
+                            new_data.append(arr)
+                        data = np.array(new_data)
+                        del new_data
+                    else:
+                        data, data_qtype = self._quant_data(data_torch, data_qtype, name, bid)
 
                 shape = gguf.quant_shape_from_byte_shape(
                     data.shape, data_qtype) if data.dtype == np.uint8 else data.shape
@@ -1393,7 +1400,7 @@ class GPTNeoXModel(Model):
         self.gguf_writer.add_block_count(block_count)
         self.gguf_writer.add_feed_forward_length(self.hparams["intermediate_size"])
         self.gguf_writer.add_rope_dimension_count(
-            int(self.hparams["rotary_pct"] * (self.hparams["hidden_size"] // self.hparams["num_attention_heads"])),)
+            int(self.hparams["rotary_pct"] * (self.hparams["hidden_size"] // self.hparams["num_attention_heads"])), )
         self.gguf_writer.add_head_count(self.hparams["num_attention_heads"])
         self.gguf_writer.add_parallel_residual(self.hparams.get("use_parallel_residual", True))
         self.gguf_writer.add_layer_norm_eps(self.hparams["layer_norm_eps"])
@@ -1634,18 +1641,18 @@ class BaichuanModel(Model):
                             *weights.shape[1:]).swapaxes(1, 2).reshape(weights.shape))
 
     def _reverse_hf_permute_part(
-        self,
-        weights: Tensor,
-        n_part: int,
-        n_head: int,
-        n_head_kv: int | None = None,
+            self,
+            weights: Tensor,
+            n_part: int,
+            n_head: int,
+            n_head_kv: int | None = None,
     ) -> Tensor:
         r = weights.shape[0] // 3
-        return self._reverse_hf_permute(weights[r * n_part:r*n_part + r, ...], n_head, n_head_kv)
+        return self._reverse_hf_permute(weights[r * n_part:r * n_part + r, ...], n_head, n_head_kv)
 
     def _reverse_hf_part(self, weights: Tensor, n_part: int) -> Tensor:
         r = weights.shape[0] // 3
-        return weights[r * n_part:r*n_part + r, ...]
+        return weights[r * n_part:r * n_part + r, ...]
 
 
 @Model.register("XverseForCausalLM")
@@ -1798,7 +1805,7 @@ class FalconModel(Model):
             n_head_kv = self.find_hparam(["num_kv_heads", "n_head_kv"], optional=True) or 1
             head_dim = self.hparams["hidden_size"] // n_head
 
-            qkv = data_torch.view(n_head_kv, n_head//n_head_kv + 2, head_dim, head_dim * n_head)
+            qkv = data_torch.view(n_head_kv, n_head // n_head_kv + 2, head_dim, head_dim * n_head)
             q = qkv[:, :-2].reshape(n_head * head_dim, head_dim * n_head)
             k = qkv[:, [-2]].reshape(n_head_kv * head_dim, head_dim * n_head)
             v = qkv[:, [-1]].reshape(n_head_kv * head_dim, head_dim * n_head)
@@ -1845,7 +1852,7 @@ class RefactModel(Model):
         inner_dim = 4 * hidden_dim
         hidden_dim = int(2 * inner_dim / 3)
         multiple_of = 256
-        ff_dim = multiple_of * ((hidden_dim+multiple_of-1) // multiple_of)
+        ff_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
         block_count = self.hparams["n_layer"]
 
@@ -1865,7 +1872,7 @@ class RefactModel(Model):
         inner_dim = 4 * hidden_dim
         hidden_dim = int(2 * inner_dim / 3)
         multiple_of = 256
-        ff_dim = multiple_of * ((hidden_dim+multiple_of-1) // multiple_of)
+        ff_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
         n_head = self.hparams["n_head"]
         n_head_kv = 1
         head_dim = self.hparams["n_embd"] // n_head
@@ -2092,7 +2099,7 @@ class LlamaModel(Model):
             if rope_scaling.get("rope_type", '').lower() == "llama3":
                 base = self.hparams.get("rope_theta", 10000.0)
                 dim = self.hparams.get("head_dim", self.hparams["hidden_size"] // self.hparams["num_attention_heads"])
-                freqs = 1.0 / (base**(torch.arange(0, dim, 2, dtype=torch.float32) / dim))
+                freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
 
                 factor = rope_scaling.get("factor", 8.0)
                 low_freq_factor = rope_scaling.get("low_freq_factor", 1.0)
@@ -2111,8 +2118,8 @@ class LlamaModel(Model):
                     elif wavelen > low_freq_wavelen:
                         rope_factors.append(factor)
                     else:
-                        smooth = (old_context_len/wavelen - low_freq_factor) / (high_freq_factor-low_freq_factor)
-                        rope_factors.append(1 / ((1-smooth) / factor + smooth))
+                        smooth = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
+                        rope_factors.append(1 / ((1 - smooth) / factor + smooth))
 
                 yield (
                     self.format_tensor_name(gguf.MODEL_TENSOR.ROPE_FREQS),
@@ -2211,7 +2218,7 @@ class DeciModel(Model):
         # DeciLM-specific code
         if n % k == 0:
             return n
-        return n + k - (n%k)
+        return n + k - (n % k)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -2341,7 +2348,7 @@ class DeciModel(Model):
             if rope_scaling.get("rope_type", '').lower() == "llama3":
                 base = self.hparams.get("rope_theta", 10000.0)
                 dim = self.hparams.get("head_dim", self.hparams["hidden_size"] // self.hparams["num_attention_heads"])
-                freqs = 1.0 / (base**(torch.arange(0, dim, 2, dtype=torch.float32) / dim))
+                freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
 
                 factor = rope_scaling.get("factor", 8.0)
                 low_freq_factor = rope_scaling.get("low_freq_factor", 1.0)
@@ -2360,8 +2367,8 @@ class DeciModel(Model):
                     elif wavelen > low_freq_wavelen:
                         rope_factors.append(factor)
                     else:
-                        smooth = (old_context_len/wavelen - low_freq_factor) / (high_freq_factor-low_freq_factor)
-                        rope_factors.append(1 / ((1-smooth) / factor + smooth))
+                        smooth = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
+                        rope_factors.append(1 / ((1 - smooth) / factor + smooth))
 
                 yield (
                     self.format_tensor_name(gguf.MODEL_TENSOR.ROPE_FREQS),
@@ -2395,13 +2402,13 @@ class BitnetModel(Model):
         new_name = self.map_tensor_name(name)
 
         if any(self.match_model_tensor_name(new_name, key, bid) for key in [
-                gguf.MODEL_TENSOR.ATTN_Q,
-                gguf.MODEL_TENSOR.ATTN_K,
-                gguf.MODEL_TENSOR.ATTN_V,
-                gguf.MODEL_TENSOR.ATTN_OUT,
-                gguf.MODEL_TENSOR.FFN_UP,
-                gguf.MODEL_TENSOR.FFN_DOWN,
-                gguf.MODEL_TENSOR.FFN_GATE,
+            gguf.MODEL_TENSOR.ATTN_Q,
+            gguf.MODEL_TENSOR.ATTN_K,
+            gguf.MODEL_TENSOR.ATTN_V,
+            gguf.MODEL_TENSOR.ATTN_OUT,
+            gguf.MODEL_TENSOR.FFN_UP,
+            gguf.MODEL_TENSOR.FFN_DOWN,
+            gguf.MODEL_TENSOR.FFN_GATE,
         ]):
             # transform weight into 1/0/-1 (in fp32)
             data_torch = self.weight_quant(data_torch)
@@ -2524,7 +2531,7 @@ class DbrxModel(Model):
         return [(new_name, data_torch)]
 
     def tensor_force_quant(self, name: str, new_name: str, bid: int | None, n_dims: int) \
-        -> gguf.GGMLQuantizationType | bool:
+            -> gguf.GGMLQuantizationType | bool:
         del name, new_name, bid  # unused
 
         return n_dims > 1
@@ -2539,7 +2546,7 @@ class MiniCPMModel(Model):
         embedding_scale = float(self.hparams["scale_emb"])
         self.gguf_writer.add_embedding_scale(embedding_scale)
         logger.info(f"gguf: (minicpm) embedding_scale = {embedding_scale}")
-        residual_scale = self.hparams["scale_depth"] / self.hparams["num_hidden_layers"]**0.5
+        residual_scale = self.hparams["scale_depth"] / self.hparams["num_hidden_layers"] ** 0.5
         self.gguf_writer.add_residual_scale(residual_scale)
         logger.info(f"gguf: (minicpm) residual_scale = {residual_scale}")
         logit_scale = self.hparams["hidden_size"] / self.hparams["dim_model_base"]
@@ -2738,8 +2745,8 @@ class WavTokenizerDecModel(Model):
 
         if \
                 name.endswith("codebook.cluster_size") or \
-                name.endswith("codebook.embed_avg") or \
-                name.endswith("codebook.inited"):
+                        name.endswith("codebook.embed_avg") or \
+                        name.endswith("codebook.inited"):
             logger.debug(f"Skipping {name!r}")
             return []
 
@@ -3707,11 +3714,11 @@ class XLMRobertaModel(BertModel):
         tokens = [b'<s>', b'<pad>', b'</s>', b'<unk>'] + tokens[3:-1]
         scores = [0.0, 0.0, 0.0, 0.0] + scores[3:-1]
         toktypes = [
-            SentencePieceTokenTypes.CONTROL,
-            SentencePieceTokenTypes.CONTROL,
-            SentencePieceTokenTypes.CONTROL,
-            SentencePieceTokenTypes.UNKNOWN,
-        ] + toktypes[3:-1]
+                       SentencePieceTokenTypes.CONTROL,
+                       SentencePieceTokenTypes.CONTROL,
+                       SentencePieceTokenTypes.CONTROL,
+                       SentencePieceTokenTypes.UNKNOWN,
+                   ] + toktypes[3:-1]
 
         self.gguf_writer.add_tokenizer_model("t5")
         self.gguf_writer.add_tokenizer_pre("default")
@@ -3774,7 +3781,7 @@ class GemmaModel(Model):
         self.gguf_writer.add_feed_forward_length(hparams["intermediate_size"])
         self.gguf_writer.add_head_count(hparams["num_attention_heads"])
         self.gguf_writer.add_head_count_kv(self.hparams["num_key_value_heads"] \
-            if "num_key_value_heads" in hparams else hparams["num_attention_heads"])
+                                               if "num_key_value_heads" in hparams else hparams["num_attention_heads"])
         self.gguf_writer.add_layer_norm_rms_eps(self.hparams["rms_norm_eps"])
         self.gguf_writer.add_key_length(hparams["head_dim"])
         self.gguf_writer.add_value_length(hparams["head_dim"])
@@ -3814,7 +3821,7 @@ class Gemma2Model(Model):
         self.gguf_writer.add_feed_forward_length(hparams["intermediate_size"])
         self.gguf_writer.add_head_count(hparams["num_attention_heads"])
         self.gguf_writer.add_head_count_kv(self.hparams["num_key_value_heads"] \
-            if "num_key_value_heads" in hparams else hparams["num_attention_heads"])
+                                               if "num_key_value_heads" in hparams else hparams["num_attention_heads"])
         self.gguf_writer.add_layer_norm_rms_eps(self.hparams["rms_norm_eps"])
         self.gguf_writer.add_key_length(hparams["head_dim"])
         self.gguf_writer.add_value_length(hparams["head_dim"])
@@ -3962,7 +3969,7 @@ class Rwkv6Model(Model):
             new_name += ".weight"
 
         if new_name.endswith("time_mix_w1.weight") \
-            or new_name.endswith("time_mix_decay_w1.weight") or new_name.endswith("time_mix_decay_w2.weight"):
+                or new_name.endswith("time_mix_decay_w1.weight") or new_name.endswith("time_mix_decay_w2.weight"):
             data_torch = data_torch.transpose(0, 1)
 
         if new_name.endswith("time_mix_w2.weight"):
@@ -3975,7 +3982,7 @@ class Rwkv6Model(Model):
             rescale_every_n_layers = self.hparams["rescale_every"]
             if rescale_every_n_layers > 0:
                 if new_name.endswith("time_mix_output.weight") or new_name.endswith("channel_mix_value.weight"):
-                    data_torch = data_torch.div_(2**int(bid // rescale_every_n_layers))
+                    data_torch = data_torch.div_(2 ** int(bid // rescale_every_n_layers))
         except KeyError:
             pass
 
@@ -3990,7 +3997,7 @@ class Rwkv6Model(Model):
                    for i in ["w", "k", "v", "r", "g"]):
                 new_name = f"blk.{bid}.time_mix_lerp_fused.weight"
                 data = torch.stack([self.lerp_weights[bid][f"blk.{bid}.time_mix_lerp_{i}.weight"].unsqueeze(0) \
-                    for i in ["w", "k", "v", "r", "g"]], dim=0).unsqueeze(1)
+                                    for i in ["w", "k", "v", "r", "g"]], dim=0).unsqueeze(1)
                 yield (new_name, data)
             return
 
@@ -4059,7 +4066,7 @@ class Rwkv7Model(Model):
         self._set_vocab_rwkv_world()
 
     def calc_lora_rank(self, hidden_size, exponent, multiplier):
-        return max(1, round(hidden_size**exponent * multiplier / 32)) * 32
+        return max(1, round(hidden_size ** exponent * multiplier / 32)) * 32
 
     def set_gguf_parameters(self):
         block_count = self.hparams["num_hidden_layers"]
@@ -4076,23 +4083,30 @@ class Rwkv7Model(Model):
         # ICLR: In-Context-Learning-Rate
         try:
             lora_rank_decay = self.hparams["lora_rank_decay"] if self.hparams["lora_rank_decay"] \
-                is not None else self.calc_lora_rank(hidden_size, 0.5, 1.8)
+                                                                 is not None else self.calc_lora_rank(hidden_size, 0.5,
+                                                                                                      1.8)
             lora_rank_iclr = self.hparams["lora_rank_iclr"] if self.hparams["lora_rank_iclr"] \
-                is not None else self.calc_lora_rank(hidden_size, 0.5, 1.8)
+                                                               is not None else self.calc_lora_rank(hidden_size, 0.5,
+                                                                                                    1.8)
             lora_rank_value_residual_mix = self.hparams["lora_rank_value_residual_mix"] \
                 if self.hparams["lora_rank_value_residual_mix"] is not None \
-                    else self.calc_lora_rank(hidden_size, 0.5, 1.3)
+                else self.calc_lora_rank(hidden_size, 0.5, 1.3)
             lora_rank_gate = self.hparams["lora_rank_gate"] if self.hparams["lora_rank_gate"] \
-                is not None else self.calc_lora_rank(hidden_size, 0.8, 0.6)
+                                                               is not None else self.calc_lora_rank(hidden_size, 0.8,
+                                                                                                    0.6)
         except KeyError:
             lora_rank_decay = self.hparams["decay_low_rank_dim"] if self.hparams["decay_low_rank_dim"] \
-            is not None else self.calc_lora_rank(hidden_size, 0.5, 1.8)
+                                                                    is not None else self.calc_lora_rank(hidden_size,
+                                                                                                         0.5, 1.8)
             lora_rank_iclr = self.hparams["a_low_rank_dim"] if self.hparams["a_low_rank_dim"] \
-                is not None else self.calc_lora_rank(hidden_size, 0.5, 1.8)
+                                                               is not None else self.calc_lora_rank(hidden_size, 0.5,
+                                                                                                    1.8)
             lora_rank_value_residual_mix = self.hparams["v_low_rank_dim"] if self.hparams["v_low_rank_dim"] \
-                is not None else self.calc_lora_rank(hidden_size, 0.5, 1.3)
+                                                                             is not None else self.calc_lora_rank(
+                hidden_size, 0.5, 1.3)
             lora_rank_gate = self.hparams["gate_low_rank_dim"] if self.hparams["gate_low_rank_dim"] \
-                is not None else self.calc_lora_rank(hidden_size, 0.8, 0.6)
+                                                                  is not None else self.calc_lora_rank(hidden_size, 0.8,
+                                                                                                       0.6)
 
         # RWKV isn't context limited
         self.gguf_writer.add_context_length(1048576)
@@ -4161,14 +4175,14 @@ class Rwkv7Model(Model):
                 new_name += ".weight"
 
             if self.lora_needs_transpose and any(new_name.endswith(t) for t in [
-                    "time_mix_w1.weight",
-                    "time_mix_w2.weight",
-                    "time_mix_a1.weight",
-                    "time_mix_a2.weight",
-                    "time_mix_v1.weight",
-                    "time_mix_v2.weight",
-                    "time_mix_g1.weight",
-                    "time_mix_g2.weight",
+                "time_mix_w1.weight",
+                "time_mix_w2.weight",
+                "time_mix_a1.weight",
+                "time_mix_a2.weight",
+                "time_mix_v1.weight",
+                "time_mix_v2.weight",
+                "time_mix_g1.weight",
+                "time_mix_g2.weight",
             ]):
                 data_torch = data_torch.transpose(0, 1)
 
@@ -4261,7 +4275,7 @@ class MambaModel(Model):
         # Fail early for models which don't have a block expansion factor of 2
         assert d_inner == 2 * d_model
 
-        self.gguf_writer.add_context_length(2**20)  # arbitrary value; for those who use the default
+        self.gguf_writer.add_context_length(2 ** 20)  # arbitrary value; for those who use the default
         self.gguf_writer.add_embedding_length(d_model)
         self.gguf_writer.add_feed_forward_length(0)  # unused, but seemingly required when loading
         self.gguf_writer.add_head_count(0)  # unused, but seemingly required when loading
@@ -4334,7 +4348,7 @@ class Cohere2Model(Model):
         rotary_pct = self.hparams["rotary_pct"]
         hidden_size = self.hparams["hidden_size"]
         num_attention_heads = self.hparams["num_attention_heads"]
-        self.gguf_writer.add_rope_dimension_count(int(rotary_pct * (hidden_size//num_attention_heads)))
+        self.gguf_writer.add_rope_dimension_count(int(rotary_pct * (hidden_size // num_attention_heads)))
         self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.NONE)
 
 
@@ -4484,7 +4498,7 @@ class OpenELMModel(Model):
 
     @staticmethod
     def _make_divisible(v: float | int, divisor: int) -> int:
-        new_v = max(divisor, int(v + divisor/2) // divisor * divisor)
+        new_v = max(divisor, int(v + divisor / 2) // divisor * divisor)
         # Make sure that round down does not go down by more than 10%.
         if new_v < 0.9 * v:
             new_v += divisor
@@ -4901,7 +4915,7 @@ class DeepseekV2Model(Model):
             v_head_dim = self.hparams["v_head_dim"]
             qk_nope_head_dim = self.hparams["qk_nope_head_dim"]
 
-            assert data_torch.shape[0] == n_head_kv * (v_head_dim+qk_nope_head_dim)
+            assert data_torch.shape[0] == n_head_kv * (v_head_dim + qk_nope_head_dim)
 
             kv_b = data_torch.view(n_head_kv, v_head_dim + qk_nope_head_dim, data_torch.shape[-1])
             k_b, v_b = torch.split(kv_b, [qk_nope_head_dim, v_head_dim], dim=1)
@@ -5276,7 +5290,7 @@ class JaisModel(Model):
             # Some other models has max_alibi_bias spelled out explicitly in the hyperparams,
             # but Jais's PyTorch model simply precalculates the slope values and places them
             # in relative_pes.slopes
-            n_head_closest_log2 = 2**math.floor(math.log2(self.hparams["n_head"]))
+            n_head_closest_log2 = 2 ** math.floor(math.log2(self.hparams["n_head"]))
             first_val = float(data_torch[0].item())
             self.max_alibi_bias = -round(math.log2(first_val) * n_head_closest_log2)
 
@@ -5554,7 +5568,7 @@ class ExaoneModel(Model):
             if rope_scaling.get("rope_type", '').lower() == "llama3":
                 base = self.hparams.get("rope_theta", 10000.0)
                 dim = self.hparams.get("head_dim", self.hparams["hidden_size"] // self.hparams["num_attention_heads"])
-                freqs = 1.0 / (base**(torch.arange(0, dim, 2, dtype=torch.float32) / dim))
+                freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
 
                 factor = rope_scaling.get("factor", 8.0)
                 low_freq_factor = rope_scaling.get("low_freq_factor", 1.0)
@@ -5573,8 +5587,8 @@ class ExaoneModel(Model):
                     elif wavelen > low_freq_wavelen:
                         rope_factors.append(factor)
                     else:
-                        smooth = (old_context_len/wavelen - low_freq_factor) / (high_freq_factor-low_freq_factor)
-                        rope_factors.append(1 / ((1-smooth) / factor + smooth))
+                        smooth = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
+                        rope_factors.append(1 / ((1 - smooth) / factor + smooth))
 
                 yield (
                     self.format_tensor_name(gguf.MODEL_TENSOR.ROPE_FREQS),
@@ -5871,8 +5885,8 @@ def parse_args() -> argparse.Namespace:
         choices=["f32", "f16", "bf16", "q8_0", "tq1_0", "tq2_0", "auto"],
         default="f16",
         help="output format - use f32 for float32, f16 for float16, bf16 for bfloat16, q8_0 for Q8_0, tq1_0 or"
-        " tq2_0 for ternary, and auto for the highest-fidelity 16-bit float type depending on the first loaded"
-        " tensor type",
+             " tq2_0 for ternary, and auto for the highest-fidelity 16-bit float type depending on the first loaded"
+             " tensor type",
     )
     parser.add_argument(
         "--bigendian",
@@ -5933,10 +5947,10 @@ def parse_args() -> argparse.Namespace:
         "--remote",
         action="store_true",
         help="(Experimental) Read safetensors file remotely without downloading to disk."
-        " Config and tokenizer files will still be downloaded. To use this feature, you need"
-        " to specify Hugging Face model repo name instead of a local directory. For example:"
-        " 'HuggingFaceTB/SmolLM2-1.7B-Instruct'. Note: To access gated repo, set HF_TOKEN "
-        "environment variable to your Hugging Face token.",
+             " Config and tokenizer files will still be downloaded. To use this feature, you need"
+             " to specify Hugging Face model repo name instead of a local directory. For example:"
+             " 'HuggingFaceTB/SmolLM2-1.7B-Instruct'. Note: To access gated repo, set HF_TOKEN "
+             "environment variable to your Hugging Face token.",
     )
 
     args = parser.parse_args()

@@ -256,25 +256,25 @@ def make_qp_quants(nmax, data, quant_weights):
     L = torch.round(iscale * data).clip(max=nmax)
     sumlx = torch.sum(quant_weights * data * L, dim=-1)
     suml2 = torch.sum(quant_weights * L * L, dim=-1)
-    #
-    # for _ in range(5):
-    #     n_changed = 0
-    #     for i in range(data.shape[-1]):
-    #         slx = sumlx - quant_weights[:, i] * data[:, i] * L[:, i]
-    #         sl2 = suml2 - quant_weights[:, i] * L[:, i] * L[:, i]
-    #         replace_idx = (slx > 0) & (sl2 > 0)
-    #         new_L = torch.round(data[:, i] * sl2 / slx).clip(max=nmax)
-    #         replace_idx &= new_L != L[:, i]
-    #         slx[replace_idx] += quant_weights[:, i][replace_idx] * data[:, i][replace_idx] * new_L[replace_idx]
-    #         sl2[replace_idx] += quant_weights[:, i][replace_idx] * new_L[replace_idx] * new_L[replace_idx]
-    #
-    #         replace_idx &= slx * slx * suml2 > sumlx * sumlx * sl2
-    #         L[:, i][replace_idx] = new_L[replace_idx]
-    #         sumlx[replace_idx] = slx[replace_idx]
-    #         suml2[replace_idx] = sl2[replace_idx]
-    #         n_changed = replace_idx.sum()
-    #     if n_changed == 0:
-    #         break
+
+    for _ in range(5):
+        n_changed = 0
+        for i in range(data.shape[-1]):
+            slx = sumlx - quant_weights[:, i] * data[:, i] * L[:, i]
+            sl2 = suml2 - quant_weights[:, i] * L[:, i] * L[:, i]
+            replace_idx = (slx > 0) & (sl2 > 0)
+            new_L = torch.round(data[:, i] * sl2 / slx).clip(max=nmax)
+            replace_idx &= new_L != L[:, i]
+            slx[replace_idx] += quant_weights[:, i][replace_idx] * data[:, i][replace_idx] * new_L[replace_idx]
+            sl2[replace_idx] += quant_weights[:, i][replace_idx] * new_L[replace_idx] * new_L[replace_idx]
+
+            replace_idx &= slx * slx * suml2 > sumlx * sumlx * sl2
+            L[:, i][replace_idx] = new_L[replace_idx]
+            sumlx[replace_idx] = slx[replace_idx]
+            suml2[replace_idx] = sl2[replace_idx]
+            n_changed = replace_idx.sum()
+        if n_changed == 0:
+            break
 
     return sumlx / suml2, L
 
@@ -433,7 +433,7 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
 
     replace_ids = (max_scales > 0).squeeze()
     output_scale = torch.zeros_like(scales).to(torch.uint8)
-    output_scale[replace_ids] = torch.round(inv_scales * scales).clip(0, 15).to(torch.uint8)##invers scale 13702*1, scales 8192*7
+    output_scale[replace_ids] = torch.round(inv_scales * scales).clip(0, 15).to(torch.uint8)
 
     replace_ids = (max_mins > 0).squeeze()
     output_scale[replace_ids] |= torch.round(inv_mins * mins).clip(0, 15).to(torch.uint8) << 4
