@@ -1159,7 +1159,6 @@ class Model(OriModel):
                     device = "xpu"
                 else:
                     device = "cpu"
-
                 if data_qtype.name.lower().endswith("_k"):
                     d_scale = module.w_d_scale.to(torch.float32)
                     d_wmin_m = module.w_d_wmin_m.to(torch.float32) if hasattr(module, "w_d_wmin_m") else None
