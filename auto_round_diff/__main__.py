@@ -14,64 +14,49 @@
 import sys
 sys.path.append('.')
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
-def run_eval():
-    from auto_round.script.llm import setup_eval_parser
-    args = setup_eval_parser()
-    if args.eval_task_by_task:
-        from auto_round.script.llm import eval_task_by_task
-        eval_task_by_task(
-            model=args.model,
-            device=args.device,
-            tasks=args.tasks,
-            batch_size=args.eval_bs,
-            trust_remote_code=not args.disable_trust_remote_code,
-            eval_model_dtype=args.eval_model_dtype
-            )
-    else:
-        from auto_round.script.llm import eval
-        eval(args)
+# def run_eval():
+#     from auto_round.script.llm import setup_eval_parser
+#     args = setup_eval_parser()
+#     if args.eval_task_by_task:
+#         from auto_round.script.llm import eval_task_by_task
+#         eval_task_by_task(
+#             model=args.model,
+#             device=args.device,
+#             tasks=args.tasks,
+#             batch_size=args.eval_bs,
+#             trust_remote_code=not args.disable_trust_remote_code,
+#             eval_model_dtype=args.eval_model_dtype
+#             )
+#     else:
+#         from auto_round.script.llm import eval
+#         eval(args)
     
 
-def run():
-    if "--eval" in sys.argv:
-        sys.argv.remove("--eval")
-        run_eval()
-    else:
-        from auto_round.script.llm import setup_parser, tune
-        args = setup_parser()
-        tune(args)
+# def run():
+#     if "--eval" in sys.argv:
+#         sys.argv.remove("--eval")
+#         run_eval()
+#     else:
+#         from auto_round.script.llm import setup_parser, tune
+#         args = setup_parser()
+#         tune(args)
 
-def run_best():
-    from auto_round.script.llm import setup_best_parser, tune
-    args = setup_best_parser()
-    tune(args)
+# def run_best():
+#     from auto_round.script.llm import setup_best_parser, tune
+#     args = setup_best_parser()
+#     tune(args)
     
-def run_light():
-    from auto_round.script.llm import setup_light_parser, tune
-    args = setup_light_parser()
-    tune(args)
+# def run_light():
+#     from auto_round.script.llm import setup_light_parser, tune
+#     args = setup_light_parser()
+#     tune(args)
 
-def run_fast():
-    from auto_round.script.llm import setup_fast_parser, tune
-    args = setup_fast_parser()
-    tune(args)
-
-
-def run_mllm():
-    if "--eval" in sys.argv:
-        from auto_round.script.mllm import setup_lmeval_parser, eval
-        sys.argv.remove("--eval")
-        args = setup_lmeval_parser()
-        eval(args)
-    elif "--lmms" in sys.argv:
-        sys.argv.remove("--lmms")
-        run_lmms()
-    else:
-        from auto_round.script.mllm import setup_parser, tune
-        args = setup_parser()
-        tune(args)
+# def run_fast():
+#     from auto_round.script.llm import setup_fast_parser, tune
+#     args = setup_fast_parser()
+#     tune(args)
 
 def run_diffusion():
     if "--eval" in sys.argv:
@@ -86,21 +71,13 @@ def run_diffusion():
         args = setup_parser()
         tune(args)
 
-def run_lmms():
-    # from auto_round.script.lmms_eval import setup_lmms_args, eval
-    from auto_round.script.mllm import setup_lmms_parser, lmms_eval
-    args = setup_lmms_parser()
-    lmms_eval(args)
-
 def switch():
-    if "--mllm" in sys.argv:
-        sys.argv.remove("--mllm")
-        run_mllm()
     if "--dm" in sys.argv:
         sys.argv.remove("--dm")
         run_diffusion()
     else:
-        run()
+        pass
+        # run()
 
 if __name__ == '__main__':
     switch()

@@ -1,10 +1,24 @@
 import torch
 import os
+import gc, yaml
+import cv2
 import sys
+import numpy as np
 import argparse
 import datetime
 import logging
+from torch import autocast
 from omegaconf import OmegaConf
+from PIL import Image
+from tqdm import tqdm, trange
+from imwatermark import WatermarkEncoder
+from ldm.models.diffusion.ddim import DDIMSampler
+from ldm.models.diffusion.plms import PLMSSampler
+from itertools import islice
+from contextlib import nullcontext
+from einops import rearrange
+from torchvision.utils import make_grid
+import time
 from ldm.util import instantiate_from_config
 from auto_round_diff.utils import (
     clear_memory,
@@ -182,12 +196,11 @@ def setup_parser():
     )
     parser.add_argument(
         "--weight_asym",
-        type=bool,
-        default=True,
-        help="weight quantization asymmetric"
+        action="store_true",
+        help="asymmetric quantization for weight"
     )
     parser.add_argument(
-        "--w_data_type",
+        "--data_type_w",
         type=str,
         default='int',
         help="data type for weight quantization"
@@ -218,9 +231,8 @@ def setup_parser():
     )
     parser.add_argument(
         "--act_asym",
-        type=bool,
-        default=True,
-        help="activation quantization asymmetric"
+        action="store_true",
+        help="asymmetric quantization for activation"
     )
     parser.add_argument(
         "--act_dynamic",
@@ -228,7 +240,7 @@ def setup_parser():
         help="use dynamic quantization for activation"
     )
     parser.add_argument(
-        "--act_data_type",
+        "--data_type_act",
         type=str,
         default='int',
         help="data type for activation quantization"
@@ -356,30 +368,151 @@ def set_logger(args):
     os.makedirs(log_path)
 
     log_path = os.path.join(log_path, "run.log")
-    sh = logging.FileHandler(log_path)
+    sh = logger.FileHandler(log_path)
 
     from auto_round_diff.utils import AutoRoundFormatter
     sh.setFormatter(AutoRoundFormatter())
     logger.addHandler(sh)
 
 def load_model_from_config(config, ckpt, verbose=False):
-    logging.info(f"Loading model from {ckpt}")
+    logger.info(f"Loading model from {ckpt}")
     pl_sd = torch.load(ckpt, map_location="cpu")
     if "global_step" in pl_sd:
-        logging.info(f"Global Step: {pl_sd['global_step']}")
+        logger.info(f"Global Step: {pl_sd['global_step']}")
     sd = pl_sd["state_dict"]
     model = instantiate_from_config(config.model)
     m, u = model.load_state_dict(sd, strict=False)
     if len(m) > 0 and verbose:
-        logging.info("missing keys:")
-        logging.info(m)
+        logger.info("missing keys:")
+        logger.info(m)
     if len(u) > 0 and verbose:
-        logging.info("unexpected keys:")
-        logging.info(u)
+        logger.info("unexpected keys:")
+        logger.info(u)
 
     model.cuda()
     model.eval()
     return model
+
+def chunk(it, size):
+    it = iter(it)
+    return iter(lambda: tuple(islice(it, size)), ())
+
+def put_watermark(img, wm_encoder=None):
+    if wm_encoder is not None:
+        img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        img = wm_encoder.encode(img, 'dwtDct')
+        img = Image.fromarray(img[:, :, ::-1])
+    return img
+
+def sample(args, model):
+    os.makedirs(args.outdir, exist_ok=True)
+    outpath = os.path.join(args.outdir, datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S"))
+    os.makedirs(outpath)
+
+    logger.info("Creating invisible watermark encoder (see https://github.com/ShieldMnt/invisible-watermark)...")
+    wm = "StableDiffusionV1"
+    wm_encoder = WatermarkEncoder()
+    wm_encoder.set_watermark('bytes', wm.encode('utf-8'))
+
+    if args.plms:
+        print('plms')
+        sampler = PLMSSampler(model)
+    else:
+        sampler = DDIMSampler(model)
+
+    batch_size = args.n_samples
+    n_rows = args.n_rows if args.n_rows > 0 else batch_size
+    if not args.from_file:
+        prompt = args.prompt
+        assert prompt is not None
+        data = [batch_size * [prompt]]
+
+    else:
+        logger.info(f"reading prompts from {args.from_file}")
+        with open(args.from_file, "r") as f:
+            data = f.read().splitlines()
+            data = list(chunk(data, batch_size))
+
+    sample_path = os.path.join(outpath, "samples")
+    os.makedirs(sample_path, exist_ok=True)
+    base_count = len(os.listdir(sample_path))
+    grid_count = len(os.listdir(outpath)) - 1
+
+    # write config out
+    sampling_file = os.path.join(outpath, "sampling_config.yaml")
+    sampling_conf = vars(args)
+    with open(sampling_file, 'a+') as f:
+        yaml.dump(sampling_conf, f, default_flow_style=False)
+    if args.verbose:
+        logger.info("UNet model")
+        logger.info(model.model)
+
+    start_code = None
+    if args.fixed_code:
+        start_code = torch.randn([args.n_samples, args.C, args.H // args.f, args.W // args.f], device=model.device)
+
+    precision_scope = autocast if args.precision=="autocast" else nullcontext
+    with torch.no_grad():
+        with precision_scope("cuda"):
+            with model.ema_scope():
+                tic = time.time()
+                all_samples = list()
+                for n in trange(args.n_iter, desc="Sampling"):
+                    for prompts in tqdm(data, desc="data"):
+                        uc = None
+                        if args.scale != 1.0:
+                            uc = model.get_learned_conditioning(batch_size * [""])
+                        if isinstance(prompts, tuple):
+                            prompts = list(prompts)
+                        c = model.get_learned_conditioning(prompts)
+                        shape = [args.C, args.H // args.f, args.W // args.f]
+                        samples_ddim, _ = sampler.sample(S=args.ddim_steps,
+                                                         conditioning=c,
+                                                         batch_size=args.n_samples,
+                                                         shape=shape,
+                                                         verbose=False,
+                                                         unconditional_guidance_scale=args.scale,
+                                                         unconditional_conditioning=uc,
+                                                         eta=args.ddim_eta,
+                                                         x_T=start_code)
+
+                        x_samples_ddim = model.decode_first_stage(samples_ddim)
+                        x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+                        x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
+
+                        x_checked_image = x_samples_ddim
+                        # x_checked_image, has_nsfw_concept = check_safety(x_samples_ddim)
+
+                        x_checked_image_torch = torch.from_numpy(x_checked_image).permute(0, 3, 1, 2)
+
+                        if not args.skip_save:
+                            for x_sample in x_checked_image_torch:
+                                x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
+                                img = Image.fromarray(x_sample.astype(np.uint8))
+                                img = put_watermark(img, wm_encoder)
+                                img.save(os.path.join(sample_path, f"{base_count:05}.png"))
+                                base_count += 1
+
+                        if not args.skip_grid:
+                            all_samples.append(x_checked_image_torch)
+
+                if not args.skip_grid:
+                    # additionally, save as grid
+                    grid = torch.stack(all_samples, 0)
+                    grid = rearrange(grid, 'n b c h w -> (n b) c h w')
+                    grid = make_grid(grid, nrow=n_rows)
+
+                    # to image
+                    grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
+                    img = Image.fromarray(grid.astype(np.uint8))
+                    img = put_watermark(img, wm_encoder)
+                    img.save(os.path.join(outpath, f'grid-{grid_count:04}.png'))
+                    grid_count += 1
+
+                toc = time.time()
+
+    logger.info(f"Your samples are ready and waiting for you here: \n{outpath} \n"
+          f" \nEnjoy.")
 
 def tune(args):
 
@@ -439,8 +572,8 @@ def tune(args):
             weight_bits=args.weight_bits,
             w_quant_granularity=args.w_quant_granularity,
             w_group_size=args.w_group_size,
-            weight_sym=not args.weight_asym,
-            w_data_type=args.w_data_type,
+            sym_w=not args.weight_asym,
+            data_type_w=args.data_type_w,
             w_scale_method=args.w_scale_method,
             tune=args.tune,
             batch_size=args.batch_size,
@@ -449,9 +582,9 @@ def tune(args):
             act_bits=args.act_bits,
             act_quant_granularity=args.w_quant_granularity,
             act_group_size=args.w_group_size,
-            act_sym=not args.act_asym,
+            sym_act=not args.act_asym,
             act_dynamic=args.act_dynamic,
-            act_data_type=args.act_data_type,
+            data_type_act=args.data_type_act,
             act_scale_method=args.act_scale_method,
             running_stat=args.running_stat,
             sm_abit=args.sm_abit,
@@ -471,6 +604,8 @@ def tune(args):
         raise NotImplementedError("This round algorithm has not been implemented yet.")
 
     model, _ = round.quantize()
+
+    sample(args, model)
 
     model.eval()
     clear_memory()

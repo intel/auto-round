@@ -13,9 +13,8 @@
 # limitations under the License.
 
 import torch
-from auto_round.data_type.utils import get_gaudi_fp8_ste_func, float8_e4m3fn_ste
-from auto_round.data_type.register import register_dtype
-
+from auto_round_diff.data_type.utils import get_gaudi_fp8_ste_func, float8_e4m3fn_ste
+from auto_round_diff.data_type.register import register_dtype, register_dtype_static
 
 @register_dtype("fp8_dynamic_per_token_sym")
 def fp8_dynamic_per_token_sym(tensor, max_scale=1.0, **kwargs):
@@ -99,6 +98,53 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, **kwargs):
     qdq_res = fp8_res * scale
     qdq_res = qdq_res.to(orig_dtype).reshape(orig_shape)
     return qdq_res, scale, None
+
+@register_dtype_static("fp8_sym")
+def quant_fp8_sym_static(tensor, bits=4, inited=False, quant_granularity='channel_wise', scale=None, zp=None, 
+                         leaf_param=False, running_stat=None, **kwargs):
+    """Symmetric quantization using float8 format.
+
+    Allows both dynamic per-token scaling and tensor-wide quantization depending on input.
+
+    Args:
+        tensor (torch.Tensor): Input tensor to quantize.
+        max_scale (float, optional): Maximum scaling factor. Defaults to 1.0.
+        tensor_max (float, optional): Maximum tensor value for precomputed scale. Defaults to None.
+        **kwargs: Additional arguments for compatibility.
+
+    Returns:
+        tuple:
+            - Quantized and dequantized tensor (torch.Tensor).
+            - Scale tensor used for quantization (torch.Tensor).
+            - Placeholder for zp (None).
+    """
+    orig_shape = tensor.shape
+    info = torch.finfo(torch.float8_e4m3fn)
+    orig_dtype = tensor.dtype
+
+    if quant_granularity == 'tensor_wise':
+        tensor = tensor.reshape(1, -1)
+    elif quant_granularity == 'channel_wise':
+        tensor = tensor.reshape(orig_shape[0], -1)
+    if not inited:
+        tensor_max = tensor.max(-1)[0]
+        tensor_min = tensor.min(-1)[0]
+        max_tensor = torch.max(tensor_min.abs(), tensor_max.abs())
+        scale = max_tensor.to(torch.float32) / info.max
+        min_scaling_factor = float(1.0 / (info.max * 512.0))
+        scale = torch.clip(scale, min=min_scaling_factor)
+        scale = scale.unsqueeze(dim=-1)
+        inited = True
+
+    if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
+        tensor = tensor.to(torch.bfloat16)
+    
+    fp8_res = (tensor / scale)
+    fp8_res = torch.clip(fp8_res, info.min, info.max)
+    fp8_res = float8_e4m3fn_ste(fp8_res)
+    qdq_res = fp8_res * scale
+    qdq_res = qdq_res.to(orig_dtype).reshape(orig_shape)
+    return qdq_res, scale, zp, inited
 
 
 @register_dtype("fp8_gaudi3_sym")

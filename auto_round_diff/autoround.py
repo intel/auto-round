@@ -53,7 +53,6 @@ from .utils import (
     reset_params,
     init_cache, check_skippable_keywords, get_shared_keys, supported_dtypes, infer_bits_by_data_type,
 )
-from .low_cpu_mem.utils import get_layers_before_block
 
 
 class AutoRound(object):
@@ -830,104 +829,104 @@ class AutoRound(object):
 
         return output
 
-    @torch.no_grad()
-    def calib(self, nsamples, bs):
-        """Perform calibration for quantization.
+    # @torch.no_grad()
+    # def calib(self, nsamples, bs):
+    #     """Perform calibration for quantization.
 
-        This method calibrates the model for quantization by processing a specified
-        number of samples from the calibration dataset. It ensures that the data is
-        properly formatted and feeds it to the model. If the number of samples processed
-        is less than the specified number, it logs a warning. If no samples are processed,
-        it logs an error and exits.
-        Args:
-            nsamples (int): The number of samples to use for calibration.
-            bs (int): The number of samples to use for calibration
-        """
-        from .calib_dataset import get_dataloader
-        if isinstance(self.dataset, str):
-            dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
+    #     This method calibrates the model for quantization by processing a specified
+    #     number of samples from the calibration dataset. It ensures that the data is
+    #     properly formatted and feeds it to the model. If the number of samples processed
+    #     is less than the specified number, it logs a warning. If no samples are processed,
+    #     it logs an error and exits.
+    #     Args:
+    #         nsamples (int): The number of samples to use for calibration.
+    #         bs (int): The number of samples to use for calibration
+    #     """
+    #     from .calib_dataset import get_dataloader
+    #     if isinstance(self.dataset, str):
+    #         dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
 
-            # slow here
-            self.dataloader = get_dataloader(
-                self.tokenizer,
-                self.seqlen,
-                dataset,
-                self.seed,
-                bs,
-                self.nsamples,
-            )
-        else:
-            self.dataloader = self.dataset
-        total_cnt = 0
+    #         # slow here
+    #         self.dataloader = get_dataloader(
+    #             self.tokenizer,
+    #             self.seqlen,
+    #             dataset,
+    #             self.seed,
+    #             bs,
+    #             self.nsamples,
+    #         )
+    #     else:
+    #         self.dataloader = self.dataset
+    #     total_cnt = 0
 
-        # load embed weight if use low_cpu_mem_usage
-        if self.low_cpu_mem_usage:
-            embed_layers = get_layers_before_block(self.model)
-            for n, m in embed_layers:
-                m = m.to(self.device)
+    #     # load embed weight if use low_cpu_mem_usage
+    #     if self.low_cpu_mem_usage:
+    #         embed_layers = get_layers_before_block(self.model)
+    #         for n, m in embed_layers:
+    #             m = m.to(self.device)
 
-        for data in self.dataloader:
-            if data is None:
-                continue
-            if isinstance(data, torch.Tensor):
-                input_ids = data.to(self.device)
-                data_new = input_ids
-            elif isinstance(data, str):
-                if self.tokenizer is None:
-                    logger.error("please provide tokenizer for string input")
-                    exit(-1)
-                data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = data[key].to(self.device)
-                input_ids = data_new["input_ids"]
-            elif isinstance(data, tuple) or isinstance(data, list):
-                data_new = data
-                input_ids = data_new[0]
-            else:
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = to_device(data[key], self.model.device)
-                    if key == 'images':
-                        data_new[key] = to_dtype(data_new[key], self.model.dtype)
-                input_ids = data_new["input_ids"]
-            if input_ids.shape[-1] < self.seqlen:
-                continue
-            try:
-                if isinstance(data_new, torch.Tensor):
-                    self.model(data_new)
-                elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new)
-                else:
-                    self.model(**data_new)
-            except NotImplementedError:
-                pass
-            except RuntimeError as error:
-                logger.warning("When quantization encounters tensor" \
-                               " shape mismatch error, you can try to avoid it with batch_size=1")
-                logger.error(error)
-                pass
-            except Exception as error:
-                raise error
-            total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
-            if total_cnt >= nsamples:
-                break
-        if total_cnt == 0:
-            logger.error(
-                f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
-                f"dataset or decease the sequence length"
-            )
-            exit(-1)
-        elif total_cnt < nsamples:
-            logger.warning(
-                f"An insufficient number of samples likely reduces the accuracy of the quantized model."
-                f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
-            )
+    #     for data in self.dataloader:
+    #         if data is None:
+    #             continue
+    #         if isinstance(data, torch.Tensor):
+    #             input_ids = data.to(self.device)
+    #             data_new = input_ids
+    #         elif isinstance(data, str):
+    #             if self.tokenizer is None:
+    #                 logger.error("please provide tokenizer for string input")
+    #                 exit(-1)
+    #             data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
+    #             data_new = {}
+    #             for key in data.keys():
+    #                 data_new[key] = data[key].to(self.device)
+    #             input_ids = data_new["input_ids"]
+    #         elif isinstance(data, tuple) or isinstance(data, list):
+    #             data_new = data
+    #             input_ids = data_new[0]
+    #         else:
+    #             data_new = {}
+    #             for key in data.keys():
+    #                 data_new[key] = to_device(data[key], self.model.device)
+    #                 if key == 'images':
+    #                     data_new[key] = to_dtype(data_new[key], self.model.dtype)
+    #             input_ids = data_new["input_ids"]
+    #         if input_ids.shape[-1] < self.seqlen:
+    #             continue
+    #         try:
+    #             if isinstance(data_new, torch.Tensor):
+    #                 self.model(data_new)
+    #             elif isinstance(data_new, tuple) or isinstance(data_new, list):
+    #                 self.model(*data_new)
+    #             else:
+    #                 self.model(**data_new)
+    #         except NotImplementedError:
+    #             pass
+    #         except RuntimeError as error:
+    #             logger.warning("When quantization encounters tensor" \
+    #                            " shape mismatch error, you can try to avoid it with batch_size=1")
+    #             logger.error(error)
+    #             pass
+    #         except Exception as error:
+    #             raise error
+    #         total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
+    #         if total_cnt >= nsamples:
+    #             break
+    #     if total_cnt == 0:
+    #         logger.error(
+    #             f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
+    #             f"dataset or decease the sequence length"
+    #         )
+    #         exit(-1)
+    #     elif total_cnt < nsamples:
+    #         logger.warning(
+    #             f"An insufficient number of samples likely reduces the accuracy of the quantized model."
+    #             f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
+    #         )
 
-        # clean embed weight to save memory
-        if self.low_cpu_mem_usage:
-            for n, m in embed_layers:
-                m = m.to("meta")
+    #     # clean embed weight to save memory
+    #     if self.low_cpu_mem_usage:
+    #         for n, m in embed_layers:
+    #             m = m.to("meta")
 
     @torch.no_grad()
     def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):

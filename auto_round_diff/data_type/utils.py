@@ -51,6 +51,16 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
         data_new = data_new.reshape(-1, group_size)
         return data_new, orig_shape, pad_len
 
+def reshape_tensor_by_quant_level(data: torch.Tensor, quant_granularity: str, group_size: int):
+    data_new, orig_shape, pad_len = None, data.shape, None
+    if quant_granularity == 'tensor_wise':
+        data_new = data.reshape(1, -1)
+    elif quant_granularity == 'channel_wise':
+        data_new = data.reshape(orig_shape[0], -1)
+    else:
+        data_new, orig_shape, pad_len = reshape_pad_tensor_by_group_size(data, group_size)
+
+    return data_new, orig_shape, pad_len
 
 def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: int):
     """Reverts the tensor to its original shape by removing padding.
@@ -198,7 +208,6 @@ def floor_ste(x: torch.Tensor):
     """
     return (x.floor() - x).detach() + x
 
-
 def float8_e4m3fn_ste(x: torch.Tensor):
     """Straight-Through Estimator (STE) for float8.
 
@@ -211,7 +220,7 @@ def float8_e4m3fn_ste(x: torch.Tensor):
     Returns:
         torch.Tensor: Quantized and dequantized tensor using float8 format.
     """
-    fp8 = (x.to(torch.float8_e4m3fn).to(x.dtype) - x).detach() + x
+    fp8 = (x.to(x.dtype) - x).detach() + x
 
     return fp8
 
