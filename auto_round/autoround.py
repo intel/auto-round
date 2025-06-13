@@ -864,8 +864,11 @@ class AutoRound(object):
         logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         is_quantized_embedding = self.quantize_embedding_layer()
+        q_all_inputs = None
         if is_quantized_embedding:
-            q_all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
+            all_inputs = copy.deepcopy(self.inputs)
+            clear_memory(self.inputs)
+            all_q_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
@@ -874,14 +877,22 @@ class AutoRound(object):
 
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
+            q_inputs = None
+            if q_all_inputs is not None:
+                q_inputs = all_q_inputs[block_names[0]]
 
             all_inputs.pop(block_names[0])
+            all_q_inputs.pop(block_names[0])
             keys = inputs.keys()
             input_id_str = [key for key in keys if key.startswith('hidden_state')]
             if len(input_id_str) != 1:
                 raise RuntimeError(f"hidden_states arg mismatch error,"
                                    "please raise an issue in https://github.com/intel/auto-round/issues")
             inputs["input_ids"] = inputs.pop(input_id_str[0], None)
+            if  q_inputs is not None:
+                q_inputs["input_ids"] = q_inputs.pop(input_id_str[0], None)
+
+
             clear_memory(self.inputs)
 
             if "input_ids" in inputs.keys():
@@ -894,6 +905,7 @@ class AutoRound(object):
                 self.model,
                 inputs,
                 block_names,
+                q_input=q_inputs,
                 nblocks=self.nblocks,
                 device=self.device,
                 pbar=pbar
@@ -1258,6 +1270,7 @@ class AutoRound(object):
             clear_memory()
         except RuntimeError as e:
             if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                self.no_enough_vram_for_w_model=True
                 logger.info("switch to cpu to cache block inputs")
                 if (self.has_qlayer_outside_block or
                         self.__class__.__name__ == "AutoRoundMLLM"):
@@ -1815,6 +1828,7 @@ class AutoRound(object):
             model: torch.nn.Module,
             inputs,
             block_names,
+            q_input=None,
             nblocks=1,
             device="cpu",
             pbar=None
@@ -1831,7 +1845,6 @@ class AutoRound(object):
         Returns:
         None
         """
-        q_input = None
         clear_memory()
         for n, m in model.named_parameters():
             m.requires_grad_(False)

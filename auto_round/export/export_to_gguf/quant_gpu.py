@@ -433,7 +433,7 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
 
     replace_ids = (max_scales > 0).squeeze()
     output_scale = torch.zeros_like(scales).to(torch.uint8)
-    output_scale[replace_ids] = torch.round(inv_scales * scales).clip(0, 15).to(torch.uint8)
+    output_scale[replace_ids] = torch.round(inv_scales * scales).clip(0, 15).to(torch.uint8)##invers scale 13702*1, scales 8192*7
 
     replace_ids = (max_mins > 0).squeeze()
     output_scale[replace_ids] |= torch.round(inv_mins * mins).clip(0, 15).to(torch.uint8) << 4

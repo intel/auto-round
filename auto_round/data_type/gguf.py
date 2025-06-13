@@ -228,7 +228,6 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
-    scale_dtype = torch.float16
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = 2 ** bits - 1
     if tensor_min is None or tensor_max is None:
@@ -255,7 +254,7 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
 
     scale = scale.view(-1, 1)
     scale = torch.clamp(scale, q_scale_thresh)
-    d_scale = torch.clamp(scale, q_scale_thresh)
+    d_scale = torch.clamp(d_scale, q_scale_thresh)
     d_wmin_m = torch.clamp(d_wmin_m, q_scale_thresh)
     wmin_m = wmin_m.view(-1, 1)
 
