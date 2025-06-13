@@ -366,7 +366,7 @@ def quant_tensor_gguf_asym_dq(
     maxq = 2 ** bits - 1
     QK_K = 256
     quant_weights = None
-    if imatrix is None:
+    if imatrix is None or (imatrix is not None and torch.sum(imatrix)==0):
         search_kwargs = {
             2: {"rmin": -0.5, "rdelta": 0.1, "nstep": 15, "use_mad": True},
             4: {"rmin": -1, "rdelta": 0.1, "nstep": 20, "use_mad": False},
@@ -383,10 +383,10 @@ def quant_tensor_gguf_asym_dq(
             tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
             use_mad=params["use_mad"], weights=quant_weights
         )
-        scale = scale.reshape(-1, super_group_size)
-        wmin_m = wmin_m.reshape(-1, super_group_size)
+        scale= scale.reshape(-1, super_group_size)
+        wmin = wmin_m.reshape(-1, super_group_size)
         scale, d_scale = double_quant_tensor(scale, super_bits)
-        wmin_m, d_wmin_m = double_quant_tensor(wmin_m, super_bits)
+        wmin_m, d_wmin_m = double_quant_tensor(wmin, super_bits)
         wmin_m = wmin_m.view(-1, 1)
         scale = scale.view(-1, 1)
     else:
@@ -405,20 +405,20 @@ def quant_tensor_gguf_asym_dq(
             av_x = torch.sqrt(sigma2)
             imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
             quant_weights = imatrix * torch.sqrt(av_x + tensor * tensor)
-        # weights = imatrix.reshape(1, -1)
-        # weights = weights.expand(tensor.numel() // weights.numel(), -1)
-        # quant_weights = weights.reshape(tensor.shape)
+        weights = imatrix.reshape(1, -1)
+        weights = weights.expand(tensor.numel() // weights.numel(), -1)
+        quant_weights = weights.reshape(tensor.shape)
 
         params = search_kwargs[bits]
 
-        scale, wmin_m = iterative_wls_quant_search(
+        scale, wmin_m_0 = iterative_wls_quant_search(
             tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
             use_mad=params["use_mad"], weights=quant_weights
         )
 
         nmax = 2 ** super_bits - 1
         scale = scale.reshape(-1, super_group_size)
-        wmin_m = wmin_m.reshape(-1, super_group_size)
+        wmin_m = wmin_m_0.reshape(-1, super_group_size)
         sum_quant_weights = quant_weights.sum(-1, keepdim=True).reshape(-1, super_group_size)
 
         d_scale, q_scale = make_qp_quants(nmax, scale, sum_quant_weights)
@@ -432,6 +432,18 @@ def quant_tensor_gguf_asym_dq(
     int_w = torch.clamp(round_ste((tensor + wmin_m) * inverse_scale + v), 0, maxq)
     qdq_result = (scale * int_w - wmin_m).to(orig_dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+    if torch.any(torch.isnan(scale)) or torch.any(torch.isinf(scale)):
+        raise NotImplementedError
+    elif torch.any(torch.isnan(d_scale)) or torch.any(torch.isinf(d_scale)):
+        raise NotImplementedError
+
+    if torch.any(torch.isnan(wmin_m)) or torch.any(torch.isinf(wmin_m)):
+        raise NotImplementedError
+    elif torch.any(torch.isnan(d_wmin_m)) or torch.any(torch.isinf(d_wmin_m)):
+        raise NotImplementedError
+
+    if torch.any(torch.isnan(qdq_result)) or torch.any(torch.isinf(qdq_result)):
+        raise NotImplementedError
 
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
 
@@ -543,7 +555,7 @@ def quant_tensor_gguf_sym_dq(
     n_blocks = tensor.nelement() // block_size
     # (nb, 16, 16)
     tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
-    if imatrix is None:
+    if imatrix is None or (imatrix is not None and torch.sum(imatrix)==0):
         if bits == 3:
             scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)
         elif bits == 6:
