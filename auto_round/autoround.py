@@ -448,7 +448,7 @@ class AutoRound(object):
         # Check the legitimacy of seqlen
 
         ##check gguf and others
-        if hasattr(self,"formats"):
+        if hasattr(self, "formats"):
             has_gguf = False
             has_besides_gguf = False
             for format_ in self.formats:
@@ -782,14 +782,14 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if (check_to_quantized(m)):
                 all_to_quantized_module_names.append(n)
-
-        has_gguf_k = False
-        for format_ in self.formats:
-            if "gguf" in format_ and "k" in format_:
-                has_gguf_k = True
-        if has_gguf_k:
-            self.get_imatrix()
-        self.quantize_embedding_layer()
+        if hasattr(self, "formats"):
+            has_gguf_k = False
+            for format_ in self.formats:
+                if "gguf" in format_ and "k" in format_:
+                    has_gguf_k = True
+            if has_gguf_k:
+                self.get_imatrix()
+            self.quantize_embedding_layer()
         pbar = tqdm(all_to_quantized_module_names)
 
         for name in pbar:
