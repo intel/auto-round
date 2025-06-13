@@ -966,7 +966,7 @@ class AutoRound(object):
                 layer = get_module(self.model, layer_name)
                 if "rtn_" + layer.data_type in QUANT_FUNC_WITH_DTYPE:
                     layer.data_type = "rtn_" + layer.data_type
-                    logger.info("usring optimized rtn method for quantizing %s", layer_name)
+                    logger.info("using optimized rtn method for quantizing %s", layer_name)
                     self.layer_config[layer_name]["data_type"] = layer.data_type
                 layer.to(self.device)
                 wrapper_layer = WrapperLinear(layer, enable_round_tuning=False, enable_minmax_tuning=False,
@@ -986,7 +986,7 @@ class AutoRound(object):
 
         if enable_quanted_input:
             logger.info(
-                "starting to cache layer inputs for %s as `enable_quanted_input` is enbale, this may be quite slow ",
+                "starting to cache layer inputs for %s as `enable_quanted_input` is enable, this may be quite slow ",
                 layer_names)
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
