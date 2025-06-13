@@ -1236,7 +1236,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
                     reset_list.append(f"{k}={v}")
                     setattr(args_or_ar, k, v)
             if len(unsupport_list) > 0:
-                logger.error(
+                logger.warning(
                     f"format {format} does not support for {', '.join(unsupport_list)},"
                     f" reset to {', '.join(reset_list)}.")
     if not isinstance(args_or_ar, argparse.Namespace) and len(unsupport_list) > 0:
