@@ -590,6 +590,8 @@ class AutoRound(object):
 
     @torch.inference_mode
     def quantize_embedding_layer(self):
+        if not hasattr(self, "formats"):
+            return
         formats = [f for f in self.formats if "fake" not in f]
         if not (len(formats) == 1 and "gguf" in formats[0]):
             return False
