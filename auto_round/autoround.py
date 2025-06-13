@@ -630,11 +630,14 @@ class AutoRound(object):
                 weight, scale, zp = quant_func(layer.weight.to(self.device), **{k: config[k] for k in
                                                                                 ["bits", "group_size", "super_bits",
                                                                                  "super_group_size","scale_dtype"]})
-            except:
-                logger.info("out of vram, fallback to cpu")
-                weight, scale, zp = quant_func(layer.weight.to("cpu"), **{k: config[k] for k in
-                                                                          ["bits", "group_size", "super_bits",
-                                                                           "super_group_size","scale_dtype"]})
+            except RuntimeError as e:
+                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                    logger.info("out of vram, fallback to cpu")
+                    weight, scale, zp = quant_func(layer.weight.to("cpu"), **{k: config[k] for k in
+                                                                              ["bits", "group_size", "super_bits",
+                                                                               "super_group_size","scale_dtype"]})
+                else:
+                    raise
             layer.weight.data.copy_(weight.cpu())
 
             for name, val in zip(["scale", "zp"], [scale, zp]):
@@ -805,12 +808,13 @@ class AutoRound(object):
                                   enable_round_tuning=False)
                 m = m.unwrapper({})
                 m.to("cpu")
-            except:
-                logger.warning("out of vram, fallback to cpu")
-                m.to("cpu")
-                m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
-                                  enable_round_tuning=False)
-                m = m.unwrapper({})
+            except RuntimeError as e:
+                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                    logger.warning("out of vram, fallback to cpu")
+                    m.to("cpu")
+                    m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
+                                      enable_round_tuning=False)
+                    m = m.unwrapper({})
             if self.low_gpu_mem_usage:
                 clear_memory()
             if self.is_packing_immediate:
