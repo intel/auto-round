@@ -395,7 +395,7 @@ def q8_0_quant_block(blocks, scale=None, zp=None, **kwargs) -> np.ndarray:
         d = torch.abs(blocks).max(dim=1, keepdim=True)[0] / 127
     id = torch.where(d == 0, 0, 1 / d)
 
-    qs = torch_roundf(blocks * id)
+    qs = torch.clip(torch_roundf(blocks * id),-128,127)
 
     # (n_blocks, 2)
     d = d.cpu().numpy().astype(np.float16).view(np.uint8)
