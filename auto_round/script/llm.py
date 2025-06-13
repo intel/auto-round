@@ -398,13 +398,13 @@ def tune(args):
         round = AutoRoundAdam
 
     layer_config = {}
-    for n, m in model.named_modules():
-        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
-            if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                layer_config[n] = {"bits": 16}
-                logger.info(
-                    f"{n} will not be quantized due to its shape not being divisible by 32,"
-                    " resulting in an exporting issue to autogptq")
+    # for n, m in model.named_modules():
+    #     if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.modeling_utils.Conv1D):
+    #         if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
+    #             layer_config[n] = {"bits": 16}
+    #             logger.info(
+    #                 f"{n} will not be quantized due to its shape not being divisible by 32,"
+    #                 " resulting in an exporting issue to autogptq")
 
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
