@@ -598,8 +598,8 @@ class AutoRound(object):
         formats = [f for f in self.formats if "fake" not in f]
         if not (len(formats) == 1 and "gguf" in formats[0]):
             return False
-        for n,m in self.model.named_modules():
-            if not isinstance(m,torch.nn.Embedding):
+        for n, m in self.model.named_modules():
+            if not isinstance(m, torch.nn.Embedding):
                 continue
 
             layer = m
@@ -619,9 +619,9 @@ class AutoRound(object):
             dtype = config["data_type"]
             if dtype not in QUANT_FUNC_WITH_DTYPE:
                 if config['sym']:
-                    dtype = dtype+"_sym"
+                    dtype = dtype + "_sym"
                 else:
-                    dtype = dtype+"_asym"
+                    dtype = dtype + "_asym"
             if "rtn_" + dtype in QUANT_FUNC_WITH_DTYPE:
                 dtype = "rtn_" + dtype
             quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
@@ -629,13 +629,13 @@ class AutoRound(object):
             try:
                 weight, scale, zp = quant_func(layer.weight.to(self.device), **{k: config[k] for k in
                                                                                 ["bits", "group_size", "super_bits",
-                                                                                 "super_group_size","scale_dtype"]})
+                                                                                 "super_group_size", "scale_dtype"]})
             except RuntimeError as e:
                 if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
                     logger.info("out of vram, fallback to cpu")
                     weight, scale, zp = quant_func(layer.weight.to("cpu"), **{k: config[k] for k in
                                                                               ["bits", "group_size", "super_bits",
-                                                                               "super_group_size","scale_dtype"]})
+                                                                               "super_group_size", "scale_dtype"]})
                 else:
                     raise
             layer.weight.data.copy_(weight.cpu())
@@ -773,7 +773,6 @@ class AutoRound(object):
                 return True
         return False
 
-
     @torch.inference_mode
     def quantize_rtn(self):
         if self.amp:
@@ -861,14 +860,19 @@ class AutoRound(object):
         layer_names = self.get_quantized_layer_names_outside_blocks()
         self.start_time = time.time()
         all_first_block_names = [block[0] for block in all_blocks]
-        logger.info("start to cache block inputs")
+        if len(layer_names) > 0:
+            logger.info("Starting to cache block inputs. This may be slow due to external block layers: %s",
+                        layer_names)
+        else:
+            logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         is_quantized_embedding = self.quantize_embedding_layer()
         q_all_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs)
-            all_q_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
+            all_q_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples,
+                                                            layer_names=layer_names)
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
@@ -889,9 +893,8 @@ class AutoRound(object):
                 raise RuntimeError(f"hidden_states arg mismatch error,"
                                    "please raise an issue in https://github.com/intel/auto-round/issues")
             inputs["input_ids"] = inputs.pop(input_id_str[0], None)
-            if  q_inputs is not None:
+            if q_inputs is not None:
                 q_inputs["input_ids"] = q_inputs.pop(input_id_str[0], None)
-
 
             clear_memory(self.inputs)
 
@@ -954,6 +957,24 @@ class AutoRound(object):
             None
         """
         ##TODO currently we take all the layers outside blocks as post block layers which is not optimal
+        ## if there is no input for layer, we use rtn
+        for layer_name in copy.deepcopy(layer_names):
+            if layer_name not in layer_inputs:
+                logger.info(f"using rtn to quantize {layer_name}")
+                from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+
+                layer = get_module(self.model, layer_name)
+                if "rtn_" + layer.data_type in QUANT_FUNC_WITH_DTYPE:
+                    layer.data_type = "rtn_" + layer.data_type
+                    logger.info("usring optimized rtn method for quantizing %s", layer_name)
+                    self.layer_config[layer_name]["data_type"] = layer.data_type
+                layer.to(self.device)
+                wrapper_layer = WrapperLinear(layer, enable_round_tuning=False, enable_minmax_tuning=False,
+                                              enable_norm_bias_tuning=False, device=self.device)
+                new_layer = wrapper_layer.unwrapper({})
+                set_module(self.model, layer_name, new_layer)
+                layer.cpu()
+                layer_names.remove(layer_name)
         if len(layer_names) == 0:
             return
         q_layer_inputs = None
@@ -964,6 +985,9 @@ class AutoRound(object):
             dispatch_model(self.model, self.model.hf_device_map)
 
         if enable_quanted_input:
+            logger.info(
+                "starting to cache layer inputs for %s as `enable_quanted_input` is enbale, this may be quite slow ",
+                layer_names)
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 accelerate.hooks.remove_hook_from_submodules(
@@ -1270,15 +1294,12 @@ class AutoRound(object):
             clear_memory()
         except RuntimeError as e:
             if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                self.no_enough_vram_for_w_model=True
+                self.no_enough_vram_for_w_model = True
                 logger.info("switch to cpu to cache block inputs")
                 if (self.has_qlayer_outside_block or
                         self.__class__.__name__ == "AutoRoundMLLM"):
-                    logger.warning(f"we strongly recommend using additional CUDA/HPU devices for better accuracy,e.g. "
-                                   f"set `--device '0,1'` in our cmd line usage or "
-                                   f"load the model with `device_mapping=auto`,"
-                                   f" for optimal performance during calibration "
-                                   f"Otherwise, the process may be significantly slower.")
+                    logger.warning("We strongly recommend using more GPUs."
+                                   " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy.")
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                 clear_memory()
                 ## Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
