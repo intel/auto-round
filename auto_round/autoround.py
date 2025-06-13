@@ -837,7 +837,7 @@ class AutoRound(object):
 
         self._check_compatibility()
         self.has_qlayer_outside_block = self.set_layerwise_config(self.layer_config)
-        if self.formats is None:
+        if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
             self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(self.layer_config, self.formats,
