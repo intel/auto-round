@@ -617,6 +617,11 @@ class AutoRound(object):
 
             from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
             dtype = config["data_type"]
+            if dtype not in QUANT_FUNC_WITH_DTYPE:
+                if config['sym']:
+                    dtype = dtype+"_sym"
+                else:
+                    dtype = dtype+"_asym"
             if "rtn_" + dtype in QUANT_FUNC_WITH_DTYPE:
                 dtype = "rtn_" + dtype
             quant_func = QUANT_FUNC_WITH_DTYPE[dtype]

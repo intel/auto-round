@@ -77,64 +77,6 @@ def quant_tensor_sym_dq(
     return qdq_result, {"scale": scale, "d_scale": d_scale}, zp
 
 
-@register_dtype("int_asym_dq")
-def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, scale_dtype=torch.float16,
-                         tensor_min=None, tensor_max=None, q_scale_thresh=1e-5, super_group_size=8, super_bits=6,
-                         **kwargs):
-    """Quantize and de-quantize tensor asymmetrically.
-
-    Args:
-        tensor: Tensor containing the tensor to be quantized
-        bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        group_size: Number of elements to share scale for quantization
-        v: Rounding value perturbation
-        min_scale: Minimum scale coefficient for tensor
-        max_scale: Maximum scale coefficient for tensor
-        tensor_min (Tensor, optional): Minimum tensor value for quantization. Defaults to None.
-        tensor_max (Tensor, optional): Maximum tensor value for quantization. Defaults to None.
-        scale_dtype: dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
-        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
-
-    Returns:
-        Quantized and de-quantized tensor, scale, zero-point
-    """
-    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-
-    maxq = 2 ** bits - 1
-    if tensor_min is None or tensor_max is None:
-        wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
-        wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
-    else:
-        wmin_tmp = tensor_min
-        wmax_tmp = tensor_max
-    if isinstance(min_scale, torch.Tensor):
-        wmin = wmin_tmp * min_scale
-        wmax = wmax_tmp * max_scale
-    else:
-        wmin = wmin_tmp
-        wmax = wmax_tmp
-    scale = ((wmax - wmin) / maxq).to(scale_dtype)
-    scale = torch.clamp(scale, min=q_scale_thresh)
-    scale = scale.view(-1, super_group_size)
-    wmin_m = -wmin  # pylint: disable=E1130
-    wmin_m = wmin_m.view(-1, super_group_size)
-
-    ##conduct double quant
-    scale, d_scale = double_quant_tensor(scale, super_bits, q_scale_thresh)
-    wmin_m, d_wmin_m = double_quant_tensor(wmin_m, super_bits, q_scale_thresh)
-
-    scale = scale.view(-1, 1)
-    scale = torch.clamp(scale, q_scale_thresh)
-    wmin_m = wmin_m.view(-1, 1)
-
-    int_w = round_ste((tensor + wmin_m) / scale + v)
-    q = torch.clamp(int_w, 0, maxq)
-    qdq_result = (scale * q - wmin_m).to(tensor.dtype)
-    qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
-    # zp = round_ste(wmin_m / scale)  # remove this later
-    return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
-
-
 @register_dtype("int_asym_float_zp")
 def quant_tensor_asym_float_zp(
         tensor,
@@ -215,6 +157,8 @@ def double_quant_tensor_sym(tensor, bits):
 
 
 def make_qp_quants(nmax, data, quant_weights):
+    data = data.to(torch.float32)
+    quant_weights = quant_weights.to(torch.float32)
     group_max = torch.max(data, dim=-1, keepdim=True)[0]
     scale = group_max / nmax
     iscale = torch.where(scale == 0, 0, 1 / scale)
@@ -311,6 +255,8 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
 
     scale = scale.view(-1, 1)
     scale = torch.clamp(scale, q_scale_thresh)
+    d_scale = torch.clamp(scale, q_scale_thresh)
+    d_wmin_m = torch.clamp(d_wmin_m, q_scale_thresh)
     wmin_m = wmin_m.view(-1, 1)
 
     int_w = round_ste((tensor + wmin_m) / scale + v)
@@ -432,19 +378,6 @@ def quant_tensor_gguf_asym_dq(
     int_w = torch.clamp(round_ste((tensor + wmin_m) * inverse_scale + v), 0, maxq)
     qdq_result = (scale * int_w - wmin_m).to(orig_dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
-    if torch.any(torch.isnan(scale)) or torch.any(torch.isinf(scale)):
-        raise NotImplementedError
-    elif torch.any(torch.isnan(d_scale)) or torch.any(torch.isinf(d_scale)):
-        raise NotImplementedError
-
-    if torch.any(torch.isnan(wmin_m)) or torch.any(torch.isinf(wmin_m)):
-        raise NotImplementedError
-    elif torch.any(torch.isnan(d_wmin_m)) or torch.any(torch.isinf(d_wmin_m)):
-        raise NotImplementedError
-
-    if torch.any(torch.isnan(qdq_result)) or torch.any(torch.isinf(qdq_result)):
-        raise NotImplementedError
-
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
 
 
