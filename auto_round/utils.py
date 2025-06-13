@@ -33,6 +33,7 @@ from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
+
 class SupportedFormats:
     def __init__(self):
         self._support_format = (
@@ -49,6 +50,7 @@ class SupportedFormats:
 
     def __getitem__(self, key):
         return self._support_list[key]
+
 
 SUPPORTED_FORMATS = SupportedFormats()
 
@@ -1191,7 +1193,6 @@ def _gguf_args_check(args_or_ar, format_str=None):
                 raise ImportError(
                     f"Please use the latest gguf-py for {format}, you can use the following command to install it:\n"
                     "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .")
-                sys.exit(-1)
             if re.search(pattern, format):
                 if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
                     logger.error(f"Cannot export {pre_dq_format} and {format} at the same time.")
@@ -1227,8 +1228,6 @@ def _gguf_args_check(args_or_ar, format_str=None):
                 if k == "data_type":
                     if re.search("q\d_1", format) and len(formats) > 1:
                         v = "int"
-                    if re.search("q\d_k", format) and args_or_ar.iters == 0:
-                        v = f"gguf_{v}"
                 if k == "sym" and isinstance(args_or_ar, argparse.Namespace):
                     k = "asym"
                     v = not v
@@ -1237,7 +1236,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
                     reset_list.append(f"{k}={v}")
                     setattr(args_or_ar, k, v)
             if len(unsupport_list) > 0:
-                logger.error(
+                logger.warning(
                     f"format {format} does not support for {', '.join(unsupport_list)},"
                     f" reset to {', '.join(reset_list)}.")
     if not isinstance(args_or_ar, argparse.Namespace) and len(unsupport_list) > 0:
@@ -1247,7 +1246,6 @@ def _gguf_args_check(args_or_ar, format_str=None):
             for k in args_or_ar.layer_config[layer_name]:
                 if hasattr(args_or_ar, k):
                     args_or_ar.layer_config[layer_name][k] = getattr(args_or_ar, k)
-        args_or_ar.has_qlayer_outside_block = args_or_ar.set_layerwise_config(args_or_ar.layer_config)
     return args_or_ar
 
 
@@ -1370,7 +1368,7 @@ def mllm_load_model(
                 torch_dtype=torch_dtype)
         else:
             if architectures.endswith("Model") \
-                and hasattr(transformers, n := architectures.replace("Model", "ForConditionalGeneration")):
+                    and hasattr(transformers, n := architectures.replace("Model", "ForConditionalGeneration")):
                 cls = getattr(transformers, n)
             elif hasattr(transformers, architectures):
                 cls = getattr(transformers, architectures)
@@ -1481,6 +1479,7 @@ def get_model_dtype(model_dtype, default="auto"):
         model_dtype = default
     return model_dtype
 
+
 def str2bool(v):
     import argparse
     if isinstance(v, bool):
@@ -1491,6 +1490,7 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
 
 def filter_quantization_config(quantization_config):
     default_dict = {"amp": True, "batch_size": 8, "data_type": int, "dataset": "NeelNanda/pile-10k",
@@ -1515,7 +1515,6 @@ def filter_quantization_config(quantization_config):
         quantization_config.pop("act_dynamic", None)
         quantization_config.pop("act_sym", None)
         quantization_config.pop("act_group_size", None)
-
 
 
 def check_start_with_block_name(name: str, block_name_to_quantize: list):
@@ -1552,13 +1551,15 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
         model_config = model.config
         if hasattr(model_config, 'max_position_embeddings') and input_seqlen > model_config.max_position_embeddings:
             raise ValueError(f"seqlen({input_seqlen}) exceeds model.config.max_position_embeddings(" \
-                    f"{model_config.max_position_embeddings}). Please lowering '--seqlen'")
+                             f"{model_config.max_position_embeddings}). Please lowering '--seqlen'")
     if tokenizer is not None and hasattr(tokenizer, 'model_max_length') and input_seqlen > tokenizer.model_max_length:
         raise ValueError(f"seqlen({input_seqlen}) exceeds tokenizer.model_max_length({tokenizer.model_max_length}). " \
-                "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length.")
+                         "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length.")
+
 
 def _use_more_bits(i_layer: int, n_layer: int):
-    return (i_layer < n_layer // 8) or (i_layer >= 7 * n_layer // 8) or ((i_layer - n_layer//8) % 3 == 2)
+    return (i_layer < n_layer // 8) or (i_layer >= 7 * n_layer // 8) or ((i_layer - n_layer // 8) % 3 == 2)
+
 
 def _get_digital_in_layer_name(layer_name):
     pattern = re.compile("([a-zA-Z]+\.){1,}(\d+)")
@@ -1568,12 +1569,14 @@ def _get_digital_in_layer_name(layer_name):
     else:
         return None
 
+
 def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
     # TODO: support for other format later
-    if "q4_k_m" not in gguf_format:
+
+    if "gguf:q4_k_m" not in gguf_format:
         return layer_config, {}
 
-    import gguf # pylint: disable=E0401
+    import gguf  # pylint: disable=E0401
     from auto_round.export.export_to_gguf.convert import Model
     from auto_round.export.export_to_gguf.config import GGUF_CONFIG
     model_architecture = model.config.architectures[0]
@@ -1599,7 +1602,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
                 else:
                     config[k] = v
         return config
-        
+
     gguf_format_config = {}
     for layer_name, config in layer_config.items():
         if config["bits"] >= 16:
@@ -1647,6 +1650,6 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
         # attn_qkv
         if "attn_qkv" in gguf_name:
             config = _set_config(config, GGUF_CONFIG["gguf:q5_k_s"])
-        
+
         layer_config[layer_name] = config
     return layer_config, gguf_format_config
