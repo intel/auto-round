@@ -489,9 +489,10 @@ def tune(args):
 
     model_name = args.model.rstrip("/")
     if model_name.split('/')[-1].strip('.') == "":
-        export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
+        export_dir = os.path.join(args.output_dir, f"w{autoround.bits}g{autoround.group_size}")
     else:
-        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
+        export_dir = os.path.join(args.output_dir,
+                                  model_name.split('/')[-1] + f"-w{autoround.bits}g{autoround.group_size}")
 
     model, folders = autoround.quantize_and_save(export_dir, format=args.format)
 

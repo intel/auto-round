@@ -723,6 +723,8 @@ class AutoRound(object):
         clear_memory()
 
     def check_need_to_quantize_lm_head(self):
+        if not hasattr(self, "formats"):
+            return False
         has_gguf = False
         for format_ in self.formats:
             if "gguf" in format_:
