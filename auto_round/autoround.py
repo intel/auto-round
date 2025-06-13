@@ -448,15 +448,16 @@ class AutoRound(object):
         # Check the legitimacy of seqlen
 
         ##check gguf and others
-        has_gguf = False
-        has_bisides_gguf = False
-        for format_ in self.formats:
-            if "gguf" in format_:
-                has_gguf = True
-            elif format_ != "fake":
-                has_bisides_gguf = True
-        if has_gguf and has_bisides_gguf:
-            raise ValueError("gguf format is not compatible with other formats, please choose only one of them")
+        if hasattr(self,"formats"):
+            has_gguf = False
+            has_besides_gguf = False
+            for format_ in self.formats:
+                if "gguf" in format_:
+                    has_gguf = True
+                elif format_ != "fake":
+                    has_besides_gguf = True
+            if has_gguf and has_besides_gguf:
+                raise ValueError("gguf format is not compatible with other formats, please choose only one of them")
 
         if self.seqlen is not None and hasattr(self.model, "config") and \
                 hasattr(self.model.config, "max_position_embeddings"):
@@ -537,14 +538,8 @@ class AutoRound(object):
         # If multiple formats are specified, enforce inplace=False
         if len(formats) > 1:
             inplace = False
-        inplace = kwargs.get("inplace", inplace)
+        self.inplace = kwargs.get("inplace", inplace)
         kwargs.pop("inplace", None)
-
-        # Determine if immediate packing is required
-        if (len(formats) == 1 and
-                ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[0]) and
-                not self.has_qlayer_outside_block and inplace):  # TODO: Support more formats
-            self.is_packing_immediate = True
 
         # Adjust format settings based on compatibility
         for index in range(len(formats)):
@@ -842,6 +837,12 @@ class AutoRound(object):
         self.has_qlayer_outside_block = self.set_layerwise_config(self.layer_config)
         self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(self.layer_config, self.formats,
                                                                                 self.model)
+        # Determine if immediate packing is required
+        formats = self.formats
+        if (len(formats) == 1 and
+                ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[0]) and
+                not self.has_qlayer_outside_block and self.inplace):  # TODO: Support more formats
+            self.is_packing_immediate = True
         if self.iters == 0:
             return self.quantize_rtn()
 
@@ -867,7 +868,7 @@ class AutoRound(object):
             logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
         is_quantized_embedding = self.quantize_embedding_layer()
-        q_all_inputs = None
+        all_q_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs)
@@ -881,12 +882,11 @@ class AutoRound(object):
 
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
-            q_inputs = None
-            if q_all_inputs is not None:
-                q_inputs = all_q_inputs[block_names[0]]
-
             all_inputs.pop(block_names[0])
-            all_q_inputs.pop(block_names[0])
+            q_inputs = None
+            if all_q_inputs is not None:
+                q_inputs = all_q_inputs[block_names[0]]
+                all_q_inputs.pop(block_names[0])
             keys = inputs.keys()
             input_id_str = [key for key in keys if key.startswith('hidden_state')]
             if len(input_id_str) != 1:

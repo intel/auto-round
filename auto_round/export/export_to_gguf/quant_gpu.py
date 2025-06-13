@@ -573,61 +573,6 @@ def q4_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
     return np.concatenate([output_d, output_dmin, output_scale, output_qs], axis=-1)
 
 
-#
-# @register_qtype("q4_k_imatrix")
-# def q4_k_imatrix_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, imatrix=None,
-#                              **kwargs):
-#     nb = blocks.shape[0]
-#     blocks = blocks.reshape((nb, QK_K // 32, 32))
-#
-#     output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
-#     output_qs = np.empty((nb, QK_K // 64, 32), dtype=np.uint8)
-#
-#     # for test only
-#     scale = None
-#     if scale is not None:
-#         pass
-#     else:
-#         sumx2 = torch.sum(blocks ** 2, dim=-1, keepdim=True)
-#         sigma2 = 2 * sumx2 / QK_K
-#         av_x = torch.sqrt(sigma2)
-#         if imatrix is not None:
-#             weights = imatrix.reshape(-1, 1, 1) * torch.sqrt(sigma2 + blocks * blocks)
-#         else:
-#             weights = av_x + torch.abs(blocks)
-#         sw = weights.sum(-1)
-#         scales, all_L, mins = make_qkx3_quants(blocks, bits=4, weights=weights, rmin=-0.9, rdelta=0.05, nstep=36,
-#                                                use_mad=False)
-#         output_d, q_scales = make_qp_quants(63, scales, sw)
-#         output_dmin, q_mins = make_qp_quants(63, mins, sw)
-#
-#     d_tmp = output_d.unsqueeze(-1) * q_scales
-#     dm_tmp = output_dmin.unsqueeze(-1) * q_mins
-#
-#     q_scales = q_scales.cpu().numpy().astype(np.uint8)
-#     q_mins = q_mins.cpu().numpy().astype(np.uint8)
-#     output_scale[:, :4] = q_scales[:, :4]
-#     output_scale[:, 4:8] = q_mins[:, :4]
-#
-#     output_scale[:, 8:] = (q_scales[:, 4:] & 0xF) | ((q_mins[:, 4:] & 0xF) << 4)
-#     output_scale[:, :4] |= ((q_scales[:, 4:] >> 4) << 6)
-#     output_scale[:, 4:8] |= ((q_mins[:, 4:] >> 4) << 6)
-#
-#     replace_ids = d_tmp != 0
-#     all_L[replace_ids] = torch.round(
-#         (blocks[replace_ids] + dm_tmp[replace_ids].unsqueeze(-1)) / d_tmp[replace_ids].unsqueeze(-1)).clip(0,15).to(torch.uint8)
-#     all_L = np.clip(all_L.cpu().numpy().astype(np.uint8), 0, 15)
-#     output_qs = all_L[:, ::2] | (all_L[:, 1::2] << 4)
-#
-#     output_d = output_d.cpu().numpy()
-#     output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
-#     output_dmin = output_dmin.cpu().numpy()
-#     output_dmin = output_dmin.reshape(-1, 1).astype(np.float16).view(np.uint8)
-#     output_qs = output_qs.reshape(nb, QK_K // 2)
-#
-#     # [d, dmin, scale, qs]
-#     return np.concatenate([output_d, output_dmin, output_scale, output_qs], axis=-1)
-
 
 @register_qtype("q5_k")
 def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
@@ -635,9 +580,6 @@ def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
     blocks = blocks.reshape((nb, QK_K // 32, 32))
 
     output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
-    output_qs = np.empty((nb, QK_K // 64, 32), dtype=np.uint8)
-    output_qh = np.empty((nb, QK_K // 8), dtype=np.uint8)
-
     if scale is not None:
         scales = scale.reshape(-1, QK_K // 32)
         mins = wmin_m.reshape(-1, QK_K // 32)
@@ -678,8 +620,8 @@ def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
 
     replace_ids = d_tmp != 0
     all_L[replace_ids] = torch.round(
-        (blocks[replace_ids] + dm_tmp[replace_ids].unsqueeze(-1)) / d_tmp[replace_ids].unsqueeze(-1)).clip(0, 31).to(
-        torch.uint8)
+        (blocks[replace_ids] + dm_tmp[replace_ids].unsqueeze(-1)) \
+        / d_tmp[replace_ids].unsqueeze(-1)).clip(0, 31).to(torch.uint8)
     all_L = np.clip(all_L.cpu().numpy().astype(np.uint8), 0, 31)  # (nb, 8, 32)
 
     output_qs = all_L[:, ::2] | (all_L[:, 1::2] << 4)
