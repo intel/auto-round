@@ -842,12 +842,12 @@ class AutoRound(object):
         else:
             self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(self.layer_config, self.formats,
                                                                                     self.model)
-        # Determine if immediate packing is required
-        formats = self.formats
-        if (len(formats) == 1 and
-                ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[0]) and
-                not self.has_qlayer_outside_block and self.inplace):  # TODO: Support more formats
-            self.is_packing_immediate = True
+            # Determine if immediate packing is required
+            formats = self.formats
+            if (len(formats) == 1 and
+                    ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[0]) and
+                    not self.has_qlayer_outside_block and self.inplace):  # TODO: Support more formats
+                self.is_packing_immediate = True
         if self.iters == 0:
             return self.quantize_rtn()
 
