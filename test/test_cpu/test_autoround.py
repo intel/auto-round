@@ -575,6 +575,7 @@ class TestAutoRound(unittest.TestCase):
                 dataset=self.llm_dataloader,
                 layer_config=layer_config
             )
+            autoround.quantize()
 
 
 if __name__ == "__main__":
