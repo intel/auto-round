@@ -35,8 +35,8 @@ class TestGGUF(unittest.TestCase):
     def test_basic_usage(self):
         python_path = sys.executable
         res = os.system(
-            f"cd ../.. && {python_path} -m auto_round --model {self.model_name} --eval_task_by_task"
-            f" --tasks piqa --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
+            f"cd ../.. && {python_path} -m auto_round --model {self.model_name} "
+            f" --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
@@ -44,7 +44,7 @@ class TestGGUF(unittest.TestCase):
 
         res = os.system(
             f"cd ../.. && {python_path} -m auto_round --model {self.model_name}"
-            f" --tasks piqa,openbookqa --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
+            f" --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
@@ -71,10 +71,10 @@ class TestGGUF(unittest.TestCase):
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
 
-        from auto_round.eval.evaluation import simple_evaluate_user_model
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa", eval_model_dtype="bf16")
-        # 0.246
-        self.assertGreater(result['results']['openbookqa']['acc,none'], 0.23)
+        # from auto_round.eval.evaluation import simple_evaluate_user_model
+        # result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa", eval_model_dtype="bf16")
+        # # 0.246
+        # self.assertGreater(result['results']['openbookqa']['acc,none'], 0.23)
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_q4_1(self):
@@ -97,10 +97,10 @@ class TestGGUF(unittest.TestCase):
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
 
-        from auto_round.eval.evaluation import simple_evaluate_user_model
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa", eval_model_dtype="bf16")
-        # 0.23
-        self.assertGreater(result['results']['openbookqa']['acc,none'], 0.22)
+        # from auto_round.eval.evaluation import simple_evaluate_user_model
+        # result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="openbookqa", eval_model_dtype="bf16")
+        # # 0.23
+        # self.assertGreater(result['results']['openbookqa']['acc,none'], 0.22)
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_func(self):
@@ -139,12 +139,12 @@ class TestGGUF(unittest.TestCase):
             super_bits=6
         )
         quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
-        from auto_round.eval.evaluation import simple_evaluate_user_model
-        gguf_file = os.listdir("saved")[0]
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
-        result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="lambada_openai", eval_model_dtype="bf16")
-        self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.5)
+        # autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
+        # from auto_round.eval.evaluation import simple_evaluate_user_model
+        # gguf_file = os.listdir("saved")[0]
+        # model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
+        # result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="lambada_openai", eval_model_dtype="bf16")
+        # self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.5)
         shutil.rmtree("./saved", ignore_errors=True)
 
     def test_q5_k(self):

@@ -492,9 +492,16 @@ def tune(args):
     )
 
     model_name = args.model.rstrip("/")
-    if model_name.split('/')[-1].strip('.') == "":
+
+
+    if model_name.split('/')[-1].strip('.') == "" and "gguf" not in args.format:
         export_dir = os.path.join(args.output_dir, f"w{autoround.bits}g{autoround.group_size}")
-    else:
+    elif model_name.split('/')[-1].strip('.') =="" and "gguf"  in args.format:
+        export_dir = args.output_dir
+    elif model_name.split('./')[-1].strip('./')!="" and "gguf" in args.format:
+        export_dir = os.path.join(args.output_dir,
+                                  model_name.split('/')[-1])
+    else :
         export_dir = os.path.join(args.output_dir,
                                   model_name.split('/')[-1] + f"-w{autoround.bits}g{autoround.group_size}")
 
