@@ -167,6 +167,11 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="whether to quantize non-text module, e.g. vision component")
 
         self.add_argument(
+            "--quant_all",
+            action='store_true',
+            help="whether to quantize all linear module")
+
+        self.add_argument(
             "--extra_data_dir",
             default=None,
             type=str,
@@ -390,6 +395,13 @@ def tune(args):
                 auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
+
+    if args.quant_all:
+        for n,m in model.named_modules():
+            if isinstance(m,torch.nn.Linear):
+                if n not in layer_config:
+                    layer_config[n] = {}
+                layer_config[n]["bits"] = 8
 
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(
