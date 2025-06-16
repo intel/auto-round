@@ -41,9 +41,8 @@ RUN groupadd -g ${GROUP_ID} hostgroup && \
 
 USER hostuser
 
+ENV PATH="/home/hostuser/.local/bin:$PATH"
 RUN pip config set global.break-system-packages true
-RUN pip install pip setuptools==69.5.1
-
 RUN pip list
 
 WORKDIR /
