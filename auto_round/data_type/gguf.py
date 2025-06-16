@@ -438,7 +438,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     return scale.to(torch.float32), -rmin.to(torch.float32)
 
 
-@register_dtype("rtn_gguf_int_sym_dq")
+@register_dtype("rtn_int_sym_dq")
 def quant_tensor_gguf_sym_dq(
         tensor,
         bits=4,

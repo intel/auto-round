@@ -111,7 +111,7 @@ class TestGGUF(unittest.TestCase):
             # bits=bits,
             # group_size=group_size,
             # sym=sym,
-            iters=0,
+            iters=1,
             # data_type="int"
         )
         quantized_model_path = "./saved"
@@ -133,7 +133,7 @@ class TestGGUF(unittest.TestCase):
             bits=3,
             group_size=16,
             sym=True,
-            iters=0,
+            iters=1,
             data_type="int_sym_dq",
             super_group_size=16,
             super_bits=6
@@ -156,7 +156,7 @@ class TestGGUF(unittest.TestCase):
             bits=5,
             group_size=32,
             sym=False,
-            iters=0,
+            iters=1,
             data_type="int_asym_dq",
             super_group_size=8,
             super_bits=6
@@ -179,7 +179,7 @@ class TestGGUF(unittest.TestCase):
             bits=6,
             group_size=16,
             sym=True,
-            iters=0,
+            iters=1,
             data_type="int_sym_dq",
             super_group_size=16,
             super_bits=8
@@ -203,9 +203,10 @@ class TestGGUF(unittest.TestCase):
             group_size=16,
             sym=True,
             iters=0,
-            data_type="gguf_int_sym_dq",
+            data_type="rtn_int_sym_dq",
             super_group_size=16,
-            super_bits=6
+            super_bits=6,
+            disable_opt_rtn=True,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="fake")
@@ -224,7 +225,8 @@ class TestGGUF(unittest.TestCase):
             iters=0,
             data_type="int_asym_dq",
             super_group_size=8,
-            super_bits=6
+            super_bits=6,
+            disable_opt_rtn=True,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q5_k_s,fake")
