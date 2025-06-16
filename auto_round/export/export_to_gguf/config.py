@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-GGUF_CONFIG = {}
+GGUF_INNER_CONFIG = {}
 
-GGUF_CONFIG["gguf:q4_0"] = {
+GGUF_INNER_CONFIG["gguf:q4_0"] = {
     "bits": 4,
     "act_bits": 16,
     "group_size": 32,
@@ -26,7 +26,7 @@ GGUF_CONFIG["gguf:q4_0"] = {
     "super_group_size": None,
 }
 
-GGUF_CONFIG["gguf:q4_1"] = {
+GGUF_INNER_CONFIG["gguf:q4_1"] = {
     "bits": 4,
     "act_bits": 16,
     "group_size": 32,
@@ -38,7 +38,7 @@ GGUF_CONFIG["gguf:q4_1"] = {
     "super_group_size": None,
 }
 
-GGUF_CONFIG["gguf:q5_0"] = {
+GGUF_INNER_CONFIG["gguf:q5_0"] = {
     "bits": 5,
     "act_bits": 16,
     "group_size": 32,
@@ -50,7 +50,7 @@ GGUF_CONFIG["gguf:q5_0"] = {
     "super_group_size": None,
 }
 
-GGUF_CONFIG["gguf:q5_1"] = {
+GGUF_INNER_CONFIG["gguf:q5_1"] = {
     "bits": 5,
     "act_bits": 16,
     "group_size": 32,
@@ -62,7 +62,7 @@ GGUF_CONFIG["gguf:q5_1"] = {
     "super_group_size": None,
 }
 
-GGUF_CONFIG["gguf:q8_0"] = {
+GGUF_INNER_CONFIG["gguf:q8_0"] = {
     "bits": 8,
     "act_bits": 16,
     "group_size": 32,
@@ -74,7 +74,7 @@ GGUF_CONFIG["gguf:q8_0"] = {
     "super_group_size": None,
 }
 
-GGUF_CONFIG["gguf:q2_k_s"] = {
+GGUF_INNER_CONFIG["gguf:q2_k"] = {
     "bits": 2,
     "act_bits": 16,
     "super_group_size": 16,
@@ -82,11 +82,11 @@ GGUF_CONFIG["gguf:q2_k_s"] = {
     "group_size": 16,
     "sym": False,
     "data_type": "int_asym_dq",
-    "embedding": "gguf:q2_k_s",
-    "lm_head": "gguf:q6_k_s"
+    "embedding": "gguf:q2_k",
+    "lm_head": "gguf:q6_k"
 }
 
-GGUF_CONFIG["gguf:q3_k_s"] = {
+GGUF_INNER_CONFIG["gguf:q3_k"] = {
     "bits": 3,
     "act_bits": 16,
     "super_group_size": 16,
@@ -94,11 +94,11 @@ GGUF_CONFIG["gguf:q3_k_s"] = {
     "group_size": 16,
     "sym": True,
     "data_type": "int_sym_dq",
-    "embedding": "gguf:q3_k_s",
-    "lm_head": "gguf:q6_k_s"
+    "embedding": "gguf:q3_k",
+    "lm_head": "gguf:q6_k"
 }
 
-GGUF_CONFIG["gguf:q4_k_s"] = GGUF_CONFIG["gguf:q4_k_m"] = {
+GGUF_INNER_CONFIG["gguf:q4_k"]  = {
     "bits": 4,
     "act_bits": 16,
     "super_group_size": 8,
@@ -106,11 +106,11 @@ GGUF_CONFIG["gguf:q4_k_s"] = GGUF_CONFIG["gguf:q4_k_m"] = {
     "group_size": 32,
     "sym": False,
     "data_type": "int_asym_dq",
-    "embedding": "gguf:q4_k_s",
-    "lm_head": "gguf:q6_k_s"
+    "embedding": "gguf:q4_k",
+    "lm_head": "gguf:q6_k"
 }
 
-GGUF_CONFIG["gguf:q5_k_s"] = {
+GGUF_INNER_CONFIG["gguf:q5_k"] = {
     "bits": 5,
     "act_bits": 16,
     "super_group_size": 8,
@@ -118,11 +118,11 @@ GGUF_CONFIG["gguf:q5_k_s"] = {
     "group_size": 32,
     "sym": False,
     "data_type": "int_asym_dq",
-    "embedding": "gguf:q5_k_s",
-    "lm_head": "gguf:q6_k_s"
+    "embedding": "gguf:q5_k",
+    "lm_head": "gguf:q6_k"
 }
 
-GGUF_CONFIG["gguf:q6_k"] = GGUF_CONFIG["gguf:q6_k_s"] = {
+GGUF_INNER_CONFIG["gguf:q6_k"]  = {
     "bits": 6,
     "act_bits": 16,
     "super_group_size": 16,
@@ -130,9 +130,66 @@ GGUF_CONFIG["gguf:q6_k"] = GGUF_CONFIG["gguf:q6_k_s"] = {
     "group_size": 16,
     "sym": True,
     "data_type": "int_sym_dq",
-    "embedding": "gguf:q6_k_s",
-    "lm_head": "gguf:q6_k_s"
+    "embedding": "gguf:q6_k",
+    "lm_head": "gguf:q6_k"
 }
+
+GGUF_INNER_CONFIG["gguf:bf16"]=GGUF_INNER_CONFIG["gguf:fp16"]  = {
+    "bits": 16,
+    "act_bits": 16,
+    "super_group_size": None,
+    "super_bits": None,
+    "group_size": None,
+    "sym": True,
+    "data_type": "int_sym_dq",
+    "embedding": None,
+    "lm_head": None,
+}
+
+
+
+GGUF_CONFIG = {}
+GGUF_CONFIG["gguf:q4_0"] = GGUF_INNER_CONFIG["gguf:q4_0"]
+GGUF_CONFIG["gguf:q4_0"]["mostly"] = "gguf:q4_0"
+GGUF_CONFIG["gguf:q4_1"] = GGUF_INNER_CONFIG["gguf:q4_1"]
+GGUF_CONFIG["gguf:q4_1"]["mostly"]= "gguf:q4_1"
+GGUF_CONFIG["gguf:q5_0"] = GGUF_INNER_CONFIG["gguf:q5_0"]
+GGUF_CONFIG["gguf:q5_0"]["mostly"]= "gguf:q5_0"
+GGUF_CONFIG["gguf:q5_1"] = GGUF_INNER_CONFIG["gguf:q5_1"]
+GGUF_CONFIG["gguf:q5_1"]["mostly"] = "gguf:q5_1"
+GGUF_CONFIG["gguf:q2_k"] = GGUF_INNER_CONFIG["gguf:q2_k"]
+GGUF_CONFIG["gguf:q2_k"]["mostly"] = "gguf:q2_k"
+GGUF_CONFIG["gguf:q2_k_s"] = GGUF_INNER_CONFIG["gguf:q2_k"]
+GGUF_CONFIG["gguf:q2_k_s"]["mostly"]= "gguf:q2_k"
+# GGUF_CONFIG["gguf:q3_k"] = GGUF_INNER_CONFIG["gguf:q3_k"]
+# GGUF_CONFIG["gguf:q3_k"]["mostly"] = "gguf:q3_k"
+GGUF_CONFIG["gguf:q3_k_s"] = GGUF_INNER_CONFIG["gguf:q3_k"]
+GGUF_CONFIG["gguf:q3_k_s"]["mostly"] = "gguf:q3_k"
+GGUF_CONFIG["gguf:q3_k_m"] = GGUF_INNER_CONFIG["gguf:q3_k"]
+GGUF_CONFIG["gguf:q3_k_m"]["mostly"] = "gguf:q3_k"
+GGUF_CONFIG["gguf:q3_k_l"] = GGUF_INNER_CONFIG["gguf:q3_k"]
+GGUF_CONFIG["gguf:q3_k_l"]["mostly"]= "gguf:q3_k"
+# GGUF_CONFIG["gguf:q4_k"] = GGUF_INNER_CONFIG["gguf:q4_k"]
+# GGUF_CONFIG["gguf:q4_k"]["mostly"]= "gguf:q4_k"
+GGUF_CONFIG["gguf:q4_k_s"] = GGUF_INNER_CONFIG["gguf:q4_k"]
+GGUF_CONFIG["gguf:q4_k_s"]["mostly"]= "gguf:q4_k"
+GGUF_CONFIG["gguf:q4_k_m"] = GGUF_INNER_CONFIG["gguf:q4_k"]
+GGUF_CONFIG["gguf:q4_k_m"]["mostly"] = "gguf:q4_k"
+GGUF_CONFIG["gguf:q5_k"] = GGUF_INNER_CONFIG["gguf:q5_k"]
+GGUF_CONFIG["gguf:q5_k"]["mostly"]= "gguf:q5_k"
+GGUF_CONFIG["gguf:q5_k_s"] = GGUF_INNER_CONFIG["gguf:q5_k"]
+GGUF_CONFIG["gguf:q5_k_s"]["mostly"] = "gguf:q5_k"
+GGUF_CONFIG["gguf:q5_k_m"] = GGUF_INNER_CONFIG["gguf:q5_k"]
+GGUF_CONFIG["gguf:q5_k_m"]["mostly"] = "gguf:q5_k"
+GGUF_CONFIG["gguf:q6_k"] = GGUF_INNER_CONFIG["gguf:q6_k"]
+GGUF_CONFIG["gguf:q6_k"]["mostly"]= "gguf:q6_k"
+GGUF_CONFIG["gguf:q8_0"] = GGUF_INNER_CONFIG["gguf:q8_0"]
+GGUF_CONFIG["gguf:q8_0"]["mostly"]= "gguf:q8_0"
+# GGUF_CONFIG["gguf:fp16"] = GGUF_INNER_CONFIG["gguf:fp16"]
+# GGUF_CONFIG["gguf:fp16"]["mostly"]= "gguf:fp16"
+# GGUF_CONFIG["gguf:bf16"] = GGUF_INNER_CONFIG["gguf:fp16"]
+# GGUF_CONFIG["gguf:bf16"]["mostly"]= "gguf:bf16"
+
 
 
 QK_K = 256

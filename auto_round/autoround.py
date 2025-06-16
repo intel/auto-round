@@ -56,7 +56,7 @@ from auto_round.utils import (
     init_cache, check_skippable_keywords, get_shared_keys, SUPPORTED_DTYPES, infer_bits_by_data_type,
     _gguf_args_check,
     check_seqlen_compatible,
-    get_layer_config_by_gguf_format
+    get_layer_config_by_gguf_format, get_lm_head_name
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -619,7 +619,7 @@ class AutoRound(object):
                 else:
                     dtype = dtype + "_asym"
 
-            if not self.disable_opt_rtn and  "rtn_" + dtype in QUANT_FUNC_WITH_DTYPE:
+            if not self.disable_opt_rtn and "rtn_" + dtype in QUANT_FUNC_WITH_DTYPE:
                 dtype = "rtn_" + dtype
             quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
 
@@ -734,18 +734,6 @@ class AutoRound(object):
         if not has_gguf:
             return False
 
-        def get_lm_head_name(model):
-            block_names = get_block_names(model, True)
-            last_name = None
-            for n, m in model.named_modules():
-                if any(m.children()):
-                    continue
-                last_name = n
-            for l in block_names:
-                if last_name in l:
-                    last_name = None
-            return last_name
-
         formats = [f for f in self.formats if "fake" not in f]
         if not (len(formats) == 1 and "gguf" in formats[0]):
             raise NotImplementedError("Only one GGUF format can be set at a time.")
@@ -760,7 +748,7 @@ class AutoRound(object):
                 act_bits = 16
                 scale_dtype = self.scale_dtype
                 keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
-                self.layer_config[embedding_name]={}
+                self.layer_config[embedding_name] = {}
                 for key in keys:
                     self.layer_config[embedding_name][key] = getattr(config, "get")(key)
                     setattr(get_module(self.model, embedding_name), key, config.get(key))
@@ -812,7 +800,7 @@ class AutoRound(object):
         for name in pbar:
             pbar.set_description(f"Quantizing {name}")
             m = get_module(self.model, name)
-            if not self.disable_opt_rtn  and not (m.data_type.startswith("rtn_")):  ## use rtn version first
+            if not self.disable_opt_rtn and not (m.data_type.startswith("rtn_")):  ## use rtn version first
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
                 if "rtn_" + m.data_type in QUANT_FUNC_WITH_DTYPE:
                     m.data_type = "rtn_" + m.data_type
@@ -864,7 +852,7 @@ class AutoRound(object):
                 if not ("gguf" in format_ or "fake" in format_):
                     only_gguf = False
                     break
-            if len(self.formats)==1 and self.formats[0]=="fake":
+            if len(self.formats) == 1 and self.formats[0] == "fake":
                 only_gguf = False
             if only_gguf:
                 self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(self.layer_config, self.formats,
