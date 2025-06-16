@@ -471,7 +471,7 @@ def quant_tensor_gguf_sym_dq(
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
-    from auto_round.export.export_to_gguf.utils import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
+    from auto_round.export.export_to_gguf.config import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
     from auto_round.export.export_to_gguf.quant_gpu import make_q3_quants, make_qx_quants
 
     if bits not in [3, 6]:

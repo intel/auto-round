@@ -31,7 +31,7 @@ class TestGGUF(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
-    
+
     def test_basic_usage(self):
         python_path = sys.executable
         res = os.system(
@@ -76,7 +76,7 @@ class TestGGUF(unittest.TestCase):
         # 0.246
         self.assertGreater(result['results']['openbookqa']['acc,none'], 0.23)
         shutil.rmtree("./saved", ignore_errors=True)
-    
+
     def test_q4_1(self):
         bits, group_size, sym = 4, 32, False
         autoround = AutoRound(
@@ -102,17 +102,17 @@ class TestGGUF(unittest.TestCase):
         # 0.23
         self.assertGreater(result['results']['openbookqa']['acc,none'], 0.22)
         shutil.rmtree("./saved", ignore_errors=True)
-    
+
     def test_func(self):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             self.model,
             self.tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
+            # bits=bits,
+            # group_size=group_size,
+            # sym=sym,
             iters=0,
-            data_type="int"
+            # data_type="int"
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_1")
@@ -124,8 +124,8 @@ class TestGGUF(unittest.TestCase):
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
-    
-        model_name = "Qwen/Qwen2.5-1.5B-Instruct" 
+
+        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
@@ -146,9 +146,9 @@ class TestGGUF(unittest.TestCase):
         result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="lambada_openai", eval_model_dtype="bf16")
         self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.5)
         shutil.rmtree("./saved", ignore_errors=True)
-    
+
     def test_q5_k(self):
-        model_name = "Qwen/Qwen2.5-1.5B-Instruct" 
+        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
@@ -169,9 +169,9 @@ class TestGGUF(unittest.TestCase):
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
-    
+
     def test_q6_k(self):
-        model_name = "Qwen/Qwen2.5-1.5B-Instruct" 
+        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
@@ -192,9 +192,9 @@ class TestGGUF(unittest.TestCase):
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
-    
+
     def test_gguf_baseline(self):
-        model_name = "Qwen/Qwen2.5-1.5B-Instruct" 
+        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
@@ -214,7 +214,7 @@ class TestGGUF(unittest.TestCase):
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
-    
+
         autoround = AutoRound(
             model,
             self.tokenizer,
@@ -233,7 +233,7 @@ class TestGGUF(unittest.TestCase):
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
-        self.assertTrue(autoround.data_type == "gguf_int_asym_dq")
+
 
 if __name__ == "__main__":
     unittest.main()

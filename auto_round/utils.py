@@ -29,7 +29,7 @@ from packaging import version
 import gc
 from .special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 import transformers
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -1574,6 +1574,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
     # TODO: support for other format later
 
     if "gguf:q4_k_m" not in gguf_format:
+        check_gguf_gs_and_fall_back(model, layer_config)
         return layer_config, {}
 
     import gguf  # pylint: disable=E0401
@@ -1652,4 +1653,78 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             config = _set_config(config, GGUF_CONFIG["gguf:q5_k_s"])
 
         layer_config[layer_name] = config
+    check_gguf_gs_and_fall_back(model, layer_config)
     return layer_config, gguf_format_config
+
+
+def get_gguf_qtype_by_layer_config(layer_config):
+    import gguf
+    if layer_config['bits'] >= 16:
+        return None
+    bits = layer_config['bits']
+    super_bits = layer_config.get("super_bits", None)
+    sym = layer_config["sym"]
+    group_size = layer_config.get("group_size", None)
+    super_group_size = layer_config.get("super_group_size", None)
+    if bits == 2 and super_bits == 4 and not sym and group_size == 16 and super_group_size == 16:
+        return gguf.GGMLQuantizationType.Q2_K
+    if bits == 3 and super_bits == 6 and sym and group_size == 16 and super_group_size == 16:
+        return gguf.GGMLQuantizationType.Q3_K
+    if bits == 4:
+        if super_bits is not None and super_bits == 6 and not sym and group_size == 32 and super_group_size == 8:
+            return gguf.GGMLQuantizationType.Q4_K
+        if super_bits is None and sym and group_size == 32:
+            return gguf.GGMLQuantizationType.Q4_0
+        if super_bits is None and not sym and group_size == 32:
+            return gguf.GGMLQuantizationType.Q4_1
+    if bits == 5:
+        if super_bits == 6 and not sym and group_size == 32 and super_group_size == 8:
+            return gguf.GGMLQuantizationType.Q5_K
+        if super_bits is None and sym and group_size == 32:
+            return gguf.GGMLQuantizationType.Q5_0
+        if super_bits is None and not sym and group_size == 32:
+            return gguf.GGMLQuantizationType.Q5_1
+    if bits == 6 and super_bits == 8 and group_size == 16 and super_group_size == 16:
+        return gguf.GGMLQuantizationType.Q6_K
+    if bits == 8 and sym and group_size == 32:
+        return gguf.GGMLQuantizationType.Q8_0
+    raise ValueError(f"Unknown layer config")
+
+
+##The code is not very robust
+def check_gguf_gs_and_fall_back(model, layer_configs):
+    for n, m in model.named_modules():
+        if not check_to_quantized(m):
+            continue
+        layer = get_module(model, n)
+        layer_config = layer_configs[n]
+        if not hasattr(layer, "weight"):
+           continue
+        if isinstance(m, transformers.pytorch_utils.Conv1D):
+            input_features = m.weight.shape[0]
+        else:
+            input_features = m.weight.shape[-1]
+        ggml_type = str(get_gguf_qtype_by_layer_config(layer_config)).lower().split(".")[-1]
+        group_size = GGML_QUANT_SIZES[ggml_type][0]
+        if input_features % group_size == 0:
+            continue
+
+        if input_features % 32 != 0:
+            layer_config["bits"] = 16
+            layer.bits = 16
+            logger.warning(f"fallback {n} to 16 bits, because input_features({input_features}) % 32 != 0")
+
+        compatible_keys = []
+        for key in GGML_QUANT_SIZES.keys():
+            if GGML_QUANT_SIZES[key][0] == 32:
+                if int(key[1]) >= layer_config["bits"]:
+                    compatible_keys.append(key)
+        sorted(compatible_keys)
+        fall_back_keys = compatible_keys[0]
+        target_config = GGUF_CONFIG["gguf:" + fall_back_keys]
+        for att in ["bits", "sym", "group_size", "super_bits", "super_group_size","act_bits","data_type"]:
+            if att in target_config:
+                layer_config[att] = target_config[att]
+                layer.__dict__[att] = target_config[att]
+        logger.warning(f"fallback {n} to {fall_back_keys}, because input_features({input_features}) % group_size({group_size}) != 0")
+

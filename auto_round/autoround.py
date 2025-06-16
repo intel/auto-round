@@ -448,8 +448,8 @@ class AutoRound(object):
         # Check the legitimacy of seqlen
 
         ##check gguf and others
+        has_gguf = False
         if hasattr(self, "formats"):
-            has_gguf = False
             has_besides_gguf = False
             for format_ in self.formats:
                 if "gguf" in format_:
@@ -590,26 +590,28 @@ class AutoRound(object):
 
     @torch.inference_mode
     def quantize_embedding_layer(self):
-        if not hasattr(self, "formats"):
-            return
-        formats = [f for f in self.formats if "fake" not in f]
-        if not (len(formats) == 1 and "gguf" in formats[0]):
-            return False
+        # if not hasattr(self, "formats"):
+        #     return False
+        # formats = [f for f in self.formats if "fake" not in f]
+        # if not (len(formats) == 1 and "gguf" in formats[0]):
+        #     return False
         for n, m in self.model.named_modules():
             if not isinstance(m, torch.nn.Embedding):
+                continue
+            config = self.layer_config[n]
+            if not check_to_quantized(config):
                 continue
 
             layer = m
             layer_name = n
-            format = formats[0]
-            tie = getattr(getattr(self.model, "config", {}), "tie_word_embeddings", True)
-            cfg_name = GGUF_CONFIG[format]["lm_head" if tie else "embedding"]
-            cfg = GGUF_CONFIG[cfg_name]
-            act_bits = 16
-
-            keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
-            config = {k: cfg.get(k) for k in keys}
-            config["act_bits"] = act_bits
+            # format = formats[0]
+            # tie = getattr(getattr(self.model, "config", {}), "tie_word_embeddings", True)
+            # cfg_name = GGUF_CONFIG[format]["lm_head" if tie else "embedding"]
+            # cfg = GGUF_CONFIG[cfg_name]
+            # act_bits = 16
+            #
+            # keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
+            # config = {k: cfg.get(k) for k in keys}
             config["scale_dtype"] = self.scale_dtype
 
             from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
@@ -724,13 +726,15 @@ class AutoRound(object):
         model.to("cpu")
         clear_memory()
 
-    def check_need_to_quantize_lm_head(self):
+    def check_need_to_quantize_lm_head_embedding(self):
         if not hasattr(self, "formats"):
             return False
         has_gguf = False
         for format_ in self.formats:
             if "gguf" in format_:
                 has_gguf = True
+        if not has_gguf:
+            return False
 
         def get_lm_head_name(model):
             block_names = get_block_names(model, True)
@@ -744,33 +748,47 @@ class AutoRound(object):
                     last_name = None
             return last_name
 
-        if has_gguf:
-            ## get the lm_head_name
-            tie_word_embeddings = True
-            if hasattr(self.model, "config") and hasattr(self.model.config, "tie_word_embeddings"):
-                tie_word_embeddings = self.model.config.tie_word_embeddings
-            if not tie_word_embeddings:
-                # TODO: If the user has set this explicitly, do not override
-                formats = [f for f in self.formats if "fake" not in f]
-                if not (len(formats) == 1 and "gguf" in formats[0]):
-                    raise NotImplementedError("Only one GGUF format can be set at a time.")
-
-                lm_head_name = get_lm_head_name(self.model)
-                config = GGUF_CONFIG[GGUF_CONFIG[formats[0]]["lm_head"]]
+        formats = [f for f in self.formats if "fake" not in f]
+        if not (len(formats) == 1 and "gguf" in formats[0]):
+            raise NotImplementedError("Only one GGUF format can be set at a time.")
+        target_gguf_format = formats[0]
+        tie_word_embeddings = True
+        if hasattr(self.model, "config") and hasattr(self.model.config, "tie_word_embeddings"):
+            tie_word_embeddings = self.model.config.tie_word_embeddings
+        for n, m in self.model.named_modules():
+            if isinstance(m, torch.nn.Embedding):
+                embedding_name = n
+                config = GGUF_CONFIG[GGUF_CONFIG[target_gguf_format]["lm_head" if tie_word_embeddings else "embedding"]]
                 act_bits = 16
                 scale_dtype = self.scale_dtype
-
                 keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
+                self.layer_config[embedding_name]={}
                 for key in keys:
-                    self.layer_config[lm_head_name][key] = getattr(config, "get")(key)
-                    setattr(get_module(self.model, lm_head_name), key, config.get(key))
-                self.layer_config[lm_head_name]["act_bits"] = act_bits
-                self.layer_config[lm_head_name]["scale_dtype"] = scale_dtype
+                    self.layer_config[embedding_name][key] = getattr(config, "get")(key)
+                    setattr(get_module(self.model, embedding_name), key, config.get(key))
+                self.layer_config[embedding_name]["act_bits"] = act_bits
+                self.layer_config[embedding_name]["scale_dtype"] = scale_dtype
+                setattr(get_module(self.model, embedding_name), "act_bits", act_bits)
+                setattr(get_module(self.model, embedding_name), "scale_dtype", scale_dtype)
 
-                setattr(get_module(self.model, lm_head_name), "act_bits", act_bits)
-                setattr(get_module(self.model, lm_head_name), "scale_dtype", scale_dtype)
-                return True
-        return False
+        if not tie_word_embeddings:
+            # TODO: If the user has set this explicitly, do not override
+
+            lm_head_name = get_lm_head_name(self.model)
+            config = GGUF_CONFIG[GGUF_CONFIG[formats[0]]["lm_head"]]
+
+            act_bits = 16
+            scale_dtype = self.scale_dtype
+            keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
+            for key in keys:
+                self.layer_config[lm_head_name][key] = getattr(config, "get")(key)
+                setattr(get_module(self.model, lm_head_name), key, config.get(key))
+            self.layer_config[lm_head_name]["act_bits"] = act_bits
+            self.layer_config[lm_head_name]["scale_dtype"] = scale_dtype
+
+            setattr(get_module(self.model, lm_head_name), "act_bits", act_bits)
+            setattr(get_module(self.model, lm_head_name), "scale_dtype", scale_dtype)
+            return True
 
     @torch.inference_mode
     def quantize_rtn(self):
@@ -915,7 +933,7 @@ class AutoRound(object):
                 self.model,
                 inputs,
                 block_names,
-                q_input=q_inputs,
+                q_input=q_inputs["input_ids"] if q_inputs is not None else None,
                 nblocks=self.nblocks,
                 device=self.device,
                 pbar=pbar
@@ -1119,7 +1137,7 @@ class AutoRound(object):
             # Apply the configuration to the corresponding layer in the model
             for key in keys:
                 setattr(m, key, layer_config[n][key])
-        need_to_quantize_lm_head = self.check_need_to_quantize_lm_head()
+        need_to_quantize_lm_head = self.check_need_to_quantize_lm_head_embedding()
         if need_to_quantize_lm_head:
             has_qlayer_outside_block = True
 
@@ -2182,6 +2200,7 @@ class AutoRound(object):
         current_input_ids: The sampled input IDs.
         current_input_others: The sampled other input data.
         """
+        logger.info(indices)
         current_input_ids = [input_ids[i] for i in indices]
 
         current_input_ids = torch.cat(current_input_ids, dim=batch_dim)

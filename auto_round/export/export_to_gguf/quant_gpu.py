@@ -15,7 +15,7 @@
 import torch
 import numpy as np
 
-from .utils import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
+from auto_round.export.export_to_gguf.config import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
 
 GGML_QUANT_TYPE = {}
 
@@ -42,17 +42,12 @@ def ggml_quant_gpu(data, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=No
     shape = data.shape
     n_blocks = data.nelement() // block_size
     blocks = data.reshape((n_blocks, block_size))
-
-    # # for test only
-    # imatrix = torch.sum(blocks, -1)
-    # imatrix = torch.rand_like(imatrix)
-    # if imatrix is not None:
-    #     ggml_type += "_imatrix"
     quant_func = GGML_QUANT_TYPE[ggml_type]
     new_data = quant_func(blocks, scale, zp, wmin_m=wmin_m, d_scale=d_scale, d_wmin_m=d_wmin_m, imatrix=imatrix)
 
     assert new_data.shape[-1] == type_size
     new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)
+    new_data = new_data.reshape(*shape[:-1], -1)
     return new_data
 
 
