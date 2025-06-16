@@ -745,7 +745,8 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if isinstance(m, torch.nn.Embedding):
                 embedding_name = n
-                config = GGUF_INNER_CONFIG[GGUF_CONFIG[target_gguf_format]["lm_head" if tie_word_embeddings else "embedding"]]
+                key = "lm_head" if tie_word_embeddings else "embedding"
+                config = GGUF_INNER_CONFIG[GGUF_CONFIG[target_gguf_format][key]]
                 act_bits = 16
                 scale_dtype = self.scale_dtype
                 keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
@@ -786,7 +787,7 @@ class AutoRound(object):
         all_to_quantized_module_names = []
 
         for n, m in self.model.named_modules():
-            if (check_to_quantized(m)):
+            if check_to_quantized(m):
                 all_to_quantized_module_names.append(n)
         if hasattr(self, "formats"):
             has_gguf_k = False
