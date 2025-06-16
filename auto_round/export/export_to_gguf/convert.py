@@ -53,7 +53,7 @@ import numpy as np
 import torch
 
 from auto_round.utils import logger, LazyImport
-from .quant_gpu import ggml_quant_gpu
+from .packing import ggml_quant_gpu
 
 gguf = LazyImport("gguf")
 
