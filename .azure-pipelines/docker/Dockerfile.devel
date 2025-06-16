@@ -42,8 +42,7 @@ RUN groupadd -g ${GROUP_ID} hostgroup && \
 USER hostuser
 
 RUN pip config set global.break-system-packages true
-RUN python -m pip install --no-cache-dir --upgrade pip
-RUN python -m pip install --no-cache-dir setuptools==69.5.1
+RUN pip install pip setuptools==69.5.1
 
 RUN pip list
 
