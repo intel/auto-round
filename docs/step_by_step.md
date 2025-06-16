@@ -242,10 +242,8 @@ autoround.quantize_and_save(output_dir, format='auto_round')
 ```
 
 ### GGUF format
-
-This format is well-suited for CPU devices and is widely adopted by the community. Mixed bits 
-configs like q4_k_m have not been supported yet. Please note: In contrast to the official implementation, AutoRound does not quantize the embedding layer or the LM head layer by default.
-
+Experimental feature. This format is well-suited for CPU devices and is widely adopted by the community. 
+This format is well-suited for CPU devices and is widely adopted by the community.
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
