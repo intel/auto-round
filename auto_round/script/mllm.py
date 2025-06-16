@@ -447,7 +447,8 @@ def tune(args):
         to_quant_block_names=args.to_quant_block_names,
         enable_torch_compile=enable_torch_compile,
         device_map=args.device_map,
-        model_kwargs=model_kwargs
+        model_kwargs=model_kwargs,
+        data_type = args.data_type
         )
     model, _ = autoround.quantize()
 
