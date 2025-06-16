@@ -513,7 +513,7 @@ class AutoRound(object):
 
         return model, folders
 
-    @torch.inference_mode
+    @torch.no_grad()
     def quantize_rtn(self):
         if self.amp:
             self.model.to(self.amp_dtype)
