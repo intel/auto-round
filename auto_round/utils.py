@@ -22,13 +22,12 @@ import re
 import cpuinfo
 import psutil
 import torch
-from textual.css.model import SelectorSet
 from torch.amp import autocast
 
 from functools import lru_cache
 from packaging import version
 import gc
-from .special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
+from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 import transformers
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES, GGUF_INNER_CONFIG
 
@@ -1664,7 +1663,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
                 new_type = "gguf:q5_k"
             ##TODO check which models are be grouped into to LLM_TYPE_70B
             # if (qs.model.type == LLM_TYPE_70B) {
-            # // In the 70B model we have 8 heads sharing the same attn_v weights.As a result, the attn_v.weight tensor is
+            # // In the 70B model we have 8 heads sharing the same attn_v weights.
+            # As a result, the attn_v.weight tensor is
             # // 8x smaller compared to attn_q.weight.Hence, we can get a nice boost in quantization accuracy with
             # // nearly negligible increase in model size by quantizing this tensor with more bits:
             #     if
@@ -1710,7 +1710,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
                         new_type = "gguf:q6_k"
             elif target_gguf_format == "gguf:q5_k_m" and _use_more_bits(i_layer, n_layer):
                 new_type = "gguf:q6_k"
-            elif target_gguf_format == "gguf:q4_k_s" and model_class.model_arch != gguf.MODEL_ARCH.FALCON and i_layer < n_layer / 8:
+            elif (target_gguf_format == "gguf:q4_k_s" and
+                  model_class.model_arch != gguf.MODEL_ARCH.FALCON and i_layer < n_layer / 8):
                 new_type = "gguf:q5_k"
             elif (target_gguf_format == "gguf:q4_0" or target_gguf_format == "gguf:q5_0") and i_layer < n_layer / 8:
                 if target_gguf_format == "gguf:q4_0":

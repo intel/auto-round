@@ -462,6 +462,12 @@ class AutoRound(object):
                     has_besides_gguf = True
             if has_gguf and has_besides_gguf:
                 raise ValueError("gguf format is not compatible with other formats, please choose only one of them")
+            if  has_gguf and self.iters!=0:
+                logger.warning(
+                    "We recommend setting `iters=0` when exporting to GGUF format,"
+                    " as we have optimized the RTN method for this case."
+                    " We will release new algorithms for certain configurations in the future."
+                )
 
         if self.seqlen is not None and hasattr(self.model, "config") and \
                 hasattr(self.model.config, "max_position_embeddings"):
