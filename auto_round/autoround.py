@@ -122,6 +122,7 @@ class AutoRound(object):
         enable_norm_bias_tuning (bool): Whether to enable fast norm/layer_bias tuning
         enable_torch_compile (bool): Whether to enable torch compile to optimize quant_block/layer (default it False).
         device_map (str|dict): device map for each block
+        disable_opt_rtn (bool): Whether to disable optimization of the RTN mode(iters=0) (default is False).
     Returns:
         The quantized model.
     """
@@ -167,6 +168,7 @@ class AutoRound(object):
             device_map: Union[str, dict] = None,
             super_bits: int = None,
             super_group_size: int = None,
+            disable_opt_rtn: bool = False,
             model_kwargs: dict = None,
             **kwargs,
     ):
@@ -254,6 +256,8 @@ class AutoRound(object):
 
         self.super_bits = super_bits
         self.super_group_size = super_group_size
+
+        self.disable_opt_rtn = disable_opt_rtn
 
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
@@ -596,22 +600,15 @@ class AutoRound(object):
         # if not (len(formats) == 1 and "gguf" in formats[0]):
         #     return False
         for n, m in self.model.named_modules():
-            if not isinstance(m, torch.nn.Embedding):
+            if not isinstance(m, torch.nn.Embedding) or n not in self.layer_config:
                 continue
+
             config = self.layer_config[n]
             if not check_to_quantized(config):
                 continue
 
             layer = m
             layer_name = n
-            # format = formats[0]
-            # tie = getattr(getattr(self.model, "config", {}), "tie_word_embeddings", True)
-            # cfg_name = GGUF_CONFIG[format]["lm_head" if tie else "embedding"]
-            # cfg = GGUF_CONFIG[cfg_name]
-            # act_bits = 16
-            #
-            # keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
-            # config = {k: cfg.get(k) for k in keys}
             config["scale_dtype"] = self.scale_dtype
 
             from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
@@ -621,7 +618,8 @@ class AutoRound(object):
                     dtype = dtype + "_sym"
                 else:
                     dtype = dtype + "_asym"
-            if "rtn_" + dtype in QUANT_FUNC_WITH_DTYPE:
+
+            if not self.disable_opt_rtn and  "rtn_" + dtype in QUANT_FUNC_WITH_DTYPE:
                 dtype = "rtn_" + dtype
             quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
 
@@ -789,6 +787,7 @@ class AutoRound(object):
             setattr(get_module(self.model, lm_head_name), "act_bits", act_bits)
             setattr(get_module(self.model, lm_head_name), "scale_dtype", scale_dtype)
             return True
+        return False
 
     @torch.inference_mode
     def quantize_rtn(self):
@@ -813,7 +812,7 @@ class AutoRound(object):
         for name in pbar:
             pbar.set_description(f"Quantizing {name}")
             m = get_module(self.model, name)
-            if not (m.data_type.startswith("rtn_")):  ## use rtn version first
+            if not self.disable_opt_rtn  and not (m.data_type.startswith("rtn_")):  ## use rtn version first
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
                 if "rtn_" + m.data_type in QUANT_FUNC_WITH_DTYPE:
                     m.data_type = "rtn_" + m.data_type
@@ -860,8 +859,16 @@ class AutoRound(object):
         if not hasattr(self, "formats"):
             logger.warning("this API is deprecated, please use `quantize_and_save` instead")
         else:
-            self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(self.layer_config, self.formats,
-                                                                                    self.model)
+            only_gguf = True
+            for format_ in self.formats:
+                if not ("gguf" in format_ or "fake" in format_):
+                    only_gguf = False
+                    break
+            if len(self.formats)==1 and self.formats[0]=="fake":
+                only_gguf = False
+            if only_gguf:
+                self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(self.layer_config, self.formats,
+                                                                                        self.model)
             # Determine if immediate packing is required
             formats = self.formats
             if (len(formats) == 1 and
@@ -2200,7 +2207,6 @@ class AutoRound(object):
         current_input_ids: The sampled input IDs.
         current_input_others: The sampled other input data.
         """
-        logger.info(indices)
         current_input_ids = [input_ids[i] for i in indices]
 
         current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
@@ -2318,6 +2324,7 @@ class AutoRoundOPT(AutoRound):
             optimizer="AdamW",
             super_bits: int = None,
             super_group_size: int = None,
+            disable_opt_rtn: bool = False,
             **kwargs,
     ):
         super(AutoRoundOPT, self).__init__(
@@ -2496,6 +2503,7 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer="AdamW",
             super_bits: int = None,
             super_group_size: int = None,
+            disable_opt_rtn: bool = False,
             **kwargs,
     ):
         super(AutoRoundAdam, self).__init__(

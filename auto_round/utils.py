@@ -1699,7 +1699,7 @@ def check_gguf_gs_and_fall_back(model, layer_configs):
         layer = get_module(model, n)
         layer_config = layer_configs[n]
         if not hasattr(layer, "weight"):
-           continue
+            continue
         if isinstance(m, transformers.pytorch_utils.Conv1D):
             input_features = m.weight.shape[0]
         else:
@@ -1722,9 +1722,10 @@ def check_gguf_gs_and_fall_back(model, layer_configs):
         sorted(compatible_keys)
         fall_back_keys = compatible_keys[0]
         target_config = GGUF_CONFIG["gguf:" + fall_back_keys]
-        for att in ["bits", "sym", "group_size", "super_bits", "super_group_size","act_bits","data_type"]:
+        for att in ["bits", "sym", "group_size", "super_bits", "super_group_size", "act_bits", "data_type"]:
             if att in target_config:
                 layer_config[att] = target_config[att]
                 layer.__dict__[att] = target_config[att]
-        logger.warning(f"fallback {n} to {fall_back_keys}, because input_features({input_features}) % group_size({group_size}) != 0")
-
+        logger.warning(
+            f"fallback {n} to {fall_back_keys}, "
+            f"because input_features({input_features}) % group_size({group_size}) != 0")

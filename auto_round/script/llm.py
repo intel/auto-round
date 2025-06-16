@@ -200,6 +200,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             help="the torch_dytpe to load the model for evaluation.")
 
+        self.add_argument("--disable_opt_rtn", action='store_true',
+                          help="whether to disable optimization of the RTN mode(iters=0) (default is False).")
+
+
 class EvalArgumentParser(argparse.ArgumentParser):
 
     def __init__(self, *args, **kwargs):
@@ -343,7 +347,6 @@ def tune(args):
     if args.format is None:
         args.format = "auto_round"
 
-
     formats = args.format.lower().replace(' ', '').split(",")
     from auto_round.utils import SUPPORTED_FORMATS
     for format in formats:
@@ -485,6 +488,7 @@ def tune(args):
         device_map=args.device_map,
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
+        disable_opt_rtn=args.disable_opt_rtn,
     )
 
     model_name = args.model.rstrip("/")
@@ -646,7 +650,7 @@ def eval(args):
         model.eval()
         st = time.time()
         res = simple_evaluate_user_model(
-                model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
+            model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
     else:
@@ -707,7 +711,7 @@ def eval_task_by_task(
         model = AutoModelForCausalLM.from_pretrained(
             model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
         model.eval()
-        parallelism=False
+        parallelism = False
     hflm = HFLM(
         pretrained=model,
         tokenizer=tokenizer,
@@ -717,7 +721,7 @@ def eval_task_by_task(
         parallelize=parallelism,
         trust_remote_code=trust_remote_code,
         dtype=eval_model_dtype
-        )
+    )
 
     if isinstance(tasks, str):
         tasks = tasks.replace(" ", "").split(",")
@@ -738,7 +742,7 @@ def eval_task_by_task(
                     ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
                     try:
                         for k, v in hflm.batch_sizes.items():
-                            hflm.batch_sizes[k] =  max(v // 2, 1)
+                            hflm.batch_sizes[k] = max(v // 2, 1)
                         logger.warning(
                             f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
                         res = lm_simple_evaluate(
@@ -760,5 +764,3 @@ def eval_task_by_task(
         print(make_table(res_all))
 
     print("total eval time:", time.time() - st)
-
-
