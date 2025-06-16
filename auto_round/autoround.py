@@ -25,7 +25,7 @@ from torch import autocast
 from tqdm import tqdm
 import accelerate
 
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG
 from auto_round.wrapper import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from auto_round.utils import (
     CpuInfo,
@@ -600,11 +600,6 @@ class AutoRound(object):
 
     @torch.inference_mode
     def quantize_embedding_layer(self):
-        # if not hasattr(self, "formats"):
-        #     return False
-        # formats = [f for f in self.formats if "fake" not in f]
-        # if not (len(formats) == 1 and "gguf" in formats[0]):
-        #     return False
         for n, m in self.model.named_modules():
             if not isinstance(m, torch.nn.Embedding) or n not in self.layer_config:
                 continue
@@ -750,7 +745,7 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if isinstance(m, torch.nn.Embedding):
                 embedding_name = n
-                config = GGUF_CONFIG[GGUF_CONFIG[target_gguf_format]["lm_head" if tie_word_embeddings else "embedding"]]
+                config = GGUF_INNER_CONFIG[GGUF_CONFIG[target_gguf_format]["lm_head" if tie_word_embeddings else "embedding"]]
                 act_bits = 16
                 scale_dtype = self.scale_dtype
                 keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
