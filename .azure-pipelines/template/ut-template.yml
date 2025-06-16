@@ -26,7 +26,7 @@ steps:
     parameters:
       dockerConfigName: ${{ parameters.dockerConfigName }}
       repoName: "auto-round"
-      repoTag: "py310"
+      repoTag: "py312"
       dockerFileName: "Dockerfile"
       containerName: ${{ parameters.utContainerName }}
       repo: ${{ parameters.repo }}
