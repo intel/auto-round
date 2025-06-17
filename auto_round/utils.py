@@ -1639,12 +1639,15 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
         if lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
             if gguf.MODEL_ARCH.FALCON == model_class.model_arch or input_features % block_size != 0:
                 new_type = "gguf:q8_0"
+            elif "lm_head" in GGUF_CONFIG[target_gguf_format]:
+                new_type = GGUF_CONFIG[target_gguf_format]["lm_head"]
             elif new_type != "gguf:q8_0":
                 new_type = "gguf:q6_k"
         elif lm_head_name is not None and layer_name == lm_head_name and tie_word_embeddings:
             pass
         elif isinstance(layer, torch.nn.Embedding):
-            pass
+            if "embedding" in GGUF_CONFIG[target_gguf_format]:
+                new_type = GGUF_CONFIG[target_gguf_format]["embedding"]
 
         # attn_v
         elif "attn_v" in gguf_name:
