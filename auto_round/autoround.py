@@ -383,9 +383,8 @@ class AutoRound(object):
 
     def _dq_check(self):
         """Reset the default value of super_bits and super_group_size"""
-        from auto_round.export.export_to_gguf.config import GGUF_CONFIG
         if self.data_type.endswith("_dq"):
-            gguf_config = GGUF_CONFIG[f"gguf:q{self.bits}_k_s"]
+            gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
             self.super_bits = gguf_config["super_bits"] if self.super_bits is None else self.super_bits
             self.super_group_size = gguf_config["super_group_size"] \
                 if self.super_group_size is None else self.super_group_size
@@ -466,7 +465,7 @@ class AutoRound(object):
                 logger.warning(
                     "We recommend setting `iters=0` when exporting to GGUF format,"
                     " as we have optimized the RTN method for this case."
-                    " We will release new algorithms for certain configurations in the future."
+                    " We are likely to release new algorithms for certain configurations in the future."
                 )
 
         if self.seqlen is not None and hasattr(self.model, "config") and \

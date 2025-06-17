@@ -21,7 +21,7 @@ GGUF_INNER_CONFIG["gguf:q4_0"] = {
     "sym": True,
     "data_type": "int",
     "embedding": "gguf:q4_0",
-    "lm_head": "gguf:q6_k_s",
+    "lm_head": "gguf:q6_k",
     "super_bits": None,
     "super_group_size": None,
 }
@@ -33,7 +33,7 @@ GGUF_INNER_CONFIG["gguf:q4_1"] = {
     "sym": False,
     "data_type": "int_asym_float_zp",
     "embedding": "gguf:q4_1",
-    "lm_head": "gguf:q6_k_s",
+    "lm_head": "gguf:q6_k",
     "super_bits": None,
     "super_group_size": None,
 }
@@ -45,7 +45,7 @@ GGUF_INNER_CONFIG["gguf:q5_0"] = {
     "sym": True,
     "data_type": "int",
     "embedding": "gguf:q5_0",
-    "lm_head": "gguf:q6_k_s",
+    "lm_head": "gguf:q6_k",
     "super_bits": None,
     "super_group_size": None,
 }
@@ -57,7 +57,7 @@ GGUF_INNER_CONFIG["gguf:q5_1"] = {
     "sym": False,
     "data_type": "int_asym_float_zp",
     "embedding": "gguf:q5_1",
-    "lm_head": "gguf:q6_k_s",
+    "lm_head": "gguf:q6_k",
     "super_bits": None,
     "super_group_size": None,
 }
