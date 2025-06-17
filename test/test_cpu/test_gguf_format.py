@@ -185,7 +185,7 @@ class TestGGUF(unittest.TestCase):
             super_bits=8
         )
         quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k_s")
+        autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q*_k")
         gguf_file = os.listdir("saved")[0]
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
