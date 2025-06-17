@@ -1648,7 +1648,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
         elif isinstance(layer, torch.nn.Embedding):
             if "embedding" in GGUF_CONFIG[target_gguf_format]:
                 new_type = GGUF_CONFIG[target_gguf_format]["embedding"]
-
+        elif gguf_name is None:
+            pass
         # attn_v
         elif "attn_v" in gguf_name:
             if target_gguf_format == "gguf:q2_k":
@@ -1682,7 +1683,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             if n_expert == 8:
                 new_type = "gguf:q8_0"
         # ffn_down
-        if "ffn_down" in gguf_name:
+        elif "ffn_down" in gguf_name:
             if target_gguf_format == "gguf:q2_k":
                 new_type = "gguf:q3_k"
             elif target_gguf_format == "gguf:q2_k_s":
