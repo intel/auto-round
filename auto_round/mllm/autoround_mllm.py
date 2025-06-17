@@ -184,37 +184,37 @@ class AutoRoundMLLM(AutoRound):
 
         from ..calib_dataset import CALIB_DATASETS
         from .mllm_dataset import MLLM_DATASET
-        if isinstance(dataset, str):
-            if quant_nontext_module or \
-                (dataset in CALIB_DATASETS.keys() and not \
-                 _only_text_test(model, tokenizer, device, self.template.model_type)):
-                if quant_nontext_module:
-                    logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
-                                "switching to liuhaotian/llava_conv_58k")
-                else:
-                    logger.warning(f"{model.config.model_type} not support for {dataset},"
-                             " will use liuhaotian/llava_conv_58k with default config as an alternative.")
-                dataset = "liuhaotian/llava_conv_58k"
-
-            if dataset in MLLM_DATASET.keys():
-                truncation = False
-                seqlen = 512 if seqlen is None else seqlen
-                if batch_size != 1:
-                    logger.warning(
-                        f"reset batch_size({batch_size}) to 1 and "
-                        f"gradient_accumulate_steps({gradient_accumulate_steps}) "
-                        f"to {batch_size * gradient_accumulate_steps}, "
-                        f"because batch_size={batch_size} cannot be used for {dataset}")
-                    gradient_accumulate_steps = batch_size * gradient_accumulate_steps
-                    batch_size = 1
-        if quant_nontext_module and batch_size != 1:
-            logger.warning(
-                f"reset batch_size({batch_size}) to 1 and "
-                f"gradient_accumulate_steps({gradient_accumulate_steps}) "
-                f"to {batch_size * gradient_accumulate_steps}, "
-                f"because batch_size={batch_size} cannot be used for calibrating non-text modules.")
-            gradient_accumulate_steps = batch_size * gradient_accumulate_steps
-            batch_size = 1
+        # if isinstance(dataset, str):
+        #     if quant_nontext_module or \
+        #         (dataset in CALIB_DATASETS.keys() and not \
+        #          _only_text_test(model, tokenizer, device, self.template.model_type)):
+        #         if quant_nontext_module:
+        #             logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
+        #                         "switching to liuhaotian/llava_conv_58k")
+        #         else:
+        #             logger.warning(f"{model.config.model_type} not support for {dataset},"
+        #                      " will use liuhaotian/llava_conv_58k with default config as an alternative.")
+        #         dataset = "liuhaotian/llava_conv_58k"
+        #
+        #     if dataset in MLLM_DATASET.keys():
+        #         truncation = False
+        #         seqlen = 512 if seqlen is None else seqlen
+        #         if batch_size != 1:
+        #             logger.warning(
+        #                 f"reset batch_size({batch_size}) to 1 and "
+        #                 f"gradient_accumulate_steps({gradient_accumulate_steps}) "
+        #                 f"to {batch_size * gradient_accumulate_steps}, "
+        #                 f"because batch_size={batch_size} cannot be used for {dataset}")
+        #             gradient_accumulate_steps = batch_size * gradient_accumulate_steps
+        #             batch_size = 1
+        # if quant_nontext_module and batch_size != 1:
+        #     logger.warning(
+        #         f"reset batch_size({batch_size}) to 1 and "
+        #         f"gradient_accumulate_steps({gradient_accumulate_steps}) "
+        #         f"to {batch_size * gradient_accumulate_steps}, "
+        #         f"because batch_size={batch_size} cannot be used for calibrating non-text modules.")
+        #     gradient_accumulate_steps = batch_size * gradient_accumulate_steps
+        #     batch_size = 1
         seqlen = 2048 if seqlen is None else seqlen
         truncation = True if truncation is None else truncation
         self.truncation = truncation
