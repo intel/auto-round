@@ -906,6 +906,8 @@ class AutoRound(object):
             clear_memory(self.inputs)
             all_q_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples,
                                                             layer_names=layer_names)
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        clear_memory()
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
@@ -1246,7 +1248,7 @@ class AutoRound(object):
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
-                data_new = data
+                data_new = to_device(data)
                 input_ids = data_new[0]
             else:
                 data_new = {}
@@ -1261,6 +1263,7 @@ class AutoRound(object):
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
                 elif isinstance(data_new, tuple) or isinstance(data_new, list):
+
                     self.model(*data_new)
                 else:
                     self.model(**data_new)
@@ -1322,16 +1325,16 @@ class AutoRound(object):
             all_inputs = self.cache_inter_data(
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
-            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-            clear_memory()
         except RuntimeError as e:
             if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                self.no_enough_vram_for_w_model = True
                 logger.info("switch to cpu to cache block inputs")
                 if (self.has_qlayer_outside_block or
                         self.__class__.__name__ == "AutoRoundMLLM"):
                     logger.warning("We strongly recommend using more GPUs in calibration."
                                    " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy.")
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(
+                        self.model)  ##self.model.hf_device_map has not been changed
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                 clear_memory()
                 ## Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
