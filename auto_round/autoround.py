@@ -1018,7 +1018,7 @@ class AutoRound(object):
 
         if enable_quanted_input:
             logger.info(
-                "starting to cache layer inputs for %s as `enable_quanted_input` is enable, this may be quite slow ",
+                "starting to cache layer inputs for %s, this may be quite slow ",
                 layer_names)
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
