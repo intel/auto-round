@@ -912,7 +912,10 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
     if tensor is not None:
         del tensor
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if torch.xpu.is_available():
+        torch.xpu.empty_cache()
 
 
 def clear_memory(tensor=None):
@@ -1639,13 +1642,17 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
         if lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
             if gguf.MODEL_ARCH.FALCON == model_class.model_arch or input_features % block_size != 0:
                 new_type = "gguf:q8_0"
+            elif "lm_head" in GGUF_CONFIG[target_gguf_format]:
+                new_type = GGUF_CONFIG[target_gguf_format]["lm_head"]
             elif new_type != "gguf:q8_0":
                 new_type = "gguf:q6_k"
         elif lm_head_name is not None and layer_name == lm_head_name and tie_word_embeddings:
             pass
         elif isinstance(layer, torch.nn.Embedding):
+            if "embedding" in GGUF_CONFIG[target_gguf_format]:
+                new_type = GGUF_CONFIG[target_gguf_format]["embedding"]
+        elif gguf_name is None:
             pass
-
         # attn_v
         elif "attn_v" in gguf_name:
             if target_gguf_format == "gguf:q2_k":
@@ -1679,7 +1686,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             if n_expert == 8:
                 new_type = "gguf:q8_0"
         # ffn_down
-        if "ffn_down" in gguf_name:
+        elif "ffn_down" in gguf_name:
             if target_gguf_format == "gguf:q2_k":
                 new_type = "gguf:q3_k"
             elif target_gguf_format == "gguf:q2_k_s":

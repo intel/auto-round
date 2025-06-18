@@ -428,10 +428,12 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
 
     replace_ids = (max_scales > 0).squeeze()
     output_scale = torch.zeros_like(scales).to(torch.uint8)
-    output_scale[replace_ids] = torch.round(inv_scales * scales).clip(0, 15).to(torch.uint8)
+    output_scale[replace_ids] = torch.round(
+        inv_scales[replace_ids] * scales[replace_ids]).clip(0, 15).to(torch.uint8)
 
     replace_ids = (max_mins > 0).squeeze()
-    output_scale[replace_ids] |= torch.round(inv_mins * mins).clip(0, 15).to(torch.uint8) << 4
+    output_scale[replace_ids] |= torch.round(
+        inv_mins[replace_ids] * mins[replace_ids]).clip(0, 15).to(torch.uint8) << 4
     if d_scale is None:
         output_d = torch.where(max_scales > 0, max_scales / 15, 0)
     if d_wmin_m is None:
@@ -566,7 +568,6 @@ def q4_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
 
     # [d, dmin, scale, qs]
     return np.concatenate([output_d, output_dmin, output_scale, output_qs], axis=-1)
-
 
 
 @register_qtype("q5_k")
