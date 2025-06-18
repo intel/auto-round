@@ -804,7 +804,7 @@ class AutoRound(object):
             for format_ in self.formats:
                 if "gguf" in format_ and "k" in format_:
                     has_gguf_k = True
-            if has_gguf_k:
+            if has_gguf_k and not self.disable_opt_rtn:
                 self.get_imatrix()
             self.quantize_embedding_layer()
         pbar = tqdm(all_to_quantized_module_names)
