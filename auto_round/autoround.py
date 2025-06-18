@@ -998,7 +998,7 @@ class AutoRound(object):
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
                 layer = get_module(self.model, layer_name)
-                if "rtn_" + layer.data_type in QUANT_FUNC_WITH_DTYPE:
+                if not self.disable_opt_rtn and "rtn_" + layer.data_type in QUANT_FUNC_WITH_DTYPE:
                     layer.data_type = "rtn_" + layer.data_type
                     logger.info("using optimized rtn method for quantizing %s", layer_name)
                     self.layer_config[layer_name]["data_type"] = layer.data_type
