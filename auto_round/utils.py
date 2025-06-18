@@ -1243,13 +1243,13 @@ def _gguf_args_check(args_or_ar, format_str=None):
                 logger.warning(
                     f"format {format} does not support for {', '.join(unsupport_list)},"
                     f" reset to {', '.join(reset_list)}.")
-    if not isinstance(args_or_ar, argparse.Namespace) and len(unsupport_list) > 0:
-        for layer_name in args_or_ar.layer_config:
-            if args_or_ar.layer_config[layer_name]['bits'] >= 16:
-                continue
-            for k in args_or_ar.layer_config[layer_name]:
-                if hasattr(args_or_ar, k):
-                    args_or_ar.layer_config[layer_name][k] = getattr(args_or_ar, k)
+    # if not isinstance(args_or_ar, argparse.Namespace) and len(unsupport_list) > 0:
+    #     for layer_name in args_or_ar.layer_config:
+    #         if args_or_ar.layer_config[layer_name]['bits'] >= 16:
+    #             continue
+    #         for k in args_or_ar.layer_config[layer_name]:
+    #             if hasattr(args_or_ar, k):
+    #                 args_or_ar.layer_config[layer_name][k] = getattr(args_or_ar, k)
     return args_or_ar
 
 
@@ -1649,7 +1649,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
                                  new_type[:bits_index + 1] + "_0"):
                     if tmp_type in GGUF_INNER_CONFIG:
                         new_type = tmp_type
-                    break
+                        break
         elif lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
             if gguf.MODEL_ARCH.FALCON == model_class.model_arch or input_features % block_size != 0:
                 new_type = "gguf:q8_0"
