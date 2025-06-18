@@ -1243,13 +1243,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
                 logger.warning(
                     f"format {format} does not support for {', '.join(unsupport_list)},"
                     f" reset to {', '.join(reset_list)}.")
-    # if not isinstance(args_or_ar, argparse.Namespace) and len(unsupport_list) > 0:
-    #     for layer_name in args_or_ar.layer_config:
-    #         if args_or_ar.layer_config[layer_name]['bits'] >= 16:
-    #             continue
-    #         for k in args_or_ar.layer_config[layer_name]:
-    #             if hasattr(args_or_ar, k):
-    #                 args_or_ar.layer_config[layer_name][k] = getattr(args_or_ar, k)
+# Removed obsolete commented-out block for improved readability and maintainability.
     return args_or_ar
 
 
@@ -1626,7 +1620,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
     i_ffn_down = 0
     layer_config_copy = copy.deepcopy(layer_config)
     target_bits = None
-    if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 6 and (inner_gguf_format[6]).isdigit():
+    if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 7 and (inner_gguf_format[6]).isdigit():
         target_bits = int(inner_gguf_format[6])
 
     for layer_name, config in layer_config_copy.items():
