@@ -1764,7 +1764,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
                 new_type = "gguf:q5_k"
             elif target_gguf_format == "gguf:q5_k_m":
                 new_type = "gguf:q5_k"
-        if input_features % block_size != 0:
+        new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
+        if input_features % new_block_size != 0:
             if new_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
                 new_type = "gguf:q5_0"
             elif new_type == "gguf:q5_k":
