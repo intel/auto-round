@@ -1626,7 +1626,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
     i_ffn_down = 0
     layer_config_copy = copy.deepcopy(layer_config)
     target_bits = None
-    if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 6 and (inner_gguf_format[6]).isdigit():
+    if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 7 and (inner_gguf_format[6]).isdigit():
         target_bits = int(inner_gguf_format[6])
 
     for layer_name, config in layer_config_copy.items():
