@@ -1650,6 +1650,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
                     if tmp_type in GGUF_INNER_CONFIG:
                         new_type = tmp_type
                         break
+            if not new_type in GGUF_INNER_CONFIG:
+                raise ValueError(f"invalid bit setting for {layer_name}")
         elif lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
             if gguf.MODEL_ARCH.FALCON == model_class.model_arch or input_features % block_size != 0:
                 new_type = "gguf:q8_0"
