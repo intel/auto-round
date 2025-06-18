@@ -472,7 +472,7 @@ class AutoRound(object):
         if self.data_type == "int" and hasattr(self, "formats") and (
                 "auto_round" in self.formats or "auto_gptq" in self.formats or "auto_awq" in self.formats):
             for n, m in self.model.named_modules():
-                if isinstance(m, self.supported_types) :
+                if isinstance(m, self.supported_types):
                     if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                         self.layer_config[n] = {"bits": 16}
                         logger.info(
@@ -533,6 +533,8 @@ class AutoRound(object):
                 if not ("gguf" in format_ or "fake" in format_):
                     only_gguf = False
                     break
+            if "fake" == formats:
+                only_gguf = False
             if only_gguf:
                 self.scale_dtype = torch.float32
                 logger.info(f"change `scale_dtype` to `torch.float32`")
@@ -712,19 +714,22 @@ class AutoRound(object):
                 model(**data)
                 if cnt > self.nsamples:
                     break
-        except:
-            logger.warning("out of vram, fallback to cpu, pleaser use more gpus by setting `--device 0,1,2,3`")
-            model = self.model.to("cpu")
-            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                accelerate.hooks.remove_hook_from_submodules(
-                    self.model)  ##self.model.hf_device_map has not been changed
-            cnt = 0
-            for data in self.dataloader:
-                cnt += data["input_ids"].shape[0]
-                data = to_device(data, self.model.device)
-                model(**data)
-                if cnt > self.nsamples:
-                    break
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                logger.warning("out of vram, fallback to cpu, pleaser use more gpus by setting `--device 0,1,2,3`")
+                model = self.model.to("cpu")
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(
+                        self.model)  ##self.model.hf_device_map has not been changed
+                cnt = 0
+                for data in self.dataloader:
+                    cnt += data["input_ids"].shape[0]
+                    data = to_device(data, self.model.device)
+                    model(**data)
+                    if cnt > self.nsamples:
+                        break
+            else:
+                raise
 
         for hook in hooks:
             hook.remove()
@@ -830,6 +835,8 @@ class AutoRound(object):
                     m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
                                       enable_round_tuning=False)
                     m = m.unwrapper({})
+                else:
+                    raise
             if self.low_gpu_mem_usage:
                 clear_memory()
             if self.is_packing_immediate:

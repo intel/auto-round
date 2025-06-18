@@ -1625,6 +1625,9 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
     i_attention_wv = 0
     i_ffn_down = 0
     layer_config_copy = copy.deepcopy(layer_config)
+    target_bits = None
+    if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 6 and (inner_gguf_format[6]).isdigit():
+        target_bits = int(inner_gguf_format[6])
 
     for layer_name, config in layer_config_copy.items():
         if not check_to_quantized(config):
@@ -1638,8 +1641,16 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
         i_layer = _get_digital_in_layer_name(layer_name)
 
         gguf_name = tensor_map.get_name(layer_name)
-
-        if lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
+        if target_bits is not None and "bits" in config and config["bits"] != target_bits:
+            bits_index = 6
+            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
+            if not new_type in GGUF_INNER_CONFIG:
+                for tmp_type in (new_type[:bits_index + 1] + "_k", new_type[:bits_index + 1] + "_1",
+                                 new_type[:bits_index + 1] + "_0"):
+                    if tmp_type in GGUF_INNER_CONFIG:
+                        new_type = tmp_type
+                    break
+        elif lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
             if gguf.MODEL_ARCH.FALCON == model_class.model_arch or input_features % block_size != 0:
                 new_type = "gguf:q8_0"
             elif "lm_head" in GGUF_CONFIG[target_gguf_format]:
