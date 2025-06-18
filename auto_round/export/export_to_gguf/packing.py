@@ -129,15 +129,15 @@ def make_q3_quants(data, bits, do_rmse=False):
             if len(suml2.shape) == 2:
                 suml2 = suml2.unsqueeze(-1)
             slx = sumlx - w * data * L
-            repalce_idx = slx > 0
+            replace_idx = slx > 0
             sl2 = suml2 - w * L * L
             new_L = torch.round(data * sl2 / slx).clip(-nmax, nmax - 1)
-            tmp_repalce_idx = repalce_idx & (new_L != L)
-            slx[tmp_repalce_idx] += w[tmp_repalce_idx] * data[tmp_repalce_idx] * new_L[tmp_repalce_idx]
-            sl2[tmp_repalce_idx] += w[tmp_repalce_idx] * new_L[tmp_repalce_idx] * new_L[tmp_repalce_idx]
-            repalce_idx &= (sl2 > 0) & (slx * slx * suml2 > sumlx * sumlx * sl2)
+            tmp_replace_idx = replace_idx & (new_L != L)
+            slx[tmp_replace_idx] += w[tmp_replace_idx] * data[tmp_replace_idx] * new_L[tmp_replace_idx]
+            sl2[tmp_replace_idx] += w[tmp_replace_idx] * new_L[tmp_replace_idx] * new_L[tmp_replace_idx]
+            replace_idx &= (sl2 > 0) & (slx * slx * suml2 > sumlx * sumlx * sl2)
 
-            L[repalce_idx] = new_L[repalce_idx]
+            L[replace_idx] = new_L[replace_idx]
             sumlx = slx
             suml2 = sl2
 
