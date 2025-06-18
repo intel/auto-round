@@ -461,12 +461,23 @@ class AutoRound(object):
                     has_besides_gguf = True
             if has_gguf and has_besides_gguf:
                 raise ValueError("gguf format is not compatible with other formats, please choose only one of them")
-            if  has_gguf and self.iters!=0:
+            if has_gguf and self.iters != 0:
                 logger.warning(
                     "We recommend setting `iters=0` when exporting to GGUF format,"
                     " as we have optimized the RTN method for this case."
                     " We are likely to release new algorithms for certain configurations in the future."
                 )
+
+        ##check group_size 32 for auto_round
+        if self.data_type == "int" and hasattr(self, "formats") and (
+                "auto_round" in self.formats or "auto_gptq" in self.formats or "auto_awq" in self.formats):
+            for n, m in self.model.named_modules():
+                if isinstance(m, self.supported_types) :
+                    if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
+                        self.layer_config[n] = {"bits": 16}
+                        logger.info(
+                            f"{n} will not be quantized due to its shape not being divisible by 32,"
+                            " resulting in an exporting issue to autogptq")
 
         if self.seqlen is not None and hasattr(self.model, "config") and \
                 hasattr(self.model.config, "max_position_embeddings"):
@@ -1319,7 +1330,7 @@ class AutoRound(object):
                 logger.info("switch to cpu to cache block inputs")
                 if (self.has_qlayer_outside_block or
                         self.__class__.__name__ == "AutoRoundMLLM"):
-                    logger.warning("We strongly recommend using more GPUs."
+                    logger.warning("We strongly recommend using more GPUs in calibration."
                                    " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy.")
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                 clear_memory()
