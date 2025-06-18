@@ -417,7 +417,7 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]  # (nb, 1)
         tmp_inverse_scale = torch.where(scales == 0, 0, 1.0 / scales)
         all_L = torch.clip(
-            torch.round((blocks + mins.reshape(*mins.shape, 1)) / tmp_inverse_scale.reshape(*scales.shape, 1)), 0,
+            torch.round((blocks + mins.reshape(*mins.shape, 1)) * tmp_inverse_scale.reshape(*scales.shape, 1)), 0,
             3).to(torch.uint8)
     else:
         scales, all_L, mins = make_qkx2_quants(blocks, bits=2, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=True)
