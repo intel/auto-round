@@ -912,7 +912,10 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
     if tensor is not None:
         del tensor
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if torch.xpu.is_available():
+        torch.xpu.empty_cache()
 
 
 def clear_memory(tensor=None):
