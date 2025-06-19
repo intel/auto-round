@@ -487,8 +487,8 @@ def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         qdq_scale = dq_scale.to(torch.float32) * qscale
 
 
-    # q_scales_offset = torch.round(inverse_dq_scale * scales).clip(-32, 31) + 32 ## scales 能换成qdq scales
-    q_scales_offset = torch.round(qdq_scale*inverse_dq_scale).clip(-32, 31) + 32  ## scales 能换成qdq scales
+    # q_scales_offset = torch.round(inverse_dq_scale * scales).clip(-32, 31) + 32
+    q_scales_offset = torch.round(qdq_scale*inverse_dq_scale).clip(-32, 31) + 32
     q_scales_offset = q_scales_offset.cpu().numpy().astype(np.uint8)
     output_scale[:, :8] = (q_scales_offset[:, :8] & 0xF) | ((q_scales_offset[:, 8:] & 0xF) << 4)
     hmask = q_scales_offset >> 4
@@ -593,8 +593,8 @@ def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]  # (nb, 1)
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]  # (nb, 1)
         inverse_scale = torch.where(scales == 0, 0, 1.0 / scales)
-        all_L = torch.round((blocks + mins.reshape(*mins.shape, 1)) * inverse_scale.reshape(*scales.shape, 1)).clip(0,
-                                                                                                                    31).to(
+        all_L = torch.round(
+            (blocks + mins.reshape(*mins.shape, 1)) * inverse_scale.reshape(*scales.shape, 1)).clip(0,31).to(
             torch.uint8)
     else:
         scales, all_L, mins = make_qkx2_quants(blocks, bits=5, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=False)
