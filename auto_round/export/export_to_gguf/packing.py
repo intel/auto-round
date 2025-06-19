@@ -468,31 +468,34 @@ def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 
     output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
 
-    if scale is not None:
-        scales = scale.reshape(-1, QK_K // 16).to(torch.float32)
-        output_d = d_scale.reshape(-1, 1).to(torch.float32)
-        iscales = torch.where(output_d == 0, 0, 1 / output_d)
-        inverse_scale = torch.where(scales==0, 0, 1.0 / scales)
-        all_L = torch.round(blocks*inverse_scale.unsqueeze(-1)).clip(-4, 3) + 4
-        all_L = all_L.to(torch.uint8)
-    else:
-        scales, all_L = make_q3_quants(blocks, bits=3, do_rmse=True)
-        imax = abs(scales).argmax(dim=-1, keepdim=True)
-        max_scales = torch.take_along_dim(scales, imax, dim=-1)
-        iscales = torch.where(max_scales != 0, -32 / max_scales, 0)
-        output_d = torch.where(iscales != 0, 1 / iscales, 0)
+    # if scale is not None:
+    #     scales = scale.reshape(-1, QK_K // 16).to(torch.float32)
+    #     output_d = d_scale.reshape(-1, 1).to(torch.float32)
+    #     iscales = torch.where(output_d == 0, 0, 1 / output_d)
+    #     inverse_scale = torch.where(scales==0, 0, 1.0 / scales)
+    #     all_L = torch.round(blocks*inverse_scale.unsqueeze(-1)).clip(-4, 3) + 4
+    #     all_L = all_L.to(torch.uint8)
+    # else:
+    scales, _ = make_q3_quants(blocks, bits=3, do_rmse=True)
+    scales_abs_max = abs(scales).argmax(dim=-1, keepdim=True)
+    max_scales_mag = torch.take_along_dim(scales, scales_abs_max, dim=-1)
+    inverse_dq_scale = torch.where(max_scales_mag != 0, -32 / max_scales_mag, 0)
+    dq_scale = torch.where(inverse_dq_scale != 0, 1 / inverse_dq_scale, 0)
 
-    q_scales = torch.round(iscales * scales).clip(-32, 31) + 32
-    q_scales = q_scales.cpu().numpy().astype(np.uint8)
-    output_scale[:, :8] = (q_scales[:, :8] & 0xF) | ((q_scales[:, 8:] & 0xF) << 4)
-    hmask = q_scales >> 4
+    q_scales_offset = torch.round(inverse_dq_scale * scales).clip(-32, 31) + 32
+    q_scales_offset = q_scales_offset.cpu().numpy().astype(np.uint8)
+    output_scale[:, :8] = (q_scales_offset[:, :8] & 0xF) | ((q_scales_offset[:, 8:] & 0xF) << 4)
+    hmask = q_scales_offset >> 4
     output_scale[:, 8:] = hmask[:, :4] | hmask[:, 4:8] << 2 | hmask[:, 8:12] << 4 | hmask[:, 12:] << 6
 
-    sc = torch.round(iscales * scales).clip(-32, 31)
-    d = output_d.to(torch.float32) * sc
-    replace_idx = (d != 0)
-
-    all_L[replace_idx] = (torch.round(blocks[replace_idx] / d[replace_idx].unsqueeze(-1)).clip(-4, 3) + 4).to(
+    qscale = torch.round(inverse_dq_scale * scales).clip(-32, 31)
+    qdq_scale = dq_scale.to(torch.float32) * qscale
+    # replace_idx = (qdq_scale != 0)
+    # all_L = torch.ones_like(blocks)*4
+    # all_L[replace_idx] = (torch.round(blocks[replace_idx] / qdq_scale[replace_idx].unsqueeze(-1)).clip(-4, 3) + 4).to(
+    #     torch.uint8)
+    reverse_qdq_scale = torch.where(qdq_scale ==0, 0, 1 / qdq_scale)
+    all_L = (torch.round(blocks / reverse_qdq_scale.unsqueeze(-1)).clip(-4, 3) + 4).to(
         torch.uint8)
 
     all_L = all_L.cpu().numpy()
@@ -504,9 +507,57 @@ def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         all_L.reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1), axis=2)  # pylint: disable=E1121
 
     output_qs = output_qs.reshape(nb, 64).astype(np.uint8)
-    output_d = output_d.cpu().numpy().reshape(-1, 1).astype(np.float16).view(np.uint8)
+    dq_scale = dq_scale.cpu().numpy().reshape(-1, 1).astype(np.float16).view(np.uint8)
     # [hmask, qs, scale, d]
-    return np.concatenate([output_hmask, output_qs, output_scale, output_d], axis=-1)
+    return np.concatenate([output_hmask, output_qs, output_scale, dq_scale], axis=-1)
+
+
+# @register_qtype("q3_k")
+# def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
+#     nb = blocks.shape[0]
+#     blocks = blocks.reshape(nb, QK_K // 16, 16)
+#
+#     output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
+#
+#     if scale is not None:
+#         scales = scale.reshape(-1, QK_K // 16).to(torch.float32)
+#         output_d = d_scale.reshape(-1, 1).to(torch.float32)
+#         iscales = torch.where(output_d == 0, 0, 1 / output_d)
+#         inverse_scale = torch.where(scales==0, 0, 1.0 / scales)
+#         all_L = torch.round(blocks*inverse_scale.unsqueeze(-1)).clip(-4, 3) + 4
+#         all_L = all_L.to(torch.uint8)
+#     else:
+#         scales, all_L = make_q3_quants(blocks, bits=3, do_rmse=True)
+#         imax = abs(scales).argmax(dim=-1, keepdim=True)
+#         max_scales = torch.take_along_dim(scales, imax, dim=-1)
+#         iscales = torch.where(max_scales != 0, -32 / max_scales, 0)
+#         output_d = torch.where(iscales != 0, 1 / iscales, 0)
+#
+#     q_scales = torch.round(iscales * scales).clip(-32, 31) + 32
+#     q_scales = q_scales.cpu().numpy().astype(np.uint8)
+#     output_scale[:, :8] = (q_scales[:, :8] & 0xF) | ((q_scales[:, 8:] & 0xF) << 4)
+#     hmask = q_scales >> 4
+#     output_scale[:, 8:] = hmask[:, :4] | hmask[:, 4:8] << 2 | hmask[:, 8:12] << 4 | hmask[:, 12:] << 6
+#
+#     sc = torch.round(iscales * scales).clip(-32, 31)
+#     d = output_d.to(torch.float32) * sc
+#     replace_idx = (d != 0)
+#
+#     all_L[replace_idx] = (torch.round(blocks[replace_idx] / d[replace_idx].unsqueeze(-1)).clip(-4, 3) + 4).to(
+#         torch.uint8)
+#
+#     all_L = all_L.cpu().numpy()
+#     output_hmask = np.bitwise_or.reduce(
+#         all_L.reshape(nb, 8, 32) >> 2 << np.arange(8, dtype=np.uint8).reshape(1, 8, 1), axis=1)  # pylint: disable=E1121
+#     all_L = np.where(all_L > 3, all_L - 4, all_L)
+#
+#     output_qs = np.bitwise_or.reduce(
+#         all_L.reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1), axis=2)  # pylint: disable=E1121
+#
+#     output_qs = output_qs.reshape(nb, 64).astype(np.uint8)
+#     output_d = output_d.cpu().numpy().reshape(-1, 1).astype(np.float16).view(np.uint8)
+#     # [hmask, qs, scale, d]
+#     return np.concatenate([output_hmask, output_qs, output_scale, output_d], axis=-1)
 
 
 @register_qtype("q4_k")
