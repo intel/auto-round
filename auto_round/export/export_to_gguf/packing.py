@@ -468,23 +468,27 @@ def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 
     output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
 
-    # if scale is not None:
-    #     scales = scale.reshape(-1, QK_K // 16).to(torch.float32)
-    #     output_d = d_scale.reshape(-1, 1).to(torch.float32)
-    #     iscales = torch.where(output_d == 0, 0, 1 / output_d)
-    #     inverse_scale = torch.where(scales==0, 0, 1.0 / scales)
-    #     all_L = torch.round(blocks*inverse_scale.unsqueeze(-1)).clip(-4, 3) + 4
-    #     all_L = all_L.to(torch.uint8)
-    # else:
-    scales, _ = make_q3_quants(blocks, bits=3, do_rmse=True)
-    scales_abs_max = abs(scales).argmax(dim=-1, keepdim=True)
-    max_scales_mag = torch.take_along_dim(scales, scales_abs_max, dim=-1)
-    inverse_dq_scale = torch.where(max_scales_mag != 0, -32 / max_scales_mag, 0)
-    dq_scale = torch.where(inverse_dq_scale != 0, 1 / inverse_dq_scale, 0)
-    qscale = torch.round(inverse_dq_scale * scales).clip(-32, 31)
-    qdq_scale = dq_scale.to(torch.float32) * qscale
+    if scale is not None:
+        qdq_scale = scale.reshape(-1, QK_K // 16).to(torch.float32)
+        dq_scale=d_scale.reshape(-1, 1).to(torch.float32)
+        inverse_dq_scale = torch.where(dq_scale==0,0,1/dq_scale)
+        # output_d = d_scale.reshape(-1, 1).to(torch.float32)
+        # iscales = torch.where(output_d == 0, 0, 1 / output_d)
+        # inverse_scale = torch.where(scales==0, 0, 1.0 / scales)
+        # all_L = torch.round(blocks*inverse_scale.unsqueeze(-1)).clip(-4, 3) + 4
+        # all_L = all_L.to(torch.uint8)
+    else: ## this is correct
+        scales, _ = make_q3_quants(blocks, bits=3, do_rmse=True)
+        scales_abs_max = abs(scales).argmax(dim=-1, keepdim=True)
+        max_scales_mag = torch.take_along_dim(scales, scales_abs_max, dim=-1)
+        inverse_dq_scale = torch.where(max_scales_mag != 0, -32 / max_scales_mag, 0)
+        dq_scale = torch.where(inverse_dq_scale != 0, 1 / inverse_dq_scale, 0)
+        qscale = torch.round(inverse_dq_scale * scales).clip(-32, 31)
+        qdq_scale = dq_scale.to(torch.float32) * qscale
 
-    q_scales_offset = torch.round(inverse_dq_scale * scales).clip(-32, 31) + 32 ## scales 能换成qdq scales
+
+    # q_scales_offset = torch.round(inverse_dq_scale * scales).clip(-32, 31) + 32 ## scales 能换成qdq scales
+    q_scales_offset = torch.round(qdq_scale*inverse_dq_scale).clip(-32, 31) + 32  ## scales 能换成qdq scales
     q_scales_offset = q_scales_offset.cpu().numpy().astype(np.uint8)
     output_scale[:, :8] = (q_scales_offset[:, :8] & 0xF) | ((q_scales_offset[:, 8:] & 0xF) << 4)
     hmask = q_scales_offset >> 4
