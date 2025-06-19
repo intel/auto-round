@@ -533,7 +533,7 @@ class AutoRound(object):
                 if not ("gguf" in format_ or "fake" in format_):
                     only_gguf = False
                     break
-            if "fake" == formats:
+            if len(formats)==1 and "fake" == formats[0]:
                 only_gguf = False
             if only_gguf:
                 self.scale_dtype = torch.float32
