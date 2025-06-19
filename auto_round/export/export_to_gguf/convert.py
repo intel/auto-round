@@ -1159,10 +1159,14 @@ class Model(OriModel):
                     device = "xpu"
                 else:
                     device = "cpu"
+                data_torch = data_torch.to(torch.float32)
+                scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
+                zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
                 if data_qtype.name.lower().endswith("_k"):
                     d_scale = module.w_d_scale.to(torch.float32)
                     d_wmin_m = module.w_d_wmin_m.to(torch.float32) if hasattr(module, "w_d_wmin_m") else None
                     wmin_m = module.w_wmin_m.to(torch.float32) if hasattr(module, "w_wmin_m") else None
+
                     data = ggml_quant_gpu(
                         data_torch,
                         data_qtype.name.lower(),
