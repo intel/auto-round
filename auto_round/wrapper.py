@@ -254,7 +254,7 @@ class WrapperLinear(torch.nn.Module):
         elif scale.numel()>1:
             self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
         else:
-            self.orig_layer.scale = scale.to("cpu")
+            self.orig_layer.scale = scale.view(-1).to("cpu")
 
         if zp is not None:
             if isinstance(zp, dict):
@@ -265,7 +265,7 @@ class WrapperLinear(torch.nn.Module):
                 zp = zp.reshape(shape[0], -1)
                 self.orig_layer.zp = zp.to("cpu")
             else:
-                self.orig_layer.zp = zp.to("cpu")
+                self.orig_layer.zp = zp.view(-1).to("cpu")
         else:
             self.orig_layer.zp = None
 

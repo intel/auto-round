@@ -252,6 +252,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     Raises:
         ValueError: If the backend is not supported.
     """
+    if "fp8" in kwargs.get("data_type", None) and kwargs.get("act_bits",16)>=16:
+        from auto_round.export.export_to_autoround.export_to_fp8_woq import save_quantized_as_autoround
+        return save_quantized_as_autoround(output_dir,inplace=inplace, backend="auto_round", **kwargs)
 
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
     if (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
@@ -304,7 +307,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
     max_workers = 1
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or  not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:

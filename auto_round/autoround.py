@@ -570,10 +570,10 @@ class AutoRound(object):
         for index in range(len(formats)):
             format = formats[index]
             if format == "auto_round":
-                if self.sym or self.bits == 3:
+                if self.sym or self.bits == 3 and "int" in self.data_type:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
-                if self.bits == 4 and not self.sym:
+                if self.bits == 4 and not self.sym and "int" in self.data_type:
                     enable_awq = all(
                         config["bits"] == self.bits or config["bits"] >= 16
                         for config in self.layer_config.values()
