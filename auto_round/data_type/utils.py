@@ -37,6 +37,9 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
     """
     orig_shape = data.shape
     pad_len = 0
+    if group_size==0:
+        data = data.reshape(1,-1)
+        return data, orig_shape, pad_len
     if len(data.shape) > 2:
         data = data.reshape(-1, orig_shape[-1])
     if group_size == -1 or data.shape[1] < group_size:

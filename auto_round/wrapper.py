@@ -34,6 +34,8 @@ def reshape_and_pad_tensor(v, group_size=-1):
     Returns:
         torch.Tensor: The reshaped tensor. If padding is applied, the padded tensor is returned.
     """
+    if group_size == 0:
+        return v.reshape(1, -1)
     if group_size == -1 or v.shape[1] < group_size:
         return v
     if v.shape[1] % group_size == 0:
@@ -249,15 +251,21 @@ class WrapperLinear(torch.nn.Module):
 
         if isinstance(scale, dict):
             _set_dict_attr(scale, "scale")
-        else:
+        elif scale.numel()>1:
             self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
+        else:
+            self.orig_layer.scale = scale.to("cpu")
 
         if zp is not None:
             if isinstance(zp, dict):
                 _set_dict_attr(zp, "zp")
-            else:
+            elif zp is None:
+                self.orig_layer.zp = None
+            elif zp.numel()>1 :
                 zp = zp.reshape(shape[0], -1)
-                self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+                self.orig_layer.zp = zp.to("cpu")
+            else:
+                self.orig_layer.zp = zp.to("cpu")
         else:
             self.orig_layer.zp = None
 
