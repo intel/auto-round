@@ -32,7 +32,7 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
 
 
-class MyLinear(torch.nn.Module):
+class FP8_WOQ_Linear(torch.nn.Module):
     def __init__(self, in_features, out_features, weight, weight_scale, bias=None, weight_zp=None, device=None):
         super().__init__()
         self.in_features = in_features
@@ -101,7 +101,7 @@ def pack_layer(layer_name, model, data_type,packing_device):
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
     bias = layer.bias
-    my_linear = MyLinear(in_features, out_features, q_weight, scale, bias, zp)
+    my_linear = FP8_WOQ_Linear(in_features, out_features, q_weight, scale, bias, zp)
 
     my_linear.to(device)
     set_module(model, layer_name, my_linear)
