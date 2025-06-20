@@ -170,7 +170,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     layer_config = kwargs["layer_config"]
     names = list(layer_config.keys())
     max_workers = 1
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

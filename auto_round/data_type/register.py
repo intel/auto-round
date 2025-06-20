@@ -16,7 +16,7 @@
 QUANT_FUNC_WITH_DTYPE = {}
 
 
-def register_dtype(name):
+def register_dtype(names):
     """Class decorator to register a EXPORT subclass to the registry.
 
     Decorator function used before a Pattern subclass.
@@ -30,7 +30,12 @@ def register_dtype(name):
     """
 
     def register(dtype):
-        QUANT_FUNC_WITH_DTYPE[name] = dtype
+        if isinstance(names,(tuple,list)):
+            for name in names:
+                QUANT_FUNC_WITH_DTYPE[name] = dtype
+        else:
+            QUANT_FUNC_WITH_DTYPE[names] = dtype
+
         return dtype
 
     return register
