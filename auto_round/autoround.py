@@ -498,6 +498,9 @@ class AutoRound(object):
                     "You can also try to increase the model_max_length to avoid this issue.")
                 self.seqlen = min(self.seqlen, self.tokenizer.model_max_length)
 
+        if self.group_size==0 and "fp8" not in self.data_type:
+                logger.warning("group_size of 0 is not supported for data_type other than fp8 ")
+
     def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
 
