@@ -64,7 +64,7 @@ class FP8WOQLinear(torch.nn.Module):
             self.register_buffer('weight_zp', weight_zp.to(torch.bfloat16))
 
 
-def pack_layer(layer_name, model, data_type,packing_device):
+def pack_layer(layer_name, model, data_type, packing_device=None):
     """
      Packs a model layer for quantization based on its type and configuration.
 
@@ -81,6 +81,12 @@ def pack_layer(layer_name, model, data_type,packing_device):
     Returns:
         None: The function modifies the model in place.
     """
+    if packing_device is None:
+        packing_device = "cpu"
+        if torch.cuda.is_available():
+            packing_device = "cuda"
+        elif torch.xpu.is_available():
+            packing_device = "xpu"
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
@@ -100,7 +106,7 @@ def pack_layer(layer_name, model, data_type,packing_device):
         torch_dtype = torch.float8_e5m2
     info = torch.finfo(torch_dtype)
     if zp is not None:
-        q_weight  = weight.to(packing_device)/scale.to(packing_device) + zp.to(packing_device)
+        q_weight = weight.to(packing_device) / scale.to(packing_device) + zp.to(packing_device)
     else:
         q_weight = weight.to(packing_device) / scale.to(packing_device)
     q_weight = torch.clamp(q_weight, info.min, info.max)
@@ -185,7 +191,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, kwargs.get("data_type", "fp8"),packing_device)
+                    pack_layer(name, model, kwargs.get("data_type", "fp8"), packing_device)
                 pbar.update(1)
 
             for _ in executor.map(wrapper, names):

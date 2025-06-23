@@ -31,7 +31,7 @@ from auto_round.utils import (logger, get_module,
                               extract_block_names_to_str, SUPPORTED_LAYER_TYPES, filter_quantization_config)
 import copy
 import json
-from .utils import WQLinear_GEMM
+from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 from concurrent.futures import ThreadPoolExecutor
 import threadpoolctl as tctl
 from tqdm import tqdm

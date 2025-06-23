@@ -21,12 +21,6 @@ import torch
 import torch.nn as nn
 import transformers
 
-try:
-    import auto_round_extension.triton.qlinear_tritonv2
-except Exception as error:
-    raise ImportError(error)
-import auto_round_extension.torch.qlinear_torch
-import auto_round.export.export_to_autoround.qlinear_triton_act
 from auto_round.utils import get_module, logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
     filter_quantization_config, SUPPORTED_FORMATS
 import threadpoolctl as tctl
@@ -76,6 +70,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     """
     if "auto_round" in backend and "awq" not in backend and "gptq" not in backend:
         if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
+            import auto_round.export.export_to_autoround.qlinear_triton_act
             return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
         from auto_round_extension.torch.qlinear_torch import QuantLinear
         return QuantLinear
@@ -112,6 +107,7 @@ def pack_qact_layer(name, model):
     w_bf16_to_fp8_scale = layer.w_bf16_to_fp8_scale if hasattr(layer, "w_bf16_to_fp8_scale") else None
     scale = layer.scale
     zp = layer.zp
+    import auto_round.export.export_to_autoround.qlinear_triton_act
     QuantLinear = auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
 
     if isinstance(layer, nn.Linear):
@@ -165,6 +161,10 @@ def pack_layer(layer_name, model, backend):
     if int(layer.act_bits) <= 8:
         return pack_qact_layer(layer_name, model)
 
+    if "fp8" in backend:
+        from auto_round.export.export_to_autoround.export_to_fp8_woq import pack_layer
+        return pack_layer(layer_name,model,backend)
+
     if not check_to_quantized(layer):
         return
 
@@ -196,8 +196,8 @@ def pack_layer(layer_name, model, backend):
         new_layer.device = device
         set_module(model, layer_name, new_layer)
         qlayer = new_layer
-        if sym and isinstance(QuantLinear, (auto_round_extension.triton.qlinear_tritonv2.QuantLinear,
-                                            auto_round_extension.torch.qlinear_torch.QuantLinear)):
+        import auto_round_extension.torch.qlinear_torch
+        if sym and isinstance(QuantLinear, (auto_round_extension.torch.qlinear_torch.QuantLinear)):
             zp = int(zp.flatten()[0])
 
         qlayer.to("cpu")
@@ -252,9 +252,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     Raises:
         ValueError: If the backend is not supported.
     """
-    if "fp8" in kwargs.get("data_type", None) and kwargs.get("act_bits",16)>=16:
+    if "fp8" in kwargs.get("data_type", None) and kwargs.get("act_bits", 16) >= 16:
         from auto_round.export.export_to_autoround.export_to_fp8_woq import save_quantized_as_autoround
-        return save_quantized_as_autoround(output_dir,inplace=inplace, backend="auto_round", **kwargs)
+        return save_quantized_as_autoround(output_dir, inplace=inplace, backend="auto_round", **kwargs)
 
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
     if (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
@@ -307,7 +307,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
     max_workers = 1
-    if not torch.cuda.is_available() or  not torch.xpu.is_available():
+    if not torch.cuda.is_available() or not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:

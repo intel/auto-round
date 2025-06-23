@@ -583,6 +583,9 @@ class AutoRound(object):
                     )
                     if enable_awq:
                         formats[index] = format.replace("auto_round", "auto_round:auto_awq")
+                if "fp8" in self.data_type:
+                    format = format.replace("auto_round", f"auto_round:{self.data_type}")
+                    formats[index] = format
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
