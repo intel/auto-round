@@ -912,7 +912,10 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
     if tensor is not None:
         del tensor
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if torch.xpu.is_available():
+        torch.xpu.empty_cache()
 
 
 def clear_memory(tensor=None):
@@ -1240,13 +1243,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
                 logger.warning(
                     f"format {format} does not support for {', '.join(unsupport_list)},"
                     f" reset to {', '.join(reset_list)}.")
-    if not isinstance(args_or_ar, argparse.Namespace) and len(unsupport_list) > 0:
-        for layer_name in args_or_ar.layer_config:
-            if args_or_ar.layer_config[layer_name]['bits'] >= 16:
-                continue
-            for k in args_or_ar.layer_config[layer_name]:
-                if hasattr(args_or_ar, k):
-                    args_or_ar.layer_config[layer_name][k] = getattr(args_or_ar, k)
+# Removed obsolete commented-out block for improved readability and maintainability.
     return args_or_ar
 
 
@@ -1622,6 +1619,9 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
     i_attention_wv = 0
     i_ffn_down = 0
     layer_config_copy = copy.deepcopy(layer_config)
+    target_bits = None
+    if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 7 and (inner_gguf_format[6]).isdigit():
+        target_bits = int(inner_gguf_format[6])
 
     for layer_name, config in layer_config_copy.items():
         if not check_to_quantized(config):
@@ -1635,17 +1635,31 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
         i_layer = _get_digital_in_layer_name(layer_name)
 
         gguf_name = tensor_map.get_name(layer_name)
-
-        if lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
+        if target_bits is not None and "bits" in config and config["bits"] != target_bits:
+            bits_index = 6
+            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
+            if not new_type in GGUF_INNER_CONFIG:
+                for tmp_type in (new_type[:bits_index + 1] + "_k", new_type[:bits_index + 1] + "_1",
+                                 new_type[:bits_index + 1] + "_0"):
+                    if tmp_type in GGUF_INNER_CONFIG:
+                        new_type = tmp_type
+                        break
+            if not new_type in GGUF_INNER_CONFIG:
+                raise ValueError(f"invalid bit setting for {layer_name}")
+        elif lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
             if gguf.MODEL_ARCH.FALCON == model_class.model_arch or input_features % block_size != 0:
                 new_type = "gguf:q8_0"
+            elif "lm_head" in GGUF_CONFIG[target_gguf_format]:
+                new_type = GGUF_CONFIG[target_gguf_format]["lm_head"]
             elif new_type != "gguf:q8_0":
                 new_type = "gguf:q6_k"
         elif lm_head_name is not None and layer_name == lm_head_name and tie_word_embeddings:
             pass
         elif isinstance(layer, torch.nn.Embedding):
+            if "embedding" in GGUF_CONFIG[target_gguf_format]:
+                new_type = GGUF_CONFIG[target_gguf_format]["embedding"]
+        elif gguf_name is None:
             pass
-
         # attn_v
         elif "attn_v" in gguf_name:
             if target_gguf_format == "gguf:q2_k":
@@ -1679,7 +1693,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             if n_expert == 8:
                 new_type = "gguf:q8_0"
         # ffn_down
-        if "ffn_down" in gguf_name:
+        elif "ffn_down" in gguf_name:
             if target_gguf_format == "gguf:q2_k":
                 new_type = "gguf:q3_k"
             elif target_gguf_format == "gguf:q2_k_s":
@@ -1744,7 +1758,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
                 new_type = "gguf:q5_k"
             elif target_gguf_format == "gguf:q5_k_m":
                 new_type = "gguf:q5_k"
-        if input_features % block_size != 0:
+        new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
+        if input_features % new_block_size != 0:
             if new_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
                 new_type = "gguf:q5_0"
             elif new_type == "gguf:q5_k":

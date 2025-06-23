@@ -125,6 +125,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
         shared_exp = shared_exp.to(torch.float32)
     tensor = tensor / (2 ** shared_exp)
     tensor = tensor + v
+    tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
     tensor = tensor * (2 ** shared_exp)
