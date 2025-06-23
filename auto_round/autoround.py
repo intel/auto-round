@@ -461,12 +461,23 @@ class AutoRound(object):
                     has_besides_gguf = True
             if has_gguf and has_besides_gguf:
                 raise ValueError("gguf format is not compatible with other formats, please choose only one of them")
-            if  has_gguf and self.iters!=0:
+            if has_gguf and self.iters != 0:
                 logger.warning(
                     "We recommend setting `iters=0` when exporting to GGUF format,"
                     " as we have optimized the RTN method for this case."
                     " We are likely to release new algorithms for certain configurations in the future."
                 )
+
+        ##check group_size 32 for auto_round
+        if self.data_type == "int" and hasattr(self, "formats") and (
+                "auto_round" in self.formats or "auto_gptq" in self.formats or "auto_awq" in self.formats):
+            for n, m in self.model.named_modules():
+                if isinstance(m, self.supported_types):
+                    if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
+                        self.layer_config[n] = {"bits": 16}
+                        logger.info(
+                            f"{n} will not be quantized due to its shape not being divisible by 32,"
+                            " resulting in an exporting issue to autogptq")
 
         if self.seqlen is not None and hasattr(self.model, "config") and \
                 hasattr(self.model.config, "max_position_embeddings"):
@@ -522,6 +533,8 @@ class AutoRound(object):
                 if not ("gguf" in format_ or "fake" in format_):
                     only_gguf = False
                     break
+            if len(formats)==1 and "fake" == formats[0]:
+                only_gguf = False
             if only_gguf:
                 self.scale_dtype = torch.float32
                 logger.info(f"change `scale_dtype` to `torch.float32`")
@@ -701,19 +714,22 @@ class AutoRound(object):
                 model(**data)
                 if cnt > self.nsamples:
                     break
-        except:
-            logger.warning("out of vram, fallback to cpu, pleaser use more gpus by setting `--device 0,1,2,3`")
-            model = self.model.to("cpu")
-            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                accelerate.hooks.remove_hook_from_submodules(
-                    self.model)  ##self.model.hf_device_map has not been changed
-            cnt = 0
-            for data in self.dataloader:
-                cnt += data["input_ids"].shape[0]
-                data = to_device(data, self.model.device)
-                model(**data)
-                if cnt > self.nsamples:
-                    break
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                logger.warning("out of vram, fallback to cpu, pleaser use more gpus by setting `--device 0,1,2,3`")
+                model = self.model.to("cpu")
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(
+                        self.model)  ##self.model.hf_device_map has not been changed
+                cnt = 0
+                for data in self.dataloader:
+                    cnt += data["input_ids"].shape[0]
+                    data = to_device(data, self.model.device)
+                    model(**data)
+                    if cnt > self.nsamples:
+                        break
+            else:
+                raise
 
         for hook in hooks:
             hook.remove()
@@ -793,7 +809,7 @@ class AutoRound(object):
             for format_ in self.formats:
                 if "gguf" in format_ and "k" in format_:
                     has_gguf_k = True
-            if has_gguf_k:
+            if has_gguf_k and not self.disable_opt_rtn:
                 self.get_imatrix()
             self.quantize_embedding_layer()
         pbar = tqdm(all_to_quantized_module_names)
@@ -819,6 +835,8 @@ class AutoRound(object):
                     m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
                                       enable_round_tuning=False)
                     m = m.unwrapper({})
+                else:
+                    raise
             if self.low_gpu_mem_usage:
                 clear_memory()
             if self.is_packing_immediate:
@@ -895,6 +913,8 @@ class AutoRound(object):
             clear_memory(self.inputs)
             all_q_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples,
                                                             layer_names=layer_names)
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        clear_memory()
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
@@ -985,7 +1005,7 @@ class AutoRound(object):
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
                 layer = get_module(self.model, layer_name)
-                if "rtn_" + layer.data_type in QUANT_FUNC_WITH_DTYPE:
+                if not self.disable_opt_rtn and "rtn_" + layer.data_type in QUANT_FUNC_WITH_DTYPE:
                     layer.data_type = "rtn_" + layer.data_type
                     logger.info("using optimized rtn method for quantizing %s", layer_name)
                     self.layer_config[layer_name]["data_type"] = layer.data_type
@@ -1007,7 +1027,7 @@ class AutoRound(object):
 
         if enable_quanted_input:
             logger.info(
-                "starting to cache layer inputs for %s as `enable_quanted_input` is enable, this may be quite slow ",
+                "starting to cache layer inputs for %s, this may be quite slow ",
                 layer_names)
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
@@ -1235,7 +1255,7 @@ class AutoRound(object):
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
-                data_new = data
+                data_new = to_device(data)
                 input_ids = data_new[0]
             else:
                 data_new = {}
@@ -1250,6 +1270,7 @@ class AutoRound(object):
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
                 elif isinstance(data_new, tuple) or isinstance(data_new, list):
+
                     self.model(*data_new)
                 else:
                     self.model(**data_new)
@@ -1311,16 +1332,16 @@ class AutoRound(object):
             all_inputs = self.cache_inter_data(
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
-            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-            clear_memory()
         except RuntimeError as e:
             if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                self.no_enough_vram_for_w_model = True
                 logger.info("switch to cpu to cache block inputs")
                 if (self.has_qlayer_outside_block or
                         self.__class__.__name__ == "AutoRoundMLLM"):
-                    logger.warning("We strongly recommend using more GPUs."
+                    logger.warning("We strongly recommend using more GPUs in calibration."
                                    " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy.")
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(
+                        self.model)  ##self.model.hf_device_map has not been changed
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                 clear_memory()
                 ## Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
