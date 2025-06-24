@@ -603,8 +603,8 @@ def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
         inv_scales = torch.where(max_scales > 0, 63. / max_scales, 0)
         inv_mins = torch.where(max_mins > 0, 63. / max_mins, 0)
 
-    q_scales = torch.round(inv_scales * scales).to(torch.uint8).clip(0, 63)
-    q_mins = torch.round(inv_mins * mins).to(torch.uint8).clip(0, 63)
+    q_scales = torch.round(inv_scales * scales).clip(0, 63)
+    q_mins = torch.round(inv_mins * mins).clip(0, 63)
 
     if d_scale is None:
         output_d = max_scales / 63
