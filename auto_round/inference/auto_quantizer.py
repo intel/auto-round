@@ -151,9 +151,14 @@ class AutoHfQuantizer:
             )
         else:
             warning_msg = ""
+        if (quantization_config_from_args is None or
+                not hasattr(quantization_config_from_args, "get_loading_attributes")):
+            # If the quantization_config_from_args is None or does not have get_loading_attributes method,
+            # we will not use it to load the model.
+            quantization_config_from_args = None
+        else:
+            loading_attr_dict = quantization_config_from_args.get_loading_attributes()
 
-        loading_attr_dict = quantization_config_from_args.get_loading_attributes() \
-            if quantization_config_from_args is not None else None
         if isinstance(quantization_config, dict):
             if "auto-round" in quantization_config[
                 "quant_method"] or quantization_config_from_args.__class__.__name__ == "AutoRoundConfig":
