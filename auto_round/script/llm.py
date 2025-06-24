@@ -531,10 +531,14 @@ def tune(args):
             # for file in os.listdir(eval_folder):
             #     gguf_file = file
             gguf_file = None
-            # gguf floder only contains one file
+            gguf_format = None  # Initialize gguf_format to None
+            # gguf folder only contains one file
             for format in formats:
                 if format.startswith("gguf"):
                     gguf_format = format.split(":")[-1].upper()
+            if gguf_format is None:  # Validate gguf_format after the loop
+                logger.error("No valid gguf format found in formats. Please check the input.")
+                sys.exit(-1)
             for file in os.listdir(eval_folder):
                 if gguf_format in file:
                     gguf_file = file
