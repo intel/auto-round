@@ -528,9 +528,16 @@ def tune(args):
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
     if args.act_bits <= 8 or eval_gguf_model:
         if eval_gguf_model:
+            # for file in os.listdir(eval_folder):
+            #     gguf_file = file
+            gguf_file = None
             # gguf floder only contains one file
+            for format in formats:
+                if format.startswith("gguf"):
+                    gguf_format = format.split(":")[-1].upper()
             for file in os.listdir(eval_folder):
-                gguf_file = file
+                if gguf_format in file:
+                    gguf_file = file
 
             logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
             if eval_model_dtype == "float32" or eval_model_dtype == "auto":
@@ -538,6 +545,9 @@ def tune(args):
                     "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
                     " but may affect accuracy."
                 )
+            if gguf_file is None:
+                logger.error("Cannot find correct gguf file for evaluation, please check.")
+                sys.exit(-1)
             model = AutoModelForCausalLM.from_pretrained(
                 eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
             model.eval()
