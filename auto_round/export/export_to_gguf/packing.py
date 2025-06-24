@@ -647,7 +647,7 @@ def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         scales = scale.reshape(-1, QK_K // 16)
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         iscales = torch.where(output_d == 0, 0, 1 / output_d)
-        all_L = torch.zeros_like(blocks, dtype=torch.uint8)
+        all_L = torch.zeros_like(blocks, dtype=torch.uint8) + 32
     else:
         scales, all_L = make_qx_quants(blocks, bits=6, rmse_type=1, qw=None)
         imax = abs(scales).argmax(dim=-1, keepdim=True)

@@ -461,7 +461,7 @@ class AutoRound(object):
                     has_besides_gguf = True
             if has_gguf and has_besides_gguf:
                 raise ValueError("gguf format is not compatible with other formats, please choose only one of them")
-            if has_gguf and self.iters != 0:
+            if has_gguf and self.iters != 0 and self.bits >= 4:
                 logger.warning(
                     "We recommend setting `iters=0` when exporting to GGUF format,"
                     " as we have optimized the RTN method for this case."
