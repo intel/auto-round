@@ -402,10 +402,10 @@ class AutoRound(object):
             raise ValueError("bits must be positive")
         if self.act_bits <= 0:
             raise ValueError("act_bits must be positive")
-        if not (self.group_size == -1 or self.group_size >= 1):
-            raise ValueError("group_size must be -1 (per channel) or a positive integer")
-        if not (self.act_group_size == -1 or self.act_group_size >= 1):
-            raise ValueError("act_group_size must be -1 (per channel) or a positive integer")
+        if not (self.group_size == -1 or self.group_size >= 0):
+            raise ValueError("group_size must be -1 (per channel) or 0 (per-tensor) or a postivie integer")
+        if not (self.act_group_size == -1 or self.act_group_size >= 0):
+            raise ValueError("act_group_size must be -1 (per channel) or 0 (per-tensor) or a positive integer")
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive")
         if self.iters < 0:
@@ -422,13 +422,16 @@ class AutoRound(object):
                 "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently")
 
-        if "mx_fp" in self.data_type:
+        if "mx_fp" in self.data_type or "nv_fp" in self.data_type:
             logger.warning(
                 "please save the quantized model to fake format "
-                "as real deployment is not supported for mx_fp datatype currently")
+                "as real deployment is not supported for mx_fp/nv_fp datatype currently")
 
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
+
+        if "nv_fp" in self.data_type and (self.group_size != 32 or self.group_size!=16):
+            logger.warning("mx_fp should only support group_size of 16/32 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
@@ -472,7 +475,7 @@ class AutoRound(object):
         if self.data_type == "int" and hasattr(self, "formats") and (
                 "auto_round" in self.formats or "auto_gptq" in self.formats or "auto_awq" in self.formats):
             for n, m in self.model.named_modules():
-                if isinstance(m, self.supported_types) :
+                if isinstance(m, self.supported_types):
                     if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                         self.layer_config[n] = {"bits": 16}
                         logger.info(
@@ -494,6 +497,9 @@ class AutoRound(object):
                     "due to the limitation of model_max_length. " \
                     "You can also try to increase the model_max_length to avoid this issue.")
                 self.seqlen = min(self.seqlen, self.tokenizer.model_max_length)
+
+        if self.group_size==0 and "fp8" not in self.data_type:
+                logger.warning("group_size of 0 is not supported for data_type other than fp8 ")
 
     def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
@@ -533,6 +539,8 @@ class AutoRound(object):
                 if not ("gguf" in format_ or "fake" in format_):
                     only_gguf = False
                     break
+            if len(formats)==1 and "fake" == formats[0]:
+                only_gguf = False
             if only_gguf:
                 self.scale_dtype = torch.float32
                 logger.info(f"change `scale_dtype` to `torch.float32`")
@@ -565,16 +573,19 @@ class AutoRound(object):
         for index in range(len(formats)):
             format = formats[index]
             if format == "auto_round":
-                if self.sym or self.bits == 3:
+                if self.sym or self.bits == 3 and "int" in self.data_type:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
-                if self.bits == 4 and not self.sym:
+                if self.bits == 4 and not self.sym and "int" in self.data_type:
                     enable_awq = all(
                         config["bits"] == self.bits or config["bits"] >= 16
                         for config in self.layer_config.values()
                     )
                     if enable_awq:
                         formats[index] = format.replace("auto_round", "auto_round:auto_awq")
+                if "fp8" in self.data_type:
+                    format = format.replace("auto_round", f"auto_round:{self.data_type}")
+                    formats[index] = format
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
@@ -712,19 +723,22 @@ class AutoRound(object):
                 model(**data)
                 if cnt > self.nsamples:
                     break
-        except:
-            logger.warning("out of vram, fallback to cpu, pleaser use more gpus by setting `--device 0,1,2,3`")
-            model = self.model.to("cpu")
-            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                accelerate.hooks.remove_hook_from_submodules(
-                    self.model)  ##self.model.hf_device_map has not been changed
-            cnt = 0
-            for data in self.dataloader:
-                cnt += data["input_ids"].shape[0]
-                data = to_device(data, self.model.device)
-                model(**data)
-                if cnt > self.nsamples:
-                    break
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                logger.warning("out of vram, fallback to cpu, pleaser use more gpus by setting `--device 0,1,2,3`")
+                model = self.model.to("cpu")
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(
+                        self.model)  ##self.model.hf_device_map has not been changed
+                cnt = 0
+                for data in self.dataloader:
+                    cnt += data["input_ids"].shape[0]
+                    data = to_device(data, self.model.device)
+                    model(**data)
+                    if cnt > self.nsamples:
+                        break
+            else:
+                raise
 
         for hook in hooks:
             hook.remove()
@@ -804,7 +818,7 @@ class AutoRound(object):
             for format_ in self.formats:
                 if "gguf" in format_ and "k" in format_:
                     has_gguf_k = True
-            if has_gguf_k:
+            if has_gguf_k and not self.disable_opt_rtn:
                 self.get_imatrix()
             self.quantize_embedding_layer()
         pbar = tqdm(all_to_quantized_module_names)
@@ -830,6 +844,8 @@ class AutoRound(object):
                     m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
                                       enable_round_tuning=False)
                     m = m.unwrapper({})
+                else:
+                    raise
             if self.low_gpu_mem_usage:
                 clear_memory()
             if self.is_packing_immediate:
@@ -906,6 +922,8 @@ class AutoRound(object):
             clear_memory(self.inputs)
             all_q_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples,
                                                             layer_names=layer_names)
+        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+        clear_memory()
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
@@ -996,7 +1014,7 @@ class AutoRound(object):
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
                 layer = get_module(self.model, layer_name)
-                if "rtn_" + layer.data_type in QUANT_FUNC_WITH_DTYPE:
+                if not self.disable_opt_rtn and "rtn_" + layer.data_type in QUANT_FUNC_WITH_DTYPE:
                     layer.data_type = "rtn_" + layer.data_type
                     logger.info("using optimized rtn method for quantizing %s", layer_name)
                     self.layer_config[layer_name]["data_type"] = layer.data_type
@@ -1018,7 +1036,7 @@ class AutoRound(object):
 
         if enable_quanted_input:
             logger.info(
-                "starting to cache layer inputs for %s as `enable_quanted_input` is enable, this may be quite slow ",
+                "starting to cache layer inputs for %s, this may be quite slow ",
                 layer_names)
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
@@ -1246,7 +1264,7 @@ class AutoRound(object):
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
-                data_new = data
+                data_new = to_device(data)
                 input_ids = data_new[0]
             else:
                 data_new = {}
@@ -1261,6 +1279,7 @@ class AutoRound(object):
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new)
                 elif isinstance(data_new, tuple) or isinstance(data_new, list):
+
                     self.model(*data_new)
                 else:
                     self.model(**data_new)
@@ -1322,16 +1341,16 @@ class AutoRound(object):
             all_inputs = self.cache_inter_data(
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
-            self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-            clear_memory()
         except RuntimeError as e:
             if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                self.no_enough_vram_for_w_model = True
                 logger.info("switch to cpu to cache block inputs")
                 if (self.has_qlayer_outside_block or
                         self.__class__.__name__ == "AutoRoundMLLM"):
                     logger.warning("We strongly recommend using more GPUs in calibration."
                                    " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy.")
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(
+                        self.model)  ##self.model.hf_device_map has not been changed
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                 clear_memory()
                 ## Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
@@ -2034,14 +2053,6 @@ class AutoRound(object):
             logger.warning(
                 "Support for exporting activation quantization is limited. "
                 "Please ensure that your configuration is supported.")
-        if format in ["gguf:q4_0", "gguf:q4_1"]:
-            if self.group_size != 32:
-                logger.error(f"{format} need group_size=32, but it is {self.group_size}, cannot export.")
-                return
-            if format == "gguf:q4_0" and not self.sym:
-                logger.warning(f"incorrect format choose, will reset to gguf:q4_1")
-            if format == "gguf:q4_1" and self.sym:
-                logger.warning(f"incorrect format choose, will reset to gguf:q4_0")
 
         from auto_round.export import EXPORT_FORMAT
         backend = format
