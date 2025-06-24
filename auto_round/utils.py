@@ -192,7 +192,9 @@ def get_scale_shape(weight, group_size):
     Returns:
       The shape of the scale tensor to be used for quantization.
     """
-    if group_size == -1 or weight.shape[1] < group_size:
+    if group_size == 0:
+        return (1)
+    elif group_size == -1 or weight.shape[1] < group_size:
         shape = weight.shape[0]
     else:
         shape = weight.shape[0] * ((weight.shape[1] + group_size - 1) // group_size)

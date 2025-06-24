@@ -31,7 +31,7 @@ from auto_round.utils import (logger, get_module,
                               extract_block_names_to_str, SUPPORTED_LAYER_TYPES, filter_quantization_config)
 import copy
 import json
-from .utils import WQLinear_GEMM
+from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 from concurrent.futures import ThreadPoolExecutor
 import threadpoolctl as tctl
 from tqdm import tqdm
@@ -102,7 +102,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
 
     backend = None
     max_workers = 1
-    if not torch.cuda.is_available():
+    if not torch.cuda.is_available() or  not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:

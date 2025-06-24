@@ -402,10 +402,10 @@ class AutoRound(object):
             raise ValueError("bits must be positive")
         if self.act_bits <= 0:
             raise ValueError("act_bits must be positive")
-        if not (self.group_size == -1 or self.group_size >= 1):
-            raise ValueError("group_size must be -1 (per channel) or a positive integer")
-        if not (self.act_group_size == -1 or self.act_group_size >= 1):
-            raise ValueError("act_group_size must be -1 (per channel) or a positive integer")
+        if not (self.group_size == -1 or self.group_size >= 0):
+            raise ValueError("group_size must be -1 (per channel) or 0 (per-tensor) or a postivie integer")
+        if not (self.act_group_size == -1 or self.act_group_size >= 0):
+            raise ValueError("act_group_size must be -1 (per channel) or 0 (per-tensor) or a positive integer")
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive")
         if self.iters < 0:
@@ -422,13 +422,16 @@ class AutoRound(object):
                 "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently")
 
-        if "mx_fp" in self.data_type:
+        if "mx_fp" in self.data_type or "nv_fp" in self.data_type:
             logger.warning(
                 "please save the quantized model to fake format "
-                "as real deployment is not supported for mx_fp datatype currently")
+                "as real deployment is not supported for mx_fp/nv_fp datatype currently")
 
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
+
+        if "nv_fp" in self.data_type and (self.group_size != 32 or self.group_size!=16):
+            logger.warning("mx_fp should only support group_size of 16/32 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
@@ -494,6 +497,9 @@ class AutoRound(object):
                     "due to the limitation of model_max_length. " \
                     "You can also try to increase the model_max_length to avoid this issue.")
                 self.seqlen = min(self.seqlen, self.tokenizer.model_max_length)
+
+        if self.group_size==0 and "fp8" not in self.data_type:
+                logger.warning("group_size of 0 is not supported for data_type other than fp8 ")
 
     def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
@@ -567,16 +573,19 @@ class AutoRound(object):
         for index in range(len(formats)):
             format = formats[index]
             if format == "auto_round":
-                if self.sym or self.bits == 3:
+                if self.sym or self.bits == 3 and "int" in self.data_type:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
-                if self.bits == 4 and not self.sym:
+                if self.bits == 4 and not self.sym and "int" in self.data_type:
                     enable_awq = all(
                         config["bits"] == self.bits or config["bits"] >= 16
                         for config in self.layer_config.values()
                     )
                     if enable_awq:
                         formats[index] = format.replace("auto_round", "auto_round:auto_awq")
+                if "fp8" in self.data_type:
+                    format = format.replace("auto_round", f"auto_round:{self.data_type}")
+                    formats[index] = format
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
@@ -2044,14 +2053,6 @@ class AutoRound(object):
             logger.warning(
                 "Support for exporting activation quantization is limited. "
                 "Please ensure that your configuration is supported.")
-        if format in ["gguf:q4_0", "gguf:q4_1"]:
-            if self.group_size != 32:
-                logger.error(f"{format} need group_size=32, but it is {self.group_size}, cannot export.")
-                return
-            if format == "gguf:q4_0" and not self.sym:
-                logger.warning(f"incorrect format choose, will reset to gguf:q4_1")
-            if format == "gguf:q4_1" and self.sym:
-                logger.warning(f"incorrect format choose, will reset to gguf:q4_0")
 
         from auto_round.export import EXPORT_FORMAT
         backend = format
