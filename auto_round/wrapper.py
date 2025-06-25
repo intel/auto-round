@@ -395,7 +395,7 @@ class WrapperLayerNorm(torch.nn.Module):
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.output_device = device
         weight_dtype = torch.float32
-        self.q_scale_thresh = 1e-5 if self.orig_layer.bits < 8 else 1e-7
+        self.q_scale_thresh = 1e-5
         self.v = torch.nn.Parameter(
             reshape_and_pad_tensor(
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
@@ -441,7 +441,7 @@ class WrapperLlamaNorm(torch.nn.Module):
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.output_device = device
         weight_dtype = torch.float32
-        self.q_scale_thresh = 1e-5 if self.orig_layer.bits < 8 else 1e-7
+        self.q_scale_thresh = 1e-5
         self.v = torch.nn.Parameter(
             reshape_and_pad_tensor(
                 torch.zeros(self.orig_layer.weight.shape, device=self.device, dtype=weight_dtype),
