@@ -23,7 +23,7 @@ AutoRound also offers a variety of useful features, including mixed-bit tuning a
 support for exporting to formats like GPTQ/AWQ/GGUF, and flexible tuning recipes. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
 details and quantized models in several Hugging Face Spaces,
-e.g. [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup)
+e.g. [OPEA](https://huggingface.co/OPEA), [Intel](https://huggingface.co/Intel), [Kaitchup](https://huggingface.co/kaitchup)
 and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 <div align="center">
@@ -33,11 +33,11 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 <div align="left">
 
 ## What's New
-* [2025.05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer to [DeepSeek-R1-0528-int2-mixed-sym-inc](./docs/DeepSeek-R1-0528-int2-mixed-sym-inc.md), [DeepSeek-R1-0528-int4-sym-gptq-inc](./docs/DeepSeek-R1-0528-int4-sym-gptq-inc.md) and [DeepSeek-R1-0528-int4-asym-awq-inc](./docs/DeepSeek-R1-0528-int4-asym-awq-inc.md) for more details.
+* [2025.05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer to [DeepSeek-R1-0528-int2-mixed-sym-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int2-mixed-sym-inc), [DeepSeek-R1-0528-int4-sym-gptq-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-gptq-inc-auto-round) and [DeepSeek-R1-0528-int4-asym-awq-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-awq-inc-auto-round) for more details.
 * [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
   vLLM versions later than v0.85.post1.
 * [2025/04] AutoRound provides some recipes for **Qwen3** series, please refer
-  to [Qwen3-8B-sym-recipe](./docs/Qwen3-8B-sym-recipe.md) and [Qwen3-14B-sym-recipe](./docs/Qwen3-14B-sym-recipe.md) for
+  to [Qwen3-8B-sym-recipe](https://huggingface.co/Intel/Qwen3-8B-int4-AutoRound-inc) and [Qwen3-14B-sym-recipe](https://huggingface.co/Intel/Qwen3-14B-int4-AutoRound-inc) for
   more details.
 * [2025/04] AutoRound has been integrated into **Transformers**. You can run models in the AutoRound format directly
   with
@@ -507,5 +507,6 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 
