@@ -348,9 +348,9 @@ def quant_tensor_gguf_asym_dq(
             imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
             quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
 
-        weights = imatrix.reshape(1, -1)
-        weights = weights.expand(tensor.numel() // weights.numel(), -1)
-        quant_weights = weights.reshape(tensor.shape)
+        # weights = imatrix.reshape(1, -1)
+        # weights = weights.expand(tensor.numel() // weights.numel(), -1)
+        # quant_weights = weights.reshape(tensor.shape)
 
         params = search_kwargs[bits]
 
