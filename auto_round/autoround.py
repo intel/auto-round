@@ -527,8 +527,10 @@ class AutoRound(object):
         for name in pbar:
             pbar.set_description(f"Quantizing {name}")
             m = get_module(self.model, name)
-
-            m.to("cpu")
+            if "hpu" in self.device:
+                m.to("cpu")
+            else:
+                m.to(self.device)
             m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False, enable_round_tuning=False)
             m = m.unwrapper({})
             m.to("cpu")
@@ -2159,3 +2161,4 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+
