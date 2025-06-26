@@ -527,7 +527,7 @@ class AutoRound(object):
         for name in pbar:
             pbar.set_description(f"Quantizing {name}")
             m = get_module(self.model, name)
-            if "hpu" in self.device:
+            if "xpu" in str(self.device):
                 m.to("cpu")
             else:
                 m.to(self.device)
