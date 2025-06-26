@@ -404,7 +404,8 @@ def tune(args):
                     layer_config[n] = {}
                 layer_config[n]["bits"] = 8
         lm_head_layer = get_lm_head_name(model)
-        layer_config[lm_head_layer]["bits"] = 16
+        if lm_head_layer is not None and lm_head_layer in layer_config:
+            layer_config[lm_head_layer]["bits"] = 16
         
 
     if args.quant_lm_head and args.low_gpu_mem_usage:
