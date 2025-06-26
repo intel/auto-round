@@ -415,10 +415,7 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
         inv_mins = torch.where(d_wmin_m == 0, 0, 1 / output_dmin)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]  # (nb, 1)
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]  # (nb, 1)
-        tmp_inverse_scale = torch.where(scales == 0, 0, 1.0 / scales)
-        all_L = torch.clip(
-            torch.round((blocks + mins.reshape(*mins.shape, 1)) * tmp_inverse_scale.reshape(*scales.shape, 1)), 0,
-            3).to(torch.uint8)
+        all_L = torch.zeros_like(blocks, dtype=torch.uint8)
     else:
         scales, all_L, mins = make_qkx2_quants(blocks, bits=2, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=True)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]
@@ -527,10 +524,11 @@ def q4_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
         inv_mins = torch.where(d_wmin_m == 0, 0, 1 / output_dmin)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]  # (nb, 1)
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]  # (nb, 1)
-        inverse_scale = torch.where(scales == 0, 0, 1.0 / scales)
-        all_L = torch.round(
-            (blocks + mins.reshape(*mins.shape, 1)) * inverse_scale.reshape(*scales.shape, 1)).clip(
-            0,15).to(torch.uint8)
+        all_L = torch.zeros_like(blocks, dtype=torch.uint8)
+        # inverse_scale = torch.where(scales == 0, 0, 1.0 / scales)
+        # all_L = torch.round(
+        #     (blocks + mins.reshape(*mins.shape, 1)) * inverse_scale.reshape(*scales.shape, 1)).clip(
+        #     0,15).to(torch.uint8)
     else:
         scales, all_L, mins = make_qkx2_quants(blocks, bits=4, rmin=-1, rdelta=0.1, nstep=20, use_mad=False)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]
@@ -590,10 +588,7 @@ def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
         inv_mins = torch.where(d_wmin_m == 0, 0, 1 / output_dmin)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]  # (nb, 1)
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]  # (nb, 1)
-        inverse_scale = torch.where(scales == 0, 0, 1.0 / scales)
-        all_L = torch.round(
-            (blocks + mins.reshape(*mins.shape, 1)) * inverse_scale.reshape(*scales.shape, 1)).clip(0,31).to(
-            torch.uint8)
+        all_L = torch.zeros_like(blocks, dtype=torch.uint8)
     else:
         scales, all_L, mins = make_qkx2_quants(blocks, bits=5, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=False)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]
@@ -601,8 +596,8 @@ def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
         inv_scales = torch.where(max_scales > 0, 63. / max_scales, 0)
         inv_mins = torch.where(max_mins > 0, 63. / max_mins, 0)
 
-    q_scales = torch.round(inv_scales * scales).to(torch.uint8).clip(0, 63)
-    q_mins = torch.round(inv_mins * mins).to(torch.uint8).clip(0, 63)
+    q_scales = torch.round(inv_scales * scales).clip(0, 63)
+    q_mins = torch.round(inv_mins * mins).clip(0, 63)
 
     if d_scale is None:
         output_d = max_scales / 63
@@ -652,8 +647,7 @@ def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
         scales = scale.reshape(-1, QK_K // 16)
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         iscales = torch.where(output_d == 0, 0, 1 / output_d)
-        inverse_scale = torch.where(scales == 0, 0, 1.0 / scales)
-        all_L = (torch.round(blocks * inverse_scale).clip(-32, 31) + 32).to(torch.uint8)
+        all_L = torch.zeros_like(blocks, dtype=torch.uint8) + 32
     else:
         scales, all_L = make_qx_quants(blocks, bits=6, rmse_type=1, qw=None)
         imax = abs(scales).argmax(dim=-1, keepdim=True)

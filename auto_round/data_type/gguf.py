@@ -320,7 +320,7 @@ def quant_tensor_gguf_asym_dq(
         elif bits == 4 or bits == 5:
             sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / 32  ##Note 32 is different from QK_K
             av_x = torch.sqrt(sigma2)
-            quant_weights = torch.sqrt(av_x + tensor * tensor)
+            quant_weights = torch.abs(tensor) + av_x
         params = search_kwargs[bits]
         scale, wmin_m = iterative_wls_quant_search(
             tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
@@ -339,15 +339,15 @@ def quant_tensor_gguf_asym_dq(
             4: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
             5: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
         }
-        if bits == 2:
-            sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+
+        sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+        if imatrix is None:
+            av_x = torch.sqrt(sigma2)
+            quant_weights = torch.abs(av_x + tensor * tensor)
+        else:
             imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
             quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
-        elif bits == 4 or bits == 5:
-            sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
-            av_x = torch.sqrt(sigma2)
-            imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
-            quant_weights = imatrix * torch.sqrt(av_x + tensor * tensor)
+
         weights = imatrix.reshape(1, -1)
         weights = weights.expand(tensor.numel() // weights.numel(), -1)
         quant_weights = weights.reshape(tensor.shape)
