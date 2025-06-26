@@ -724,6 +724,20 @@ def convert_dtype_torch2str_hf(dtype):
     return str_dtype
 
 
+def get_lm_head_name(model):
+    block_names = get_block_names(model, True)
+    last_name = None
+    for n, m in model.named_modules():
+        if any(m.children()):
+            continue
+        last_name = n
+    for l in block_names:
+        if last_name in l:
+            last_name = None
+            break
+    return last_name
+
+    
 def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     """Checks the availability of memory on the specified device for processing inputs using a given weight tensor.
 
@@ -1439,3 +1453,4 @@ def get_shared_keys(model):
     shared_keys = shared_cache_keys
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
+

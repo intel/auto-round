@@ -23,7 +23,8 @@ from auto_round.utils import (
     get_device_and_parallelism,
     set_cuda_visible_devices,
     logger,
-    _gguf_args_check
+    _gguf_args_check,
+    get_lm_head_name
     )
 
 
@@ -398,10 +399,13 @@ def tune(args):
 
     if args.quant_all:
         for n,m in model.named_modules():
-            if isinstance(m,torch.nn.Linear):
+            if isinstance(m, torch.nn.Linear):
                 if n not in layer_config:
                     layer_config[n] = {}
                 layer_config[n]["bits"] = 8
+        lm_head_layer = get_lm_head_name(model)
+        layer_config[lm_head_layer]["bits"] = 16
+        
 
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(
@@ -578,4 +582,5 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+
 
