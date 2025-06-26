@@ -405,28 +405,36 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     sum_w = torch.sum(weights, dim=1, keepdim=True)
     sum_x = torch.sum(weights * data, dim=1, keepdim=True)
 
-    scale = 1 / ((maxq - minq) / (rmax - rmin + 1e-8))
-    quant_data = torch.clamp(torch.round((maxq - minq) / (rmax - rmin + 1e-8) * (data - rmin)), minq, maxq)
+    # scale = 1 / ((maxq - minq) / (rmax - rmin + 1e-8))
+    scale = (rmax - rmin) / (maxq - minq)
+    iscale = torch.where(scale == 0, 0, 1 / scale)
+    # quant_data = torch.clamp(torch.round((maxq - minq) / (rmax - rmin + 1e-8) * (data - rmin)), minq, maxq)
+    quant_data = torch.clamp(torch.round(iscale * (data - rmin)), minq, maxq)
     diff = scale * quant_data + rmin - data
-    best_mad = torch.sum(weights * (torch.abs(diff) if use_mad else diff ** 2), dim=1, keepdim=True)
+    best_mad = torch.sum(weights * (torch.abs(diff) if use_mad else diff ** 2), dim=-1, keepdim=True)
 
     for is_ in range(nstep):
         factor = rrmin + rdelta * is_ + maxq - minq
-        iscale_new = factor / (rmax - rmin + 1e-8)
+        # iscale_new = factor / (rmax - rmin + 1e-8)
+        scale_new = (rmax - rmin) / factor
+        iscale_new = torch.where(scale_new == 0, 0, 1 / scale_new)
         quant_data_new = torch.clamp(torch.round(iscale_new * (data - rmin)), minq, maxq)
 
         mul_weights_quant_data = weights * quant_data_new
-        sum_l = torch.sum(mul_weights_quant_data, dim=1, keepdim=True)
-        sum_l2 = torch.sum(mul_weights_quant_data * quant_data_new, dim=1, keepdim=True)
-        sum_xl = torch.sum(mul_weights_quant_data * data, dim=1, keepdim=True)
+        sum_l = torch.sum(mul_weights_quant_data, dim=-1, keepdim=True)
+        sum_l2 = torch.sum(mul_weights_quant_data * quant_data_new, dim=-1, keepdim=True)
+        sum_xl = torch.sum(mul_weights_quant_data * data, dim=-1, keepdim=True)
 
         D = sum_w * sum_l2 - sum_l ** 2
         this_scale = (sum_w * sum_xl - sum_x * sum_l) / D
         this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
+        this_min[this_min > 0] = 0
+        this_scale[this_min > 0] = (sum_xl / sum_l2)[this_min > 0]
 
-        quant_data = torch.clamp(torch.round((1 / this_scale) * (data - this_min)), minq, maxq)
-        diff = this_scale * quant_data + this_min - data
-        mad = torch.sum(weights * (torch.abs(diff) if use_mad else diff ** 2), dim=1, keepdim=True)
+        # quant_data = torch.clamp(torch.round((1 / this_scale) * (data - this_min)), minq, maxq)
+        # diff = this_scale * quant_data + this_min - data
+        diff = this_scale * quant_data_new + this_min - data
+        mad = torch.sum(weights * (torch.abs(diff) if use_mad else diff ** 2), dim=-1, keepdim=True)
 
         idx_to_replace = torch.where((mad < best_mad) & (D > 0))[0]
         best_mad[idx_to_replace] = mad[idx_to_replace]
