@@ -408,7 +408,8 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     scale = 1 / ((maxq - minq) / (rmax - rmin + 1e-8))
     quant_data = torch.clamp(torch.round((maxq - minq) / (rmax - rmin + 1e-8) * (data - rmin)), minq, maxq)
     diff = scale * quant_data + rmin - data
-    best_mad = torch.sum(weights * (torch.abs(diff) if use_mad else diff ** 2), dim=1, keepdim=True)
+
+    best_mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights*diff ** 2, dim=1, keepdim=True)
 
     for is_ in range(nstep):
         factor = rrmin + rdelta * is_ + maxq - minq
@@ -426,7 +427,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
 
         quant_data = torch.clamp(torch.round((1 / this_scale) * (data - this_min)), minq, maxq)
         diff = this_scale * quant_data + this_min - data
-        mad = torch.sum(weights * (torch.abs(diff) if use_mad else diff ** 2), dim=1, keepdim=True)
+        mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff ** 2, dim=1, keepdim=True)
 
         idx_to_replace = torch.where((mad < best_mad) & (D > 0))[0]
         best_mad[idx_to_replace] = mad[idx_to_replace]
