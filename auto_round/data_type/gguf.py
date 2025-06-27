@@ -495,9 +495,13 @@ def quant_tensor_gguf_sym_dq(
     else:
         imatrix = imatrix.to(tensor.device)
         if bits == 3:
-            sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
-            imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
-            quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
+            # sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+            # imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
+            # quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
+            # scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
+            weights = imatrix.reshape(1, -1)
+            weights = weights.expand(tensor.numel() // weights.numel(), -1)
+            quant_weights = weights.reshape(tensor.shape)
             scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
         elif bits == 6:
             weights = imatrix.reshape(1, -1)
