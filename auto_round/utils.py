@@ -1334,13 +1334,21 @@ def mllm_load_model(
     import json
     import transformers
     from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
-    from huggingface_hub import HfApi, HfFileSystem
+    from huggingface_hub import HfApi, hf_hub_download
 
     if os.path.isdir(pretrained_model_name_or_path):
         config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
     else:
-        hf_file = HfFileSystem()
-        config = json.load(hf_file.open(pretrained_model_name_or_path + "/config.json"))
+        from huggingface_hub import hf_hub_download
+        import gzip
+        try:
+            config_path = hf_hub_download(pretrained_model_name_or_path, "config.json")
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            config_path = hf_hub_download(pretrained_model_name_or_path, "config.json.gz")
+            with gzip.open(config_path, "rt", encoding="utf-8") as f:
+                config = json.load(f)
 
     if "model_type" in config:
         model_type = config["model_type"]
@@ -1830,3 +1838,4 @@ def get_gguf_qtype_by_layer_config(layer_config):
     if bits == 8 and sym and group_size == 32:
         return gguf.GGMLQuantizationType.Q8_0
     raise ValueError(f"Unknown layer config")
+
