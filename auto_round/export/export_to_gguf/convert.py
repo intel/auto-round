@@ -1199,7 +1199,7 @@ class Model(OriModel):
     def get_qtype_by_layer_config(self, layer_config, name, data_qtype):
         name = name[:-len('.weight')]
         if name not in layer_config or layer_config[name]['bits'] >= 16:
-            return data_qtype
+            return gguf.GGMLQuantizationType.F32 ## change later
         bits = layer_config[name]['bits']
         super_bits = layer_config[name]["super_bits"]
         sym = layer_config[name]["sym"]

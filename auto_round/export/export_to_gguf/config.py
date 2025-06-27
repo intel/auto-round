@@ -134,7 +134,7 @@ GGUF_INNER_CONFIG["gguf:q6_k"]  = {
     "lm_head": "gguf:q6_k"
 }
 
-GGUF_INNER_CONFIG["gguf:bf16"]=GGUF_INNER_CONFIG["gguf:fp16"]  = {
+GGUF_INNER_CONFIG["gguf:fp32"]=GGUF_INNER_CONFIG["gguf:bf16"]=GGUF_INNER_CONFIG["gguf:fp16"]  = {
     "bits": 16,
     "act_bits": 16,
     "super_group_size": None,
@@ -183,8 +183,8 @@ GGUF_CONFIG["gguf:q6_k"] = GGUF_INNER_CONFIG["gguf:q6_k"]
 GGUF_CONFIG["gguf:q6_k"]["mostly"]= "gguf:q6_k"
 GGUF_CONFIG["gguf:q8_0"] = GGUF_INNER_CONFIG["gguf:q8_0"]
 GGUF_CONFIG["gguf:q8_0"]["mostly"]= "gguf:q8_0"
-# GGUF_CONFIG["gguf:fp16"] = GGUF_INNER_CONFIG["gguf:fp16"]
-# GGUF_CONFIG["gguf:fp16"]["mostly"]= "gguf:fp16"
+GGUF_CONFIG["gguf:fp32"] = GGUF_INNER_CONFIG["gguf:fp32"]
+GGUF_CONFIG["gguf:fp32"]["mostly"]= "gguf:fp32"
 # GGUF_CONFIG["gguf:bf16"] = GGUF_INNER_CONFIG["gguf:fp16"]
 # GGUF_CONFIG["gguf:bf16"]["mostly"]= "gguf:bf16"
 

@@ -161,7 +161,7 @@ def make_qp_quants(nmax, data, quant_weights):
     scale = group_max / nmax
     iscale = torch.where(scale == 0, 0, 1 / scale)
 
-    L = torch.round(iscale * data)
+    L = torch.round(iscale * data).clip(max=nmax)
     diffs = data - scale * L
     best_mse = torch.sum(quant_weights * diffs * diffs)
 
@@ -169,7 +169,7 @@ def make_qp_quants(nmax, data, quant_weights):
         if _is == 0:
             continue
         scale_is = group_max / (0.1 * _is + nmax)
-        iscale_is = torch.where(scale == 0, 0, 1 / scale_is)
+        iscale_is = torch.where(scale_is == 0, 0, 1 / scale_is)
 
         tmp_L = torch.round(iscale_is * data).clip(max=nmax)
         diffs = data - scale_is * tmp_L
@@ -180,29 +180,32 @@ def make_qp_quants(nmax, data, quant_weights):
         iscale[replace_idx] = iscale_is[replace_idx]
 
     L = torch.round(iscale * data).clip(max=nmax)
-    sumlx = torch.sum(quant_weights * data * L, dim=-1)
-    suml2 = torch.sum(quant_weights * L * L, dim=-1)
+    scale = torch.where(iscale == 0, 0, 1 / iscale).view(-1)
+    return scale, L
 
-    for _ in range(5):
-        n_changed = 0
-        for i in range(data.shape[-1]):
-            slx = sumlx - quant_weights[:, i] * data[:, i] * L[:, i]
-            sl2 = suml2 - quant_weights[:, i] * L[:, i] * L[:, i]
-            replace_idx = (slx > 0) & (sl2 > 0)
-            new_L = torch.round(data[:, i] * sl2 / slx).clip(max=nmax)
-            replace_idx &= new_L != L[:, i]
-            slx[replace_idx] += quant_weights[:, i][replace_idx] * data[:, i][replace_idx] * new_L[replace_idx]
-            sl2[replace_idx] += quant_weights[:, i][replace_idx] * new_L[replace_idx] * new_L[replace_idx]
+    # sumlx = torch.sum(quant_weights * data * L, dim=-1)
+    # suml2 = torch.sum(quant_weights * L * L, dim=-1)
+    #
+    # for _ in range(5):
+    #     n_changed = 0
+    #     for i in range(data.shape[-1]):
+    #         slx = sumlx - quant_weights[:, i] * data[:, i] * L[:, i]
+    #         sl2 = suml2 - quant_weights[:, i] * L[:, i] * L[:, i]
+    #         replace_idx = (slx > 0) & (sl2 > 0)
+    #         new_L = torch.round(data[:, i] * sl2 / slx).clip(max=nmax)
+    #         replace_idx &= new_L != L[:, i]
+    #         slx[replace_idx] += quant_weights[:, i][replace_idx] * data[:, i][replace_idx] * new_L[replace_idx]
+    #         sl2[replace_idx] += quant_weights[:, i][replace_idx] * new_L[replace_idx] * new_L[replace_idx]
+    #
+    #         replace_idx &= slx * slx * suml2 > sumlx * sumlx * sl2
+    #         L[:, i][replace_idx] = new_L[replace_idx]
+    #         sumlx[replace_idx] = slx[replace_idx]
+    #         suml2[replace_idx] = sl2[replace_idx]
+    #         n_changed = replace_idx.sum()
+    #     if n_changed == 0:
+    #         break
 
-            replace_idx &= slx * slx * suml2 > sumlx * sumlx * sl2
-            L[:, i][replace_idx] = new_L[replace_idx]
-            sumlx[replace_idx] = slx[replace_idx]
-            suml2[replace_idx] = sl2[replace_idx]
-            n_changed = replace_idx.sum()
-        if n_changed == 0:
-            break
-
-    return sumlx / suml2, L
+    # return sumlx / suml2, L
 
 
 @register_dtype("int_asym_dq")
@@ -366,8 +369,8 @@ def quant_tensor_gguf_asym_dq(
 
         d_scale, q_scale = make_qp_quants(nmax, scale, sum_quant_weights)
         d_wmin_m, q_wmin_m = make_qp_quants(nmax, wmin_m, sum_quant_weights)
-        d_scale = d_scale.unsqueeze(-1)
-        d_wmin_m = d_wmin_m.unsqueeze(-1)
+        d_scale = d_scale.to(torch.float16).to(q_scale.dtype).unsqueeze(-1)##packing will use fp16 for double quant scale
+        d_wmin_m = d_wmin_m.to(torch.float16).to(q_scale.dtype).unsqueeze(-1)
         scale = (d_scale * q_scale).view(-1, 1)
         wmin_m = (d_wmin_m * q_wmin_m).view(-1, 1)
     inverse_scale = torch.where(scale == 0, 0, 1 / scale)
@@ -375,7 +378,8 @@ def quant_tensor_gguf_asym_dq(
     int_w = torch.clamp(round_ste((tensor + wmin_m) * inverse_scale + v), 0, maxq)
     qdq_result = (scale * int_w - wmin_m).to(orig_dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
-    return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
+    return (qdq_result, {"scale": scale, "d_scale": d_scale.to(torch.float16)},
+            {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m.to(torch.float16)})
 
 
 def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None):
@@ -405,15 +409,17 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     sum_w = torch.sum(weights, dim=1, keepdim=True)
     sum_x = torch.sum(weights * data, dim=1, keepdim=True)
 
-    scale = 1 / ((maxq - minq) / (rmax - rmin + 1e-8))
-    quant_data = torch.clamp(torch.round((maxq - minq) / (rmax - rmin + 1e-8) * (data - rmin)), minq, maxq)
+    scale = (rmax - rmin)/(maxq - minq)
+    reverse_scale = torch.where(scale == 0, 0, 1 / scale)
+    quant_data = torch.clamp(torch.round(reverse_scale * (data - rmin)), minq, maxq)
     diff = scale * quant_data + rmin - data
 
     best_mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights*diff ** 2, dim=1, keepdim=True)
 
     for is_ in range(nstep):
         factor = rrmin + rdelta * is_ + maxq - minq
-        iscale_new = factor / (rmax - rmin + 1e-8)
+        new_scale = (rmax - rmin)/factor
+        iscale_new  = torch.where(new_scale == 0, 0, 1 / scale)
         quant_data_new = torch.clamp(torch.round(iscale_new * (data - rmin)), minq, maxq)
 
         mul_weights_quant_data = weights * quant_data_new
