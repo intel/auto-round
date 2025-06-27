@@ -1334,21 +1334,26 @@ def mllm_load_model(
     import json
     import transformers
     from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
-    from huggingface_hub import HfApi, hf_hub_download
+    from huggingface_hub import HfApi, hf_hub_download, HfFileSystem
 
     if os.path.isdir(pretrained_model_name_or_path):
         config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
     else:
-        from huggingface_hub import hf_hub_download
-        import gzip
-        try:
+        from huggingface_hub import hf_hub_download, list_repo_files
+        file_list = list_repo_files(pretrained_model_name_or_path)
+        if "config.json" in file_list:
+            # Load plain JSON
             config_path = hf_hub_download(pretrained_model_name_or_path, "config.json")
             with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
-        except Exception:
+        elif "config.json.gz" in file_list:
+            # Load gzipped JSON
+            import gzip
             config_path = hf_hub_download(pretrained_model_name_or_path, "config.json.gz")
             with gzip.open(config_path, "rt", encoding="utf-8") as f:
                 config = json.load(f)
+        else:
+            raise FileNotFoundError(f"No config.json or config.json.gz found for {pretrained_model_name_or_path}")
 
     if "model_type" in config:
         model_type = config["model_type"]
