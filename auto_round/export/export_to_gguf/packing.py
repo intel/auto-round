@@ -62,11 +62,11 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
     nmax = pow(2, bits - 1)
     imax = abs(data).argmax(axis=-1, keepdims=True)
     group_max = torch.take_along_dim(data, imax, dim=-1)
-    iscales = torch.where(group_max != 0, -nmax / group_max, 0)
+    iscales = torch.where(torch.abs(group_max)>1e-8, -nmax / group_max, 0)
 
     if rmse_type == 0:
         L = (torch.round(iscales * data).clip(-nmax, nmax - 1) + nmax)
-        scales = torch.where(iscales != 0, 1 / iscales, 0).reshape(iscales.shape[:2])
+        scales = torch.where(torch.abs(iscales)>1e-8, 1 / iscales, 0).reshape(iscales.shape[:2])
         return scales, L
 
     return_early = False
@@ -89,7 +89,7 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
     suml2 = torch.sum(w * L * L, dim=-1)
     scales = torch.where(suml2 != 0, sumlx / suml2, 0)
     if return_early:
-        iscales_inv = torch.where(iscales != 0, 1 / iscales, 0).reshape(iscales.shape[:2])
+        iscales_inv = torch.where(torch.abs(iscales)>1e-8, 1 / iscales, 0).reshape(iscales.shape[:2])
         scales = torch.where(suml2 > 0, 0.5 * (scales + iscales_inv), iscales_inv)
         L = (L + nmax).to(torch.uint8)
         return scales, L
@@ -97,7 +97,7 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
     for _is in range(-9, 10):
         if _is == 0:
             continue
-        iscales = torch.where(group_max != 0, -(nmax + -0.1 * _is) / nmax, 0)
+        iscales = torch.where(torch.abs(group_max)>1e-8, -(nmax + -0.1 * _is) / nmax, 0)
         tmp_L = torch.round(iscales * data).clip(-nmax, nmax - 1)
         sumlx = torch.sum(w * data * L, dim=-1)
         suml2 = torch.sum(w * L * L, dim=-1)
@@ -439,7 +439,8 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
     d_tmp = output_d * (output_scale & 0xF)
     dm_tmp = output_dmin * (output_scale >> 4)
 
-    replace_ids = d_tmp != 0
+    # replace_ids = d_tmp != 0
+    replace_ids = torch.abs(d_tmp) > EPS
     all_L[replace_ids] = torch.round(
         (blocks[replace_ids] + dm_tmp[replace_ids].unsqueeze(-1)) / d_tmp[replace_ids].unsqueeze(-1)).clip(0, 3).to(
         torch.uint8)
