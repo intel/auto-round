@@ -428,7 +428,7 @@ def tune(args):
         layer_config = {}
         for n,m in model.named_modules():
             if isinstance(m,torch.nn.Linear):
-                if len(n.split('.'))>2 and int(n.split('.')[2])<10:
+                if len(n.split('.'))>2 and int(n.split('.')[2])<5:
                     layer_config[n] = {"bits": 4}
                     print(n)
                 elif not "expert"  in n and n!="lm_head":
