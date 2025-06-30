@@ -399,7 +399,7 @@ def q8_0_quant_block(blocks, scale=None, zp=None, **kwargs) -> np.ndarray:
 
     return np.concatenate([d, qs], axis=1)
 
-
+EPS = 1e-8  # 防止除零的小量
 @register_qtype("q2_k")
 def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
     nb = blocks.shape[0]
@@ -411,8 +411,8 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
         mins = wmin_m.reshape((-1, QK_K // 16))
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         output_dmin = d_wmin_m.reshape(-1, 1).to(torch.float32)
-        inv_scales = torch.where(output_d == 0, 0, 1 / output_d)
-        inv_mins = torch.where(d_wmin_m == 0, 0, 1 / output_dmin)
+        inv_scales = torch.where(torch.abs(output_d)<EPS, 0, 1 / output_d)
+        inv_mins = torch.where(torch.abs(output_dmin)<EPS, 0, 1 / output_dmin)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]  # (nb, 1)
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]  # (nb, 1)
         all_L = torch.zeros_like(blocks, dtype=torch.uint8)
@@ -512,7 +512,7 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
 QK_K = 256  # 每个量化块的大小
 K_SCALE_SIZE = 12  # 缩放因子字节数
 BLOCK_GROUP_SIZE = 16  # 内部块分组大小
-EPS = 1e-8  # 防止除零的小量
+
 
 
 @register_qtype("q3_k")

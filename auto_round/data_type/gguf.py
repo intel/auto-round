@@ -377,7 +377,7 @@ def quant_tensor_gguf_asym_dq(
         d_wmin_m = d_wmin_m.to(torch.float16).to(q_scale.dtype).unsqueeze(-1)
         scale = (d_scale * q_scale).view(-1, 1)
         wmin_m = (d_wmin_m * q_wmin_m).view(-1, 1)
-    inverse_scale = torch.where(scale == 0, 0, 1 / scale)
+    inverse_scale = torch.where(torch.abs(scale)<1e-8, 0, 1 / scale)
 
     int_w = torch.clamp(round_ste((tensor + wmin_m) * inverse_scale + v), 0, maxq)
     qdq_result = (scale * int_w - wmin_m).to(orig_dtype)

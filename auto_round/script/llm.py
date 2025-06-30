@@ -413,27 +413,17 @@ def tune(args):
                 ##TODO gptq could support some mixed precision config
                 logger.warning(f"mixed precision exporting does not support {format} currently")
 
-    # if "30B" in args.model:
-    #     layer_config = {}
-    #     for n,m in model.named_modules():
-    #         if isinstance(m,torch.nn.Linear):
-    #             if len(n.split('.'))>2 and int(n.split('.')[2])<10:
-    #                 layer_config[n] = {"bits": 4}
-    #                 print(n)
-    #             elif not "expert"  in n and n!="lm_head":
-    #                 layer_config[n] =  {"bits": 4}
-    #                 print(n)
 
     if "30B" in args.model:
         layer_config = {}
         for n,m in model.named_modules():
             if isinstance(m,torch.nn.Linear):
-                if len(n.split('.'))>2 and int(n.split('.')[2])<5:
+                if len(n.split('.'))>2 and int(n.split('.')[2])<2:
                     layer_config[n] = {"bits": 4}
                     print(n)
-                elif not "expert"  in n and n!="lm_head":
-                    layer_config[n] =  {"bits": 4}
-                    print(n)
+                # elif not "expert"  in n and n!="lm_head":
+                #     layer_config[n] =  {"bits": 4}
+                #     print(n)
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():
         lm_head_layer_name = n
