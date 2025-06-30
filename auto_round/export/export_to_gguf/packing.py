@@ -65,7 +65,7 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
     iscales = torch.where(group_max != 0, -nmax / group_max, 0)
 
     if rmse_type == 0:
-        L = (torch.round(iscales * data).clip(-nmax, nmax - 1) + nmax).to(torch.uint8)
+        L = (torch.round(iscales * data).clip(-nmax, nmax - 1) + nmax)
         scales = torch.where(iscales != 0, 1 / iscales, 0).reshape(iscales.shape[:2])
         return scales, L
 
@@ -107,7 +107,7 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
         scales[replace_id] = sumlx[replace_id] / suml2[replace_id]
         best[replace_id] = scales[replace_id] * sumlx[replace_id]
 
-    L = (L + nmax).to(torch.uint8)
+    L = (L + nmax)
     return scales, L
 
 
@@ -458,57 +458,168 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
     return np.concatenate([output_scale, output_qs, output_d, output_dmin], axis=-1)
 
 
+# @register_qtype("q3_k")
+# def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
+#     nb = blocks.shape[0]
+#     blocks = blocks.reshape(nb, QK_K // 16, 16)
+#
+#     output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
+#
+#     if scale is not None:
+#         qdq_scale = scale.reshape(-1, QK_K // 16).to(torch.float32)
+#         dq_scale = d_scale.reshape(-1, 1).to(torch.float32)
+#         inverse_dq_scale = torch.where(dq_scale == 0, 0, 1 / dq_scale)
+#         # output_d = d_scale.reshape(-1, 1).to(torch.float32)
+#         # iscales = torch.where(output_d == 0, 0, 1 / output_d)
+#         # inverse_scale = torch.where(scales==0, 0, 1.0 / scales)
+#         # all_L = torch.round(blocks*inverse_scale.unsqueeze(-1)).clip(-4, 3) + 4
+#         # all_L = all_L.to(torch.uint8)
+#     else:  ## this is correct
+#         scales, _ = make_q3_quants(blocks, bits=3, do_rmse=True)
+#         scales_abs_max = abs(scales).argmax(dim=-1, keepdim=True)
+#         max_scales_mag = torch.take_along_dim(scales, scales_abs_max, dim=-1)
+#         inverse_dq_scale = torch.where(max_scales_mag != 0, -32 / max_scales_mag, 0)
+#         dq_scale = torch.where(inverse_dq_scale != 0, 1 / inverse_dq_scale, 0)
+#         qscale = torch.round(inverse_dq_scale * scales).clip(-32, 31)
+#         qdq_scale = dq_scale.to(torch.float32) * qscale
+#
+#     # q_scales_offset = torch.round(inverse_dq_scale * scales).clip(-32, 31) + 32
+#     q_scales_offset = torch.round(qdq_scale * inverse_dq_scale).clip(-32, 31) + 32
+#     q_scales_offset = q_scales_offset.cpu().numpy().astype(np.uint8)
+#     output_scale[:, :8] = (q_scales_offset[:, :8] & 0xF) | ((q_scales_offset[:, 8:] & 0xF) << 4)
+#     hmask = q_scales_offset >> 4
+#     output_scale[:, 8:] = hmask[:, :4] | hmask[:, 4:8] << 2 | hmask[:, 8:12] << 4 | hmask[:, 12:] << 6
+#
+#     reverse_qdq_scale = torch.where(qdq_scale == 0, 0, 1 / qdq_scale)
+#     all_L = (torch.round(blocks * reverse_qdq_scale.unsqueeze(-1)).clip(-4, 3) + 4).to(
+#         torch.uint8)
+#
+#     all_L = all_L.cpu().numpy()
+#     output_hmask = np.bitwise_or.reduce(
+#         all_L.reshape(nb, 8, 32) >> 2 << np.arange(8, dtype=np.uint8).reshape(1, 8, 1), axis=1)  # pylint: disable=E1121
+#     all_L = np.where(all_L > 3, all_L - 4, all_L)
+#
+#     output_qs = np.bitwise_or.reduce(
+#         all_L.reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1), axis=2)  # pylint: disable=E1121
+#
+#     output_qs = output_qs.reshape(nb, 64).astype(np.uint8)
+#     dq_scale = dq_scale.cpu().numpy().reshape(-1, 1).astype(np.float16).view(np.uint8)
+#     # [hmask, qs, scale, d]
+#     return np.concatenate([output_hmask, output_qs, output_scale, dq_scale], axis=-1)
+
+
+# Constants
+QK_K = 256  # 每个量化块的大小
+K_SCALE_SIZE = 12  # 缩放因子字节数
+BLOCK_GROUP_SIZE = 16  # 内部块分组大小
+EPS = 1e-8  # 防止除零的小量
+
+
 @register_qtype("q3_k")
-def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
-    nb = blocks.shape[0]
-    blocks = blocks.reshape(nb, QK_K // 16, 16)
+def q3_k_quant_block(
+        blocks: np.ndarray,
+        scale: None,
+        zp= None,
+        wmin_m= None,
+        d_scale = None,
+        d_wmin_m = None,
+        **kwargs
+) -> np.ndarray:
+    """
+    将输入块量化为3-bit格式 (Q3_K)，并打包为字节流。
 
-    output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
+    Args:
+        blocks: 输入数据块，形状为 [num_blocks, QK_K] 的float32数组
+        scale: 预计算的缩放因子，形状为 [num_blocks, QK_K//16]
+        d_scale: 反缩放因子，形状为 [num_blocks, 1]
 
-    if scale is not None:
-        qdq_scale = scale.reshape(-1, QK_K // 16).to(torch.float32)
-        dq_scale=d_scale.reshape(-1, 1).to(torch.float32)
-        inverse_dq_scale = torch.where(dq_scale==0,0,1/dq_scale)
-        # output_d = d_scale.reshape(-1, 1).to(torch.float32)
-        # iscales = torch.where(output_d == 0, 0, 1 / output_d)
-        # inverse_scale = torch.where(scales==0, 0, 1.0 / scales)
-        # all_L = torch.round(blocks*inverse_scale.unsqueeze(-1)).clip(-4, 3) + 4
-        # all_L = all_L.to(torch.uint8)
-    else: ## this is correct
-        scales, _ = make_q3_quants(blocks, bits=3, do_rmse=True)
-        scales_abs_max = abs(scales).argmax(dim=-1, keepdim=True)
-        max_scales_mag = torch.take_along_dim(scales, scales_abs_max, dim=-1)
-        inverse_dq_scale = torch.where(max_scales_mag != 0, -32 / max_scales_mag, 0)
-        dq_scale = torch.where(inverse_dq_scale != 0, 1 / inverse_dq_scale, 0)
-        qscale = torch.round(inverse_dq_scale * scales).clip(-32, 31)
-        qdq_scale = dq_scale.to(torch.float32) * qscale
+    Returns:
+        量化后的字节流，形状为 [num_blocks, 输出字节数] 的uint8数组
 
+    Raises:
+        ValueError: 输入形状不匹配或数据无效
+    """
+    # === 输入验证 ===
+    num_blocks = blocks.shape[0]
+    assert blocks.shape[1] == QK_K, f"输入块大小必须为 {QK_K}"
 
-    # q_scales_offset = torch.round(inverse_dq_scale * scales).clip(-32, 31) + 32
-    q_scales_offset = torch.round(qdq_scale*inverse_dq_scale).clip(-32, 31) + 32
-    q_scales_offset = q_scales_offset.cpu().numpy().astype(np.uint8)
-    output_scale[:, :8] = (q_scales_offset[:, :8] & 0xF) | ((q_scales_offset[:, 8:] & 0xF) << 4)
-    hmask = q_scales_offset >> 4
-    output_scale[:, 8:] = hmask[:, :4] | hmask[:, 4:8] << 2 | hmask[:, 8:12] << 4 | hmask[:, 12:] << 6
+    # 关键reshape恢复：将每个块分为 (QK_K//16) 组，每组16个元素
+    blocks = blocks.reshape(num_blocks, QK_K // BLOCK_GROUP_SIZE, BLOCK_GROUP_SIZE)
 
-    reverse_qdq_scale = torch.where(qdq_scale == 0, 0, 1 / qdq_scale)
-    all_L = (torch.round(blocks * reverse_qdq_scale.unsqueeze(-1)).clip(-4, 3) + 4).to(
-        torch.uint8)
+    # if scale is not None:
+    #     assert scale.shape == (num_blocks, QK_K // BLOCK_GROUP_SIZE), "缩放因子形状错误"
+    # if d_scale is not None:
+    #     assert d_scale.shape == (num_blocks, 1), "反缩放因子形状错误"
 
-    all_L = all_L.cpu().numpy()
-    output_hmask = np.bitwise_or.reduce(
-        all_L.reshape(nb, 8, 32) >> 2 << np.arange(8, dtype=np.uint8).reshape(1, 8, 1), axis=1)  # pylint: disable=E1121
-    all_L = np.where(all_L > 3, all_L - 4, all_L)
+    # === 转换为PyTorch ===
+    # blocks_t = torch.from_numpy(blocks.astype(np.float32))
+    output_scale = np.empty((num_blocks, K_SCALE_SIZE), dtype=np.uint8)
 
-    output_qs = np.bitwise_or.reduce(
-        all_L.reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1), axis=2)  # pylint: disable=E1121
+    # === 量化逻辑 ===
+    with torch.no_grad():
+        if scale is not None:
+            # 使用预计算的缩放因子
+            qdq_scale = scale.reshape(num_blocks, -1)
+            dq_scale = d_scale.reshape(num_blocks, 1)
+            inverse_dq_scale = torch.where(
+                torch.abs(dq_scale) > EPS,
+                1 / dq_scale,
+                torch.zeros_like(dq_scale)
+            )
+        else:
+            # 动态计算缩放因子 (需实现make_q3_quants函数)
+            scales, _ = make_q3_quants(blocks, bits=3, do_rmse=True)
+            scales_abs_max = torch.abs(scales).amax(dim=-1, keepdim=True)
+            inverse_dq_scale = torch.where(
+                scales_abs_max > EPS,
+                -32 / scales_abs_max,
+                torch.zeros_like(scales_abs_max)
+            )
+            dq_scale = torch.where(
+                torch.abs(inverse_dq_scale) > EPS,
+                1 / inverse_dq_scale,
+                torch.zeros_like(inverse_dq_scale)
+            )
+            qscale = torch.round(inverse_dq_scale * scales).clip(-32, 31)
+            qdq_scale = dq_scale * qscale
 
-    output_qs = output_qs.reshape(nb, 64).astype(np.uint8)
-    dq_scale = dq_scale.cpu().numpy().reshape(-1, 1).astype(np.float16).view(np.uint8)
-    # [hmask, qs, scale, d]
-    return np.concatenate([output_hmask, output_qs, output_scale, dq_scale], axis=-1)
+        # === 位打包 ===
+        # 1. 处理缩放因子
+        q_scales_offset = torch.round(qdq_scale * inverse_dq_scale).clip(-32, 31) + 32
+        q_scales_offset = q_scales_offset.to(torch.uint8).cpu().numpy()
 
+        # 2. 缩放因子位打包 (低4位和高4位分开处理)
+        output_scale[:, :8] = (q_scales_offset[:, :8] & 0x0F) | ((q_scales_offset[:, 8:] & 0x0F) << 4)
+        hmask = q_scales_offset >> 4
+        output_scale[:, 8:] = (
+                                      hmask[:, :4] |
+                                      (hmask[:, 4:8] << 2) |
+                                      (hmask[:, 8:12] << 4) |
+                                      (hmask[:, 12:] << 6)
+                                )
 
+        # 3. 量化数据打包
+        reverse_qdq_scale = torch.where(torch.abs(qdq_scale) > EPS,1 / qdq_scale,torch.zeros_like(qdq_scale)
+        )
+        all_L = (torch.round(blocks * reverse_qdq_scale.unsqueeze(-1)).clip(-4, 3) + 4)
+        all_L = all_L.to(torch.uint8).cpu().numpy()
+
+        # 4. 高位掩码生成 (恢复原始reshape逻辑)
+        output_hmask = np.bitwise_or.reduce(
+            all_L.reshape(num_blocks, 8, 32) >> 2 << np.arange(8, dtype=np.uint8).reshape(1, 8, 1),
+            axis=1
+        )
+
+        # 5. 量化数据修正
+        all_L = np.where(all_L > 3, all_L - 4, all_L)
+        output_qs = np.bitwise_or.reduce(
+            all_L.reshape(num_blocks, 2, 4, 32) << np.array([0, 2, 4, 6], dtype=np.uint8).reshape(1, 1, 4, 1),
+            axis=2
+        ).reshape(num_blocks, 64)
+
+        # 6. 合并输出
+        dq_scale_np = dq_scale.cpu().numpy().astype(np.float16).view(np.uint8).reshape(num_blocks, -1)
+        return np.concatenate([output_hmask, output_qs, output_scale, dq_scale_np], axis=-1)
 
 @register_qtype("q4_k")
 def q4_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
@@ -640,11 +751,10 @@ def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
 @register_qtype("q6_k")
 def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
     nb = blocks.shape[0]
-    blocks = blocks.reshape((nb, QK_K // 16, 16))
+    blocks = blocks.reshape((nb, QK_K // 16, 16)).to(torch.float32)
 
-    scale = None
     if scale is not None:
-        scales = scale.reshape(-1, QK_K // 16)
+        scales = scale.reshape(-1, QK_K // 16).to(torch.float32)
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
         iscales = torch.where(output_d == 0, 0, 1 / output_d)
         all_L = torch.zeros_like(blocks, dtype=torch.uint8) + 32

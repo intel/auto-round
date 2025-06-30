@@ -745,6 +745,12 @@ class AutoRound(object):
         for n, m in model.named_modules():
             if hasattr(m, "imatrix"):
                 m.imatrix /= cnt
+                # if torch.max(torch.abs(m.imatrix))>100:
+                    # logger.info(f"{n},imatrix,{torch.max(torch.abs(m.imatrix))}")
+                    # logger.info(f"{n},weight,{torch.max(torch.abs(m.weight))}")
+                # if n.split('.')"10" in n:
+                #     exit()
+
 
         model.to("cpu")
         clear_memory()

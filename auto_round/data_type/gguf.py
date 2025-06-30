@@ -149,6 +149,8 @@ def double_quant_tensor_sym(tensor, bits):
     imax = abs(tensor).argmax(axis=-1, keepdims=True)
     wmax = torch.take_along_dim(tensor, imax, dim=-1)
     scale = wmax / -maxq
+    q_scale_thresh = 1e-5
+    scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
     inverse_scale = torch.where(scale == 0, 0, 1 / scale)
     qdq_tensor = torch.clip((round_ste(tensor * inverse_scale)),-maxq, maxq - 1) * scale
     return qdq_tensor, scale
@@ -179,12 +181,13 @@ def make_qp_quants(nmax, data, quant_weights):
         best_mse[replace_idx] = mse[replace_idx]
         iscale[replace_idx] = iscale_is[replace_idx]
 
+    # L = torch.round(iscale * data).clip(max=nmax)
+    # scale = torch.where(iscale == 0, 0, 1 / iscale).view(-1)
+    # return scale, L
     L = torch.round(iscale * data).clip(max=nmax)
-    scale = torch.where(iscale == 0, 0, 1 / iscale).view(-1)
-    return scale, L
-
-    # sumlx = torch.sum(quant_weights * data * L, dim=-1)
-    # suml2 = torch.sum(quant_weights * L * L, dim=-1)
+    sumlx = torch.sum(quant_weights * data * L, dim=-1)
+    suml2 = torch.sum(quant_weights * L * L, dim=-1)
+    return sumlx / suml2, L
     #
     # for _ in range(5):
     #     n_changed = 0
@@ -311,6 +314,7 @@ def quant_tensor_gguf_asym_dq(
         raise ValueError(f"bits={bits} not supported by gguf_int_asym_dq")
     maxq = 2 ** bits - 1
     QK_K = 256
+    tensor =tensor.to(torch.float32)
     quant_weights = None
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         search_kwargs = {
@@ -478,7 +482,7 @@ def quant_tensor_gguf_sym_dq(
     """
     from auto_round.export.export_to_gguf.config import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
     from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants
-
+    q_scale_thresh = 1e-8
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
 
@@ -500,6 +504,7 @@ def quant_tensor_gguf_sym_dq(
             scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
     else:
         imatrix = imatrix.to(tensor.device)
+        imatrix = imatrix.to(torch.float32)
         if bits == 3:
             # sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
             # imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
@@ -516,7 +521,10 @@ def quant_tensor_gguf_sym_dq(
             scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
 
     # conduct double quant
+    scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
     scale, d_scale = double_quant_tensor_sym(scale, super_bits)
+    d_scale = d_scale.to(torch.float16)
+    d_scale = torch.where(d_scale < 0, torch.clamp(d_scale, max=-q_scale_thresh), torch.clamp(d_scale, min=q_scale_thresh))
 
     scale = scale.unsqueeze(-1)
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
@@ -524,7 +532,16 @@ def quant_tensor_gguf_sym_dq(
     int_w = torch.round(tensor * inverse_scale).clip(-maxq, maxq - 1) + maxq
     qdq_result = (scale * (int_w - zp)).to(orig_dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+    if torch.any(torch.isnan(qdq_result)) or torch.any(torch.isinf(qdq_result)):
+        raise ValueError("NaN detected in quantized tensor, please check the input tensor and parameters.")
 
-    return qdq_result, {"scale": scale, "d_scale": d_scale}, zp
+    if torch.any(torch.isnan(scale)) or torch.any(torch.isinf(scale)):
+        raise ValueError("NaN detected in quantized tensor, please check the input tensor and parameters.")
+
+    if torch.any(torch.isnan(d_scale)) or torch.any(torch.isinf(d_scale)):
+        raise ValueError("NaN detected in quantized tensor, please check the input tensor and parameters.")
+
+
+    return qdq_result, {"scale": scale, "d_scale": d_scale.to(torch.float16)}, zp
 
 
