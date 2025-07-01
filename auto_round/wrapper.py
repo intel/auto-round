@@ -176,6 +176,8 @@ class WrapperLinear(torch.nn.Module):
             imatrix=self.orig_layer.imatrix if hasattr(self.orig_layer, "imatrix") else None,
             **quant_kwargs
         )
+        # if self.name == "model.layers.1.mlp.experts.0.gate_proj":
+        # breakpoint()
         weight_q = weight_q.to(weight.dtype)
         if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             weight_q = weight_q.t()
@@ -234,7 +236,7 @@ class WrapperLinear(torch.nn.Module):
         qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
         if hasattr(self.orig_layer, "imatrix"):
             self.orig_layer.imatrix = None
-        self.orig_layer.weight.data.copy_(qdq_weight)
+        # self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
 
         shape = qdq_weight.shape
@@ -525,7 +527,9 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
                 device=device,
                 **kwargs,
             )
+            new_m.name = n
             set_module(block, n, new_m)
+            breakpoint()
             quantized_layers.append(n)
 
         if enable_norm_bias_tuning:

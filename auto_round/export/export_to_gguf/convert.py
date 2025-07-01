@@ -1258,6 +1258,7 @@ class Model(OriModel):
 
         for name, data_torch in chain(self.generate_extra_tensors(), self.get_tensors()):
             # we don't need these
+            breakpoint()
             if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
                 continue
 
@@ -1364,6 +1365,7 @@ class Model(OriModel):
                     # for MOE model
                     if len(data_torch.shape) == 3:
                         new_data = []
+                        breakpoint()
                         for idx, arr in enumerate(data_torch):
                             arr_name = name.split('.')
                             for i in range(len(arr_name) - 1, -1, -1):
