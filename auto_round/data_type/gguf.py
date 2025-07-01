@@ -312,7 +312,6 @@ def quant_tensor_gguf_asym_dq(
     maxq = 2 ** bits - 1
     QK_K = 256
     quant_weights = None
-    imatrix = None
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         search_kwargs = {
             2: {"rmin": -0.5, "rdelta": 0.1, "nstep": 15, "use_mad": True},
