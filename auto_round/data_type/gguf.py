@@ -347,13 +347,13 @@ def quant_tensor_gguf_asym_dq(
             5: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
         }
 
-        sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
-        if imatrix is None:
-            av_x = torch.sqrt(sigma2)
-            quant_weights = torch.abs(av_x + tensor * tensor)
-        else:
-            imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
-            quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
+        # sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+        # if imatrix is None:
+        #     av_x = torch.sqrt(sigma2)
+        #     quant_weights = torch.abs(av_x + tensor * tensor)
+        # else:
+        #     imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
+        #     quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
 
         weights = imatrix.reshape(1, -1)
         weights = weights.expand(tensor.numel() // weights.numel(), -1)
@@ -403,7 +403,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     Returns:
         Tuple: (Optimal scale tensor, optimal minimum value tensor)
     """
-    dtype = torch.bfloat16
+    dtype = torch.float32
     data = data.to(dtype)
     maxq = 2 ** bits - 1
     minq = 0
@@ -421,7 +421,8 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     # quant_data = torch.clamp(torch.round((maxq - minq) / (rmax - rmin + 1e-8) * (data - rmin)), minq, maxq)
     quant_data = torch.clamp(torch.round(iscale * (data - rmin)), minq, maxq)
     diff = scale * quant_data + rmin - data
-    best_mad = torch.sum(weights * (torch.abs(diff) if use_mad else diff ** 2), dim=-1, keepdim=True)
+
+    best_mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights*diff ** 2, dim=-1, keepdim=True)
 
     for is_ in range(nstep):
         factor = rrmin + rdelta * is_ + maxq - minq
@@ -444,7 +445,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
         # quant_data = torch.clamp(torch.round((1 / this_scale) * (data - this_min)), minq, maxq)
         # diff = this_scale * quant_data + this_min - data
         diff = this_scale * quant_data_new + this_min - data
-        mad = torch.sum(weights * (torch.abs(diff) if use_mad else diff ** 2), dim=-1, keepdim=True)
+        mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff ** 2, dim=-1, keepdim=True)
 
         idx_to_replace = torch.where((mad < best_mad) & (D > 0))[0]
         best_mad[idx_to_replace] = mad[idx_to_replace]
@@ -512,9 +513,13 @@ def quant_tensor_gguf_sym_dq(
     else:
         imatrix = imatrix.to(tensor.device)
         if bits == 3:
-            sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
-            imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
-            quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
+            # sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+            # imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
+            # quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
+            # scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
+            weights = imatrix.reshape(1, -1)
+            weights = weights.expand(tensor.numel() // weights.numel(), -1)
+            quant_weights = weights.reshape(tensor.shape)
             scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
         elif bits == 6:
             weights = imatrix.reshape(1, -1)
