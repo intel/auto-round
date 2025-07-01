@@ -1164,7 +1164,6 @@ def is_debug_mode():
 
 def get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
-    torch.nn.Embedding
     if isinstance(layer, torch.nn.Linear):
         return layer.in_features, layer.out_features
     elif isinstance(layer, transformers.pytorch_utils.Conv1D):  # TODO: Verify correctness
