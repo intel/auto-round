@@ -305,8 +305,9 @@ def quant_tensor_gguf_asym_dq(
     """
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    tensor =tensor.to(torch.float32)
     if bits not in [2, 4, 5]:
-        raise ValueError(f"bits={bits} not supported by gguf_int_asym_dq")
+        raise ValueError(f"bits={bits} not supported by rtn_int_asym_dq")
     maxq = 2 ** bits - 1
     QK_K = 256
     quant_weights = None
@@ -327,10 +328,12 @@ def quant_tensor_gguf_asym_dq(
             tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
             use_mad=params["use_mad"], weights=quant_weights
         )
+        scale = scale.to(scale_dtype)
         scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
         scale = scale.reshape(-1, super_group_size)
         wmin = wmin_m.reshape(-1, super_group_size)
         scale, d_scale = double_quant_tensor(scale, super_bits)
+        wmin = torch.where(torch.abs(wmin) < 1e-30, 0, wmin)
         wmin_m, d_wmin_m = double_quant_tensor(wmin, super_bits)
         wmin_m = wmin_m.view(-1, 1)
         scale = scale.view(-1, 1)
@@ -360,6 +363,7 @@ def quant_tensor_gguf_asym_dq(
             tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
             use_mad=params["use_mad"], weights=quant_weights
         )
+        scale = scale.to(scale_dtype)
         scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
         nmax = 2 ** super_bits - 1
         scale = scale.reshape(-1, super_group_size)
@@ -381,7 +385,7 @@ def quant_tensor_gguf_asym_dq(
 
 
 def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None):
-    """Performs iterative weighted least squares quantization search.
+    """Adapted from Llamacpp. Performs iterative weighted least squares quantization search.
 
     Args:
         data (torch.Tensor): Input tensor to quantize.
