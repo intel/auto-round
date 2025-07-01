@@ -1160,7 +1160,8 @@ class AutoRound(object):
                 layer_config[n]["in_blocks"] = False
 
             # If the layer is outside a block and requires quantization, mark it as a quantized layer outside the block
-            if n not in layers_in_blocks and check_to_quantized(layer_config[n]) and not isinstance(m,torch.nn.Embedding):
+            if (n not in layers_in_blocks and check_to_quantized(layer_config[n])
+                    and not isinstance(m,torch.nn.Embedding)):
                 has_qlayer_outside_block = True
 
             in_features, out_features = get_layer_features(m)
