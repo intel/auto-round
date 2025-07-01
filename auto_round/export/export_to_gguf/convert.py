@@ -77,7 +77,6 @@ class SentencePieceTokenTypes(IntEnum):
 
 AnyModel = TypeVar("AnyModel", bound="type[Model]")
 
-
 class OriModel:
     _model_classes: dict[str, type[Model]] = {}
 
@@ -1130,6 +1129,30 @@ class Model(OriModel):
         # would require using decorated functions instead of simply defining the property
         if "model_arch" not in cls.__dict__:
             raise TypeError(f"Missing property 'model_arch' for {cls.__name__!r}")
+    
+    def get_moe_name(self, name, new_name):
+        type_mapping = {
+            "FFN_GATE_EXP": ["gate_proj", "w1", "linear"],
+            "FFN_DOWN_EXP": ["down_proj", "w2", "linear_1"],
+            "FFN_UP_EXP": ["up_proj", "w3", "linear_v"],
+        }
+        nums = re.findall('\d+', name)
+        if len(nums) != 2:
+            return name
+        name_tmp = name[:-len(".weight")].replace(f'.{nums[1]}',  '')
+        new_name_tmp = new_name[:-len(".weight")]
+        if self.tensor_map.get_type(name_tmp) == self.tensor_map.get_type(new_name_tmp):
+            return name
+
+        tensor_type = self.tensor_map.get_type(new_name_tmp).name
+        experts_name = name_tmp.split(".")[-1]
+        for k, v in type_mapping.items():
+            if experts_name in v:
+                idx = v.index(experts_name)
+                name = name.replace(experts_name, type_mapping[tensor_type][idx])
+                return name
+        return name
+            
 
     def get_tensors(self) -> Iterator[tuple[str, Tensor]]:
         for name, tensor in self.model.named_parameters():
@@ -1258,7 +1281,6 @@ class Model(OriModel):
 
         for name, data_torch in chain(self.generate_extra_tensors(), self.get_tensors()):
             # we don't need these
-            breakpoint()
             if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
                 continue
 
@@ -1316,6 +1338,10 @@ class Model(OriModel):
                         data_qtype = gguf.GGMLQuantizationType.F16
                         # data_qtype = gguf.GGMLQuantizationType.Q8_0  # llama.cpp:llama_tensor_get_type
 
+                # get name by new_name (for experts),
+                # breakpoint()
+                name = self.get_moe_name(name, new_name)
+
                 # get data_qtype by layer_config
                 data_qtype = self.get_qtype_by_layer_config(self.layer_config, name, data_qtype)
 
@@ -1365,7 +1391,6 @@ class Model(OriModel):
                     # for MOE model
                     if len(data_torch.shape) == 3:
                         new_data = []
-                        breakpoint()
                         for idx, arr in enumerate(data_torch):
                             arr_name = name.split('.')
                             for i in range(len(arr_name) - 1, -1, -1):

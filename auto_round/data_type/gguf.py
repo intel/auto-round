@@ -326,28 +326,19 @@ def quant_tensor_gguf_asym_dq(
             av_x = torch.sqrt(sigma2)
             quant_weights = torch.abs(tensor) + av_x
         params = search_kwargs[bits]
-        # scale, wmin_m = iterative_wls_quant_search(
-        #     tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
-        #     use_mad=params["use_mad"], weights=quant_weights
-        # )
-        scale, _, wmin_m = make_qkx2_quants(tensor, bits=bits, rmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
-            use_mad=params["use_mad"])
+        scale, wmin_m = iterative_wls_quant_search(
+            tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
+            use_mad=params["use_mad"], weights=quant_weights
+        )
+        # scale, _, wmin_m = make_qkx2_quants(tensor, bits=bits, rmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
+            # use_mad=params["use_mad"])
 
         scale = scale.reshape(-1, super_group_size)
         wmin_m = wmin_m.reshape(-1, super_group_size)
-        scale_qdq, d_scale = double_quant_tensor(scale, super_bits)
-        wmin_m_qdq, d_wmin_m = double_quant_tensor(wmin_m, super_bits)
+        scale, d_scale = double_quant_tensor(scale, super_bits)
+        wmin_m, d_wmin_m = double_quant_tensor(wmin_m, super_bits)
         wmin_m = wmin_m.view(-1, 1)
         scale = scale.view(-1, 1)
-        scale_qdq = scale_qdq.view(-1, 1)
-        wmin_m_qdq = wmin_m_qdq.view(-1, 1)
-
-        if bits == 2:
-            scale_ori, wmin_ori, d_scale_ori, d_wmin_m_ori = q2_k_quant_block_test(tensor.reshape(-1, 256))
-            if scale_ori.reshape(-1, 1).shape != scale.shape:
-                breakpoint()
-            if (scale_ori.reshape(-1, 1) != scale).sum().item() > 0 or (wmin_ori.reshape(-1,1) != wmin_m).sum().item() > 0 or (d_scale_ori != d_scale).sum().item() > 0 or (d_wmin_m_ori != d_wmin_m).sum().item() > 0:
-                breakpoint()
     else:
         imatrix = imatrix.to(tensor.device)
         search_kwargs = {
@@ -370,13 +361,12 @@ def quant_tensor_gguf_asym_dq(
 
         params = search_kwargs[bits]
 
-        # scale, wmin_m_0 = iterative_wls_quant_search(
-        #     tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
-        #     use_mad=params["use_mad"], weights=quant_weights
-        # )
-        # breakpoint()
-        scale, _, wmin_m_0 = make_qkx2_quants(tensor, bits=bits, rmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
-            use_mad=params["use_mad"])
+        scale, wmin_m_0 = iterative_wls_quant_search(
+            tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
+            use_mad=params["use_mad"], weights=quant_weights
+        )
+        # scale, _, wmin_m_0 = make_qkx2_quants(tensor, bits=bits, rmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
+        #     use_mad=params["use_mad"])
 
         nmax = 2 ** super_bits - 1
         scale = scale.reshape(-1, super_group_size)
@@ -390,10 +380,10 @@ def quant_tensor_gguf_asym_dq(
         d_wmin_m = d_wmin_m.unsqueeze(-1)
         scale = (d_scale * q_scale).view(-1, 1)
         wmin_m = (d_wmin_m * q_wmin_m).view(-1, 1)
-    inverse_scale = torch.where(scale_qdq == 0, 0, 1 / scale_qdq)
+    inverse_scale = torch.where(scale == 0, 0, 1 / scale)
 
-    int_w = torch.clamp(round_ste((tensor + wmin_m_qdq) * inverse_scale + v), 0, maxq)
-    qdq_result = (scale_qdq * int_w - wmin_m_qdq).to(orig_dtype)
+    int_w = torch.clamp(round_ste((tensor + wmin_m) * inverse_scale + v), 0, maxq)
+    qdq_result = (scale * int_w - wmin_m).to(orig_dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
 
