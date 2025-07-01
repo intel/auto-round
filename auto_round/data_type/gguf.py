@@ -16,6 +16,7 @@ import torch
 from auto_round.data_type.utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.data_type.register import register_dtype
 
+
 @register_dtype("int_sym_dq")
 def quant_tensor_sym_dq(
         tensor,
@@ -149,8 +150,8 @@ def double_quant_tensor_sym(tensor, bits):
     imax = abs(tensor).argmax(axis=-1, keepdims=True)
     wmax = torch.take_along_dim(tensor, imax, dim=-1)
     scale = wmax / -maxq
-    inverse_scale = torch.where(scale == 0, 0, 1 / scale)
-    qdq_tensor = torch.clip((round_ste(tensor * inverse_scale)),-maxq, maxq - 1) * scale
+    inverse_scale = torch.where(scale == 0, 0, 1 / scale)  ##1e-40
+    qdq_tensor = torch.clip((round_ste(tensor * inverse_scale)), -maxq, maxq - 1) * scale
     return qdq_tensor, scale
 
 
@@ -169,7 +170,7 @@ def make_qp_quants(nmax, data, quant_weights):
         if _is == 0:
             continue
         scale_is = group_max / (0.1 * _is + nmax)
-        iscale_is = torch.where(scale == 0, 0, 1 / scale_is)
+        iscale_is = torch.where(scale_is == 0, 0, 1 / scale_is)
 
         tmp_L = torch.round(iscale_is * data).clip(max=nmax)
         diffs = data - scale_is * tmp_L
@@ -182,25 +183,25 @@ def make_qp_quants(nmax, data, quant_weights):
     L = torch.round(iscale * data).clip(max=nmax)
     sumlx = torch.sum(quant_weights * data * L, dim=-1)
     suml2 = torch.sum(quant_weights * L * L, dim=-1)
-
-    for _ in range(5):
-        n_changed = 0
-        for i in range(data.shape[-1]):
-            slx = sumlx - quant_weights[:, i] * data[:, i] * L[:, i]
-            sl2 = suml2 - quant_weights[:, i] * L[:, i] * L[:, i]
-            replace_idx = (slx > 0) & (sl2 > 0)
-            new_L = torch.round(data[:, i] * sl2 / slx).clip(max=nmax)
-            replace_idx &= new_L != L[:, i]
-            slx[replace_idx] += quant_weights[:, i][replace_idx] * data[:, i][replace_idx] * new_L[replace_idx]
-            sl2[replace_idx] += quant_weights[:, i][replace_idx] * new_L[replace_idx] * new_L[replace_idx]
-
-            replace_idx &= slx * slx * suml2 > sumlx * sumlx * sl2
-            L[:, i][replace_idx] = new_L[replace_idx]
-            sumlx[replace_idx] = slx[replace_idx]
-            suml2[replace_idx] = sl2[replace_idx]
-            n_changed = replace_idx.sum()
-        if n_changed == 0:
-            break
+    #
+    # for _ in range(5):
+    #     n_changed = 0
+    #     for i in range(data.shape[-1]):
+    #         slx = sumlx - quant_weights[:, i] * data[:, i] * L[:, i]
+    #         sl2 = suml2 - quant_weights[:, i] * L[:, i] * L[:, i]
+    #         replace_idx = (slx > 0) & (sl2 > 0)
+    #         new_L = torch.round(data[:, i] * sl2 / slx).clip(max=nmax)
+    #         replace_idx &= new_L != L[:, i]
+    #         slx[replace_idx] += quant_weights[:, i][replace_idx] * data[:, i][replace_idx] * new_L[replace_idx]
+    #         sl2[replace_idx] += quant_weights[:, i][replace_idx] * new_L[replace_idx] * new_L[replace_idx]
+    #
+    #         replace_idx &= slx * slx * suml2 > sumlx * sumlx * sl2
+    #         L[:, i][replace_idx] = new_L[replace_idx]
+    #         sumlx[replace_idx] = slx[replace_idx]
+    #         suml2[replace_idx] = sl2[replace_idx]
+    #         n_changed = replace_idx.sum()
+    #     if n_changed == 0:
+    #         break
 
     return sumlx / suml2, L
 
@@ -326,6 +327,7 @@ def quant_tensor_gguf_asym_dq(
             tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
             use_mad=params["use_mad"], weights=quant_weights
         )
+        scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
         scale = scale.reshape(-1, super_group_size)
         wmin = wmin_m.reshape(-1, super_group_size)
         scale, d_scale = double_quant_tensor(scale, super_bits)
@@ -358,7 +360,7 @@ def quant_tensor_gguf_asym_dq(
             tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
             use_mad=params["use_mad"], weights=quant_weights
         )
-
+        scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
         nmax = 2 ** super_bits - 1
         scale = scale.reshape(-1, super_group_size)
         wmin_m = wmin_m_0.reshape(-1, super_group_size)
@@ -409,7 +411,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     quant_data = torch.clamp(torch.round((maxq - minq) / (rmax - rmin + 1e-8) * (data - rmin)), minq, maxq)
     diff = scale * quant_data + rmin - data
 
-    best_mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights*diff ** 2, dim=1, keepdim=True)
+    best_mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff ** 2, dim=1, keepdim=True)
 
     for is_ in range(nstep):
         factor = rrmin + rdelta * is_ + maxq - minq
@@ -488,7 +490,7 @@ def quant_tensor_gguf_sym_dq(
     tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         if bits == 3:
-            scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True) ##TODO this has bug
+            scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)  ##TODO this has bug
             ##scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
         elif bits == 6:
             scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
@@ -508,7 +510,7 @@ def quant_tensor_gguf_sym_dq(
             weights = weights.expand(tensor.numel() // weights.numel(), -1)
             quant_weights = weights.reshape(tensor.shape)
             scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
-
+    scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
     # conduct double quant
     scale, d_scale = double_quant_tensor_sym(scale, super_bits)
 
@@ -520,5 +522,3 @@ def quant_tensor_gguf_sym_dq(
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
 
     return qdq_result, {"scale": scale, "d_scale": d_scale}, zp
-
-
