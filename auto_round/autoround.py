@@ -774,8 +774,10 @@ class AutoRound(object):
                 act_bits = 16
                 scale_dtype = self.scale_dtype
                 keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
-                self.layer_config[embedding_name] = {}
+                self.layer_config[embedding_name] = self.layer_config.get(embedding_name, {})
                 for key in keys:
+                    if key in  self.layer_config[embedding_name]:
+                        continue
                     self.layer_config[embedding_name][key] = getattr(config, "get")(key)
                     setattr(get_module(self.model, embedding_name), key, config.get(key))
                 self.layer_config[embedding_name]["act_bits"] = act_bits
@@ -792,7 +794,10 @@ class AutoRound(object):
             act_bits = 16
             scale_dtype = self.scale_dtype
             keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
+            self.layer_config[lm_head_name] = self.layer_config.get(lm_head_name, {})
             for key in keys:
+                if key in self.layer_config[lm_head_name]:
+                    continue
                 self.layer_config[lm_head_name][key] = getattr(config, "get")(key)
                 setattr(get_module(self.model, lm_head_name), key, config.get(key))
             self.layer_config[lm_head_name]["act_bits"] = act_bits
@@ -1072,7 +1077,6 @@ class AutoRound(object):
         """
         # Get the names of layers in quantization blocks
         layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
-
         ##process regex in layer_config
         all_supported_layer_names = []
         # List of configuration keys
@@ -1098,7 +1102,9 @@ class AutoRound(object):
                     delattr(m, key)
 
             # Skip unsupported types
-            if not isinstance(m, tuple(self.supported_types)):
+            supported_types = self.supported_types
+
+            if not isinstance(m,supported_types):
                 continue
             all_supported_layer_names.append(n)
 
@@ -1116,7 +1122,9 @@ class AutoRound(object):
                 for match_name in matched_names:
                     layer_config[match_name] = val
             else:
-                raise ValueError(f"key {name} in layer_config is invalid, please have a double check")
+                tmp_m = get_module(self.model,name)
+                if not isinstance(tmp_m, torch.nn.Embedding): ##TODO not good code style
+                    raise ValueError(f"key {name} in layer_config is invalid, please have a double check")
 
         has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
 
@@ -1124,7 +1132,7 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
 
             # Skip unsupported types
-            if not isinstance(m, tuple(self.supported_types)):
+            if not isinstance(m, supported_types):
                 continue
 
             # If the layer is not in the config and is part of a quantization block, use default configuration
@@ -1152,7 +1160,8 @@ class AutoRound(object):
                 layer_config[n]["in_blocks"] = False
 
             # If the layer is outside a block and requires quantization, mark it as a quantized layer outside the block
-            if n not in layers_in_blocks and check_to_quantized(layer_config[n]):
+            if (n not in layers_in_blocks and check_to_quantized(layer_config[n])
+                    and not isinstance(m,torch.nn.Embedding)):
                 has_qlayer_outside_block = True
 
             in_features, out_features = get_layer_features(m)
