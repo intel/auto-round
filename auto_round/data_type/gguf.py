@@ -15,7 +15,6 @@
 import torch
 from auto_round.data_type.utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.data_type.register import register_dtype
-from auto_round.export.export_to_gguf.packing import make_qkx2_quants, q2_k_quant_block_test
 
 @register_dtype("int_sym_dq")
 def quant_tensor_sym_dq(
@@ -304,8 +303,8 @@ def quant_tensor_gguf_asym_dq(
     Returns:
         Tuple: (Quantized-dequantized tensor, scale dictionary, zero-point dictionary)
     """
-    tensor = tensor.to(torch.float32)
     orig_dtype = tensor.dtype
+    tensor = tensor.to(torch.float32)
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if bits not in [2, 4, 5]:
         raise ValueError(f"bits={bits} not supported by gguf_int_asym_dq")

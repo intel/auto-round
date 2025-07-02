@@ -400,45 +400,6 @@ def q8_0_quant_block(blocks, scale=None, zp=None, **kwargs) -> np.ndarray:
     return np.concatenate([d, qs], axis=1)
 
 
-def q2_k_dequantize_blocks(blocks: np.ndarray) -> np.ndarray:
-    n_blocks = blocks.shape[0]
-
-    scales, rest = np.hsplit(blocks, [QK_K // 16])
-    qs, rest = np.hsplit(rest, [QK_K // 4])
-    d, dmin = np.hsplit(rest, [2])
-
-    d = d.view(np.float16).astype(np.float32)
-    dmin = dmin.view(np.float16).astype(np.float32)
-
-    # (n_blocks, 16, 1)
-    dl = (d * (scales & 0xF).astype(np.float32)).reshape((n_blocks, QK_K // 16, 1))
-    ml = (dmin * (scales >> 4).astype(np.float32)).reshape((n_blocks, QK_K // 16, 1))
-
-    shift = np.array([0, 2, 4, 6], dtype=np.uint8).reshape((1, 1, 4, 1))
-
-    qs = (qs.reshape((n_blocks, -1, 1, 32)) >> shift) & np.uint8(3)
-
-    qs = qs.reshape((n_blocks, QK_K // 16, 16)).astype(np.float32)
-
-    qs = dl * qs - ml
-
-    return qs.reshape((n_blocks, -1))
-
-def q2_k_quant_block_test(blocks):
-    nb = blocks.shape[0]
-
-    blocks = blocks.reshape((nb, QK_K // 16, 16))  # (nb, 16, 16)
-    scales, all_L, mins = make_qkx2_quants(blocks, bits=2, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=True)
-    max_scales = torch.max(scales, dim=-1, keepdim=True)[0]
-    max_mins = torch.max(mins, dim=-1, keepdim=True)[0]
-    inv_scales = torch.where(max_scales > 0, 15. / max_scales, 0)
-    inv_mins = torch.where(max_mins > 0, 15. / max_mins, 0)
-    output_d = torch.where(max_scales > 0, max_scales / 15, 0)
-    output_dmin = torch.where(max_mins > 0, max_mins / 15., 0)
-
-    return scales, mins, output_d, output_dmin
-
-
 @register_qtype("q2_k")
 def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
     nb = blocks.shape[0]

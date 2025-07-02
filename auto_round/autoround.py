@@ -835,7 +835,6 @@ class AutoRound(object):
                 m.to(self.device)
                 m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
                                   enable_round_tuning=False)
-                m.name = name
                 m = m.unwrapper({})
                 m.to("cpu")
             except RuntimeError as e:
