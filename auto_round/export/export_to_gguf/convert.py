@@ -1157,6 +1157,32 @@ class Model(OriModel):
     def get_tensors(self) -> Iterator[tuple[str, Tensor]]:
         for name, tensor in self.model.named_parameters():
             yield name, tensor
+    
+    def _quant_data_with_args(self, data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None):
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.xpu.is_available():
+            device = "xpu"
+        else:
+            device = "cpu"
+        data_torch = data_torch.to(torch.float32)
+        scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
+        zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
+        d_scale = d_scale.to(torch.float32) if isinstance(d_scale, torch.Tensor) else d_scale
+        d_wmin = d_wmin.to(torch.float32) if isinstance(d_wmin, torch.Tensor) else d_wmin
+        wmin = wmin.to(torch.float32) if isinstance(wmin, torch.Tensor) else wmin
+
+        data = ggml_quant_gpu(
+            data_torch,
+            data_qtype.name.lower(),
+            scale,
+            zp,
+            wmin=wmin,
+            d_scale=d_scale,
+            d_wmin=d_wmin,
+            device=device
+        )
+        return data
 
     def _quant_data(self, data_torch, data_qtype, name, bid):
         from auto_round.utils import get_module
@@ -1389,8 +1415,41 @@ class Model(OriModel):
                         data_qtype = gguf.GGMLQuantizationType.F16
                         data = gguf.quants.quantize(data, data_qtype)
                 else:
+                    # for deepseek v2
+                    if name.endswith("kv_b_proj.weight"):
+                        from auto_round.utils import get_module
+                        layer_name = name[:-len('.weight')]
+                        module = get_module(self.model, layer_name)
+                        n_head_kv = self.hparams["num_key_value_heads"]
+                        v_head_dim = self.hparams["v_head_dim"]
+                        qk_nope_head_dim = self.hparams["qk_nope_head_dim"]
+
+                        attr_list = {
+                            "scale": None,
+                            "zp": None,
+                            "d_scale": None,
+                            "wmin": None,
+                            "d_wmin": None
+                        }
+                        for attr in attr_list:
+                            if hasattr(module, attr) or hasattr(module, "w_" + attr):
+                                if attr in ['scale', "zp"]:
+                                    attr_tensor = getattr(module, attr)
+                                else:
+                                    attr_tensor = getattr(module, "w_" + attr)
+                                kv_b = attr_tensor.view(n_head_kv, v_head_dim + qk_nope_head_dim, -1)
+                                k_b, v_b = torch.split(kv_b, [qk_nope_head_dim, v_head_dim], dim=1)
+                                k_b = k_b.transpose(1, 2)
+
+                                name_kb = name.replace("kv_b_proj", "k_b_proj")
+                                if new_name == self.map_tensor_name(name_kb):
+                                    attr_list[attr] = k_b
+                                else:
+                                    attr_list[attr] = v_b
+                        data = self._quant_data_with_args(data_torch, data_qtype, **attr_list)
+
                     # for MOE model
-                    if len(data_torch.shape) == 3:
+                    elif len(data_torch.shape) == 3:
                         new_data = []
                         for idx, arr in enumerate(data_torch):
                             arr_name = name.split('.')
@@ -1412,8 +1471,6 @@ class Model(OriModel):
                 shape_str = f"{{{', '.join(str(n) for n in reversed(shape))}}}"
 
                 # n_dims is implicit in the shape
-                if isinstance(data_qtype, bool):
-                    breakpoint()
                 logger.info(
                     f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype}"
                     f" --> {data_qtype.name}, shape = {shape_str}")
