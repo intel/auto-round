@@ -139,7 +139,8 @@ def double_quant_tensor(tensor, bits):
     wmax = torch.clamp(tensor.max(-1)[0], min=0)
     scale = wmax / maxq
     scale = scale.view(-1, 1)
-    inverse_scale = torch.where(scale == 0, 0, 1 / scale)
+    # inverse_scale = torch.where(scale == 0, 0, 1 / scale)
+    inverse_scale = torch.where(wmax > 0, maxq / wmax, 0).view(-1, 1)
     qdq_tensor = torch.clamp(round_ste(tensor * inverse_scale), max=maxq) * scale
     return qdq_tensor, scale
 
@@ -244,26 +245,26 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     scale = ((wmax - wmin) / maxq).to(scale_dtype)
     scale = torch.clamp(scale, min=q_scale_thresh)
     scale = scale.view(-1, super_group_size)
-    wmin_m = -wmin  # pylint: disable=E1130
-    wmin_m = wmin_m.view(-1, super_group_size)
+    wmin = -wmin  # pylint: disable=E1130
+    wmin = wmin.view(-1, super_group_size)
 
     ##conduct double quant
     scale, d_scale = double_quant_tensor(scale, super_bits)
-    wmin_m, d_wmin_m = double_quant_tensor(wmin_m, super_bits)
+    wmin, d_wmin = double_quant_tensor(wmin, super_bits)
 
     scale = scale.view(-1, 1)
     scale = torch.clamp(scale, q_scale_thresh)
     d_scale = torch.clamp(d_scale, q_scale_thresh)
-    d_wmin_m = torch.clamp(d_wmin_m, q_scale_thresh)
-    wmin_m = wmin_m.view(-1, 1)
+    d_wmin = torch.clamp(d_wmin, q_scale_thresh)
+    wmin = wmin.view(-1, 1)
 
-    int_w = round_ste((tensor + wmin_m) / scale + v)
+    int_w = round_ste((tensor + wmin) / scale + v)
     q = torch.clamp(int_w, 0, maxq)
-    qdq_result = (scale * q - wmin_m).to(tensor.dtype)
+    qdq_result = (scale * q - wmin).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
 
-    # zp = round_ste(wmin_m / scale)  # remove this later
-    return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
+    # zp = round_ste(wmin / scale)  # remove this later
+    return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
 @register_dtype("rtn_int_asym_dq")
@@ -324,18 +325,18 @@ def quant_tensor_gguf_asym_dq(
             av_x = torch.sqrt(sigma2)
             quant_weights = torch.abs(tensor) + av_x
         params = search_kwargs[bits]
-        scale, wmin_m = iterative_wls_quant_search(
+        scale, wmin = iterative_wls_quant_search(
             tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
             use_mad=params["use_mad"], weights=quant_weights
         )
         scale = scale.to(scale_dtype)
         scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
         scale = scale.reshape(-1, super_group_size)
-        wmin = wmin_m.reshape(-1, super_group_size)
+        wmin = wmin.reshape(-1, super_group_size)
         scale, d_scale = double_quant_tensor(scale, super_bits)
         wmin = torch.where(torch.abs(wmin) < 1e-30, 0, wmin)
-        wmin_m, d_wmin_m = double_quant_tensor(wmin, super_bits)
-        wmin_m = wmin_m.view(-1, 1)
+        wmin, d_wmin = double_quant_tensor(wmin, super_bits)
+        wmin = wmin.view(-1, 1)
         scale = scale.view(-1, 1)
     else:
         imatrix = imatrix.to(tensor.device)
@@ -359,7 +360,7 @@ def quant_tensor_gguf_asym_dq(
 
         params = search_kwargs[bits]
 
-        scale, wmin_m_0 = iterative_wls_quant_search(
+        scale, wmin_0 = iterative_wls_quant_search(
             tensor, bits=bits, rrmin=params["rmin"], rdelta=params["rdelta"], nstep=params["nstep"],
             use_mad=params["use_mad"], weights=quant_weights
         )
@@ -367,21 +368,22 @@ def quant_tensor_gguf_asym_dq(
         scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
         nmax = 2 ** super_bits - 1
         scale = scale.reshape(-1, super_group_size)
-        wmin_m = wmin_m_0.reshape(-1, super_group_size)
+        wmin = wmin_0.reshape(-1, super_group_size)
         sum_quant_weights = quant_weights.sum(-1, keepdim=True).reshape(-1, super_group_size)
 
         d_scale, q_scale = make_qp_quants(nmax, scale, sum_quant_weights)
-        d_wmin_m, q_wmin_m = make_qp_quants(nmax, wmin_m, sum_quant_weights)
+        d_wmin, q_wmin = make_qp_quants(nmax, wmin, sum_quant_weights)
+        
         d_scale = d_scale.unsqueeze(-1)
-        d_wmin_m = d_wmin_m.unsqueeze(-1)
+        d_wmin = d_wmin.unsqueeze(-1)
         scale = (d_scale * q_scale).view(-1, 1)
-        wmin_m = (d_wmin_m * q_wmin_m).view(-1, 1)
+        wmin = (d_wmin * q_wmin).view(-1, 1)
     inverse_scale = torch.where(scale == 0, 0, 1 / scale)
 
-    int_w = torch.clamp(round_ste((tensor + wmin_m) * inverse_scale + v), 0, maxq)
-    qdq_result = (scale * int_w - wmin_m).to(orig_dtype)
+    int_w = torch.clamp(round_ste((tensor + wmin) * inverse_scale + v), 0, maxq)
+    qdq_result = (scale * int_w - wmin).to(orig_dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
-    return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin_m": wmin_m, "d_wmin_m": d_wmin_m}
+    return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
 def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None):
@@ -411,29 +413,38 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
     sum_w = torch.sum(weights, dim=1, keepdim=True)
     sum_x = torch.sum(weights * data, dim=1, keepdim=True)
 
-    scale = 1 / ((maxq - minq) / (rmax - rmin + 1e-8))
-    quant_data = torch.clamp(torch.round((maxq - minq) / (rmax - rmin + 1e-8) * (data - rmin)), minq, maxq)
+    # scale = 1 / ((maxq - minq) / (rmax - rmin + 1e-8))
+    scale = (rmax - rmin) / (maxq - minq)
+    iscale = torch.where(scale == 0, 0, 1 / scale)
+    # quant_data = torch.clamp(torch.round((maxq - minq) / (rmax - rmin + 1e-8) * (data - rmin)), minq, maxq)
+    quant_data = torch.clamp(torch.round(iscale * (data - rmin)), minq, maxq)
     diff = scale * quant_data + rmin - data
 
     best_mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff ** 2, dim=1, keepdim=True)
 
     for is_ in range(nstep):
         factor = rrmin + rdelta * is_ + maxq - minq
-        iscale_new = factor / (rmax - rmin + 1e-8)
+        # iscale_new = factor / (rmax - rmin + 1e-8)
+        scale_new = (rmax - rmin) / factor
+        iscale_new = torch.where(scale_new == 0, 0, 1 / scale_new)
         quant_data_new = torch.clamp(torch.round(iscale_new * (data - rmin)), minq, maxq)
 
         mul_weights_quant_data = weights * quant_data_new
-        sum_l = torch.sum(mul_weights_quant_data, dim=1, keepdim=True)
-        sum_l2 = torch.sum(mul_weights_quant_data * quant_data_new, dim=1, keepdim=True)
-        sum_xl = torch.sum(mul_weights_quant_data * data, dim=1, keepdim=True)
+        sum_l = torch.sum(mul_weights_quant_data, dim=-1, keepdim=True)
+        sum_l2 = torch.sum(mul_weights_quant_data * quant_data_new, dim=-1, keepdim=True)
+        sum_xl = torch.sum(mul_weights_quant_data * data, dim=-1, keepdim=True)
 
         D = sum_w * sum_l2 - sum_l ** 2
         this_scale = (sum_w * sum_xl - sum_x * sum_l) / D
         this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
+        this_min[this_min > 0] = 0
+        this_scale[this_min > 0] = (sum_xl / sum_l2)[this_min > 0]
+        reverse_this_scale = torch.where(this_scale == 0, 0, 1 / this_scale)
 
-        quant_data = torch.clamp(torch.round((1 / this_scale) * (data - this_min)), minq, maxq)
+        quant_data = torch.clamp(torch.round(reverse_this_scale * (data - this_min)), minq, maxq)
         diff = this_scale * quant_data + this_min - data
-        mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff ** 2, dim=1, keepdim=True)
+        # diff = this_scale * quant_data_new + this_min - data
+        mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff ** 2, dim=-1, keepdim=True)
 
         idx_to_replace = torch.where((mad < best_mad) & (D > 0))[0]
         best_mad[idx_to_replace] = mad[idx_to_replace]

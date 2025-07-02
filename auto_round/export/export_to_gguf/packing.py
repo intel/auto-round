@@ -28,22 +28,22 @@ def register_qtype(name):
     return register
 
 
-def ggml_quant_gpu(data, ggml_type, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, imatrix=None,
+def ggml_quant_gpu(data, ggml_type, scale=None, zp=None, wmin=None, d_scale=None, d_wmin=None, imatrix=None,
                    device="cuda"):
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
 
     data = data.to(torch.float32).to(device)
     scale = scale.to(device) if scale is not None else scale
     zp = zp.to(device) if zp is not None else zp
-    wmin_m = wmin_m.to(device) if wmin_m is not None else wmin_m
+    wmin = wmin.to(device) if wmin is not None else wmin
     d_scale = d_scale.to(device) if d_scale is not None else d_scale
-    d_wmin_m = d_wmin_m.to(device) if d_wmin_m is not None else d_wmin_m
+    d_wmin = d_wmin.to(device) if d_wmin is not None else d_wmin
 
     shape = data.shape
     n_blocks = data.nelement() // block_size
     blocks = data.reshape((n_blocks, block_size))
     quant_func = GGML_QUANT_TYPE[ggml_type]
-    new_data = quant_func(blocks, scale, zp, wmin_m=wmin_m, d_scale=d_scale, d_wmin_m=d_wmin_m, imatrix=imatrix)
+    new_data = quant_func(blocks, scale, zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, imatrix=imatrix)
 
     assert new_data.shape[-1] == type_size
     new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)
@@ -404,28 +404,30 @@ def q8_0_quant_block(blocks, scale=None, zp=None, **kwargs) -> np.ndarray:
 
 
 @register_qtype("q2_k")
-def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
+def q2_k_quant_block(blocks, scale=None, zp=None, wmin=None, d_scale=None, d_wmin=None, **kwargs):
     nb = blocks.shape[0]
 
     blocks = blocks.reshape((nb, QK_K // 16, 16))  # (nb, 16, 16)
 
     if scale is not None:
         scales = scale.reshape((-1, QK_K // 16))
-        mins = wmin_m.reshape((-1, QK_K // 16))
+        mins = wmin.reshape((-1, QK_K // 16))
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
-        output_dmin = d_wmin_m.reshape(-1, 1).to(torch.float32)
+        output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         inv_scales = torch.where(output_d == 0, 0, 1 / output_d)
-        inv_mins = torch.where(d_wmin_m == 0, 0, 1 / output_dmin)
-        max_scales = torch.max(scales, dim=-1, keepdim=True)[0]  # (nb, 1)
-        max_mins = torch.max(mins, dim=-1, keepdim=True)[0]  # (nb, 1)
+        inv_mins = torch.where(d_wmin == 0, 0, 1 / output_dmin)
+        max_scales = torch.max(scales, dim=-1, keepdim=True)[0]
+        max_mins = torch.max(mins, dim=-1, keepdim=True)[0]
         all_L = torch.zeros_like(blocks, dtype=torch.uint8)
     else:
         scales, all_L, mins = make_qkx2_quants(blocks, bits=2, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=True)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]
+        output_d = torch.where(max_scales > 0, max_scales / 15, 0)
+        output_dmin = torch.where(max_mins > 0, max_mins / 15., 0)
         inv_scales = torch.where(max_scales > 0, 15. / max_scales, 0)
         inv_mins = torch.where(max_mins > 0, 15. / max_mins, 0)
-
+    
     replace_ids = (max_scales > 0).squeeze()
     output_scale = torch.zeros_like(scales).to(torch.uint8)
     output_scale[replace_ids] = torch.round(
@@ -434,10 +436,6 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
     replace_ids = (max_mins > 0).squeeze()
     output_scale[replace_ids] |= torch.round(
         inv_mins[replace_ids] * mins[replace_ids]).clip(0, 15).to(torch.uint8) << 4
-    if d_scale is None:
-        output_d = torch.where(max_scales > 0, max_scales / 15, 0)
-    if d_wmin_m is None:
-        output_dmin = torch.where(max_mins > 0, max_mins / 15., 0)
 
     d_tmp = output_d * (output_scale & 0xF)
     dm_tmp = output_dmin * (output_scale >> 4)
@@ -446,7 +444,6 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
     all_L[replace_ids] = torch.round(
         (blocks[replace_ids] + dm_tmp[replace_ids].unsqueeze(-1)) / d_tmp[replace_ids].unsqueeze(-1)).clip(0, 3).to(
         torch.uint8)
-    all_L = np.clip(all_L.cpu().numpy(), 0, 3).astype(np.uint8)
 
     output_scale = output_scale.cpu().numpy()
     all_L = all_L.reshape(-1, 4, 32)
@@ -455,14 +452,13 @@ def q2_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
     output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
     output_dmin = output_dmin.cpu().numpy()
     output_dmin = output_dmin.reshape(-1, 1).astype(np.float16).view(np.uint8)
-    output_qs = output_qs.reshape((nb, QK_K // 4))
+    output_qs = output_qs.cpu().numpy().astype(np.uint8).reshape((nb, QK_K // 4))
 
     # [scale, qs, d, dmin]
     return np.concatenate([output_scale, output_qs, output_d, output_dmin], axis=-1)
 
-
 @register_qtype("q3_k")
-def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
+def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin=None, d_scale=None, d_wmin=None, **kwargs):
     nb = blocks.shape[0]
     blocks = blocks.reshape(nb, QK_K // 16, 16)
 
@@ -498,13 +494,12 @@ def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
     all_L = (torch.round(blocks * reverse_qdq_scale.unsqueeze(-1)).clip(-4, 3) + 4).to(
         torch.uint8)
 
-    all_L = all_L.cpu().numpy()
-    output_hmask = np.bitwise_or.reduce(
-        all_L.reshape(nb, 8, 32) >> 2 << np.arange(8, dtype=np.uint8).reshape(1, 8, 1), axis=1)  # pylint: disable=E1121
-    all_L = np.where(all_L > 3, all_L - 4, all_L)
+    output_hmask = all_L.reshape(nb, 8, 32) >> 2 << torch.arange(8, device=all_L.device).reshape(1, 8, 1)
+    output_hmask = np.bitwise_or.reduce(output_hmask.cpu().numpy(), axis=1, dtype=np.uint8)  # pylint: disable=E1121
+    all_L = torch.where(all_L > 3, all_L - 4, all_L)
 
-    output_qs = np.bitwise_or.reduce(
-        all_L.reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1), axis=2)  # pylint: disable=E1121
+    output_qs = all_L.reshape(nb, 2, 4, 32) << torch.tensor([0, 2, 4, 6], device=all_L.device).reshape(1, 1, 4, 1)
+    output_qs = np.bitwise_or.reduce(output_qs.cpu().numpy(), axis=2, dtype=np.uint8)  # pylint: disable=E1121
 
     output_qs = output_qs.reshape(nb, 64).astype(np.uint8)
     dq_scale = dq_scale.cpu().numpy().reshape(-1, 1).astype(np.float16).view(np.uint8)
@@ -514,20 +509,19 @@ def q3_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
 
 
 @register_qtype("q4_k")
-def q4_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
+def q4_k_quant_block(blocks, scale=None, zp=None, wmin=None, d_scale=None, d_wmin=None, **kwargs):
     nb = blocks.shape[0]
     blocks = blocks.reshape((nb, QK_K // 32, 32))
 
-    output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
-    output_qs = np.empty((nb, QK_K // 64, 32), dtype=np.uint8)
+    output_scale = torch.empty((nb, K_SCALE_SIZE), dtype=torch.uint8, device=blocks.device)
 
     if scale is not None:
         scales = scale.reshape(-1, QK_K // 32)
-        mins = wmin_m.reshape(-1, QK_K // 32)
+        mins = wmin.reshape(-1, QK_K // 32)
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
-        output_dmin = d_wmin_m.reshape(-1, 1).to(torch.float32)
+        output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         inv_scales = torch.where(output_d == 0, 0, 1 / output_d)
-        inv_mins = torch.where(d_wmin_m == 0, 0, 1 / output_dmin)
+        inv_mins = torch.where(d_wmin == 0, 0, 1 / output_dmin)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]  # (nb, 1)
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]  # (nb, 1)
         all_L = torch.zeros_like(blocks, dtype=torch.uint8)
@@ -542,18 +536,18 @@ def q4_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
         inv_scales = torch.where(max_scales > 0, 63. / max_scales, 0)
         inv_mins = torch.where(max_mins > 0, 63. / max_mins, 0)
 
-    q_scales = torch.round(inv_scales * scales).clip(0, 63)
-    q_mins = torch.round(inv_mins * mins).clip(0, 63)
+    q_scales = torch.round(inv_scales * scales).clip(0, 63).to(torch.uint8)
+    q_mins = torch.round(inv_mins * mins).clip(0, 63).to(torch.uint8)
 
     if d_scale is None:
         output_d = max_scales / 63
-    if d_wmin_m is None:
+    if d_wmin is None:
         output_dmin = max_mins / 63
 
     d_tmp = output_d * q_scales
     dm_tmp = output_dmin * q_mins
-    q_scales = q_scales.cpu().numpy().astype(np.uint8)
-    q_mins = q_mins.cpu().numpy().astype(np.uint8)
+    # q_scales = q_scales.cpu().numpy().astype(np.uint8)
+    # q_mins = q_mins.cpu().numpy().astype(np.uint8)
     output_scale[:, :4] = q_scales[:, :4]
     output_scale[:, 4:8] = q_mins[:, :4]
 
@@ -565,32 +559,32 @@ def q4_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
     all_L[replace_ids] = torch.round(
         (blocks[replace_ids] + dm_tmp[replace_ids].unsqueeze(-1)) / d_tmp[replace_ids].unsqueeze(-1)).clip(
         0, 15).to(torch.uint8)
-    all_L = np.clip(all_L.cpu().numpy(), 0, 15).astype(np.uint8)
     output_qs = all_L[:, ::2] | (all_L[:, 1::2] << 4)
 
     output_d = output_d.cpu().numpy()
     output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
     output_dmin = output_dmin.cpu().numpy()
     output_dmin = output_dmin.reshape(-1, 1).astype(np.float16).view(np.uint8)
-    output_qs = output_qs.reshape(nb, QK_K // 2)
+    output_qs = output_qs.reshape(nb, QK_K // 2).cpu().numpy().astype(np.uint8)
+    output_scale = output_scale.cpu().numpy().astype(np.uint8)
 
     # [d, dmin, scale, qs]
     return np.concatenate([output_d, output_dmin, output_scale, output_qs], axis=-1)
 
 
 @register_qtype("q5_k")
-def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
+def q5_k_quant_block(blocks, scale=None, zp=None, wmin=None, d_scale=None, d_wmin=None, **kwargs):
     nb = blocks.shape[0]
     blocks = blocks.reshape((nb, QK_K // 32, 32))
 
-    output_scale = np.empty((nb, K_SCALE_SIZE), dtype=np.uint8)
+    output_scale = torch.empty((nb, K_SCALE_SIZE), dtype=torch.uint8, device=blocks.device)
     if scale is not None:
         scales = scale.reshape(-1, QK_K // 32)
-        mins = wmin_m.reshape(-1, QK_K // 32)
+        mins = wmin.reshape(-1, QK_K // 32)
         output_d = d_scale.reshape(-1, 1).to(torch.float32)
-        output_dmin = d_wmin_m.reshape(-1, 1).to(torch.float32)
+        output_dmin = d_wmin.reshape(-1, 1).to(torch.float32)
         inv_scales = torch.where(output_d == 0, 0, 1 / output_d)
-        inv_mins = torch.where(d_wmin_m == 0, 0, 1 / output_dmin)
+        inv_mins = torch.where(d_wmin == 0, 0, 1 / output_dmin)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]  # (nb, 1)
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]  # (nb, 1)
         all_L = torch.zeros_like(blocks, dtype=torch.uint8)
@@ -600,20 +594,20 @@ def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]
         inv_scales = torch.where(max_scales > 0, 63. / max_scales, 0)
         inv_mins = torch.where(max_mins > 0, 63. / max_mins, 0)
-
-    q_scales = torch.round(inv_scales * scales).clip(0, 63)
-    q_mins = torch.round(inv_mins * mins).clip(0, 63)
+    
+    q_scales = torch.round(inv_scales * scales).clip(0, 63).to(torch.uint8)
+    q_mins = torch.round(inv_mins * mins).clip(0, 63).to(torch.uint8)
 
     if d_scale is None:
         output_d = max_scales / 63
-    if d_wmin_m is None:
+    if d_wmin is None:
         output_dmin = max_mins / 63
 
     d_tmp = output_d * q_scales
     dm_tmp = output_dmin * q_mins
 
-    q_scales = q_scales.cpu().numpy().astype(np.uint8)
-    q_mins = q_mins.cpu().numpy().astype(np.uint8)
+    # q_scales = q_scales.cpu().numpy().astype(np.uint8)
+    # q_mins = q_mins.cpu().numpy().astype(np.uint8)
     output_scale[:, :4] = q_scales[:, :4]
     output_scale[:, 4:8] = q_mins[:, :4]
 
@@ -625,23 +619,27 @@ def q5_k_quant_block(blocks, scale=None, zp=None, wmin_m=None, d_scale=None, d_w
     all_L[replace_ids] = torch.round(
         (blocks[replace_ids] + dm_tmp[replace_ids].unsqueeze(-1)) \
         / d_tmp[replace_ids].unsqueeze(-1)).clip(0, 31).to(torch.uint8)
-    all_L = np.clip(all_L.cpu().numpy().astype(np.uint8), 0, 31)  # (nb, 8, 32)
+    # all_L = np.clip(all_L.cpu().numpy().astype(np.uint8), 0, 31)  # (nb, 8, 32)
+    all_L = torch.clamp(all_L, 0, 31)
 
     output_qs = all_L[:, ::2] | (all_L[:, 1::2] << 4)
+    output_qh = all_L >> 4 << torch.arange(8, device=all_L.device).reshape(1, 8, 1)
     output_qh = np.bitwise_or.reduce(
-        all_L >> 4 << np.arange(8, dtype=np.uint8).reshape(1, 8, 1), axis=1).astype(np.uint8)  # pylint: disable=E1121
+        output_qh.cpu().numpy(), axis=1, dtype=np.uint8).astype(np.uint8)  # pylint: disable=E1121
 
     output_d = output_d.cpu().numpy()
     output_d = output_d.reshape(-1, 1).astype(np.float16).view(np.uint8)
     output_dmin = output_dmin.cpu().numpy()
     output_dmin = output_dmin.reshape(-1, 1).astype(np.float16).view(np.uint8)
-    output_qs = output_qs.reshape(nb, QK_K // 2)
+    output_qs = output_qs.reshape(nb, QK_K // 2).cpu().numpy().astype(np.uint8)
+    output_scale = output_scale.cpu().numpy().astype(np.uint8)
+
     # [d, dmin, scale, qh, qs]
     return np.concatenate([output_d, output_dmin, output_scale, output_qh, output_qs], axis=-1)
 
 
 @register_qtype("q6_k")
-def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale=None, d_wmin_m=None, **kwargs):
+def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin=None, d_scale=None, d_wmin=None, **kwargs):
     nb = blocks.shape[0]
     blocks = blocks.reshape((nb, QK_K // 16, 16))
 
@@ -664,12 +662,14 @@ def q6_k_quant_block(blocks: np.array, scale=None, zp=None, wmin_m=None, d_scale
     all_L[replace_ids] = torch.round(blocks[replace_ids] / d_tmp[replace_ids].reshape(-1, 1) + 32) \
         .clip(0, 63).to(torch.uint8)
 
-    all_L = all_L.cpu().numpy()
+    # all_L = all_L.cpu().numpy()
     tmp_L = all_L.reshape(nb, 4, 64) & 0xF
-    output_ql = (tmp_L[:, ::2] | (tmp_L[:, 1::2] << 4)).reshape(nb, QK_K // 2)
+    output_ql = (tmp_L[:, ::2] | (tmp_L[:, 1::2] << 4)).reshape(nb, QK_K // 2).cpu().numpy().astype(np.uint8)
+    ouptut_qh = (all_L >> 4).reshape(nb, 2, 4, 32) << torch.tensor(
+        [0, 2, 4, 6], device=all_L.device).reshape(1, 1, 4, 1)
     output_qh = np.bitwise_or.reduce(
-        (all_L >> 4).reshape(nb, 2, 4, 32) << np.array([0, 2, 4, 6]).reshape(1, 1, 4, 1),  # pylint: disable=E1121
-        axis=2).reshape(nb, QK_K // 4).astype(np.uint8)  # pylint: disable=E1121
+        ouptut_qh.cpu().numpy(),  # pylint: disable=E1121
+        axis=2, dtype=np.uint8).reshape(nb, QK_K // 4).astype(np.uint8)  # pylint: disable=E1121
 
     output_d = output_d.cpu().numpy().reshape(-1, 1).astype(np.float16).view(np.uint8)
 
