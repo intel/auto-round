@@ -346,13 +346,13 @@ def quant_tensor_gguf_asym_dq(
             5: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
         }
 
-        sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
-        if imatrix is None:
-            av_x = torch.sqrt(sigma2)
-            quant_weights = torch.abs(av_x + tensor * tensor)
-        else:
-            imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
-            quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
+        # sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+        # if imatrix is None:
+        #     av_x = torch.sqrt(sigma2)
+        #     quant_weights = torch.abs(av_x + tensor * tensor)
+        # else:
+        #     imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
+        #     quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
 
         weights = imatrix.reshape(1, -1)
         weights = weights.expand(tensor.numel() // weights.numel(), -1)
@@ -439,8 +439,9 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
         this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
         this_min[this_min > 0] = 0
         this_scale[this_min > 0] = (sum_xl / sum_l2)[this_min > 0]
+        reverse_this_scale = torch.where(this_scale == 0, 0, 1 / this_scale)
 
-        quant_data = torch.clamp(torch.round((1 / this_scale) * (data - this_min)), minq, maxq)
+        quant_data = torch.clamp(torch.round(reverse_this_scale * (data - this_min)), minq, maxq)
         diff = this_scale * quant_data + this_min - data
         # diff = this_scale * quant_data_new + this_min - data
         mad = torch.sum((weights * torch.abs(diff)) if use_mad else weights * diff ** 2, dim=-1, keepdim=True)
