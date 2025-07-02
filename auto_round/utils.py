@@ -1666,9 +1666,10 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
         i_layer = _get_digital_in_layer_name(layer_name)
 
         if lm_head_name is not None and layer_name == lm_head_name:
-            target_bits= int(re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]['lm_head']).group(1))
+            target_bits = int(re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]['lm_head']).group(1))
         if isinstance(layer, torch.nn.Embedding):
-            target_bits= int(re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]['embedding']).group(1))
+            target_bits = int(
+                re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]['embedding']).group(1))
 
         gguf_name = tensor_map.get_name(layer_name)
         bits_index = 6
@@ -1871,4 +1872,3 @@ def get_gguf_qtype_by_layer_config(layer_config):
     if bits == 8 and sym and group_size == 32:
         return gguf.GGMLQuantizationType.Q8_0
     raise ValueError(f"Unknown layer config")
-
