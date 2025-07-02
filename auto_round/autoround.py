@@ -430,7 +430,7 @@ class AutoRound(object):
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
 
-        if "nv_fp" in self.data_type and (self.group_size != 32 or self.group_size!=16):
+        if "nv_fp" in self.data_type and (self.group_size != 32 or self.group_size != 16):
             logger.warning("mx_fp should only support group_size of 16/32 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
@@ -498,8 +498,8 @@ class AutoRound(object):
                     "You can also try to increase the model_max_length to avoid this issue.")
                 self.seqlen = min(self.seqlen, self.tokenizer.model_max_length)
 
-        if self.group_size==0 and "fp8" not in self.data_type:
-                logger.warning("group_size of 0 is not supported for data_type other than fp8 ")
+        if self.group_size == 0 and "fp8" not in self.data_type:
+            logger.warning("group_size of 0 is not supported for data_type other than fp8 ")
 
     def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
@@ -539,7 +539,7 @@ class AutoRound(object):
                 if not ("gguf" in format_ or "fake" in format_):
                     only_gguf = False
                     break
-            if len(formats)==1 and "fake" == formats[0]:
+            if len(formats) == 1 and "fake" == formats[0]:
                 only_gguf = False
             if only_gguf:
                 self.scale_dtype = torch.float32
@@ -776,7 +776,8 @@ class AutoRound(object):
                 keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
                 self.layer_config[embedding_name] = self.layer_config.get(embedding_name, {})
                 for key in keys:
-                    if key in  self.layer_config[embedding_name]:
+                    if key in self.layer_config[embedding_name]:
+                        self.layer_config["fixed_by_user"]=True
                         continue
                     self.layer_config[embedding_name][key] = getattr(config, "get")(key)
                     setattr(get_module(self.model, embedding_name), key, config.get(key))
@@ -796,7 +797,8 @@ class AutoRound(object):
             keys = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
             self.layer_config[lm_head_name] = self.layer_config.get(lm_head_name, {})
             for key in keys:
-                if key in self.layer_config[lm_head_name]:
+                if key in self.layer_config[lm_head_name] and self.layer_config[lm_head_name].get("fixed_by_user",
+                                                                                     False):
                     continue
                 self.layer_config[lm_head_name][key] = getattr(config, "get")(key)
                 setattr(get_module(self.model, lm_head_name), key, config.get(key))
@@ -1104,7 +1106,7 @@ class AutoRound(object):
             # Skip unsupported types
             supported_types = self.supported_types
 
-            if not isinstance(m,supported_types):
+            if not isinstance(m, supported_types):
                 continue
             all_supported_layer_names.append(n)
 
@@ -1122,8 +1124,8 @@ class AutoRound(object):
                 for match_name in matched_names:
                     layer_config[match_name] = val
             else:
-                tmp_m = get_module(self.model,name)
-                if not isinstance(tmp_m, torch.nn.Embedding): ##TODO not good code style
+                tmp_m = get_module(self.model, name)
+                if not isinstance(tmp_m, torch.nn.Embedding):  ##TODO not good code style
                     raise ValueError(f"key {name} in layer_config is invalid, please have a double check")
 
         has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
@@ -1145,6 +1147,7 @@ class AutoRound(object):
                 for key in keys:
                     if key not in layer_config[n].keys():
                         layer_config[n][key] = getattr(self, key)
+                layer_config[n]["fixed_by_user"] = True
             # If the layer is not in the config and not part of a quantization block,
             # use default configuration and set specific values
             else:
@@ -1161,7 +1164,7 @@ class AutoRound(object):
 
             # If the layer is outside a block and requires quantization, mark it as a quantized layer outside the block
             if (n not in layers_in_blocks and check_to_quantized(layer_config[n])
-                    and not isinstance(m,torch.nn.Embedding)):
+                    and not isinstance(m, torch.nn.Embedding)):
                 has_qlayer_outside_block = True
 
             in_features, out_features = get_layer_features(m)

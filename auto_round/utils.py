@@ -1652,7 +1652,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
         i_layer = _get_digital_in_layer_name(layer_name)
 
         gguf_name = tensor_map.get_name(layer_name)
-        if target_bits is not None and "bits" in config and config["bits"] != target_bits:
+        if (target_bits is not None and
+                "bits" in config and config["bits"] != target_bits):
             bits_index = 6
             new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
             if not new_type in GGUF_INNER_CONFIG:
