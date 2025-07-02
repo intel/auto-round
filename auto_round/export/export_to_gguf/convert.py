@@ -1167,7 +1167,7 @@ class Model(OriModel):
             if hasattr(module, "scale"):
                 if hasattr(self, "permute"):
                     bs = module.weight.shape[0]
-                    for attr in ["scale", "zp", "w_d_scale", "w_d_wmin_m", "w_wmin_m"]:
+                    for attr in ["scale", "zp", "w_d_scale", "w_d_wmin", "w_wmin"]:
                         if hasattr(module, attr) and getattr(module, attr) is not None:
                             attr_tensor = getattr(module, attr)
                             ori_shape = attr_tensor.shape
@@ -1187,17 +1187,17 @@ class Model(OriModel):
                 zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
                 if data_qtype.name.lower().endswith("_k"):
                     d_scale = module.w_d_scale.to(torch.float32)
-                    d_wmin_m = module.w_d_wmin_m.to(torch.float32) if hasattr(module, "w_d_wmin_m") else None
-                    wmin_m = module.w_wmin_m.to(torch.float32) if hasattr(module, "w_wmin_m") else None
+                    d_wmin = module.w_d_wmin.to(torch.float32) if hasattr(module, "w_d_wmin") else None
+                    wmin = module.w_wmin.to(torch.float32) if hasattr(module, "w_wmin") else None
 
                     data = ggml_quant_gpu(
                         data_torch,
                         data_qtype.name.lower(),
                         scale,
                         zp,
-                        wmin_m=wmin_m,
+                        wmin=wmin,
                         d_scale=d_scale,
-                        d_wmin_m=d_wmin_m,
+                        d_wmin=d_wmin,
                         device=device
                     )
                 else:
@@ -1222,6 +1222,8 @@ class Model(OriModel):
     def get_qtype_by_layer_config(self, layer_config, name, data_qtype):
         name = name[:-len('.weight')]
         if name not in layer_config or layer_config[name]['bits'] >= 16:
+            if isinstance(data_qtype, bool):
+                return gguf.GGMLQuantizationType.F32
             return data_qtype
         bits = layer_config[name]['bits']
         super_bits = layer_config[name]["super_bits"]
@@ -1410,6 +1412,8 @@ class Model(OriModel):
                 shape_str = f"{{{', '.join(str(n) for n in reversed(shape))}}}"
 
                 # n_dims is implicit in the shape
+                if isinstance(data_qtype, bool):
+                    breakpoint()
                 logger.info(
                     f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype}"
                     f" --> {data_qtype.name}, shape = {shape_str}")
