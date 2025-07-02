@@ -848,6 +848,7 @@ class AutoRound(object):
                     m.to("cpu")
                     m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
                                       enable_round_tuning=False)
+                    m = m.unwrapper({})
                 else:
                     raise
             if self.low_gpu_mem_usage:

@@ -528,9 +528,7 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
                 device=device,
                 **kwargs,
             )
-            new_m.name = n
             set_module(block, n, new_m)
-            breakpoint()
             quantized_layers.append(n)
 
         if enable_norm_bias_tuning:

@@ -1339,7 +1339,6 @@ class Model(OriModel):
                         # data_qtype = gguf.GGMLQuantizationType.Q8_0  # llama.cpp:llama_tensor_get_type
 
                 # get name by new_name (for experts),
-                # breakpoint()
                 name = self.get_moe_name(name, new_name)
 
                 # get data_qtype by layer_config

@@ -333,7 +333,7 @@ def quant_tensor_gguf_asym_dq(
         scale = scale.to(scale_dtype)
         scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
         scale = scale.reshape(-1, super_group_size)
-        wmin_m = wmin_m.reshape(-1, super_group_size)
+        wmin = wmin_m.reshape(-1, super_group_size)
         scale, d_scale = double_quant_tensor(scale, super_bits)
         wmin = torch.where(torch.abs(wmin) < 1e-30, 0, wmin)
         wmin_m, d_wmin_m = double_quant_tensor(wmin, super_bits)
