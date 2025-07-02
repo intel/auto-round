@@ -1584,6 +1584,20 @@ def _get_digital_in_layer_name(layer_name):
     else:
         return None
 
+def _search_gguf_type(gguf_type):
+    if gguf_type in GGUF_INNER_CONFIG:
+        return gguf_type
+    pattern = re.compile("gguf:q([0-9]{1,})_[01k]")
+    bits = re.search(pattern, gguf_type)
+    if not bits:
+        raise KeyError(f"{gguf_type} is not a correct gguf type, please check")
+
+    for suffix in ["_0", "_1", "_k"]:
+        if gguf_type.endswith(suffix):
+            continue
+        if (tmp_type := re.sub("_[01k]", suffix, gguf_type)) in GGUF_INNER_CONFIG:
+            return tmp_type
+    return None
 
 ##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
 def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
@@ -1651,18 +1665,29 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             input_features = layer.weight.shape[-1]
         i_layer = _get_digital_in_layer_name(layer_name)
 
+        if lm_head_name is not None and layer_name == lm_head_name:
+            target_bits= int(re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]['lm_head']).group(1))
+        if isinstance(layer, torch.nn.Embedding):
+            target_bits= int(re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]['embedding']).group(1))
+
         gguf_name = tensor_map.get_name(layer_name)
-        if (target_bits is not None and
+        bits_index = 6
+        if config.get("fixed_by_user", False):
+            if "bits" not in config:
+                logger.warning(
+                    f"Setting layer_config requires providing bits, {layer_name} has not bits,"
+                    f" using bits={target_bits} instead.")
+                new_type = new_type[:bits_index] + target_bits + new_type[bits_index + 1:]
+            else:
+                new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
+            new_type = _search_gguf_type(new_type)
+            if new_type is None:
+                raise ValueError(f"invalid bit setting for {layer_name}")
+        elif (target_bits is not None and
                 "bits" in config and config["bits"] != target_bits):
-            bits_index = 6
             new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
-            if not new_type in GGUF_INNER_CONFIG:
-                for tmp_type in (new_type[:bits_index + 1] + "_k", new_type[:bits_index + 1] + "_1",
-                                 new_type[:bits_index + 1] + "_0"):
-                    if tmp_type in GGUF_INNER_CONFIG:
-                        new_type = tmp_type
-                        break
-            if not new_type in GGUF_INNER_CONFIG:
+            new_type = _search_gguf_type(new_type)
+            if new_type is None:
                 raise ValueError(f"invalid bit setting for {layer_name}")
         elif lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
             if gguf.MODEL_ARCH.FALCON == model_class.model_arch or input_features % block_size != 0:

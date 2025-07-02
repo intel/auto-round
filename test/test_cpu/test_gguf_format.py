@@ -244,7 +244,8 @@ class TestGGUF(unittest.TestCase):
         layer_config = {
             "lm_head": {'bits': 4, 'group_size': 32, 'sym': False, 'data_type': 'int_asym_dq', 'scale_dtype': torch.float32, 'super_bits': 6, 'super_group_size': 8, 'in_blocks': False},
             "model.embed_tokens": {'bits': 6, 'group_size': 32, 'super_bits': 6, 'super_group_size': 8},
-            "model.layers.12.mlp.gate_proj": {'bits': 3}
+            "model.layers.12.mlp.gate_proj": {'bits': 3},
+            "model.layers.10.mlp.gate_proj": {'bits': 8},
         }
         autoround = AutoRound(
             model,
@@ -265,6 +266,8 @@ class TestGGUF(unittest.TestCase):
         self.assertEqual(autoround.model.model.embed_tokens.bits, 6)
         self.assertEqual(autoround.model.model.embed_tokens.group_size, 16)
         self.assertEqual(autoround.model.model.layers[12].mlp.gate_proj.bits, 3)
+        self.assertEqual(autoround.model.model.layers[10].mlp.gate_proj.bits, 8)
+        self.assertEqual(autoround.layer_config['model.layers.10.mlp.gate_proj']['mostly'], "gguf:q8_0")
         shutil.rmtree("./saved", ignore_errors=True)
 
 if __name__ == "__main__":
