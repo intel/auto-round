@@ -137,7 +137,7 @@ def double_quant_tensor(tensor, bits):
     tensor = tensor.to(torch.float32)  # Ensure tensor is in float32 for precision
     maxq = 2 ** bits - 1
     wmax = torch.clamp(tensor.max(-1)[0], min=0)
-    scale = torch.where(wmax > 0, wmax / maxq, 0)
+    scale = wmax / maxq
     scale = scale.view(-1, 1)
     # inverse_scale = torch.where(scale == 0, 0, 1 / scale)
     inverse_scale = torch.where(wmax > 0, maxq / wmax, 0).view(-1, 1)
