@@ -237,6 +237,35 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
 
 
+    def test_q4_k_m(self):
+        model_name = "Qwen/Qwen2.5-7B-Instruct"
+        model_name = "/models/Qwen2.5-7B-Instruct"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        bits, group_size, sym, super_group_size, super_bits = 4, 32, False, 8, 6
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=0,
+            seqlen=1,
+            dataset=self.llm_dataloader,
+            data_type="int_asym_dq",
+            super_group_size=super_group_size,
+            super_bits=super_bits,
+            disable_opt_rtn=True 
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
+        self.assertEqual(autoround.layer_config["model.layers.11.self_attn.v_proj"]["super_group_size"], 16)
+        self.assertEqual(autoround.layer_config["model.layers.11.self_attn.v_proj"]["data_type"], "int_sym_dq")
+        self.assertEqual(autoround.layer_config["model.layers.7.self_attn.v_proj"]["data_type"], "int_asym_dq")
+        self.assertEqual(autoround.model.model.layers[0].self_attn.v_proj.bits, 6)
+        self.assertEqual(autoround.model.model.layers[12].self_attn.v_proj.bits, 4)
+        shutil.rmtree("./saved", ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()
 
