@@ -59,6 +59,9 @@ def torch_roundf(n):
 
 
 def make_qx_quants(data, bits, rmse_type=0, qw=None):
+    """
+    adapted from llmacpp
+    """
     nmax = pow(2, bits - 1)
     imax = abs(data).argmax(axis=-1, keepdims=True)
     group_max = torch.take_along_dim(data, imax, dim=-1)
