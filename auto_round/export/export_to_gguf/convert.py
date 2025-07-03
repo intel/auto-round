@@ -1416,7 +1416,7 @@ class Model(OriModel):
                         data = gguf.quants.quantize(data, data_qtype)
                 else:
                     # for deepseek v2
-                    if name.endswith("kv_b_proj.weight"):
+                    if name.endswith("kv_b_proj.weight") and self.model_arch.name == 'DEEPSEEK2':
                         from auto_round.utils import get_module
                         layer_name = name[:-len('.weight')]
                         module = get_module(self.model, layer_name)

@@ -1817,10 +1817,28 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
                 f"fallback {layer_name} to {new_type}, "
                 f"because input_features({input_features}) % block_size({block_size}) != 0")
         # for deepseek v2
-        if layer_name.endswith("kv_b_proj") and new_type.endswith("_k"):
-            tmp_type = new_type.replace("_k", "_0")
-            logger.warning_once(f"self_attn.kv_b_proj does not support the use of {new_type}, replace it with {tmp_type}")
-            new_type = tmp_type
+        if layer_name.endswith("kv_b_proj") and new_type.endswith("_k") \
+            and 'Deepseek' in model.config.architectures[0]:
+            fallback = False
+
+            # calc if need fallback 
+            n_head_kv = model.config.num_key_value_heads
+            v_head_dim = model.config.v_head_dim
+            qk_nope_head_dim = model.config.qk_nope_head_dim
+            kv_b = get_module(model, layer_name).weight
+            kv_b = kv_b.view(n_head_kv, v_head_dim + qk_nope_head_dim, kv_b.shape[-1])
+            k_b, v_b = torch.split(kv_b, [qk_nope_head_dim, v_head_dim], dim=1)
+            k_b = k_b.transpose(1, 2)
+            
+            if k_b.shape[-1] < 256 or k_b % 256 != 0 or v_b.shape[-1] < 256 or v_b % 256 != 0:
+                fallback = True
+            if fallback:
+                tmp_type = new_type.replace("_k", "_0")
+                if tmp_type not in GGUF_CONFIG:
+                    tmp_type = "gguf:q4_0"
+                logger.warning_once(
+                    f"self_attn.kv_b_proj does not support the use of {new_type}, replace it with {tmp_type}")
+                new_type = tmp_type
 
         target_config = GGUF_INNER_CONFIG[new_type]
 
