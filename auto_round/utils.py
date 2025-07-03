@@ -1826,8 +1826,6 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             fallback = False
 
             # calc if need fallback 
-            n_head_kv = model.config.num_key_value_heads
-            v_head_dim = model.config.v_head_dim
             qk_nope_head_dim = model.config.qk_nope_head_dim
             kv_b_shape = get_module(model, layer_name).weight.shape
             
