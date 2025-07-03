@@ -52,7 +52,9 @@ import math
 import numpy as np
 import torch
 
-from auto_round.utils import logger, LazyImport
+from auto_round.low_cpu_mem import clean_module_weight
+from auto_round.utils import logger, LazyImport, get_module, clear_memory, \
+    clean_module_parameter
 from .packing import ggml_quant_gpu
 
 gguf = LazyImport("gguf")
@@ -1282,9 +1284,17 @@ class Model(OriModel):
         max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
 
         for name, data_torch in chain(self.generate_extra_tensors(), self.get_tensors()):
+            if data_torch is None:
+                continue
             # we don't need these
             if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
                 continue
+            if hasattr(self,"current_packing_block") and self.current_packing_block is not None:
+                current_packing_block_split = self.current_packing_block.split('.')
+                name_split = name.split('.')
+                if (len(name_split)<len(current_packing_block_split) or
+                        name_split[:len(current_packing_block_split)]!=current_packing_block_split):
+                    continue
 
             old_dtype = data_torch.dtype
 
@@ -1419,6 +1429,10 @@ class Model(OriModel):
                     f" --> {data_qtype.name}, shape = {shape_str}")
 
                 self.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
+
+                module = get_module(self.model, ".".join(name.split(".")[:-1]))
+                clean_module_parameter(module, name.split(".")[-1])
+                clear_memory()
 
 
 @Model.register("GPTNeoXForCausalLM")

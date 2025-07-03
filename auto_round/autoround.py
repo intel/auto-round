@@ -525,6 +525,7 @@ class AutoRound(object):
             ValueError: If an unsupported format is specified.
         """
         # Validate and process the specified formats
+        self.orig_output_dir = output_dir
         _gguf_args_check(self, format)
 
         formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
@@ -611,13 +612,17 @@ class AutoRound(object):
                     " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
                     "the AutoRound format(2/3/4/8 bits)."
                 )
-            save_format_ = format.replace(":", "-").replace("_", "-")
-            save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
+            save_folder = self.get_save_folder_name(format)
             self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
 
             folders.append(save_folder)
 
         return model, folders
+
+    def get_save_folder_name(self,format):
+        save_format_ = format.replace(":", "-").replace("_", "-")
+        save_folder = os.path.join(self.orig_output_dir, save_format_) if len(self.formats) > 1 else self.orig_output_dir
+        return save_folder
 
     @torch.inference_mode
     def quantize_embedding_layer(self):
@@ -863,8 +868,11 @@ class AutoRound(object):
             if self.is_packing_immediate:
                 from auto_round.export import PACKING_LAYER_WITH_FORMAT
                 if check_to_quantized(m):
-                    target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
+                    # target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
+                    # PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
+                    from auto_round.export.export_to_gguf.export import pack_gguf_layer
+                    output_dir = self.get_save_folder_name(self.formats[0])
+                    pack_gguf_layer(name,self.model,self.formats[0],output_dir,self.layer_config,self.tokenizer)
                     if self.low_gpu_mem_usage:
                         clear_memory()
             else:
@@ -954,6 +962,8 @@ class AutoRound(object):
         Returns:
         The quantized model and layer configurations.
         """
+        for n,m in self.model.named_modules():
+            m.tmp_name = n
         self._check_compatibility()
         self.has_qlayer_outside_block = self.set_layerwise_config(self.layer_config)
         if not hasattr(self, "formats"):
@@ -972,8 +982,7 @@ class AutoRound(object):
             # Determine if immediate packing is required
             formats = self.formats
             if (len(formats) == 1 and
-                    ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[0]) and
-                    not self.has_qlayer_outside_block and self.inplace):  # TODO: Support more formats
+                    ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[0] or "gguf" in formats[0]) and self.inplace):  # TODO: Support more formats
                 self.is_packing_immediate = True
         if self.iters == 0:
             return self.quantize_rtn()
@@ -1112,20 +1121,20 @@ class AutoRound(object):
         if len(layer_names) == 0:
             return
         q_layer_inputs = None
-        enable_quanted_input = self.enable_quanted_input
-        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
-            from accelerate.big_modeling import dispatch_model
-
-            dispatch_model(self.model, self.model.hf_device_map)
-
-        if enable_quanted_input:
-            logger.info(
-                "starting to cache layer inputs for %s, this may be quite slow ",
-                layer_names)
-            q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
-            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                accelerate.hooks.remove_hook_from_submodules(
-                    self.model)  ##self.model.hf_device_map has not been changed
+        # enable_quanted_input = self.enable_quanted_input
+        # if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
+        #     from accelerate.big_modeling import dispatch_model
+        #
+        #     dispatch_model(self.model, self.model.hf_device_map)
+        #
+        # if enable_quanted_input:
+        #     logger.info(
+        #         "starting to cache layer inputs for %s, this may be quite slow ",
+        #         layer_names)
+        #     q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
+        #     if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+        #         accelerate.hooks.remove_hook_from_submodules(
+        #             self.model)  ##self.model.hf_device_map has not been changed
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
@@ -1136,7 +1145,7 @@ class AutoRound(object):
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.cache_device)
-            q_layer_input = q_layer_inputs[layer_name] if enable_quanted_input else None
+            q_layer_input = q_layer_inputs[layer_name] if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.cache_device)
             quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
             del layer_input
@@ -2068,7 +2077,11 @@ class AutoRound(object):
                 for _, tmp_m in m.named_modules():
                     if hasattr(tmp_m, "bits") and check_to_quantized(tmp_m):
                         target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                        PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.name, self.model, self.formats[0])
+                        ##PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.name, self.model, self.formats[0])
+                        from auto_round.export.export_to_gguf.export import pack_gguf_layer
+                        output_dir = self.get_save_folder_name(self.formats[0])
+                        pack_gguf_layer(tmp_m.tmp_name, self.model, target_backend, output_dir, self.layer_config,
+                                        self.tokenizer)
         pbar.set_description(f"Quantizing done")
         pbar.update(1)
         pbar.close()
