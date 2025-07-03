@@ -841,7 +841,7 @@ class AutoRound(object):
         pbar = tqdm(all_to_quantized_module_names)
 
         for name in pbar:
-            pbar.set_description(f"Quantizing {name}")
+            pbar.set_description(f"Quantizing {name}\n")
             m = get_module(self.model, name)
             if not self.disable_opt_rtn and not (m.data_type.startswith("rtn_")):  ## use rtn version first
                 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
@@ -2054,7 +2054,7 @@ class AutoRound(object):
                 pbar.update(1)
             if nblocks == 1:
                 n = block_names[i]
-                pbar.set_description(f"Quantizing {n}")
+                pbar.set_description(f"Quantizing {n}\n")
                 m = get_module(model, n)
             else:
                 names = block_names[i: min(i + nblocks, len(block_names))]

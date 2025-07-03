@@ -16,12 +16,10 @@ import os
 import sys
 import shutil
 import torch
-from .convert import Model
-from auto_round.utils import logger, LazyImport, get_block_names, flatten_list, check_to_quantized
 from pathlib import Path
 import time
-
-from ..export_to_awq.utils import clear_memory
+from auto_round.export.export_to_gguf.convert import Model
+from auto_round.utils import logger, LazyImport, get_block_names, flatten_list, check_to_quantized
 
 gguf = LazyImport("gguf")
 
@@ -84,7 +82,7 @@ def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0"):
             small_first_shard=False)
     return model_instance
 
-
+@torch.inference_mode()
 def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer):
     """Export the model to gguf format."""
     global gguf_model_instance_global
@@ -121,25 +119,26 @@ def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer):
         gguf_model_instance_global.current_packing_block = model.last_layer_name_to_block_name[name]
         gguf_model_instance_global.prepare_tensors()
         model.last_layer_name_to_block_name.pop(name)
-        # if len(model.last_layer_name_to_block_name) == 0:
-        #     gguf_model_instance_global.current_packing_block = None
+        if len(model.last_layer_name_to_block_name) == 0:
+            gguf_model_instance_global.current_packing_block = None
         #     gguf_model_instance_global.write()
         #     shutil.rmtree(tmp_work_dir, ignore_errors=True)
         #     del gguf_model_instance_global
 
-
+@torch.inference_mode()
 def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, **kwargs):
     """Export the model to gguf format."""
-    if output_dir is not None and os.path.exists(output_dir):
+    tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
+    if output_dir is not None and os.path.exists(output_dir) and not os.path.exists(tmp_work_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
 
     st = time.time()
+    global gguf_model_instance_global
+
+    model = kwargs["model"]
     if "gguf_model_instance_global" not in globals():
-        model = kwargs["model"]
         tokenizer = kwargs.get("tokenizer", None)
         config = model.config
-
-        tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
         if tokenizer is not None:
             tokenizer.save_pretrained(tmp_work_dir)
         config.save_pretrained(tmp_work_dir)
