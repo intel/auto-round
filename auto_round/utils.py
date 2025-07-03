@@ -1897,14 +1897,9 @@ def get_gguf_qtype_by_layer_config(layer_config):
 
 def clean_module_parameter(submodule, parameter):
     is_buffer = parameter in submodule._buffers
-    old_value = getattr(submodule, parameter)
     with torch.no_grad():
         if is_buffer:
-            submodule._buffers[parameter] = torch.zeros(old_value.shape, device="meta")
+            submodule._buffers[parameter] = None
         else:
-            param_cls = type(submodule._parameters[parameter])
-            kwargs = submodule._parameters[parameter].__dict__
-            new_value = torch.zeros(old_value.shape, device="meta")
-            new_value = param_cls(new_value, requires_grad=old_value.requires_grad, **kwargs).to("meta")
-            submodule._parameters[parameter] = new_value
+            submodule._parameters[parameter] = None
     gc.collect()
