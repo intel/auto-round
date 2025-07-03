@@ -52,7 +52,8 @@ import math
 import numpy as np
 import torch
 
-from auto_round.utils import logger, LazyImport
+from auto_round.utils import logger, LazyImport, clear_memory, get_module
+from auto_round.low_cpu_mem.utils import clean_module_weight
 from .packing import ggml_quant_gpu
 
 gguf = LazyImport("gguf")
@@ -1185,7 +1186,6 @@ class Model(OriModel):
         return data
 
     def _quant_data(self, data_torch, data_qtype, name, bid):
-        from auto_round.utils import get_module
         suffix = '.weight'
         if suffix in name:
             layer_name = name[:-len(suffix)]
@@ -1417,7 +1417,6 @@ class Model(OriModel):
                 else:
                     # for deepseek v2
                     if name.endswith("kv_b_proj.weight") and self.model_arch.name == 'DEEPSEEK2':
-                        from auto_round.utils import get_module
                         layer_name = name[:-len('.weight')]
                         module = get_module(self.model, layer_name)
                         n_head_kv = self.hparams["num_key_value_heads"]
@@ -1476,6 +1475,13 @@ class Model(OriModel):
                     f" --> {data_qtype.name}, shape = {shape_str}")
 
                 self.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
+
+                # save cpu memory
+                del data
+                module = get_module(self.model, ".".join(name.split(".")[:-1]))
+                clean_module_weight(module)
+                setattr(self.model, name, None)
+                clear_memory()
 
 
 @Model.register("GPTNeoXForCausalLM")

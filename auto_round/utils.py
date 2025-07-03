@@ -1599,6 +1599,15 @@ def _search_gguf_type(gguf_type):
             return tmp_type
     return None
 
+def _gguf_type_fallback(gguf_type):
+    if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
+        gguf_type = "gguf:q5_0"
+    elif gguf_type == "gguf:q5_k":
+        gguf_type = "gguf:q5_0"
+    elif gguf_type == "gguf:q6_k":
+        gguf_type = "gguf:q8_0"
+    return gguf_type
+
 ##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
 def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
     # TODO: support for other format later
@@ -1804,12 +1813,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
                 new_type = "gguf:q5_k"
         new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
         if input_features % new_block_size != 0:
-            if new_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
-                new_type = "gguf:q5_0"
-            elif new_type == "gguf:q5_k":
-                new_type = "gguf:q5_0"
-            elif new_type == "gguf:q6_k":
-                new_type = "gguf:q8_0"
+            new_type = _gguf_type_fallback(new_type)
             new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
             if input_features % new_block_size != 0:
                 new_type = "gguf:bf16"
@@ -1833,9 +1837,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             if k_b.shape[-1] < 256 or k_b % 256 != 0 or v_b.shape[-1] < 256 or v_b % 256 != 0:
                 fallback = True
             if fallback:
-                tmp_type = new_type.replace("_k", "_0")
-                if tmp_type not in GGUF_CONFIG:
-                    tmp_type = "gguf:q4_0"
+                tmp_type = _gguf_type_fallback(new_type)
                 logger.warning_once(
                     f"self_attn.kv_b_proj does not support the use of {new_type}, replace it with {tmp_type}")
                 new_type = tmp_type
