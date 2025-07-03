@@ -1816,6 +1816,11 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             logger.warning(
                 f"fallback {layer_name} to {new_type}, "
                 f"because input_features({input_features}) % block_size({block_size}) != 0")
+        # for deepseek v2
+        if layer_name.endswith("kv_b_proj") and new_type.endswith("_k"):
+            tmp_type = new_type.replace("_k", "_0")
+            logger.warning_once(f"self_attn.kv_b_proj does not support the use of {new_type}, replace it with {tmp_type}")
+            new_type = tmp_type
 
         target_config = GGUF_INNER_CONFIG[new_type]
 
