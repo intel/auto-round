@@ -52,9 +52,8 @@ import math
 import numpy as np
 import torch
 
-from auto_round.utils import logger, LazyImport, clear_memory, get_module
-from auto_round.low_cpu_mem.utils import clean_module_weight
-from .packing import ggml_quant_gpu
+from auto_round.utils import logger, LazyImport, clear_memory, get_module, clean_modeule_parameter
+from auto_round.export.export_to_gguf.packing import ggml_quant_gpu
 
 gguf = LazyImport("gguf")
 
@@ -1200,7 +1199,7 @@ class Model(OriModel):
                             attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), name, bid)[0][1]
                             attr_tensor = attr_tensor.reshape(ori_shape)
                             setattr(module, attr, attr_tensor)
-                scale = module.scale
+                scale = module.scale if hasattr(module, "scale") else None
                 zp = module.zp if hasattr(module, "zp") else None
                 if torch.cuda.is_available():
                     device = "cuda"
@@ -1212,7 +1211,7 @@ class Model(OriModel):
                 scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
                 zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
                 if data_qtype.name.lower().endswith("_k"):
-                    d_scale = module.w_d_scale.to(torch.float32)
+                    d_scale = module.w_d_scale.to(torch.float32) if hasattr(module, "w_d_scale") else None
                     d_wmin = module.w_d_wmin.to(torch.float32) if hasattr(module, "w_d_wmin") else None
                     wmin = module.w_wmin.to(torch.float32) if hasattr(module, "w_wmin") else None
 
@@ -1478,10 +1477,11 @@ class Model(OriModel):
 
                 # save cpu memory
                 del data
-                module = get_module(self.model, ".".join(name.split(".")[:-1]))
-                clean_module_weight(module)
-                setattr(self.model, name, None)
                 clear_memory()
+
+            module = get_module(self.model, ".".join(name.split(".")[:-1]))
+            clean_modeule_parameter(module, name.split(".")[-1])
+            clear_memory()
 
 
 @Model.register("GPTNeoXForCausalLM")

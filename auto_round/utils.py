@@ -29,7 +29,7 @@ from packaging import version
 import gc
 from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 import transformers
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES, GGUF_INNER_CONFIG
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES, GGUF_INNER_CONFIG, QK_K
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -1219,7 +1219,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
                     logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                     sys.exit(1)
 
-                if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 != 0):
+                if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % QK_K != 0):
                     model_name = args_or_ar.model.split('/')
                     model_name = model_name[-1] if model_name[-1] else model_name[-2]
                     hidden_size = hparams["hidden_size"]
@@ -1829,12 +1829,10 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             n_head_kv = model.config.num_key_value_heads
             v_head_dim = model.config.v_head_dim
             qk_nope_head_dim = model.config.qk_nope_head_dim
-            kv_b = get_module(model, layer_name).weight
-            kv_b = kv_b.view(n_head_kv, v_head_dim + qk_nope_head_dim, kv_b.shape[-1])
-            k_b, v_b = torch.split(kv_b, [qk_nope_head_dim, v_head_dim], dim=1)
-            k_b = k_b.transpose(1, 2)
+            kv_b_shape = get_module(model, layer_name).weight.shape
             
-            if k_b.shape[-1] < 256 or k_b % 256 != 0 or v_b.shape[-1] < 256 or v_b % 256 != 0:
+            if qk_nope_head_dim < QK_K or qk_nope_head_dim % QK_K != 0 \
+                or kv_b_shape[-1] < QK_K or kv_b_shape[-1] % QK_K != 0:
                 fallback = True
             if fallback:
                 tmp_type = _gguf_type_fallback(new_type)
@@ -1897,3 +1895,18 @@ def get_gguf_qtype_by_layer_config(layer_config):
     if bits == 8 and sym and group_size == 32:
         return gguf.GGMLQuantizationType.Q8_0
     raise ValueError(f"Unknown layer config")
+
+
+def clean_modeule_parameter(submodule, parameter):
+    is_buffer = parameter in submodule._buffers
+    old_value = getattr(submodule, parameter)
+    with torch.no_grad():
+        if is_buffer:
+            submodule._buffers[parameter] = torch.zeros(old_value.shape, device="meta")
+        else:
+            param_cls = type(submodule._parameters[parameter])
+            kwargs = submodule._parameters[parameter].__dict__
+            new_value = torch.zeros(old_value.shape, device="meta")
+            new_value = param_cls(new_value, requires_grad=old_value.requires_grad, **kwargs).to("meta")
+            submodule._parameters[parameter] = new_value
+    gc.collect()
