@@ -86,8 +86,8 @@ def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0"):
 def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer):
     """Export the model to gguf format."""
     global gguf_model_instance_global
-
-    if output_dir is not None and os.path.exists(output_dir):
+    tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
+    if output_dir is not None and os.path.exists(output_dir) and not os.path.exists(tmp_work_dir):
         logger.warning_once(f"{output_dir} already exists, this may cause model conflict")
     tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
     if "gguf_model_instance_global" not in globals():

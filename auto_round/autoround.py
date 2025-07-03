@@ -56,7 +56,7 @@ from auto_round.utils import (
     init_cache, check_skippable_keywords, get_shared_keys, SUPPORTED_DTYPES, infer_bits_by_data_type,
     _gguf_args_check,
     check_seqlen_compatible,
-    get_layer_config_by_gguf_format, get_lm_head_name
+    get_layer_config_by_gguf_format, get_lm_head_name, flatten_list
 )
 from .low_cpu_mem.utils import get_layers_before_block
 
@@ -675,8 +675,7 @@ class AutoRound(object):
             clear_memory()
         return True
 
-    def get_imatrix(self):
-        ##TODO switch to blockwise way when oom
+    def quant_rtn_with_imatrix(self,all_to_quantized_module_names):
         logger.info("start to get imatrix for gguf quantization")
         from .calib_dataset import get_dataloader
         if isinstance(self.dataset, str):
@@ -697,8 +696,6 @@ class AutoRound(object):
             from accelerate.big_modeling import dispatch_model
             dispatch_model(model, model.hf_device_map)
 
-
-
         def register_act_hook(model):
             def get_act_max_hook(module, input, output):
                 if isinstance(input, (tuple, list)):
@@ -706,9 +703,11 @@ class AutoRound(object):
                 if not hasattr(module, "imatrix"):
                     module.imatrix = (torch.sum(input.reshape(-1, input.shape[-1]).to(torch.float32) ** 2, dim=0)).to(
                         torch.float32)
+                    module.imatrix_cnt=1
                 else:
                     module.imatrix = module.imatrix + (
                         torch.sum(input.reshape(-1, input.shape[-1]).to(torch.float32) ** 2, dim=0)).to(torch.float32)
+                    module.imatrix_cnt+=1
 
             hook_handles = []
 
@@ -729,12 +728,27 @@ class AutoRound(object):
                 model(**data)
                 if cnt > self.nsamples:
                     break
+            for hook in hooks:
+                hook.remove()
+            for n, m in model.named_modules():
+                if hasattr(m, "imatrix"):
+                    m.imatrix /= m.imatrix_cnt
+            pbar = tqdm(all_to_quantized_module_names)
+
+            for name in pbar:
+                pbar.set_description(f"Quantizing {name}")
+                self.quantize_layer_via_rtn(name)
+
         except RuntimeError as e:
             try:
                 model=self.model.to("cpu")
                 clear_memory()
                 logger.warning("out of vram, fallback to blockwise way to get imatrix, this may affect accuracy")
-                self.model_forward_blockwise()
+                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                for hook in hooks:
+                    hook.remove()
+
+
             except Exception as e:
                 model=self.model.to("cpu")
                 clear_memory()
@@ -742,19 +756,12 @@ class AutoRound(object):
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                     accelerate.hooks.remove_hook_from_submodules(
                         self.model)  ##self.model.hf_device_map has not been changed
-                cnt = 0
-                for data in self.dataloader:
-                    cnt += data["input_ids"].shape[0]
-                    data = to_device(data, self.model.device)
-                    model(**data)
-                    if cnt > self.nsamples:
-                        break
-
-        for hook in hooks:
-            hook.remove()
-        for n, m in model.named_modules():
-            if hasattr(m, "imatrix"):
-                m.imatrix /= cnt
+                orig_device = self.device
+                self.device = "cpu"
+                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                for hook in hooks:
+                    hook.remove()
+                self.device = orig_device
 
         model.to("cpu")
         clear_memory()
@@ -820,6 +827,45 @@ class AutoRound(object):
             return True
         return False
 
+
+    def quantize_layer_via_rtn(self,name):
+        m = get_module(self.model, name)
+        if not self.disable_opt_rtn and not (m.data_type.startswith("rtn_")):  ## use rtn version first
+            from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+            if "rtn_" + m.data_type in QUANT_FUNC_WITH_DTYPE:
+                m.data_type = "rtn_" + m.data_type
+                self.layer_config[name]["data_type"] = m.data_type
+        try:
+            m.to(self.device)
+            m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
+                              enable_round_tuning=False)
+            m = m.unwrapper({})
+            m.to("cpu")
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                logger.warning("out of vram, fallback to cpu")
+                m.to("cpu")
+                m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
+                                  enable_round_tuning=False)
+                m = m.unwrapper({})
+            else:
+                raise
+        if self.low_gpu_mem_usage:
+            clear_memory()
+        if self.is_packing_immediate:
+            from auto_round.export import PACKING_LAYER_WITH_FORMAT
+            if check_to_quantized(m):
+                # target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
+                # PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
+                from auto_round.export.export_to_gguf.export import pack_gguf_layer
+                output_dir = self.get_save_folder_name(self.formats[0])
+                pack_gguf_layer(name, self.model, self.formats[0], output_dir, self.layer_config, self.tokenizer)
+                if self.low_gpu_mem_usage:
+                    clear_memory()
+        else:
+            set_module(self.model, name, m)
+
+
     @torch.inference_mode
     def quantize_rtn(self):
         if self.amp:
@@ -830,58 +876,28 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
             if check_to_quantized(m):
                 all_to_quantized_module_names.append(n)
+        has_gguf_k = False
+
+        self.quantize_embedding_layer()
+
         if hasattr(self, "formats"):
-            has_gguf_k = False
             for format_ in self.formats:
                 if "gguf" in format_ and "k" in format_:
                     has_gguf_k = True
-            if has_gguf_k and not self.disable_opt_rtn:
-                self.get_imatrix()
-            self.quantize_embedding_layer()
-        pbar = tqdm(all_to_quantized_module_names)
 
-        for name in pbar:
-            pbar.set_description(f"Quantizing {name}\n")
-            m = get_module(self.model, name)
-            if not self.disable_opt_rtn and not (m.data_type.startswith("rtn_")):  ## use rtn version first
-                from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-                if "rtn_" + m.data_type in QUANT_FUNC_WITH_DTYPE:
-                    m.data_type = "rtn_" + m.data_type
-                    self.layer_config[name]["data_type"] = m.data_type
-            try:
-                m.to(self.device)
-                m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
-                                  enable_round_tuning=False)
-                m = m.unwrapper({})
-                m.to("cpu")
-            except RuntimeError as e:
-                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                    logger.warning("out of vram, fallback to cpu")
-                    m.to("cpu")
-                    m = WrapperLinear(m, enable_minmax_tuning=False, enable_norm_bias_tuning=False,
-                                      enable_round_tuning=False)
-                    m = m.unwrapper({})
-                else:
-                    raise
-            if self.low_gpu_mem_usage:
-                clear_memory()
-            if self.is_packing_immediate:
-                from auto_round.export import PACKING_LAYER_WITH_FORMAT
-                if check_to_quantized(m):
-                    # target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
-                    # PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
-                    from auto_round.export.export_to_gguf.export import pack_gguf_layer
-                    output_dir = self.get_save_folder_name(self.formats[0])
-                    pack_gguf_layer(name,self.model,self.formats[0],output_dir,self.layer_config,self.tokenizer)
-                    if self.low_gpu_mem_usage:
-                        clear_memory()
-            else:
-                set_module(self.model, name, m)
+        if has_gguf_k and not self.disable_opt_rtn:
+            self.quant_rtn_with_imatrix(all_to_quantized_module_names)
+        else:
+            pbar = tqdm(all_to_quantized_module_names)
+
+            for name in pbar:
+                pbar.set_description(f"Quantizing {name}")
+                self.quantize_layer_via_rtn(name)
 
         self.quantized = True
         return self.model, self.layer_config
 
-    def model_forward_blockwise(self):
+    def quantize_via_rtn_blockwise(self,all_to_quantized_module_names ):
         if bool(self.quant_block_list):
             all_blocks = self.quant_block_list
         else:
@@ -896,7 +912,7 @@ class AutoRound(object):
 
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model)  ##self.model.hf_device_map has not been changed
-
+        pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), 1))
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
@@ -918,6 +934,7 @@ class AutoRound(object):
             input_ids = inputs["input_ids"]
             inputs.pop("input_ids", None)
             for block_name in block_names:
+                pbar.set_description(f"quantizing {block_name}")
                 input_others = inputs
                 clear_memory()
                 input_ids = to_device(input_ids, self.cache_device)
@@ -955,7 +972,23 @@ class AutoRound(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(
                         block)
+                for n, m in block.named_modules():
+                    if hasattr(m, "imatrix"):
+                        m.imatrix /= m.imatrix_cnt
+                    if n in all_to_quantized_module_names:
+                        self.quantize_layer_via_rtn(n)
+                        all_to_quantized_module_names.pop(n)
+
                 mv_module_from_gpu(block, self.low_cpu_mem_usage)
+                pbar.update(1)
+            pbar.close()
+
+            for name in all_to_quantized_module_names:
+                pbar.set_description(f"Quantizing {name}")
+                self.quantize_layer_via_rtn(name)
+
+
+
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
@@ -2054,7 +2087,7 @@ class AutoRound(object):
                 pbar.update(1)
             if nblocks == 1:
                 n = block_names[i]
-                pbar.set_description(f"Quantizing {n}\n")
+                pbar.set_description(f"Quantizing {n}")
                 m = get_module(model, n)
             else:
                 names = block_names[i: min(i + nblocks, len(block_names))]
