@@ -3,7 +3,7 @@
 # pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
 accelerate
 # autoawq
-bitsandbytes==0.44.0 
+bitsandbytes
 datasets
 einops
 flash-attn==2.5.8
@@ -12,12 +12,12 @@ lm-eval>=0.4.2,<0.5
 numpy < 2.0
 optimum
 pandas
-protobuf==3.20.2
+protobuf==4.25.8
 pillow
 py-cpuinfo
-torch==2.3.0
+torch==2.6.0
 torchvision
-triton==2.3.0
+triton==3.2.0
 tqdm
-transformers==4.45.0
+transformers
 xformers

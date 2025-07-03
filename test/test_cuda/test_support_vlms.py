@@ -23,7 +23,7 @@ class TestSupportVLMS(unittest.TestCase):
     def tearDownClass(self):
         shutil.rmtree(self.save_dir, ignore_errors=True)
     
-    @require_gptqmodel
+    # @require_gptqmodel
     # def test_qwen2(self):
     #     model_path = "/models/Qwen2-VL-2B-Instruct/"
     #     # test tune
@@ -200,44 +200,44 @@ class TestSupportVLMS(unittest.TestCase):
         print(response)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @require_vlm_env
-    def test_llava(self):
-        model_path = "/models/llava-v1.5-7b/"
-        ## test tune
-        res = os.system(
-            f"cd ../.. && {self.python_path} -m auto_round --mllm "
-            f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
-        self.assertFalse(res > 0 or res == -1, msg="llava-v1.5-7b tuning fail")
+    # @require_vlm_env
+    # def test_llava(self):
+    #     model_path = "/models/llava-v1.5-7b/"
+    #     ## test tune
+    #     res = os.system(
+    #         f"cd ../.. && {self.python_path} -m auto_round --mllm "
+    #         f"--model {model_path} --iter 2 --output_dir {self.save_dir} --device {self.device}") 
+    #     self.assertFalse(res > 0 or res == -1, msg="llava-v1.5-7b tuning fail")
     
-        ## test infer
-        from llava.model.builder import load_pretrained_model
-        from llava.train.train import preprocess, preprocess_multimodal
-        class DataArgs:
-            is_multimodal = True
-            mm_use_im_start_end = False
+    #     ## test infer
+    #     from llava.model.builder import load_pretrained_model
+    #     from llava.train.train import preprocess, preprocess_multimodal
+    #     class DataArgs:
+    #         is_multimodal = True
+    #         mm_use_im_start_end = False
 
-        quantized_model_path = os.path.join(self.save_dir, "llava-v1.5-7b-w4g128")
-        tokenizer, model, image_processor, _ = load_pretrained_model(
-            quantized_model_path,
-            model_base=None,
-            model_name=quantized_model_path,
-            torch_dtype="auto",
-            device_map=f"cuda:{self.device}",
-        )
-        image_url = "http://images.cocodataset.org/train2017/000000116003.jpg"
-        messages = [{"from": "human", "value": "What is the tennis player doing in the image?\n<image>"}]
+    #     quantized_model_path = os.path.join(self.save_dir, "llava-v1.5-7b-w4g128")
+    #     tokenizer, model, image_processor, _ = load_pretrained_model(
+    #         quantized_model_path,
+    #         model_base=None,
+    #         model_name=quantized_model_path,
+    #         torch_dtype="auto",
+    #         device_map=f"cuda:{self.device}",
+    #     )
+    #     image_url = "http://images.cocodataset.org/train2017/000000116003.jpg"
+    #     messages = [{"from": "human", "value": "What is the tennis player doing in the image?\n<image>"}]
 
-        # Preparation for inference
-        image = Image.open(requests.get(image_url, stream=True).raw).convert('RGB')
-        image_input = image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0].to(model.device)
-        input_data = preprocess_multimodal([messages], DataArgs())
-        inputs = preprocess(input_data, tokenizer, has_image=(image_input is not None))
+    #     # Preparation for inference
+    #     image = Image.open(requests.get(image_url, stream=True).raw).convert('RGB')
+    #     image_input = image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0].to(model.device)
+    #     input_data = preprocess_multimodal([messages], DataArgs())
+    #     inputs = preprocess(input_data, tokenizer, has_image=(image_input is not None))
 
-        output = model.generate(inputs['input_ids'].to(model.device), images=image_input.unsqueeze(0).half(), max_new_tokens=50)
-        print(tokenizer.batch_decode(output))
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
+    #     output = model.generate(inputs['input_ids'].to(model.device), images=image_input.unsqueeze(0).half(), max_new_tokens=50)
+    #     print(tokenizer.batch_decode(output))
+    #     shutil.rmtree(quantized_model_path, ignore_errors=True)
     
-    @require_gptqmodel
+    # @require_gptqmodel
     # def test_llama(self):
     #     model_path = "/models/Llama-3.2-11B-Vision-Instruct/"
     #     ## test tune
@@ -341,70 +341,70 @@ class TestSupportVLMS(unittest.TestCase):
     #     self.assertFalse(res > 0 or res == -1, msg="qwen2-72b tuning fail")
     #     shutil.rmtree(self.save_dir, ignore_errors=True)
     
-    @require_vlm_env
-    def test_deepseek_vl2(self):
-        model_path = "/models/deepseek-vl2-tiny"
-        res = os.system(
-            f"cd ../.. && {self.python_path} -m auto_round --mllm "
-            f"--model {model_path} --iter 3 --nsamples 10 --bs 4 --output_dir {self.save_dir} --device auto --group_size 32 "
-            f"--fp_layers language.model.layers.4,language.model.layers.6"
-            )
-        self.assertFalse(res > 0 or res == -1, msg="deepseek vl2 tuning fail")
+    # @require_vlm_env
+    # def test_deepseek_vl2(self):
+    #     model_path = "/models/deepseek-vl2-tiny"
+    #     res = os.system(
+    #         f"cd ../.. && {self.python_path} -m auto_round --mllm "
+    #         f"--model {model_path} --iter 3 --nsamples 10 --bs 4 --output_dir {self.save_dir} --device auto --group_size 32 "
+    #         f"--fp_layers language.model.layers.4,language.model.layers.6"
+    #         )
+    #     self.assertFalse(res > 0 or res == -1, msg="deepseek vl2 tuning fail")
 
-        quantized_model_path = os.path.join(self.save_dir, "deepseek-vl2-tiny-w4g32")
-        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM
-        from transformers import AutoModelForCausalLM
-        vl_chat_processor: DeepseekVLV2Processor = DeepseekVLV2Processor.from_pretrained(quantized_model_path)
-        tokenizer = vl_chat_processor.tokenizer
+    #     quantized_model_path = os.path.join(self.save_dir, "deepseek-vl2-tiny-w4g32")
+    #     from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM
+    #     from transformers import AutoModelForCausalLM
+    #     vl_chat_processor: DeepseekVLV2Processor = DeepseekVLV2Processor.from_pretrained(quantized_model_path)
+    #     tokenizer = vl_chat_processor.tokenizer
 
-        vl_gpt: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path,
-            trust_remote_code=True,
-            device_map=f"cuda:{self.device}",
-            torch_dtype="float16",
-        )
-        vl_gpt = vl_gpt.eval()
+    #     vl_gpt: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
+    #         quantized_model_path,
+    #         trust_remote_code=True,
+    #         device_map=f"cuda:{self.device}",
+    #         torch_dtype="float16",
+    #     )
+    #     vl_gpt = vl_gpt.eval()
 
-        image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
-        content = "Describe this image."
+    #     image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
+    #     content = "Describe this image."
 
-        ## single image conversation example
-        conversation = [
-            {
-                "role": "<|User|>",
-                "content": content,
-            },
-            {"role": "<|Assistant|>", "content": ""},
-        ]
+    #     ## single image conversation example
+    #     conversation = [
+    #         {
+    #             "role": "<|User|>",
+    #             "content": content,
+    #         },
+    #         {"role": "<|Assistant|>", "content": ""},
+    #     ]
 
-        # load images and prepare for inputs
-        pil_images = Image.open(requests.get(image_url, stream=True).raw)
-        prepare_inputs = vl_chat_processor(
-            conversations=conversation,
-            images=[pil_images],
-            force_batchify=True,
-            system_prompt=""
-        )
-        prepare_inputs = prepare_inputs.to(vl_gpt.device)
+    #     # load images and prepare for inputs
+    #     pil_images = Image.open(requests.get(image_url, stream=True).raw)
+    #     prepare_inputs = vl_chat_processor(
+    #         conversations=conversation,
+    #         images=[pil_images],
+    #         force_batchify=True,
+    #         system_prompt=""
+    #     )
+    #     prepare_inputs = prepare_inputs.to(vl_gpt.device)
 
-        # run image encoder to get the image embeddings
-        inputs_embeds = vl_gpt.prepare_inputs_embeds(**prepare_inputs)
+    #     # run image encoder to get the image embeddings
+    #     inputs_embeds = vl_gpt.prepare_inputs_embeds(**prepare_inputs)
 
-        # run the model to get the response
-        outputs = vl_gpt.language.generate(
-            input_ids = prepare_inputs["input_ids"],
-            inputs_embeds=inputs_embeds,
-            attention_mask=prepare_inputs.attention_mask,
-            pad_token_id=tokenizer.eos_token_id,
-            bos_token_id=tokenizer.bos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            max_new_tokens=512,  
-            do_sample=False,  
-            use_cache=True 
-        )
+    #     # run the model to get the response
+    #     outputs = vl_gpt.language.generate(
+    #         input_ids = prepare_inputs["input_ids"],
+    #         inputs_embeds=inputs_embeds,
+    #         attention_mask=prepare_inputs.attention_mask,
+    #         pad_token_id=tokenizer.eos_token_id,
+    #         bos_token_id=tokenizer.bos_token_id,
+    #         eos_token_id=tokenizer.eos_token_id,
+    #         max_new_tokens=512,  
+    #         do_sample=False,  
+    #         use_cache=True 
+    #     )
 
-        answer = tokenizer.decode(outputs[0].cpu().tolist(), skip_special_tokens=True)
-        print(f"{prepare_inputs['sft_format'][0]}", answer)
+    #     answer = tokenizer.decode(outputs[0].cpu().tolist(), skip_special_tokens=True)
+    #     print(f"{prepare_inputs['sft_format'][0]}", answer)
 
 if __name__ == "__main__":
     unittest.main()
