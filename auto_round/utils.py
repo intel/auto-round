@@ -1895,7 +1895,7 @@ def get_gguf_qtype_by_layer_config(layer_config):
     raise ValueError(f"Unknown layer config")
 
 
-def clean_modeule_parameter(submodule, parameter):
+def clean_module_parameter(submodule, parameter):
     is_buffer = parameter in submodule._buffers
     old_value = getattr(submodule, parameter)
     with torch.no_grad():

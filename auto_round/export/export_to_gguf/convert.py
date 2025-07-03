@@ -52,7 +52,7 @@ import math
 import numpy as np
 import torch
 
-from auto_round.utils import logger, LazyImport, clear_memory, get_module, clean_modeule_parameter
+from auto_round.utils import logger, LazyImport, clear_memory, get_module, clean_module_parameter
 from auto_round.export.export_to_gguf.packing import ggml_quant_gpu
 
 gguf = LazyImport("gguf")
@@ -1480,7 +1480,7 @@ class Model(OriModel):
                 clear_memory()
 
             module = get_module(self.model, ".".join(name.split(".")[:-1]))
-            clean_modeule_parameter(module, name.split(".")[-1])
+            clean_module_parameter(module, name.split(".")[-1])
             clear_memory()
 
 
