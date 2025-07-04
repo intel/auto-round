@@ -1325,8 +1325,6 @@ class Model(OriModel):
         max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
 
         for name, data_torch in chain(self.generate_extra_tensors(), self.get_tensors()):
-            # if "experts.127" in name:
-            #     breakpoint()
             if data_torch is None:
                 continue
             # we don't need these
