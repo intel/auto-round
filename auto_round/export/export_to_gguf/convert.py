@@ -1325,6 +1325,8 @@ class Model(OriModel):
         max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
 
         for name, data_torch in chain(self.generate_extra_tensors(), self.get_tensors()):
+            # if "experts.127" in name:
+            #     breakpoint()
             if data_torch is None:
                 continue
             # we don't need these
@@ -1349,7 +1351,8 @@ class Model(OriModel):
                 if part.isdecimal():
                     bid = int(part)
                     break
-
+            
+            clean_weight_list = []
             for new_name, data_torch in (self.modify_tensors(data_torch, name, bid)):
                 data = data_torch.squeeze().cpu().numpy()
 
@@ -1393,7 +1396,7 @@ class Model(OriModel):
 
                 # get name by new_name (for experts),
                 name = self.get_moe_name(name, new_name)
-
+                clean_weight_list.append(name)
                 # get data_qtype by layer_config
                 data_qtype = self.get_qtype_by_layer_config(self.layer_config, name, data_qtype)
 
@@ -1503,8 +1506,9 @@ class Model(OriModel):
 
             # # save cpu memory, but slow
             if self.low_cpu_mem_usage:
-                module = get_module(self.model, ".".join(name.split(".")[:-1]))
-                clean_module_parameter(module, name.split(".")[-1])
+                for weight_name in clean_weight_list:
+                    module = get_module(self.model, ".".join(weight_name.split(".")[:-1]))
+                    clean_module_parameter(module, weight_name.split(".")[-1])
 
 
 @Model.register("GPTNeoXForCausalLM")
