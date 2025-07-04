@@ -1138,14 +1138,14 @@ class Model(OriModel):
         if not low_cpu_mem_usage:
             return False
         
-        process = psutil.Process(os.getpid())
-        mem_usage = process.memory_info().rss
-        memory_info = psutil.virtual_memory() 
-        if memory_info.available > mem_usage / 3:
-            return False
-        else:
-            logger.info("use low cpu memory mode.")
-            return True
+        # process = psutil.Process(os.getpid())
+        # mem_usage = process.memory_info().rss
+        # memory_info = psutil.virtual_memory()
+        # if memory_info.available > mem_usage / 3:
+        #     return False
+        # else:
+        #     logger.info("use low cpu memory mode.")
+        return True
 
     def get_moe_name(self, name, new_name):
         type_mapping = {
@@ -1504,7 +1504,7 @@ class Model(OriModel):
             if self.low_cpu_mem_usage:
                 module = get_module(self.model, ".".join(name.split(".")[:-1]))
                 clean_module_parameter(module, name.split(".")[-1])
-                clear_memory()
+                ##clear_memory()
 
 
 @Model.register("GPTNeoXForCausalLM")

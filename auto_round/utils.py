@@ -1910,4 +1910,3 @@ def clean_module_parameter(submodule, parameter):
             submodule._buffers[parameter] = None
         else:
             submodule._parameters[parameter] = None
-    gc.collect()
