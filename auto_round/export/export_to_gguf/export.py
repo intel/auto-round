@@ -19,7 +19,7 @@ import torch
 from pathlib import Path
 import time
 from auto_round.export.export_to_gguf.convert import Model
-from auto_round.utils import logger, LazyImport, get_block_names, flatten_list, check_to_quantized
+from auto_round.utils import logger, LazyImport, get_block_names, flatten_list, check_to_quantized, get_module
 
 gguf = LazyImport("gguf")
 
@@ -46,7 +46,7 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
 }
 
 
-def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0",low_cpu_mem_usage=False):
+def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0", low_cpu_mem_usage=False):
     tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
     with torch.inference_mode():
         hparams = Model.load_hparams(tmp_work_dir)
@@ -74,7 +74,7 @@ def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0",low_
             dir_model=tmp_work_dir,
             ftype=output_type,
             fname_out=Path(output_dir),
-            low_cpu_mem_usage=low_cpu_mem_usage,# pylint: disable=E0401
+            low_cpu_mem_usage=low_cpu_mem_usage,  # pylint: disable=E0401
             is_big_endian=False,
             model_name=model_name,
             split_max_tensors=False,
@@ -82,6 +82,7 @@ def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0",low_
             dry_run=False,
             small_first_shard=False)
     return model_instance
+
 
 @torch.inference_mode()
 def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer):
@@ -97,7 +98,8 @@ def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer):
             tokenizer.save_pretrained(tmp_work_dir)
         config.save_pretrained(tmp_work_dir)
 
-        gguf_model_instance_global = create_model_class(output_dir, model, layer_config, backend,low_cpu_mem_usage=True)
+        gguf_model_instance_global = create_model_class(output_dir, model, layer_config, backend,
+                                                        low_cpu_mem_usage=True)
 
         if not hasattr(model, "last_layer_name_to_block_name"):
             block_name_to_last_layer_name = {}
@@ -119,15 +121,22 @@ def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer):
         ##packing block
         gguf_model_instance_global.current_packing_block = model.last_layer_name_to_block_name[name]
         gguf_model_instance_global.prepare_tensors()
+
+        block = get_module(model, model.last_layer_name_to_block_name[name])
+        for n, m in block.named_modules():
+            if hasattr(m, "weight"):
+                m.weight = None
+            if hasattr(m, "bias"):
+                m.bias = None
+        import gc
+        gc.collect()
         model.last_layer_name_to_block_name.pop(name)
         if len(model.last_layer_name_to_block_name) == 0:
             gguf_model_instance_global.current_packing_block = None
-        import gc
-        gc.collect()
-
         #     gguf_model_instance_global.write()
         #     shutil.rmtree(tmp_work_dir, ignore_errors=True)
         #     del gguf_model_instance_global
+
 
 @torch.inference_mode()
 def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, **kwargs):
