@@ -1505,7 +1505,6 @@ class Model(OriModel):
             if self.low_cpu_mem_usage:
                 module = get_module(self.model, ".".join(name.split(".")[:-1]))
                 clean_module_parameter(module, name.split(".")[-1])
-                gc.collect(1)
 
 
 @Model.register("GPTNeoXForCausalLM")

@@ -122,6 +122,9 @@ def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer):
         model.last_layer_name_to_block_name.pop(name)
         if len(model.last_layer_name_to_block_name) == 0:
             gguf_model_instance_global.current_packing_block = None
+        import gc
+        gc.collect()
+
         #     gguf_model_instance_global.write()
         #     shutil.rmtree(tmp_work_dir, ignore_errors=True)
         #     del gguf_model_instance_global
