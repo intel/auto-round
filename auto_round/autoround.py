@@ -1084,7 +1084,7 @@ class AutoRound(object):
                         if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                             continue
                         hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
-                        add_hook_to_module(m, hook, recurse=True)
+                        add_hook_to_module(m, hook, True)
 
                     input_ids = self.get_block_outputs(
                         block,

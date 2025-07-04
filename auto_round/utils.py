@@ -782,9 +782,6 @@ def get_layer_names_in_block(model, supported_types=(torch.nn.Linear,
             for n, m in block.named_modules():
                 if hasattr(m, "tmp_name"):
                     layers_in_block.append(m.tmp_name)
-    # for n, m in model.named_modules():
-    #     if hasattr(m, "tmp_name"):
-    #         delattr(m, "tmp_name")
     return layers_in_block
 
 
