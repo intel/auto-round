@@ -614,7 +614,8 @@ class AutoRound(object):
                 )
             save_format_ = format.replace(":", "-").replace("_", "-")
             save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
-            self.save_quantized(save_folder, format=format, inplace=inplace, low_cpu_mem_usage=low_cpu_mem_usage, **kwargs)
+            self.save_quantized(
+                save_folder, format=format, inplace=inplace, low_cpu_mem_usage=low_cpu_mem_usage, **kwargs)
 
             folders.append(save_folder)
 
