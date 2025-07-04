@@ -15,9 +15,9 @@ pandas
 protobuf==4.25.8
 pillow
 py-cpuinfo
-torch==2.6.0
+torch
 torchvision
-triton==3.2.0
+triton
 tqdm
-transformers==4.48.0
+transformers
 xformers
