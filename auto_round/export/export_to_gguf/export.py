@@ -74,6 +74,7 @@ def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0"):
             dir_model=tmp_work_dir,
             ftype=output_type,
             fname_out=Path(output_dir),
+            low_cpu_mem_usage=low_cpu_mem_usage,
             is_big_endian=False,
             model_name=model_name,
             split_max_tensors=False,
@@ -186,7 +187,6 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, *
     rt = time.time() - st
     logger.info(f"Model successfully exported to {gguf_model_instance_global.fname_out}, running time={rt}")
     del gguf_model_instance_global
-
     shutil.rmtree(tmp_work_dir, ignore_errors=True)
 
     return model

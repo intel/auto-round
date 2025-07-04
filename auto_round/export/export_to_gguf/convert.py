@@ -42,6 +42,7 @@ import json
 import os
 import re
 import sys
+import psutil
 from enum import IntEnum
 from pathlib import Path
 from hashlib import sha256
@@ -52,10 +53,9 @@ import math
 import numpy as np
 import torch
 
-from auto_round.low_cpu_mem import clean_module_weight
-from auto_round.utils import logger, LazyImport, get_module, clear_memory, \
-    clean_module_parameter
-from .packing import ggml_quant_gpu
+from auto_round.utils import logger, LazyImport, clear_memory, get_module, clean_module_parameter
+from auto_round.export.export_to_gguf.packing import ggml_quant_gpu
+
 
 gguf = LazyImport("gguf")
 
@@ -1098,6 +1098,7 @@ class Model(OriModel):
             dir_model: Path,
             ftype: gguf.LlamaFileType,
             fname_out: Path,
+            low_cpu_mem_usage: bool = False,
             is_big_endian: bool = False,
             use_temp_file: bool = False,
             eager: bool = False,
@@ -1110,6 +1111,7 @@ class Model(OriModel):
             hparams: dict[str, Any] | None = None):
         self.model = model
         self.layer_config = layer_config
+        self.low_cpu_mem_usage = self._need_low_cpu_mem(low_cpu_mem_usage)
         super().__init__(
             dir_model=dir_model,
             ftype=ftype,
@@ -1132,6 +1134,19 @@ class Model(OriModel):
         if "model_arch" not in cls.__dict__:
             raise TypeError(f"Missing property 'model_arch' for {cls.__name__!r}")
     
+    def _need_low_cpu_mem(self, low_cpu_mem_usage):
+        if not low_cpu_mem_usage:
+            return False
+        
+        process = psutil.Process(os.getpid())
+        mem_usage = process.memory_info().rss
+        memory_info = psutil.virtual_memory() 
+        if memory_info.available > mem_usage / 3:
+            return False
+        else:
+            logger.info("use low cpu memory mode.")
+            return True
+
     def get_moe_name(self, name, new_name):
         type_mapping = {
             "FFN_GATE_EXP": ["gate_proj", "w1", "linear"],
@@ -1159,9 +1174,34 @@ class Model(OriModel):
     def get_tensors(self) -> Iterator[tuple[str, Tensor]]:
         for name, tensor in self.model.named_parameters():
             yield name, tensor
+    
+    def _quant_data_with_args(self, data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None):
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.xpu.is_available():
+            device = "xpu"
+        else:
+            device = "cpu"
+        data_torch = data_torch.to(torch.float32)
+        scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
+        zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
+        d_scale = d_scale.to(torch.float32) if isinstance(d_scale, torch.Tensor) else d_scale
+        d_wmin = d_wmin.to(torch.float32) if isinstance(d_wmin, torch.Tensor) else d_wmin
+        wmin = wmin.to(torch.float32) if isinstance(wmin, torch.Tensor) else wmin
+
+        data = ggml_quant_gpu(
+            data_torch,
+            data_qtype.name.lower(),
+            scale,
+            zp,
+            wmin=wmin,
+            d_scale=d_scale,
+            d_wmin=d_wmin,
+            device=device
+        )
+        return data
 
     def _quant_data(self, data_torch, data_qtype, name, bid):
-        from auto_round.utils import get_module
         suffix = '.weight'
         if suffix in name:
             layer_name = name[:-len(suffix)]
@@ -1176,7 +1216,7 @@ class Model(OriModel):
                             attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), name, bid)[0][1]
                             attr_tensor = attr_tensor.reshape(ori_shape)
                             setattr(module, attr, attr_tensor)
-                scale = module.scale
+                scale = module.scale if hasattr(module, "scale") else None
                 zp = module.zp if hasattr(module, "zp") else None
                 if torch.cuda.is_available():
                     device = "cuda"
@@ -1188,7 +1228,7 @@ class Model(OriModel):
                 scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
                 zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
                 if data_qtype.name.lower().endswith("_k"):
-                    d_scale = module.w_d_scale.to(torch.float32)
+                    d_scale = module.w_d_scale.to(torch.float32) if hasattr(module, "w_d_scale") else None
                     d_wmin = module.w_d_wmin.to(torch.float32) if hasattr(module, "w_d_wmin") else None
                     wmin = module.w_wmin.to(torch.float32) if hasattr(module, "w_wmin") else None
 
@@ -1399,8 +1439,40 @@ class Model(OriModel):
                         data_qtype = gguf.GGMLQuantizationType.F16
                         data = gguf.quants.quantize(data, data_qtype)
                 else:
+                    # for deepseek v2
+                    if name.endswith("kv_b_proj.weight") and self.model_arch.name == 'DEEPSEEK2':
+                        layer_name = name[:-len('.weight')]
+                        module = get_module(self.model, layer_name)
+                        n_head_kv = self.hparams["num_key_value_heads"]
+                        v_head_dim = self.hparams["v_head_dim"]
+                        qk_nope_head_dim = self.hparams["qk_nope_head_dim"]
+
+                        attr_list = {
+                            "scale": None,
+                            "zp": None,
+                            "d_scale": None,
+                            "wmin": None,
+                            "d_wmin": None
+                        }
+                        for attr in attr_list:
+                            if hasattr(module, attr) or hasattr(module, "w_" + attr):
+                                if attr in ['scale', "zp"]:
+                                    attr_tensor = getattr(module, attr)
+                                else:
+                                    attr_tensor = getattr(module, "w_" + attr)
+                                kv_b = attr_tensor.view(n_head_kv, v_head_dim + qk_nope_head_dim, -1)
+                                k_b, v_b = torch.split(kv_b, [qk_nope_head_dim, v_head_dim], dim=1)
+                                k_b = k_b.transpose(1, 2)
+
+                                name_kb = name.replace("kv_b_proj", "k_b_proj")
+                                if new_name == self.map_tensor_name(name_kb):
+                                    attr_list[attr] = k_b
+                                else:
+                                    attr_list[attr] = v_b
+                        data = self._quant_data_with_args(data_torch, data_qtype, **attr_list)
+
                     # for MOE model
-                    if len(data_torch.shape) == 3:
+                    elif len(data_torch.shape) == 3:
                         new_data = []
                         for idx, arr in enumerate(data_torch):
                             arr_name = name.split('.')
@@ -1422,14 +1494,14 @@ class Model(OriModel):
                 shape_str = f"{{{', '.join(str(n) for n in reversed(shape))}}}"
 
                 # n_dims is implicit in the shape
-                if isinstance(data_qtype, bool):
-                    breakpoint()
                 logger.info(
                     f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype}"
                     f" --> {data_qtype.name}, shape = {shape_str}")
 
                 self.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
 
+            # save cpu memory, but slow
+            if self.low_cpu_mem_usage:
                 module = get_module(self.model, ".".join(name.split(".")[:-1]))
                 clean_module_parameter(module, name.split(".")[-1])
                 clear_memory()

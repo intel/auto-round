@@ -604,6 +604,7 @@ class AutoRound(object):
 
         # Save the quantized model in the specified formats
         folders = []
+        low_cpu_mem_usage = len(formats) == 1 and "gguf" in formats[0]
         for format in formats:
             if "gptq" in format and not self.sym:
                 logger.warning(
