@@ -50,7 +50,7 @@ def _save_quantized_as_autoawq(*args, **kwargs):
     return save_quantized_as_autoawq(*args, **kwargs)
 
 @register_format("gguf")
-def _save_quantized_as_autoawq(*args, **kwargs):
+def _save_quantized_as_gguf(*args, **kwargs):
     from auto_round.export.export_to_gguf.export import save_quantized_as_gguf
     return save_quantized_as_gguf(*args, **kwargs)
 
