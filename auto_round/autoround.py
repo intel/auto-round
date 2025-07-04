@@ -871,12 +871,13 @@ class AutoRound(object):
             if isinstance(module, torch.nn.Embedding):
                 key: str = "lm_head" if tie_word_embeddings else "embedding"
                 config: dict[str, Any] = GGUF_INNER_CONFIG[GGUF_CONFIG[target_format][key]]
-                self._apply_config_to_layer(name, config)
+                self._apply_config_to_layer(name, config,True)
 
         if not tie_word_embeddings:
             lm_head_name: str = get_lm_head_name(self.model)
             config: dict[str, Any] = GGUF_CONFIG[GGUF_CONFIG[target_format]["lm_head"]]
-            self._apply_config_to_layer(lm_head_name, config, check_fixed_by_user=True)
+            check_fixed_by_user =  self.layer_config[lm_head_name].get("fixed_by_user", False)
+            self._apply_config_to_layer(lm_head_name, config, check_fixed_by_user=check_fixed_by_user)
             return True
 
         return False
@@ -907,7 +908,7 @@ class AutoRound(object):
             if (
                     key in self.layer_config[layer_name]
                     and check_fixed_by_user
-                    and self.layer_config[layer_name].get("fixed_by_user", False)
+                    # and self.layer_config[layer_name].get("fixed_by_user", False)
             ):
                 continue
             self.layer_config[layer_name][key] = config.get(key)
