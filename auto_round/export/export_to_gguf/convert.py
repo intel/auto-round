@@ -1502,7 +1502,7 @@ class Model(OriModel):
                 self.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
 
             # # save cpu memory, but slow
-            if self.low_cpu_mem_usage:
+            if self.low_cpu_mem_usage: ##TODO bug, moe last layer has not been released
                 module = get_module(self.model, ".".join(name.split(".")[:-1]))
                 clean_module_parameter(module, name.split(".")[-1])
 

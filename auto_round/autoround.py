@@ -604,7 +604,6 @@ class AutoRound(object):
 
         # Save the quantized model in the specified formats
         folders = []
-        low_cpu_mem_usage = len(formats) == 1 and "gguf" in formats[0]
         for format in formats:
             if "gptq" in format and not self.sym:
                 logger.warning(
@@ -620,7 +619,7 @@ class AutoRound(object):
 
         return model, folders
 
-    def get_save_folder_name(self,format):
+    def get_save_folder_name(self, format):
         save_format_ = format.replace(":", "-").replace("_", "-")
         save_folder = (os.path.join(self.orig_output_dir, save_format_)
                        if len(self.formats) > 1 else self.orig_output_dir)
@@ -677,7 +676,7 @@ class AutoRound(object):
             clear_memory()
         return True
 
-    def quant_rtn_with_imatrix(self,all_to_quantized_module_names):
+    def quant_rtn_with_imatrix(self, all_to_quantized_module_names):
         logger.info("start to get imatrix for gguf quantization")
         from .calib_dataset import get_dataloader
         if isinstance(self.dataset, str):
@@ -705,11 +704,11 @@ class AutoRound(object):
                 if not hasattr(module, "imatrix"):
                     module.imatrix = (torch.sum(input.reshape(-1, input.shape[-1]).to(torch.float32) ** 2, dim=0)).to(
                         torch.float32)
-                    module.imatrix_cnt=1
+                    module.imatrix_cnt = 1
                 else:
                     module.imatrix = module.imatrix + (
                         torch.sum(input.reshape(-1, input.shape[-1]).to(torch.float32) ** 2, dim=0)).to(torch.float32)
-                    module.imatrix_cnt+=1
+                    module.imatrix_cnt += 1
 
             hook_handles = []
 
@@ -743,16 +742,14 @@ class AutoRound(object):
 
         except RuntimeError as e:
             try:
-                model=self.model.to("cpu")
+                model = self.model.to("cpu")
                 clear_memory()
                 logger.warning("out of vram, fallback to blockwise way to get imatrix, this may affect accuracy")
                 self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
                 for hook in hooks:
                     hook.remove()
-
-
             except Exception as e:
-                model=self.model.to("cpu")
+                model = self.model.to("cpu")
                 clear_memory()
                 logger.warning("fallback to cpu, pleaser use more gpus to get imatrix, by setting `--device 0,1,2,3`")
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
@@ -829,8 +826,7 @@ class AutoRound(object):
             return True
         return False
 
-
-    def quantize_layer_via_rtn(self,name):
+    def quantize_layer_via_rtn(self, name):
         m = get_module(self.model, name)
         if not self.disable_opt_rtn and not (m.data_type.startswith("rtn_")):  ## use rtn version first
             from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
@@ -870,7 +866,6 @@ class AutoRound(object):
         else:
             set_module(self.model, name, m)
 
-
     @torch.inference_mode
     def quantize_rtn(self):
         if self.amp:
@@ -902,7 +897,7 @@ class AutoRound(object):
         self.quantized = True
         return self.model, self.layer_config
 
-    def quantize_via_rtn_blockwise(self,all_to_quantized_module_names ):
+    def quantize_via_rtn_blockwise(self, all_to_quantized_module_names):
         if bool(self.quant_block_list):
             all_blocks = self.quant_block_list
         else:
@@ -992,15 +987,12 @@ class AutoRound(object):
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
 
-
-
-
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
         Returns:
         The quantized model and layer configurations.
         """
-        for n,m in self.model.named_modules():
+        for n, m in self.model.named_modules():
             m.tmp_name = n
         self._check_compatibility()
         self.has_qlayer_outside_block = self.set_layerwise_config(self.layer_config)
@@ -1021,7 +1013,7 @@ class AutoRound(object):
             formats = self.formats
             if (len(formats) == 1 and
                     ("awq" in formats[0] or "gptq" in formats[0] or
-                     "auto_round" in formats[0] or "gguf" in formats[0]) and self.inplace):  # TODO: Support more formats
+                     "auto_round" in formats[0] or "gguf" in formats[0]) and self.inplace):
                 self.is_packing_immediate = True
         if self.iters == 0:
             return self.quantize_rtn()
@@ -1161,9 +1153,11 @@ class AutoRound(object):
             return
         q_layer_inputs = None
         enable_quanted_input = self.enable_quanted_input
-        has_gguf = any("gguf" in format_ for format_ in self.formats)
+        has_gguf = False
+        if hasattr(self, "formats"):
+            has_gguf = any("gguf" in format_ for format_ in self.formats)
         if has_gguf and self.is_packing_immediate:
-            enable_quanted_input=False
+            enable_quanted_input = False
 
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
             from accelerate.big_modeling import dispatch_model
