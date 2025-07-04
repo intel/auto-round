@@ -133,9 +133,6 @@ def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer):
         model.last_layer_name_to_block_name.pop(name)
         if len(model.last_layer_name_to_block_name) == 0:
             gguf_model_instance_global.current_packing_block = None
-        #     gguf_model_instance_global.write()
-        #     shutil.rmtree(tmp_work_dir, ignore_errors=True)
-        #     del gguf_model_instance_global
 
 
 @torch.inference_mode()
@@ -163,38 +160,6 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, *
 
         gguf_model_instance_global = create_model_class(output_dir, model, layer_config, backend)
 
-    # with torch.inference_mode():
-    #     hparams = Model.load_hparams(tmp_work_dir)
-    #     model_architecture = hparams["architectures"][0]
-    #     try:
-    #         model_class = Model.from_model_architecture(model_architecture)
-    #     except NotImplementedError:
-    #         logger.error(f"Model {model_architecture} is not supported")
-    #         sys.exit(1)
-    #     model_class = Model.from_model_architecture(model_architecture)
-    #     model_name = model.name_or_path.split('/')
-    #     if len(model_name[-1]) == 0:
-    #         model_name = model_name[-2]
-    #     else:
-    #         model_name = model_name[-1]
-    #
-    #     output_type = backend.split(":")[-1]
-    #     if output_type.lower() not in FTYPE_MAP:
-    #         raise TypeError(f"{output_type} type is not supported")
-    #     output_type = FTYPE_MAP.get(output_type.lower())
-    #
-    #     model_instance = model_class(
-    #         model,
-    #         layer_config,
-    #         dir_model=tmp_work_dir,
-    #         ftype=output_type,
-    #         fname_out=Path(output_dir),
-    #         is_big_endian=False,
-    #         model_name=model_name,
-    #         split_max_tensors=False,
-    #         split_max_size=0,
-    #         dry_run=False,
-    #         small_first_shard=False)
     gguf_model_instance_global.write()
     rt = time.time() - st
     logger.info(f"Model successfully exported to {gguf_model_instance_global.fname_out}, running time={rt}")
