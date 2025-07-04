@@ -432,7 +432,7 @@ class AutoRound(object):
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
 
         if "nv_fp" in self.data_type and (self.group_size != 16):
-            logger.warning("nv_fp should only support group_size of 16/32 in real deployment")
+            logger.warning("nv_fp should only support group_size of 16 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
