@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 import ast
+import gc
 import logging
 import argparse
 import contextlib
@@ -55,6 +56,7 @@ import torch
 
 from auto_round.utils import logger, LazyImport, clear_memory, get_module, clean_module_parameter
 from auto_round.export.export_to_gguf.packing import ggml_quant_gpu
+
 
 gguf = LazyImport("gguf")
 
@@ -318,8 +320,10 @@ class OriModel:
             logger.info(f"gguf: experts used count = {n_experts_used}")
 
         if (head_dim := self.hparams.get("head_dim")) is not None:
-            self.gguf_writer.add_key_length(head_dim)
-            self.gguf_writer.add_value_length(head_dim)
+            # Workaround for incorrect AutoConfig value for DeepSeekV3 (is set correctly in DeepSeekV2Model class)
+            if self.hparams.get("model_type") != "deepseek_v3":
+                self.gguf_writer.add_key_length(head_dim)
+                self.gguf_writer.add_value_length(head_dim)
 
         self.gguf_writer.add_file_type(self.ftype)
         logger.info(f"gguf: file type = {self.ftype}")
@@ -1137,14 +1141,14 @@ class Model(OriModel):
         if not low_cpu_mem_usage:
             return False
         
-        process = psutil.Process(os.getpid())
-        mem_usage = process.memory_info().rss
-        memory_info = psutil.virtual_memory() 
-        if memory_info.available > mem_usage / 3:
-            return False
-        else:
-            logger.info("use low cpu memory mode.")
-            return True
+        # process = psutil.Process(os.getpid())
+        # mem_usage = process.memory_info().rss
+        # memory_info = psutil.virtual_memory()
+        # if memory_info.available > mem_usage / 3:
+        #     return False
+        # else:
+        #     logger.info("use low cpu memory mode.")
+        return True
 
     def get_moe_name(self, name, new_name):
         type_mapping = {
@@ -1323,9 +1327,17 @@ class Model(OriModel):
         max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
 
         for name, data_torch in chain(self.generate_extra_tensors(), self.get_tensors()):
+            if data_torch is None:
+                continue
             # we don't need these
             if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
                 continue
+            if hasattr(self,"current_packing_block") and self.current_packing_block is not None: # pylint: disable=E1101
+                current_packing_block_split = self.current_packing_block.split('.') # pylint: disable=E1101
+                name_split = name.split('.')
+                if (len(name_split)<len(current_packing_block_split) or
+                        name_split[:len(current_packing_block_split)]!=current_packing_block_split):
+                    continue
 
             old_dtype = data_torch.dtype
 
@@ -1339,7 +1351,8 @@ class Model(OriModel):
                 if part.isdecimal():
                     bid = int(part)
                     break
-
+            
+            clean_weight_list = []
             for new_name, data_torch in (self.modify_tensors(data_torch, name, bid)):
                 data = data_torch.squeeze().cpu().numpy()
 
@@ -1383,7 +1396,7 @@ class Model(OriModel):
 
                 # get name by new_name (for experts),
                 name = self.get_moe_name(name, new_name)
-
+                clean_weight_list.append(name)
                 # get data_qtype by layer_config
                 data_qtype = self.get_qtype_by_layer_config(self.layer_config, name, data_qtype)
 
@@ -1491,11 +1504,11 @@ class Model(OriModel):
 
                 self.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
 
-            # save cpu memory, but slow
+            # # save cpu memory, but slow
             if self.low_cpu_mem_usage:
-                module = get_module(self.model, ".".join(name.split(".")[:-1]))
-                clean_module_parameter(module, name.split(".")[-1])
-                clear_memory()
+                for weight_name in clean_weight_list:
+                    module = get_module(self.model, ".".join(weight_name.split(".")[:-1]))
+                    clean_module_parameter(module, weight_name.split(".")[-1])
 
 
 @Model.register("GPTNeoXForCausalLM")

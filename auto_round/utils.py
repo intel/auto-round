@@ -782,9 +782,6 @@ def get_layer_names_in_block(model, supported_types=(torch.nn.Linear,
             for n, m in block.named_modules():
                 if hasattr(m, "tmp_name"):
                     layers_in_block.append(m.tmp_name)
-    for n, m in model.named_modules():
-        if hasattr(m, "tmp_name"):
-            delattr(m, "tmp_name")
     return layers_in_block
 
 
@@ -1592,7 +1589,7 @@ def _search_gguf_type(gguf_type):
     if not bits:
         raise KeyError(f"{gguf_type} is not a correct gguf type, please check")
 
-    for suffix in ["_0", "_1", "_k"]:
+    for suffix in ["_k", "_0", "_1"]:
         if gguf_type.endswith(suffix):
             continue
         if (tmp_type := re.sub("_[01k]", suffix, gguf_type)) in GGUF_INNER_CONFIG:
@@ -1894,6 +1891,14 @@ def get_gguf_qtype_by_layer_config(layer_config):
         return gguf.GGMLQuantizationType.Q8_0
     raise ValueError(f"Unknown layer config")
 
+def flatten_list(nested_list):
+    flattened = []
+    for item in nested_list:
+        if isinstance(item, (list, tuple)):
+            flattened.extend(flatten_list(item))
+        else:
+            flattened.append(item)
+    return flattened
 
 def clean_module_parameter(submodule, parameter):
     is_buffer = parameter in submodule._buffers
@@ -1902,4 +1907,3 @@ def clean_module_parameter(submodule, parameter):
             submodule._buffers[parameter] = None
         else:
             submodule._parameters[parameter] = None
-    gc.collect()
