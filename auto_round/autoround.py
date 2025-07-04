@@ -771,7 +771,12 @@ class AutoRound(object):
 
         try:
             # Move model to target device
-            model = model.to(self.device)
+            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 :
+                from accelerate.big_modeling import dispatch_model
+
+                dispatch_model(self.model, self.model.hf_device_map)
+            else:
+                model = model.to(self.device)
             cnt = 0
 
             # Run forward pass to accumulate imatrix
@@ -790,16 +795,20 @@ class AutoRound(object):
             for _, module in model.named_modules():
                 if hasattr(module, "imatrix"):
                     module.imatrix /= module.imatrix_cnt
-
+            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                import accelerate
+                accelerate.hooks.remove_hook_from_submodules(model)
             # Perform quantization using RTN
             from tqdm import tqdm
             pbar = tqdm(all_to_quantized_module_names)
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
-
         except RuntimeError as e:
             try:
+                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                    import accelerate
+                    accelerate.hooks.remove_hook_from_submodules(model)
                 # Fallback: out-of-memory → try CPU blockwise quantization
                 logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
                 model = model.to("cpu")
@@ -810,7 +819,6 @@ class AutoRound(object):
                 logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
                 model = model.to("cpu")
                 clear_memory()
-
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
                     accelerate.hooks.remove_hook_from_submodules(model)
