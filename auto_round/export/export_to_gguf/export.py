@@ -45,7 +45,7 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
         "auto": gguf.LlamaFileType.GUESSED,
     }
 
-def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, **kwargs):
+def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, low_cpu_mem_usage=False, **kwargs):
     """Export the model to gguf format."""
     if output_dir is not None and os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
@@ -88,12 +88,14 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, *
             dir_model=tmp_work_dir,
             ftype=output_type,
             fname_out=Path(output_dir),
+            low_cpu_mem_usage=low_cpu_mem_usage,
             is_big_endian=False,
             model_name=model_name,
             split_max_tensors=False,
             split_max_size=0,
             dry_run=False,
-            small_first_shard=False)
+            small_first_shard=False,
+            )
         model_instance.write()
         rt = time.time() - st
         logger.info(f"Model successfully exported to {model_instance.fname_out}, running time={rt}")

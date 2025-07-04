@@ -603,6 +603,7 @@ class AutoRound(object):
 
         # Save the quantized model in the specified formats
         folders = []
+        low_cpu_mem_usage = len(formats) == 1 and "gguf" in formats[0]
         for format in formats:
             if "gptq" in format and not self.sym:
                 logger.warning(
@@ -613,7 +614,8 @@ class AutoRound(object):
                 )
             save_format_ = format.replace(":", "-").replace("_", "-")
             save_folder = os.path.join(output_dir, save_format_) if len(formats) > 1 else output_dir
-            self.save_quantized(save_folder, format=format, inplace=inplace, **kwargs)
+            self.save_quantized(
+                save_folder, format=format, inplace=inplace, low_cpu_mem_usage=low_cpu_mem_usage, **kwargs)
 
             folders.append(save_folder)
 

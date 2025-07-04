@@ -29,7 +29,7 @@ from packaging import version
 import gc
 from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 import transformers
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES, GGUF_INNER_CONFIG
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES, GGUF_INNER_CONFIG, QK_K
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -1219,7 +1219,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
                     logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                     sys.exit(1)
 
-                if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 != 0):
+                if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % QK_K != 0):
                     model_name = args_or_ar.model.split('/')
                     model_name = model_name[-1] if model_name[-1] else model_name[-2]
                     hidden_size = hparams["hidden_size"]
@@ -1599,6 +1599,15 @@ def _search_gguf_type(gguf_type):
             return tmp_type
     return None
 
+def _gguf_type_fallback(gguf_type):
+    if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
+        gguf_type = "gguf:q5_0"
+    elif gguf_type == "gguf:q5_k":
+        gguf_type = "gguf:q5_0"
+    elif gguf_type == "gguf:q6_k":
+        gguf_type = "gguf:q8_0"
+    return gguf_type
+
 ##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
 def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
     # TODO: support for other format later
@@ -1804,18 +1813,30 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
                 new_type = "gguf:q5_k"
         new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
         if input_features % new_block_size != 0:
-            if new_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
-                new_type = "gguf:q5_0"
-            elif new_type == "gguf:q5_k":
-                new_type = "gguf:q5_0"
-            elif new_type == "gguf:q6_k":
-                new_type = "gguf:q8_0"
+            new_type = _gguf_type_fallback(new_type)
             new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
             if input_features % new_block_size != 0:
                 new_type = "gguf:bf16"
             logger.warning(
                 f"fallback {layer_name} to {new_type}, "
                 f"because input_features({input_features}) % block_size({block_size}) != 0")
+        # for deepseek v2
+        if layer_name.endswith("kv_b_proj") and new_type.endswith("_k") \
+            and 'Deepseek' in model.config.architectures[0]:
+            fallback = False
+
+            # calc if need fallback 
+            qk_nope_head_dim = model.config.qk_nope_head_dim
+            kv_b_shape = get_module(model, layer_name).weight.shape
+            
+            if qk_nope_head_dim < QK_K or qk_nope_head_dim % QK_K != 0 \
+                or kv_b_shape[-1] < QK_K or kv_b_shape[-1] % QK_K != 0:
+                fallback = True
+            if fallback:
+                tmp_type = _gguf_type_fallback(new_type)
+                logger.warning_once(
+                    f"self_attn.kv_b_proj does not support the use of {new_type}, replace it with {tmp_type}")
+                new_type = tmp_type
 
         target_config = GGUF_INNER_CONFIG[new_type]
 
@@ -1872,3 +1893,13 @@ def get_gguf_qtype_by_layer_config(layer_config):
     if bits == 8 and sym and group_size == 32:
         return gguf.GGMLQuantizationType.Q8_0
     raise ValueError(f"Unknown layer config")
+
+
+def clean_module_parameter(submodule, parameter):
+    is_buffer = parameter in submodule._buffers
+    with torch.no_grad():
+        if is_buffer:
+            submodule._buffers[parameter] = None
+        else:
+            submodule._parameters[parameter] = None
+    gc.collect()
