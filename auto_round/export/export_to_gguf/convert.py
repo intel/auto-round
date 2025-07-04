@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 import ast
+import gc
 import logging
 import argparse
 import contextlib
@@ -1329,8 +1330,8 @@ class Model(OriModel):
             # we don't need these
             if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
                 continue
-            if hasattr(self,"current_packing_block") and self.current_packing_block is not None:
-                current_packing_block_split = self.current_packing_block.split('.')
+            if hasattr(self,"current_packing_block") and self.current_packing_block is not None: # pylint: disable=E1101
+                current_packing_block_split = self.current_packing_block.split('.') # pylint: disable=E1101
                 name_split = name.split('.')
                 if (len(name_split)<len(current_packing_block_split) or
                         name_split[:len(current_packing_block_split)]!=current_packing_block_split):
@@ -1504,7 +1505,7 @@ class Model(OriModel):
             if self.low_cpu_mem_usage:
                 module = get_module(self.model, ".".join(name.split(".")[:-1]))
                 clean_module_parameter(module, name.split(".")[-1])
-                ##clear_memory()
+                gc.collect()
 
 
 @Model.register("GPTNeoXForCausalLM")

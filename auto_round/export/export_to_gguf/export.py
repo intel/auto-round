@@ -46,7 +46,7 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
 }
 
 
-def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0"):
+def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0",low_cpu_mem_usage=False):
     tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
     with torch.inference_mode():
         hparams = Model.load_hparams(tmp_work_dir)
@@ -74,7 +74,7 @@ def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0"):
             dir_model=tmp_work_dir,
             ftype=output_type,
             fname_out=Path(output_dir),
-            low_cpu_mem_usage=low_cpu_mem_usage,
+            low_cpu_mem_usage=low_cpu_mem_usage,# pylint: disable=E0401
             is_big_endian=False,
             model_name=model_name,
             split_max_tensors=False,
@@ -97,7 +97,7 @@ def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer):
             tokenizer.save_pretrained(tmp_work_dir)
         config.save_pretrained(tmp_work_dir)
 
-        gguf_model_instance_global = create_model_class(output_dir, model, layer_config, backend)
+        gguf_model_instance_global = create_model_class(output_dir, model, layer_config, backend,low_cpu_mem_usage=True)
 
         if not hasattr(model, "last_layer_name_to_block_name"):
             block_name_to_last_layer_name = {}

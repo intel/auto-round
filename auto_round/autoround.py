@@ -622,7 +622,8 @@ class AutoRound(object):
 
     def get_save_folder_name(self,format):
         save_format_ = format.replace(":", "-").replace("_", "-")
-        save_folder = os.path.join(self.orig_output_dir, save_format_) if len(self.formats) > 1 else self.orig_output_dir
+        save_folder = (os.path.join(self.orig_output_dir, save_format_)
+                       if len(self.formats) > 1 else self.orig_output_dir)
         return save_folder
 
     @torch.inference_mode
@@ -1019,7 +1020,8 @@ class AutoRound(object):
             # Determine if immediate packing is required
             formats = self.formats
             if (len(formats) == 1 and
-                    ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[0] or "gguf" in formats[0]) and self.inplace):  # TODO: Support more formats
+                    ("awq" in formats[0] or "gptq" in formats[0] or
+                     "auto_round" in formats[0] or "gguf" in formats[0]) and self.inplace):  # TODO: Support more formats
                 self.is_packing_immediate = True
         if self.iters == 0:
             return self.quantize_rtn()
