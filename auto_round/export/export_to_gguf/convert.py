@@ -42,6 +42,7 @@ import json
 import os
 import re
 import sys
+import psutil
 from enum import IntEnum
 from pathlib import Path
 from hashlib import sha256
@@ -1096,6 +1097,7 @@ class Model(OriModel):
             dir_model: Path,
             ftype: gguf.LlamaFileType,
             fname_out: Path,
+            low_cpu_mem_usage: bool = False,
             is_big_endian: bool = False,
             use_temp_file: bool = False,
             eager: bool = False,
@@ -1108,6 +1110,7 @@ class Model(OriModel):
             hparams: dict[str, Any] | None = None):
         self.model = model
         self.layer_config = layer_config
+        self.low_cpu_mem_usage = self._need_low_cpu_mem(low_cpu_mem_usage)
         super().__init__(
             dir_model=dir_model,
             ftype=ftype,
@@ -1130,6 +1133,19 @@ class Model(OriModel):
         if "model_arch" not in cls.__dict__:
             raise TypeError(f"Missing property 'model_arch' for {cls.__name__!r}")
     
+    def _need_low_cpu_mem(self, low_cpu_mem_usage):
+        if not low_cpu_mem_usage:
+            return False
+        
+        process = psutil.Process(os.getpid())
+        mem_usage = process.memory_info().rss
+        memory_info = psutil.virtual_memory() 
+        if memory_info.available > mem_usage / 3:
+            return False
+        else:
+            logger.info("use low cpu memory mode.")
+            return True
+
     def get_moe_name(self, name, new_name):
         type_mapping = {
             "FFN_GATE_EXP": ["gate_proj", "w1", "linear"],
@@ -1475,13 +1491,15 @@ class Model(OriModel):
 
                 self.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
 
-                # save cpu memory
-                del data
-                clear_memory()
+                # save cpu memory, but slow
+                if self.low_cpu_mem_usage:
+                    del data
+                    clear_memory()
 
-            module = get_module(self.model, ".".join(name.split(".")[:-1]))
-            clean_module_parameter(module, name.split(".")[-1])
-            clear_memory()
+            if self.low_cpu_mem_usage:
+                module = get_module(self.model, ".".join(name.split(".")[:-1]))
+                clean_module_parameter(module, name.split(".")[-1])
+                clear_memory()
 
 
 @Model.register("GPTNeoXForCausalLM")
