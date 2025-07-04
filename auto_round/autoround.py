@@ -898,6 +898,7 @@ class AutoRound(object):
         return self.model, self.layer_config
 
     def quantize_via_rtn_blockwise(self, all_to_quantized_module_names):
+        all_to_quantized_module_names = list(set(all_to_quantized_module_names))
         if bool(self.quant_block_list):
             all_blocks = self.quant_block_list
         else:
@@ -975,9 +976,9 @@ class AutoRound(object):
                 for n, m in block.named_modules():
                     if hasattr(m, "imatrix"):
                         m.imatrix /= m.imatrix_cnt
-                    if n in all_to_quantized_module_names:
-                        self.quantize_layer_via_rtn(n)
-                        all_to_quantized_module_names.pop(n)
+                    if m.tmp_name in all_to_quantized_module_names:
+                        self.quantize_layer_via_rtn(m.tmp_name)
+                        all_to_quantized_module_names.remove(m.tmp_name)
 
                 mv_module_from_gpu(block, self.low_cpu_mem_usage)
                 pbar.update(1)
