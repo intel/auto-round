@@ -1975,8 +1975,6 @@ class AutoRound(object):
     def check_needs_auto_gguf_mix_mse(self, block, layer_config, formats, input_ids, input_others, outputs, device,cache_device):
         ## TODO Q4_K_M does not support iters==0
         ## TODO for moe model, expert use default bits
-        #block的layer里获取connfig找有几个6bit，。。。
-        #选敏感度最大的替换
         mse_reduction = "mean"
         if self.gradient_accumulate_steps != 1:
             mse_reduction = "sum"
