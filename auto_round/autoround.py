@@ -1971,6 +1971,114 @@ class AutoRound(object):
                 hook_handles.append(hook)
         return hook_handles
 
+    @torch.inference_mode()
+    def check_needs_auto_gguf_mix_mse(self, block, layer_config, formats, input_ids, input_others, outputs, device,cache_device):
+        ## TODO Q4_K_M does not support iters==0
+        ## TODO for moe model, expert use default bits
+        #block的layer里获取connfig找有几个6bit，。。。
+        #选敏感度最大的替换
+        mse_reduction = "mean"
+        if self.gradient_accumulate_steps != 1:
+            mse_reduction = "sum"
+        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        target_gguf_format = None
+        for format in formats:
+            if format.startswith("gguf") and 'm' in format:
+                target_gguf_format = format
+        if target_gguf_format is None:
+            return
+
+        ## simple verification, if the layer_config has any mixed-bits setting, we don't apply auto mix precision
+        bits = []  
+        count=0
+        quant_bits = {}
+        for n, m in block.named_modules():#[4 4 6 4 4 6 8]
+            if hasattr(m, "bits"):
+                bits.append(m.bits)
+                quant_bits[m.bits]=0
+        ori_bit = min(bits)
+        for b in bits:
+            if b != ori_bit:
+                quant_bits[b]+=1
+        bits = set(bits) #{4,6}
+        if len(bits) <= 1:
+            return
+        del quant_bits[min(bits)]
+        
+        layer_names = []
+ 
+        for n, m in block.named_modules():
+            if check_to_quantized(m):
+                layer_names.append(n)
+                count+=1
+        
+        if count > 10:
+            return
+
+        nsamples = min(32, len(outputs))
+        whole_indices = torch.randperm(len(outputs))[:nsamples]
+        ##we assume the block input and output shape are same
+        current_output = [outputs[x] for x in whole_indices]
+        current_output = torch.cat(current_output, dim=self.batch_dim)
+        # current_output = to_device(current_output, device)
+        current_input_ids = [input_ids[i] for i in whole_indices]
+        default_config = GGUF_CONFIG[target_gguf_format]
+        split_list = re.split(':|_',target_gguf_format)
+        mix_configs = {}
+        
+        for k,_ in quant_bits.items():
+            mix_configs[k] = GGUF_CONFIG[f"gguf:q{k}_{split_list[2]}"]
+            
+        low_config = GGUF_CONFIG[f"gguf:q{min(bits)}_{split_list[2]}"]
+        # for n in self.layer_config.keys():
+        #             if self.layer_config[n]["bits"] == max(bits):
+        #                 for q_n in layer_names:
+        #                     if n.endswith(q_n):
+        #                         self.layer_config[n] = low_config
+        each_loss = {}#不同bit的总loss
+        layer_to_mix = {}
+        for bit_name,cur_config in mix_configs.items():
+            for layer_name in layer_names:
+                h = block
+                module = get_module(h, layer_name)
+                for key in cur_config:  
+                    setattr(module,key,cur_config[key])
+                
+                wrapper_layer = WrapperLinear(module,enable_minmax_tuning=False,enable_round_tuning=False,enable_norm_bias_tuning=False,device=device)
+                set_module(h, layer_name, wrapper_layer)
+                q_output = self.get_block_outputs(h, current_input_ids, input_others, self.batch_size * self.infer_bs_coeff,
+                                        device,
+                                        cache_device)
+                # wrapper_layer = wrapper_layer.unwrapper({})
+                for key in default_config:  
+                    setattr(module,key,default_config[key])
+                set_module(h,layer_name,wrapper_layer.orig_layer)
+                
+                cur_loss=mse_loss(torch.stack(q_output).squeeze(1),current_output)
+                each_loss[layer_name] = cur_loss #把每一层的loss记录下来
+            tmp_list = []
+            for _ in range(quant_bits[bit_name]):
+                max_loss = max(zip(each_loss.keys(),each_loss.values()))
+                tmp_list.append(max_loss[0])
+                h = block
+                module = get_module(h, max_loss[0])
+                for key in cur_config:  
+                    setattr(module,key,cur_config[key])
+                for n in self.layer_config.keys():
+                    if n.endswith(max_loss[0]):
+                        self.layer_config[n] = cur_config
+                    elif self.layer_config[n]["bits"]==max(bits) and not n.endswith(max_loss[0]):
+                        for q_n in layer_names:
+                            if n.endswith(q_n):
+                                self.layer_config[n] = low_config
+                                for key in default_config:  
+                                    setattr(module,key,default_config[key])
+                each_loss.pop(max_loss[0])
+            layer_to_mix[bit_name] = tmp_list
+        # print(mix_configs.keys())
+        # return layer_to_mix,mix_configs[6]
+            
+
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
 
@@ -2013,6 +2121,15 @@ class AutoRound(object):
 
             for handle in hook_handles:
                 handle.remove()
+
+        self.check_needs_auto_gguf_mix_mse(
+            block, self.layer_config, self.formats, input_ids, input_others, output, device, self.cache_device)
+
+        # for ke in layer_to_mix[6]:
+        #     for kk in cur_config:
+        #         h = block
+        #         module = get_module(h, ke)
+        #         setattr(module,kk,cur_config[kk])
 
         if q_input is not None:
             if input_ids is not q_input:
