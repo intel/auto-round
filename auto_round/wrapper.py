@@ -416,8 +416,6 @@ class WrapperLayerNorm(torch.nn.Module):
                                          v, q_scale_thresh=self.q_scale_thresh)
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.weight.data.copy_(weight_q)
-        self.orig_layer.bits = 16
-        self.orig_layer.act_bits = 16
         return self.orig_layer
 
     def forward(self, input):
@@ -460,8 +458,6 @@ class WrapperLlamaNorm(torch.nn.Module):
         if best_params is None:
             return self.orig_layer
         v = best_params['v']
-        self.orig_layer.bits = 16
-        self.orig_layer.act_bits = 16
         weight_q, _, _ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
                                          v, q_scale_thresh=self.q_scale_thresh)
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
