@@ -491,7 +491,7 @@ def quant_tensor_gguf_sym_dq(
     
     maxq = 2 ** (bits - 1)
     group_size = 16
-    super_bits = 6
+    super_bits = 6 if bits == 3 else 8
     super_group_size = 16
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
