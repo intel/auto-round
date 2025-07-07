@@ -254,7 +254,7 @@ class WrapperLinear(torch.nn.Module):
 
         if isinstance(scale, dict):
             _set_dict_attr(scale, "scale")
-        elif scale.numel()>1:
+        elif scale.numel() > 1:
             self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
         else:
             self.orig_layer.scale = scale.view(-1).to("cpu")
@@ -264,7 +264,7 @@ class WrapperLinear(torch.nn.Module):
                 _set_dict_attr(zp, "zp")
             elif zp is None:
                 self.orig_layer.zp = None
-            elif zp.numel()>1 :
+            elif zp.numel() > 1:
                 zp = zp.reshape(shape[0], -1)
                 self.orig_layer.zp = zp.to("cpu")
             else:
@@ -416,6 +416,8 @@ class WrapperLayerNorm(torch.nn.Module):
                                          v, q_scale_thresh=self.q_scale_thresh)
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.weight.data.copy_(weight_q)
+        self.orig_layer.bits = 16
+        self.orig_layer.act_bits = 16
         return self.orig_layer
 
     def forward(self, input):
@@ -458,6 +460,8 @@ class WrapperLlamaNorm(torch.nn.Module):
         if best_params is None:
             return self.orig_layer
         v = best_params['v']
+        self.orig_layer.bits = 16
+        self.orig_layer.act_bits = 16
         weight_q, _, _ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
                                          v, q_scale_thresh=self.q_scale_thresh)
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
@@ -483,6 +487,7 @@ NORM_MAPPING["Phi3RMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["MistralRMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["MistralRMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["Qwen3RMSNorm"] = WrapperLlamaNorm
+
 
 class WrapperMultiblock(torch.nn.Module):
     """A wrapper for a list of modules to be act as a single block.
@@ -519,11 +524,9 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
     unquantized_layers = []
     modules = []
     for n, m in block.named_modules():
+        modules.append((n, m))
+    for n, m in block.named_modules():
         if isinstance(m, SUPPORTED_LAYER_TYPES):
-            modules.append((n, m))
-    for item in modules:
-        n, m = item
-        if isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
@@ -537,18 +540,18 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
-        if enable_norm_bias_tuning:
+        elif enable_norm_bias_tuning:
             if "norm" in m.__class__.__name__.lower():
                 if m.__class__.__name__ in NORM_MAPPING.keys():
                     wrapper_layer_class = NORM_MAPPING[m.__class__.__name__]
                     new_m = wrapper_layer_class(m, device=device)
-                    setattr(block, n, new_m)
+                    set_module(block, n, new_m)
                 elif "RMSNorm" in m.__class__.__name__:
                     logger.warning_once(
                         f"use LlamaRMSNorm to wrap {m.__class__.__name__}, please check the correctness yourself")
                     wrapper_layer_class = NORM_MAPPING["LlamaRMSNorm"]
                     new_m = wrapper_layer_class(m, device=device)
-                    setattr(block, n, new_m)
+                    set_module(block, n, new_m)
                 else:
                     logger.warning_once(f"{m.__class__.__name__} is not supported")
 
@@ -590,4 +593,3 @@ def unwrapper_block(block, best_params):
                 best_param = None
             orig_layer = m.unwrapper(best_param)
             set_module(block, n, orig_layer)
-

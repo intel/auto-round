@@ -2222,10 +2222,6 @@ class AutoRound(object):
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
-        for n, m in self.model.named_modules():
-            if isinstance(m, tuple(self.supported_types)):
-                m.name = n
-
         for i in range(0, len(block_names), nblocks):
             if i != 0:
                 pbar.update(1)
@@ -2261,7 +2257,7 @@ class AutoRound(object):
                             pack_gguf_layer(tmp_m.tmp_name, self.model, self.formats[0], output_dir, self.layer_config,
                                             self.tokenizer)
                         else:
-                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.name, self.model, self.formats[0])
+                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
         pbar.set_description(f"Quantizing done")
         pbar.update(1)
         pbar.close()
