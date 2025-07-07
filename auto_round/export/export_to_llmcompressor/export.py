@@ -14,9 +14,8 @@
 
 import os
 import torch
-from auto_round.utils import get_module, logger, set_module
+from auto_round.utils import get_module, logger, set_module, detect_device
 from auto_round.wrapper import WrapperWALayer
-from auto_round.data_type.int import quant_tensor_sym
 from auto_round.export.export_to_llmcompressor.config import quantization_config
 
 
@@ -37,7 +36,7 @@ def recover_qweight(qdq_weight, scale):
 
 
 @torch.no_grad()
-def save_fake_to_llmcompressor_format(output_dir, model=None, **kwargs):
+def save_quantized_as_llmcompressor(output_dir, model=None, **kwargs):
     safe_serialization = kwargs.get("safe_serialization", True)
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
@@ -51,10 +50,11 @@ def save_fake_to_llmcompressor_format(output_dir, model=None, **kwargs):
         processor.save_pretrained(output_dir)
 
     # generate q_weight
+    device = detect_device()
     for n, m in model.named_modules():
         if isinstance(m, WrapperWALayer):
             m = m.orig_layer
-            q_weight = recover_qweight(m.weight, m.scale)
+            q_weight = recover_qweight(m.weight.to(device), m.scale.to(device)).to("cpu")
             delattr(m, 'weight')
             setattr(m, 'weight', torch.nn.Buffer(q_weight))
             setattr(m, "weight_scale", torch.nn.Buffer(m.scale))
@@ -70,4 +70,4 @@ def save_fake_to_llmcompressor_format(output_dir, model=None, **kwargs):
     # save model.config, model.state_dict()
     model.config.quantization_config = quantization_config
     model.config.save_pretrained(output_dir)
-    model.save_pretrained(output_dir, safe_serialization=True)
+    model.save_pretrained(output_dir, safe_serialization=safe_serialization)
