@@ -271,7 +271,6 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
 def quant_tensor_gguf_asym_dq(
         tensor,
         bits=4,
-        group_size=-1,
         v=0,
         min_scale=1.0,
         max_scale=1.0,
@@ -279,8 +278,6 @@ def quant_tensor_gguf_asym_dq(
         tensor_min=None,
         tensor_max=None,
         q_scale_thresh=1e-5,
-        super_group_size=8,
-        super_bits=6,
         imatrix=None,
         **kwargs):
     """Quantizes and dequantizes a tensor using asymmetric integer quantization for formats like Q2_K, Q4_K, and Q5_K.
@@ -305,12 +302,14 @@ def quant_tensor_gguf_asym_dq(
         Tuple: (Quantized-dequantized tensor, scale dictionary, zero-point dictionary)
     """
     orig_dtype = tensor.dtype
+    maxq = 2 ** bits - 1
+    group_size = 16 if bits ==2 else 32
+    super_bits = 4 if bits == 2  else 6
+    super_group_size = 16 if bits == 2 else 8
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     tensor =tensor.to(torch.float32)
     if bits not in [2, 4, 5]:
         raise ValueError(f"bits={bits} not supported by rtn_int_asym_dq")
-    maxq = 2 ** bits - 1
-    QK_K = 256
     quant_weights = None
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         search_kwargs = {
@@ -457,8 +456,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
 @register_dtype("rtn_int_sym_dq")
 def quant_tensor_gguf_sym_dq(
         tensor,
-        bits=4,
-        group_size=-1,
+        bits=3,
         v=0,
         min_scale=1.0,
         max_scale=1.0,
@@ -466,8 +464,6 @@ def quant_tensor_gguf_sym_dq(
         tensor_min=None,
         tensor_max=None,
         q_scale_thresh=1e-5,
-        super_group_size=16,
-        super_bits=6,
         imatrix=None,
         **kwargs):
     """Quantize and de-quantize tensor asymmetrically. For Q3_K, Q6_K.
@@ -492,9 +488,13 @@ def quant_tensor_gguf_sym_dq(
 
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
+    
+    maxq = 2 ** (bits - 1)
+    group_size = 16
+    super_bits = 6
+    super_group_size = 16
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2 ** (bits - 1)
     ggml_type = f"q{bits}_k"
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
     orig_dtype = tensor.dtype

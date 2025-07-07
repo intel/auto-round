@@ -54,7 +54,7 @@ import numpy as np
 import torch
 
 from auto_round.utils import logger, LazyImport, clear_memory, get_module, clean_module_parameter
-from auto_round.export.export_to_gguf.packing import ggml_quant_gpu
+from auto_round.export.export_to_gguf.packing import ggml_quant
 
 gguf = LazyImport("gguf")
 
@@ -1188,7 +1188,7 @@ class Model(OriModel):
         d_wmin = d_wmin.to(torch.float32) if isinstance(d_wmin, torch.Tensor) else d_wmin
         wmin = wmin.to(torch.float32) if isinstance(wmin, torch.Tensor) else wmin
 
-        data = ggml_quant_gpu(
+        data = ggml_quant(
             data_torch,
             data_qtype.name.lower(),
             scale,
@@ -1230,8 +1230,9 @@ class Model(OriModel):
                     d_scale = module.w_d_scale.to(torch.float32) if hasattr(module, "w_d_scale") else None
                     d_wmin = module.w_d_wmin.to(torch.float32) if hasattr(module, "w_d_wmin") else None
                     wmin = module.w_wmin.to(torch.float32) if hasattr(module, "w_wmin") else None
+                    imatrix = module.imatrix.to(torch.float32) if hasattr(module, "imatrix") else None
 
-                    data = ggml_quant_gpu(
+                    data = ggml_quant(
                         data_torch,
                         data_qtype.name.lower(),
                         scale,
@@ -1239,10 +1240,11 @@ class Model(OriModel):
                         wmin=wmin,
                         d_scale=d_scale,
                         d_wmin=d_wmin,
+                        imatrix=imatrix,
                         device=device
                     )
                 else:
-                    data = ggml_quant_gpu(data_torch, data_qtype.name.lower(), scale, zp, device=device)
+                    data = ggml_quant(data_torch, data_qtype.name.lower(), scale, zp, device=device)
             else:
                 # if data_torch.dtype ==torch.float32:
                 #     data_qtype = gguf.GGMLQuantizationType.F32
