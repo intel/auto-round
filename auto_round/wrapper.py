@@ -522,9 +522,6 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
     """
     quantized_layers = []
     unquantized_layers = []
-    modules = []
-    for n, m in block.named_modules():
-        modules.append((n, m))
     for n, m in block.named_modules():
         if isinstance(m, SUPPORTED_LAYER_TYPES):
             if not check_to_quantized(m):
