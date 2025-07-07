@@ -445,6 +445,9 @@ class AutoRound(object):
                     f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
                     f" than gradient_accumulate_steps * batch_size")
+
+        if self.enable_norm_bias_tuning:
+            logger.warning("the enable_norm_bias_tuning feature is experimental and currently has limited support.")
         self._dq_check()
 
 

@@ -20,7 +20,7 @@ from .utils import (
     check_to_quantized,
     get_scale_shape,
     set_module,
-    logger
+    logger, SUPPORTED_LAYER_TYPES
 )
 
 
@@ -475,13 +475,14 @@ class WrapperLlamaNorm(torch.nn.Module):
         return (weight_q * hidden_states.to(input_dtype)).to(self.output_device)
 
 
-norm_mapping = {}
-norm_mapping["LayerNorm"] = WrapperLayerNorm
-norm_mapping["LlamaRMSNorm"] = WrapperLlamaNorm
-norm_mapping["Qwen2RMSNorm"] = WrapperLlamaNorm
-norm_mapping["Phi3RMSNorm"] = WrapperLlamaNorm
-norm_mapping["MistralRMSNorm"] = WrapperLlamaNorm
-
+NORM_MAPPING = {}
+NORM_MAPPING["LayerNorm"] = WrapperLayerNorm
+NORM_MAPPING["LlamaRMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING["Qwen2RMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING["Phi3RMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING["MistralRMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING["MistralRMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING["Qwen3RMSNorm"] = WrapperLlamaNorm
 
 class WrapperMultiblock(torch.nn.Module):
     """A wrapper for a list of modules to be act as a single block.
@@ -516,7 +517,12 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
     """
     quantized_layers = []
     unquantized_layers = []
-    for n, m in block.named_modules():
+    modules = []
+    for n,m in block.named_modules():
+        if isinstance(m,SUPPORTED_LAYER_TYPES):
+            modules.append((n,m))
+    for item in modules:
+        n,m = item
         if isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
@@ -533,14 +539,14 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
 
         if enable_norm_bias_tuning:
             if "norm" in m.__class__.__name__.lower():
-                if m.__class__.__name__ in norm_mapping.keys():
-                    wrapper_layer_class = norm_mapping[m.__class__.__name__]
+                if m.__class__.__name__ in NORM_MAPPING.keys():
+                    wrapper_layer_class = NORM_MAPPING[m.__class__.__name__]
                     new_m = wrapper_layer_class(m, device=device)
                     setattr(block, n, new_m)
                 elif "RMSNorm" in m.__class__.__name__:
                     logger.warning_once(
                         f"use LlamaRMSNorm to wrap {m.__class__.__name__}, please check the correctness yourself")
-                    wrapper_layer_class = norm_mapping["LlamaRMSNorm"]
+                    wrapper_layer_class = NORM_MAPPING["LlamaRMSNorm"]
                     new_m = wrapper_layer_class(m, device=device)
                     setattr(block, n, new_m)
                 else:
