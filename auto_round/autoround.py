@@ -975,8 +975,8 @@ class AutoRound(object):
                 else:
                     raise
 
-        if self.low_gpu_mem_usage:
-            clear_memory()
+            if self.low_gpu_mem_usage:
+                clear_memory()
 
         # Step 3: Optional immediate packing/export
         if self.is_packing_immediate:

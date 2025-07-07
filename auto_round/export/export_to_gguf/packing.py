@@ -132,27 +132,23 @@ def make_q3_quants(data, bits, do_rmse=False):
     if do_rmse:
         L = torch.round(iscale * data).clip(-nmax, nmax - 1)
         w = torch.pow(data, 2)
-        sumlx = torch.sum(w * data * L, dim=-1)[0]
-        suml2 = torch.sum(w * L * L, dim=-1)[0]
+        sumlx = torch.sum(w * data * L, dim=-1)
+        suml2 = torch.sum(w * L * L, dim=-1)
 
         for itry in range(5):
-            # w = np.power(data, 2)
-            if len(sumlx.shape) == 2:
-                sumlx = sumlx.unsqueeze(-1)
-            if len(suml2.shape) == 2:
-                suml2 = suml2.unsqueeze(-1)
-            slx = sumlx - w * data * L
-            replace_idx = slx > 0
-            sl2 = suml2 - w * L * L
-            new_L = torch.round(data * sl2 / slx).clip(-nmax, nmax - 1)
-            tmp_replace_idx = replace_idx & (new_L != L)
-            slx[tmp_replace_idx] += w[tmp_replace_idx] * data[tmp_replace_idx] * new_L[tmp_replace_idx]
-            sl2[tmp_replace_idx] += w[tmp_replace_idx] * new_L[tmp_replace_idx] * new_L[tmp_replace_idx]
-            replace_idx &= (sl2 > 0) & (slx * slx * suml2 > sumlx * sumlx * sl2)
-
-            L[replace_idx] = new_L[replace_idx]
-            sumlx = slx
-            suml2 = sl2
+            for i in range(sumlx.shape[-1]):
+                w_tmp, data_tmp, L_tmp = w[:,:, i], data[:,:, i], L[:,:, i]
+                slx = sumlx - w_tmp * data_tmp * L_tmp
+                replace_idx = slx > 0
+                sl2 = suml2 - w_tmp * L_tmp ** 2
+                new_L = torch.round(data_tmp * sl2 / slx).clip(-nmax, nmax - 1)
+                tmp_replace_idx = replace_idx & (new_L != L_tmp)
+                slx[tmp_replace_idx] += w_tmp[tmp_replace_idx] * data_tmp[tmp_replace_idx] * new_L[tmp_replace_idx]
+                sl2[tmp_replace_idx] += w_tmp[tmp_replace_idx] * new_L[tmp_replace_idx] * new_L[tmp_replace_idx]
+                replace_idx &= (sl2 > 0) & (slx * slx * suml2 > sumlx * sumlx * sl2)
+                L[:,:, i][replace_idx] = new_L[replace_idx]
+                sumlx = slx
+                suml2 = sl2
         return sumlx / suml2, L.to(torch.uint8)
 
     L = torch.round(iscale * data).clip(-nmax, nmax - 1) + nmax
@@ -506,7 +502,7 @@ def q3_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False,
         q_scales_offset = torch.round(qdq_scale * inverse_dq_scale).clip(-32, 31) + 32
     else:
         from auto_round.data_type.gguf import quant_tensor_gguf_sym_dq
-        blocks.reshape(blocks.shape[0], -1)
+        blocks = blocks.reshape(blocks.shape[0], -1)
         blocks, scales, _ = quant_tensor_gguf_sym_dq(blocks, bits=3, scale_dtype=torch.float32, imatrix=imatrix)
         scales, d_scale = scales['scale'], scales['d_scale']
         blocks = blocks.reshape((nb, QK_K // 16, 16))
@@ -698,7 +694,7 @@ def q6_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False,
             .clip(0, 63).to(torch.uint8)
     else:
         from auto_round.data_type.gguf import quant_tensor_gguf_sym_dq
-        blocks.reshape(blocks.shape[0], -1)
+        blocks = blocks.reshape(blocks.shape[0], -1)
         blocks, scales, _ = quant_tensor_gguf_sym_dq(blocks, bits=6, scale_dtype=torch.float32, imatrix=imatrix)
         scales, d_scale = scales['scale'], scales['d_scale']
         blocks = blocks.reshape((nb, QK_K // 16, 16))
