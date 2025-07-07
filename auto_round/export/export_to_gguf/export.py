@@ -50,7 +50,15 @@ def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0", low
     tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
     with torch.inference_mode():
         hparams = Model.load_hparams(tmp_work_dir)
-        model_architecture = hparams["architectures"][0]
+        if "architectures" in hparams:
+            model_architecture = hparams["architectures"][0]
+        else:
+            model_architecture = type(model).__name__
+            if model_architecture not in Model._model_classes:
+                if model_architecture.replace("CausalLM", "ConditionalGeneration") in Model._model_classes:
+                    model_architecture = model_architecture.replace("CausalLM", "ConditionalGeneration")
+                elif model_architecture.replace("ConditionalGeneration", "CausalLM") in Model._model_classes:
+                    model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
         try:
             model_class = Model.from_model_architecture(model_architecture)
         except NotImplementedError:

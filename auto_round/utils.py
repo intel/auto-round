@@ -1612,7 +1612,15 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
 
     import gguf  # pylint: disable=E0401
     from auto_round.export.export_to_gguf.convert import Model
-    model_architecture = model.config.architectures[0]
+    if model.config.architectures is not None:
+        model_architecture = model.config.architectures[0]
+    else:
+        model_architecture = type(model).__name__
+        if model_architecture not in Model._model_classes:
+            if model_architecture.replace("CausalLM", "ConditionalGeneration") in Model._model_classes:
+                model_architecture = model_architecture.replace("CausalLM", "ConditionalGeneration")
+            elif model_architecture.replace("ConditionalGeneration", "CausalLM") in Model._model_classes:
+                model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
     try:
         model_class = Model.from_model_architecture(model_architecture)
     except NotImplementedError:
