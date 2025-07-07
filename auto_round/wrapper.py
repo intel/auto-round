@@ -485,7 +485,6 @@ NORM_MAPPING["LlamaRMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["Qwen2RMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["Phi3RMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["MistralRMSNorm"] = WrapperLlamaNorm
-NORM_MAPPING["MistralRMSNorm"] = WrapperLlamaNorm
 NORM_MAPPING["Qwen3RMSNorm"] = WrapperLlamaNorm
 
 
