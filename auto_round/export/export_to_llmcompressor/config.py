@@ -51,5 +51,6 @@ quantization_config = {
 "ignore": [],
 "kv_cache_scheme": None,
 "quant_method": "compressed-tensors",
-"quantization_status": "compressed"
+"quantization_status": "compressed",
+"provider": "auto-round"  # This is the key to indicate the model provider
 }
