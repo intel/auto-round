@@ -518,11 +518,11 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
     quantized_layers = []
     unquantized_layers = []
     modules = []
-    for n,m in block.named_modules():
-        if isinstance(m,SUPPORTED_LAYER_TYPES):
-            modules.append((n,m))
+    for n, m in block.named_modules():
+        if isinstance(m, SUPPORTED_LAYER_TYPES):
+            modules.append((n, m))
     for item in modules:
-        n,m = item
+        n, m = item
         if isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)

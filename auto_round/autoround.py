@@ -447,9 +447,9 @@ class AutoRound(object):
                     f" than gradient_accumulate_steps * batch_size")
 
         if self.enable_norm_bias_tuning:
-            logger.warning("the enable_norm_bias_tuning feature is experimental and currently has limited support.")
-        self._dq_check()
+            logger.warning("the `enable_norm_bias_tuning` feature is experimental and currently has limited support.")
 
+        self._dq_check()
 
     def _check_compatibility(self):
 
