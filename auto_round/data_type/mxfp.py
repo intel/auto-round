@@ -101,6 +101,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
     orig_dtype = tensor.dtype
+    tensor = tensor.to(torch.float32)
     shared_exp, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
     if isinstance(max_scale, torch.Tensor):
         shared_exp *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
@@ -111,10 +112,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     shared_exp = floor_ste(shared_exp)
     scale_emax = 2 ** (8 - 1) - 1
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
-    if (shared_exp.dtype == torch.float16 and (torch.any(shared_exp > 15) or torch.any(shared_exp < -24))) or (
-            shared_exp.dtype == torch.bfloat16 and torch.any((shared_exp < -126))):
-        tensor = tensor.to(torch.float32)
-        shared_exp = shared_exp.to(torch.float32)
+
     tensor = tensor / (2 ** shared_exp)
     tensor = tensor + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
