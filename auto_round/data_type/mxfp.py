@@ -42,7 +42,6 @@ FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     if ebits != 0:
         private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
-
         # The minimum representable exponent for 8 exp bits is -126
         min_exp = -(2 ** (ebits - 1)) + 2
         private_exp = private_exp.clip(min=min_exp)
@@ -109,7 +108,8 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     else:
         shared_exp *= max_scale
 
-    shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
+    # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
+    shared_exp = torch.where(shared_exp == 0, torch.ones_like(shared_exp), torch.log2(shared_exp))
     shared_exp = floor_ste(shared_exp)
     scale_emax = 2 ** (8 - 1) - 1
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
