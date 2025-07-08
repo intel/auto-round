@@ -560,13 +560,6 @@ class ModelBase(OriModel):
             small_first_shard=small_first_shard,
             hparams=hparams)
 
-    @classmethod
-    def __init_subclass__(cls):
-        # can't use an abstract property, because overriding it without type errors
-        # would require using decorated functions instead of simply defining the property
-        if "model_arch" not in cls.__dict__:
-            raise TypeError(f"Missing property 'model_arch' for {cls.__name__!r}")
-
     def _need_low_cpu_mem(self, low_cpu_mem_usage):
         if not low_cpu_mem_usage:
             return False
