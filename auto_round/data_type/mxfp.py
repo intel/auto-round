@@ -73,6 +73,7 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     return tensor
 
+
 @torch.compile()
 def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
              mantissa_rounding="even", data_type="mx_fp", **kwargs):
@@ -113,12 +114,13 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     scale_emax = 2 ** (8 - 1) - 1
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
-    tensor = tensor / (2 ** shared_exp)
+    scale = torch.pow(2, shared_exp)
+    tensor = tensor / scale
     tensor = tensor + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
-    tensor = tensor * (2 ** shared_exp)
+    tensor = tensor * scale
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
@@ -127,11 +129,11 @@ for key in MXFP_FORMAT_CACHE.keys():
     QUANT_FUNC_WITH_DTYPE[key] = quant_mx
 
 if __name__ == "__main__":
-    data = torch.tensor([0.0, 0.25, 0.4,0.75, 1.25,1.4, 1.75, 2.5, 2.9,3.5, 5.0, 5.1])
+    data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])
     data1 = quant_element(data, 2, 3, 6.0)
-    gt = torch.tensor([0.0,0.0,0.5,1.0,1.0,1.5,2.0,2.0,3.0,4.0,4.0,6.0])
-    assert(torch.sum(torch.abs(data1-gt))<1e-6)
+    gt = torch.tensor([0.0, 0.0, 0.5, 1.0, 1.0, 1.5, 2.0, 2.0, 3.0, 4.0, 4.0, 6.0])
+    assert (torch.sum(torch.abs(data1 - gt)) < 1e-6)
 
-    data_neg = data*-1
+    data_neg = data * -1
     data2 = quant_element(data_neg, 2, 3, 6.0)
-    assert(torch.sum(torch.abs(data2-gt*-1))<1e-6)
+    assert (torch.sum(torch.abs(data2 - gt * -1)) < 1e-6)
