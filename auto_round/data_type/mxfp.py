@@ -39,7 +39,7 @@ FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
-def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
+def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even",v=0):
     if ebits != 0:
         private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
         # The minimum representable exponent for 8 exp bits is -126
@@ -50,7 +50,7 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
 
     # Scale up so appropriate number of mbits are in the integer portion of the number
     tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** private_exp) * (2 ** (mbits - 2))
-
+    tensor += (2*v)
     if mantissa_rounding == "even":
         abs_tensor = torch.abs(tensor)
         mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
@@ -61,10 +61,6 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
         tensor = floor_ste(tensor)
     else:
         raise ValueError("mantissa_rounding only supports even, nearest or floor.")
-
-    ##the clamp is False in official code
-    # max_mantissa = 2 ** (mbits - 1) - 1 ## this is incorrect
-    # tensor = torch.clamp(tensor, -max_mantissa, max_mantissa)
 
     # Undo scaling
     tensor = tensor / (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** (mbits - 2)) * (2 ** private_exp)
@@ -116,9 +112,8 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
 
     scale = torch.pow(2, shared_exp)
     tensor = tensor / scale
-    tensor = tensor + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
-    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
+    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding,v)
 
     tensor = tensor * scale
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
