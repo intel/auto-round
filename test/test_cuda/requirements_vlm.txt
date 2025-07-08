@@ -19,5 +19,5 @@ torch==2.3.0
 torchvision
 triton==2.3.0
 tqdm
-transformers==4.45.0
+transformers==4.52.1
 xformers
