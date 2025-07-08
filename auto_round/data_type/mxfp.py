@@ -52,17 +52,20 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     # Scale up so appropriate number of mbits are in the integer portion of the number
     tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** private_exp) * (2 ** (mbits - 2))
 
-    # if mantissa_rounding == "even":
-    abs_tensor = torch.abs(tensor)
-    mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
-    tensor = torch.sign(tensor) * (floor_ste(abs_tensor + 0.5) - mask_tensor)
-    # elif mantissa_rounding == "nearest":
-    #     tensor = round_ste(tensor)
-    # elif mantissa_rounding == "floor":
-    #     tensor = floor_ste(tensor)
-    # else:
-    #     raise ValueError("mantissa_rounding only supports even, nearest or floor.")
+    if mantissa_rounding == "even":
+        abs_tensor = torch.abs(tensor)
+        mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
+        tensor = torch.sign(tensor) * (floor_ste(abs_tensor + 0.5) - mask_tensor)
+    elif mantissa_rounding == "nearest":
+        tensor = round_ste(tensor)
+    elif mantissa_rounding == "floor":
+        tensor = floor_ste(tensor)
+    else:
+        raise ValueError("mantissa_rounding only supports even, nearest or floor.")
 
+    ##the clamp is False in official code
+    # max_mantissa = 2 ** (mbits - 1) - 1 ## this is incorrect
+    # tensor = torch.clamp(tensor, -max_mantissa, max_mantissa)
 
     # Undo scaling
     tensor = tensor / (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** (mbits - 2)) * (2 ** private_exp)
@@ -72,7 +75,7 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
 
 @torch.compile()
 def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
-             mantissa_rounding="even", data_type="mx_fp", tensor_max=None,**kwargs):
+             mantissa_rounding="even", data_type="mx_fp", **kwargs):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -96,26 +99,28 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
         KeyError: If `data_type` is not found in `MXFP_FORMAT_CACHE`.
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    orig_dtype = tensor.dtype
-    tensor = tensor.to(torch.float32)
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
-    if tensor_max is not None:
-        max_val = tensor_max.view(-1,1)
+    orig_dtype = tensor.dtype
+    shared_exp, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
+    if isinstance(max_scale, torch.Tensor):
+        shared_exp *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
     else:
-        max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
-    scale = max_val * (
-        max_scale if not isinstance(max_scale, torch.Tensor) else max_scale.unsqueeze(-1).to(tensor.device))
-    # shared_exp = (torch.log2(scale + FP32_MIN_NORMAL * (scale == 0).float()))
-    shared_exp = torch.where(scale==0,torch.ones_like(scale),torch.log2(scale))
+        shared_exp *= max_scale
+
+    shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
+    shared_exp = floor_ste(shared_exp)
     scale_emax = 2 ** (8 - 1) - 1
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
-
-    scale = torch.pow(2, shared_exp)
-    tensor = (tensor / scale) + v
+    if (shared_exp.dtype == torch.float16 and (torch.any(shared_exp > 15) or torch.any(shared_exp < -24))) or (
+            shared_exp.dtype == torch.bfloat16 and torch.any((shared_exp < -126))):
+        tensor = tensor.to(torch.float32)
+        shared_exp = shared_exp.to(torch.float32)
+    tensor = tensor / (2 ** shared_exp)
+    tensor = tensor + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
-    tensor = tensor * scale
+    tensor = tensor * (2 ** shared_exp)
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
@@ -124,11 +129,11 @@ for key in MXFP_FORMAT_CACHE.keys():
     QUANT_FUNC_WITH_DTYPE[key] = quant_mx
 
 if __name__ == "__main__":
-    data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])
+    data = torch.tensor([0.0, 0.25, 0.4,0.75, 1.25,1.4, 1.75, 2.5, 2.9,3.5, 5.0, 5.1])
     data1 = quant_element(data, 2, 3, 6.0)
-    gt = torch.tensor([0.0, 0.0, 0.5, 1.0, 1.0, 1.5, 2.0, 2.0, 3.0, 4.0, 4.0, 6.0])
-    assert (torch.sum(torch.abs(data1 - gt)) < 1e-6)
+    gt = torch.tensor([0.0,0.0,0.5,1.0,1.0,1.5,2.0,2.0,3.0,4.0,4.0,6.0])
+    assert(torch.sum(torch.abs(data1-gt))<1e-6)
 
-    data_neg = data * -1
+    data_neg = data*-1
     data2 = quant_element(data_neg, 2, 3, 6.0)
-    assert (torch.sum(torch.abs(data2 - gt * -1)) < 1e-6)
+    assert(torch.sum(torch.abs(data2-gt*-1))<1e-6)
