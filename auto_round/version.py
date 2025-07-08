@@ -15,3 +15,4 @@
 supporting popular model weight only compression based on signround."""
 
 __version__ = "0.6.0"
+

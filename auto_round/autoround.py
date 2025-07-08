@@ -431,8 +431,8 @@ class AutoRound(object):
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
 
-        if "nv_fp" in self.data_type and (self.group_size != 32 or self.group_size != 16):
-            logger.warning("mx_fp should only support group_size of 16/32 in real deployment")
+        if "nv_fp" in self.data_type and (self.group_size != 16):
+            logger.warning("nv_fp should only support group_size of 16 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
@@ -445,8 +445,11 @@ class AutoRound(object):
                     f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
                     f" than gradient_accumulate_steps * batch_size")
-        self._dq_check()
 
+        if self.enable_norm_bias_tuning:
+            logger.warning("the `enable_norm_bias_tuning` feature is experimental and currently has limited support.")
+
+        self._dq_check()
 
     def _check_compatibility(self):
 
@@ -2286,10 +2289,6 @@ class AutoRound(object):
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
-        for n, m in self.model.named_modules():
-            if isinstance(m, tuple(self.supported_types)):
-                m.name = n
-
         for i in range(0, len(block_names), nblocks):
             if i != 0:
                 pbar.update(1)
@@ -2325,7 +2324,7 @@ class AutoRound(object):
                             pack_gguf_layer(tmp_m.tmp_name, self.model, self.formats[0], output_dir, self.layer_config,
                                             self.tokenizer)
                         else:
-                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.name, self.model, self.formats[0])
+                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
         pbar.set_description(f"Quantizing done")
         pbar.update(1)
         pbar.close()
