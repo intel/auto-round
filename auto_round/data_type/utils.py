@@ -20,8 +20,8 @@ from auto_round.utils import logger
 def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
     """Reshapes and pads the tensor to ensure that it can be quantized in groups of `group_size`.
 
-    This function adjusts t
-    he input tensor's shape so that its last dimension is a multiple
+    This function adjusts the
+    input tensor's shape so that its last dimension is a multiple
     of the specified `group_size`. If padding is required, it adds padding to the tensor
     to achieve this. If the tensor's last dimension is already divisible by `group_size`,
     no padding is applied.

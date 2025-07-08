@@ -423,10 +423,10 @@ class AutoRound(object):
                 "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently")
 
-        if "mx_fp" in self.data_type or "nv_fp" in self.data_type:
-            logger.warning(
-                "please save the quantized model to fake format "
-                "as real deployment is not supported for mx_fp/nv_fp datatype currently")
+        # if "mx_fp" in self.data_type or "nv_fp" in self.data_type:
+        #     logger.warning(
+        #         "please save the quantized model to fake format "
+        #         "as real deployment is not supported for mx_fp/nv_fp datatype currently")
 
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
@@ -1059,9 +1059,11 @@ class AutoRound(object):
                         output_dir, self.layer_config, self.tokenizer
                     )
                 else:
+                    kwargs = {}
+                    if "mx"  in self.formats[0] or "nv" in self.formats[0]:
+                        kwargs["data_type"] = self.data_type
                     PACKING_LAYER_WITH_FORMAT[target_backend](
-                        name, self.model, self.formats[0]
-                    )
+                        name, self.model, self.formats[0], **kwargs)
 
                 if self.low_gpu_mem_usage:
                     clear_memory()
@@ -2324,7 +2326,10 @@ class AutoRound(object):
                             pack_gguf_layer(tmp_m.tmp_name, self.model, self.formats[0], output_dir, self.layer_config,
                                             self.tokenizer)
                         else:
-                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
+                            kwargs = {}
+                            if "mx"  in self.formats[0] or "nv" in self.formats[0]:
+                                kwargs["data_type"] = self.data_type
+                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0], **kwargs)
         pbar.set_description(f"Quantizing done")
         pbar.update(1)
         pbar.close()
@@ -2881,3 +2886,4 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+
