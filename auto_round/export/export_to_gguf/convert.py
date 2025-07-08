@@ -53,8 +53,9 @@ from itertools import chain
 import math
 import numpy as np
 import torch
+from transformers import AutoConfig
 
-from auto_round.utils import logger, LazyImport, clear_memory, get_module, clean_module_parameter
+from auto_round.utils import logger, LazyImport, get_module, clean_module_parameter
 from auto_round.export.export_to_gguf.packing import ggml_quant
 
 gguf = LazyImport("gguf")
@@ -204,7 +205,7 @@ class OriModel:
             return None
         raise KeyError(f"could not find any of: {keys}")
 
-    def get_tensors(self) -> Iterator[tuple[str, Tensor]]:
+    def get_tensors(self) -> Iterator[tuple[str, Tensor]]:  # pylint: disable=E0202
         tensor_names_from_parts: set[str] = set()
 
         index_name = "model.safetensors" if self.is_safetensors else "pytorch_model.bin"
@@ -1758,9 +1759,6 @@ class GPTNeoXModel(TextModel):
         tensors: list[tuple[str, Tensor]] = []
 
         if re.match(r"gpt_neox\.layers\.\d+\.attention\.query_key_value\.weight", name):
-            # Map bloom-style qkv_linear to gpt-style qkv_linear
-            # bloom: https://github.com/huggingface/transformers/blob/main/src/transformers/models/bloom/modeling_bloom.py#L238-L252  # noqa
-            # gpt-2: https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py#L312  # noqa
             qkv_weights = data_torch.reshape((n_head, 3, n_embed // n_head, n_embed))
             data_torch = torch.cat(
                 (
@@ -1815,9 +1813,6 @@ class BloomModel(TextModel):
         tensors: list[tuple[str, Tensor]] = []
 
         if re.match(r"h\.\d+\.self_attention\.query_key_value\.weight", name):
-            # Map bloom-style qkv_linear to gpt-style qkv_linear
-            # bloom: https://github.com/huggingface/transformers/blob/main/src/transformers/models/bloom/modeling_bloom.py#L238-L252  # noqa
-            # gpt-2: https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py#L312  # noqa
             qkv_weights = data_torch.reshape((n_head, 3, n_embed // n_head, n_embed))
             data_torch = torch.cat(
                 (
@@ -1919,8 +1914,6 @@ class OrionModel(TextModel):
         self.gguf_writer.add_feed_forward_length(self.hparams["intermediate_size"])
         self.gguf_writer.add_head_count(head_count)
         self.gguf_writer.add_head_count_kv(head_count_kv)
-        # note: config provides rms norm but it is actually layer norm
-        # ref:  https://huggingface.co/OrionStarAI/Orion-14B-Chat/blob/276a17221ce42beb45f66fac657a41540e71f4f5/modeling_orion.py#L570-L571
         self.gguf_writer.add_layer_norm_eps(self.hparams["rms_norm_eps"])
 
 
@@ -2897,9 +2890,6 @@ class BitnetModel(TextModel):
         weight = weight.float()
         scale = weight.abs().mean().clamp(min=1e-5)
         iscale = 1 / scale
-        # TODO: multiply by the scale directly instead of inverting it twice
-        # (this is also unnecessarily doubly inverted upstream)
-        # ref: https://huggingface.co/1bitLLM/bitnet_b1_58-3B/blob/af89e318d78a70802061246bf037199d2fb97020/utils_quant.py#L10
         result = (weight * iscale).round().clamp(-1, 1) / iscale
         return result.type(dtype)
 
@@ -3757,7 +3747,8 @@ class Phi3MiniModel(TextModel):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} '
+                                f'-> {token.decode("utf-8")!r}'
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -3859,7 +3850,8 @@ class Phi3MiniModel(TextModel):
 
         if len(long_factors) != len(short_factors) or len(long_factors) != rope_dims / 2:
             raise ValueError(
-                f'The length of rope long and short factors must be {rope_dims / 2}. long_factors = {len(long_factors)}, short_factors = {len(short_factors)}.'
+                f'The length of rope long and short factors must be {rope_dims / 2}.'
+                f' long_factors = {len(long_factors)}, short_factors = {len(short_factors)}.'
             )
 
         yield (
@@ -4187,7 +4179,7 @@ class InternLM2Model(TextModel):
             qkv = qkv.reshape((num_groups, q_per_kv + 2, head_dim, n_embd))
             q, k, v = qkv[:, :q_per_kv], qkv[:, -2], qkv[:, -1]
 
-            # The model weights of q and k equire additional reshape.
+            # The model weights of q and k require additional reshape.
             q = LlamaModel.permute(q.reshape((-1, q.shape[-1])), num_heads, num_heads)
             k = LlamaModel.permute(k.reshape((-1, k.shape[-1])), num_heads, num_kv_heads)
             v = v.reshape((-1, v.shape[-1]))
