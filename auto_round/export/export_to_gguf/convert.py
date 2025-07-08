@@ -2314,13 +2314,13 @@ class StableLMModel(TextModel):
         return [(self.map_tensor_name(name), data_torch)]
 
     def _stack_qk_norm(self, bid: int, n_head: int, norms: dict[str, Tensor], layer_name: str = "q_layernorm"):
-        datas: list[Tensor] = []
+        data: list[Tensor] = []
         # extract the norms in order
         for xid in range(n_head):
             ename = f"model.layers.{bid}.self_attn.{layer_name}.norms.{xid}.weight"
-            datas.append(norms[ename])
+            data.append(norms[ename])
             del norms[ename]
-        data_torch = torch.stack(datas, dim=0)
+        data_torch = torch.stack(data, dim=0)
 
         merged_name = f"model.layers.{bid}.self_attn.{layer_name}.weight"
         new_name = self.map_tensor_name(merged_name)
@@ -2445,14 +2445,14 @@ class LlamaModel(TextModel):
 
                 # merge the experts into a single 3d tensor
                 for wid in ["w1", "w2", "w3"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.block_sparse_moe.experts.{xid}.{wid}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"layers.{bid}.feed_forward.experts.{wid}.weight"
 
@@ -2953,14 +2953,14 @@ class GrokModel(TextModel):
 
                 # merge the experts into a single 3d tensor
                 for wid in ["linear", "linear_1", "linear_v"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"transformer.decoder_layer.{bid}.moe.{xid}.{wid}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"transformer.decoder_layer.{bid}.moe.{wid}.weight"
 
@@ -3345,7 +3345,7 @@ class Qwen2VLVisionModel(MmprojModel):
             self.gguf_writer.add_vision_n_wa_pattern(n_wa_pattern)
         else:
             raise ValueError(f"Unknown QwenVL model type: {self.global_config['model_type']}")
-        # default values below are taken from HF tranformers code
+        # default values below are taken from HF transformers code
         self.gguf_writer.add_vision_attention_layernorm_eps(self.global_config.get("rms_norm_eps", 1e-6))
 
     def tensor_force_quant(self, name, new_name, bid, n_dims):
@@ -3380,7 +3380,7 @@ class Qwen2VLVisionModel(MmprojModel):
                 # split Conv3D into Conv2Ds
                 c1, c2, kt, kh, kw = data_torch.shape
                 del c1, c2, kh, kw  # unused
-                assert kt == 2, "Current implmentation only support temporal_patch_size of 2"
+                assert kt == 2, "Current implementation only support temporal_patch_size of 2"
                 return [
                     (gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.V_ENC_EMBD_PATCH] + ".weight", data_torch[:, :, 0, ...]),
                     (gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.V_ENC_EMBD_PATCH] + ".weight.1", data_torch[:, :, 1, ...]),
@@ -3585,14 +3585,14 @@ class Qwen2MoeModel(TextModel):
 
                 # merge the experts into a single 3d tensor
                 for w_name in ["down_proj", "gate_proj", "up_proj"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
 
@@ -3897,14 +3897,14 @@ class PhiMoeModel(Phi3MiniModel):
 
                 # merge the experts into a single 3d tensor
                 for w_name in ["w1", "w2", "w3"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.block_sparse_moe.experts.{xid}.{w_name}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"model.layers.{bid}.block_sparse_moe.experts.{w_name}.weight"
 
@@ -4066,7 +4066,7 @@ class InternLM2Model(TextModel):
                 toktype = SentencePieceTokenTypes.UNUSED
             elif tokenizer.IsByte(token_id):
                 toktype = SentencePieceTokenTypes.BYTE
-            # take care of ununsed raw token
+            # take care of unused raw token
             if piece.startswith('[UNUSED'):
                 toktype = SentencePieceTokenTypes.UNUSED
 
@@ -4844,7 +4844,7 @@ class Gemma3VisionModel(MmprojModel):
         super().set_gguf_parameters()
         hparams = self.hparams
         self.gguf_writer.add_clip_projector_type(gguf.VisionProjectorType.GEMMA3)
-        # default values below are taken from HF tranformers code
+        # default values below are taken from HF transformers code
         self.gguf_writer.add_vision_attention_layernorm_eps(hparams.get("layer_norm_eps", 1e-6))
         self.gguf_writer.add_vision_use_gelu(True)
         # calculate proj_scale_factor (used by tinygemma3 test model)
@@ -5249,7 +5249,7 @@ class Rwkv7Model(TextModel):
 
             if bid == 0 and "time_mix_a" in new_name:
                 # dummy v0/v1/v2 on first layer
-                # easist way to make llama happy
+                # easiest way to make llama happy
                 yield (new_name.replace("time_mix_a", "time_mix_v"), data_torch)
 
             yield (new_name, data_torch)
@@ -5575,14 +5575,14 @@ class OlmoeModel(TextModel):
 
                 # merge the experts into a single 3d tensor
                 for w_name in ["down_proj", "gate_proj", "up_proj"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
 
@@ -5821,14 +5821,14 @@ class ArcticModel(TextModel):
 
                 # merge the experts into a single 3d tensor
                 for wid in ["w1", "w2", "w3"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.block_sparse_moe.experts.{xid}.{wid}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"layers.{bid}.feed_forward.experts.{wid}.weight"
 
@@ -5910,14 +5910,14 @@ class DeepseekModel(TextModel):
 
                 # merge the experts into a single 3d tensor
                 for w_name in ["down_proj", "gate_proj", "up_proj"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
 
@@ -6018,14 +6018,14 @@ class DeepseekV2Model(TextModel):
 
                 # merge the experts into a single 3d tensor
                 for w_name in ["down_proj", "gate_proj", "up_proj"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
 
@@ -6910,14 +6910,14 @@ class BailingMoeModel(TextModel):
             if len(self._experts[bid]) >= n_experts * 3:
                 # merge the experts into a single 3d tensor
                 for w_name in ["down_proj", "gate_proj", "up_proj"]:
-                    datas: list[Tensor] = []
+                    data: list[Tensor] = []
 
                     for xid in range(n_experts):
                         ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
-                        datas.append(self._experts[bid][ename])
+                        data.append(self._experts[bid][ename])
                         del self._experts[bid][ename]
 
-                    data_torch = torch.stack(datas, dim=0)
+                    data_torch = torch.stack(data, dim=0)
 
                     merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
 
