@@ -38,7 +38,12 @@ def register_dataset(name):
     """
 
     def register(dataset):
-        CALIB_DATASETS[name] = dataset
+        if isinstance(name,list):
+            names = name
+        else:
+            names = [name]
+        for tmp_name in names:
+            CALIB_DATASETS[tmp_name] = dataset
         return dataset
 
     return register
@@ -143,7 +148,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     return calib_dataset
 
 
-@register_dataset("swift/pile-val-backup")
+@register_dataset(["swift/pile-val-backup","pile-val-backup"])
 def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup", split=None, seed=42,
                          apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -177,7 +182,7 @@ def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup"
     return calib_dataset
 
 
-@register_dataset("BAAI/CCI3-HQ")
+@register_dataset(["BAAI/CCI3-HQ", "CCI3-HQ"])
 def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_chat_template=False,
                         system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -206,7 +211,7 @@ def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=No
     return calib_dataset
 
 
-@register_dataset("codeparrot/github-code-clean")
+@register_dataset(["codeparrot/github-code-clean"],"github-code-clean")
 def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/github-code-clean", split=None, seed=42,
                                   apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -257,7 +262,7 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
     return calib_dataset
 
 
-@register_dataset("HuggingFaceH4/ultrachat_200k")
+@register_dataset(["HuggingFaceH4/ultrachat_200k","ultrachat_200k"])
 def get_ultrachat_dataset(
     tokenizer,
     seqlen,
@@ -306,6 +311,7 @@ def get_ultrachat_dataset(
     dataset = dataset.map(tokenize_example_batch, batched=True)
     return dataset
 
+@register_dataset(["madao33/new-title-chinese","new-title-chinese"])
 def get_new_chinese_title_dataset(
         tokenizer,
         seqlen,
