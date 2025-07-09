@@ -1193,7 +1193,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
             if format == "q6_k_s":
                 logger.warning("Please not that q6_k_s is q6_k.")
             try:
-                from auto_round.export.export_to_gguf.convert import Model
+                from auto_round.export.export_to_gguf.convert import ModelBase
             except:
                 raise ImportError(
                     f"Please use the latest gguf-py for {format}, you can use the following command to install it:\n"
@@ -1207,11 +1207,11 @@ def _gguf_args_check(args_or_ar, format_str=None):
 
             if isinstance(args_or_ar.model, str) and os.path.isdir(args_or_ar.model):
                 from pathlib import Path
-                from auto_round.export.export_to_gguf.convert import Model
-                hparams = Model.load_hparams(Path(args_or_ar.model))
+                from auto_round.export.export_to_gguf.convert import ModelBase
+                hparams = ModelBase.load_hparams(Path(args_or_ar.model))
                 model_architecture = hparams["architectures"][0]
                 try:
-                    model_class = Model.from_model_architecture(model_architecture)
+                    model_class = ModelBase.from_model_architecture(model_architecture)
                 except NotImplementedError:
                     logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                     sys.exit(1)
@@ -1611,10 +1611,18 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
     target_gguf_format = next((fmt for fmt in gguf_format if fmt != "fake"), None)
 
     import gguf  # pylint: disable=E0401
-    from auto_round.export.export_to_gguf.convert import Model
-    model_architecture = model.config.architectures[0]
+    from auto_round.export.export_to_gguf.convert import ModelBase
+    if model.config.architectures is not None:
+        model_architecture = model.config.architectures[0]
+    else:
+        model_architecture = type(model).__name__
+        if model_architecture not in ModelBase._model_classes:
+            if model_architecture.replace("CausalLM", "ConditionalGeneration") in ModelBase._model_classes:
+                model_architecture = model_architecture.replace("CausalLM", "ConditionalGeneration")
+            elif model_architecture.replace("ConditionalGeneration", "CausalLM") in ModelBase._model_classes:
+                model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
     try:
-        model_class = Model.from_model_architecture(model_architecture)
+        model_class = ModelBase.from_model_architecture(model_architecture)
     except NotImplementedError:
         return layer_config, {}
 
