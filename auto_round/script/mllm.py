@@ -383,7 +383,7 @@ def tune(args):
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
-                auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
+                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
 

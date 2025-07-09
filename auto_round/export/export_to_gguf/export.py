@@ -48,7 +48,8 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
 }
 
 
-def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0", low_cpu_mem_usage=False, model_type=ModelType.TEXT):
+def create_model_class(
+        output_dir, model, layer_config, backend="gguf:q4_0", low_cpu_mem_usage=False, model_type=ModelType.TEXT):
     tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
     with torch.inference_mode():
         hparams = ModelBase.load_hparams(tmp_work_dir)
@@ -95,7 +96,8 @@ def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0", low
 
 
 @torch.inference_mode()
-def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer, processor=None, model_type=ModelType.TEXT):
+def pack_gguf_layer(
+        name, model, backend, output_dir, layer_config, tokenizer, processor=None, model_type=ModelType.TEXT):
     """Export the model to gguf format."""
     global gguf_model_instance_global
     tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
@@ -110,8 +112,10 @@ def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer, p
         if processor is not None:
             processor.save_pretrained(tmp_work_dir)
 
-        gguf_model_instance_global = [create_model_class(output_dir, model, layer_config, backend,
-                                                        low_cpu_mem_usage=True, model_type=ModelType.TEXT)]
+        gguf_model_instance_global = [
+            create_model_class(
+                output_dir, model, layer_config, backend, low_cpu_mem_usage=True, model_type=ModelType.TEXT)
+        ]
         if model_type == ModelType.MMPROJ:
             gguf_model_instance_global.append(
                 create_model_class(
@@ -176,7 +180,9 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, v
             tokenizer.save_pretrained(tmp_work_dir)
         config.save_pretrained(tmp_work_dir)
 
-        gguf_model_instance_global = [create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.TEXT)]
+        gguf_model_instance_global = [
+            create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.TEXT)
+        ]
         if vlm:
             gguf_model_instance_global.append(
                 create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.MMPROJ))

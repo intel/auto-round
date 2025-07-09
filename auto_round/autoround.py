@@ -1232,8 +1232,8 @@ class AutoRound(object):
                 only_gguf = False
             if only_gguf:
                 model_type = ModelType.MMPROJ if self.vlm else ModelType.TEXT
-                self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(self.layer_config, self.formats,
-                                                                                        self.model, model_type=model_type)
+                self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
+                    self.layer_config, self.formats, self.model, model_type=model_type)
             # Determine if immediate packing is required
             formats = self.formats
             if (len(formats) == 1 and

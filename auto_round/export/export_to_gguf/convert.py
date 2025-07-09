@@ -295,7 +295,8 @@ class OriModel:
             if "language_model" in name:
                 new_name = self.tensor_map.get_name(key=name.replace(".language_model", ""), try_suffixes=try_suffixes)
             if "visual" in name:
-                new_name = self.tensor_map.get_name(key=name.replace("model.visual", "visual"), try_suffixes=try_suffixes)
+                new_name = self.tensor_map.get_name(
+                    key=name.replace("model.visual", "visual"), try_suffixes=try_suffixes)
             if new_name is None:
                 raise ValueError(f"Can not map tensor {name!r}")
         return new_name
@@ -1070,10 +1071,10 @@ class TextModel(ModelBase):
         )
 
         seems_special = seems_special or (token_text.startswith("<|") and token_text.endswith("|>"))
-        seems_special = seems_special or (token_text.startswith("<｜") and token_text.endswith("｜>"))  
+        seems_special = seems_special or (token_text.startswith("<｜") and token_text.endswith("｜>"))
 
         # TODO: should these be marked as UNUSED instead? (maybe not)
-        seems_special = seems_special or (token_text.startswith("<unused") and token_text.endswith(">"))  
+        seems_special = seems_special or (token_text.startswith("<unused") and token_text.endswith(">"))
 
         return seems_special
 
@@ -1117,7 +1118,7 @@ class TextModel(ModelBase):
                     else:
                         # NOTE: this was added for Gemma.
                         # Encoding and decoding the tokens above isn't sufficient for this case.
-                        token = token.replace(b"\xe2\x96\x81".decode("utf-8"), " ")  
+                        token = token.replace(b"\xe2\x96\x81".decode("utf-8"), " ")
                         toktypes.append(gguf.TokenType.USER_DEFINED)
                 else:
                     toktypes.append(gguf.TokenType.NORMAL)
