@@ -38,7 +38,7 @@ def register_dataset(name):
     """
 
     def register(dataset):
-        if isinstance(name,list):
+        if isinstance(name, list):
             names = name
         else:
             names = [name]
@@ -51,15 +51,15 @@ def register_dataset(name):
 
 def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=None):
     rendered_messages = []
-    if system_prompt is None:
-        system_prompt = "You are a helpful assistant."
+    # if system_prompt is None: ## remove system prompt as models like deepseek don't recommend using it
+    #     system_prompt = "You are a helpful assistant."
     for text in samples:
-        message=[]
-        if system_prompt!="":
+        message = []
+        if system_prompt is not None and system_prompt != "":
             message.append({"role": "system", "content": system_prompt})
 
-        if isinstance(text,list) and isinstance(text[0],dict):
-            message+=text
+        if isinstance(text, list) and isinstance(text[0], dict):
+            message += text
         else:
             message.append({"role": "user", "content": text})
         try:
@@ -107,7 +107,7 @@ def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False, system_
     return default_tokenizer_function
 
 
-@register_dataset("NeelNanda/pile-10k")
+@register_dataset(["NeelNanda/pile-10k","pile-10k"])
 def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42,
                      apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -130,7 +130,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template,
                                                 system_prompt=system_prompt)
     try:
-        calib_dataset = load_dataset(dataset_name, split=split)
+        calib_dataset = load_dataset("NeelNanda/pile-10k", split=split)
     except Exception as e:
         import ssl
         error_message = str(e)
@@ -148,7 +148,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     return calib_dataset
 
 
-@register_dataset(["swift/pile-val-backup","pile-val-backup"])
+@register_dataset(["swift/pile-val-backup", "pile-val-backup"])
 def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup", split=None, seed=42,
                          apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -203,7 +203,7 @@ def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=No
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template,
                                                 system_prompt=system_prompt)
 
-    calib_dataset = load_dataset(dataset_name, split='train', streaming=True)
+    calib_dataset = load_dataset("BAAI/CCI3-HQ", split='train', streaming=True)
     calib_dataset = calib_dataset.take(10000)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
@@ -211,7 +211,7 @@ def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=No
     return calib_dataset
 
 
-@register_dataset(["codeparrot/github-code-clean"],"github-code-clean")
+@register_dataset(["codeparrot/github-code-clean","github-code-clean"])
 def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/github-code-clean", split=None, seed=42,
                                   apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -254,7 +254,8 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
 
     tokenizer_function = get_default_tokenizer_function()
 
-    calib_dataset = load_dataset(dataset_name, split='train', streaming=True, trust_remote_code=True)
+    calib_dataset = load_dataset("codeparrot/github-code-clean", split='train',
+                                 streaming=True, trust_remote_code=True)
     calib_dataset = calib_dataset.take(10000)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
@@ -262,38 +263,37 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
     return calib_dataset
 
 
-@register_dataset(["HuggingFaceH4/ultrachat_200k","ultrachat_200k"])
+@register_dataset(["HuggingFaceH4/ultrachat_200k", "ultrachat_200k"])
 def get_ultrachat_dataset(
-    tokenizer,
-    seqlen,
-    dataset_name="HuggingFaceH4/ultrachat_200k",
-    split=None,
-    seed=42,
-    apply_chat_template=True,
-    system_prompt=None,
+        tokenizer,
+        seqlen,
+        dataset_name="HuggingFaceH4/ultrachat_200k",
+        split=None,
+        seed=42,
+        apply_chat_template=True,
+        system_prompt=None,
 ):
-    # 加载数据集
-    dataset = load_dataset(dataset_name, split='train_sft', streaming=True, trust_remote_code=True)
+
+    dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split='train_sft',
+                           streaming=True, trust_remote_code=True)
     dataset = dataset.take(20000).shuffle(seed=seed)
 
-    # 检查是否为对话模型
+
     def is_instruct_tokenizer(tokenizer):
         try:
-            out = tokenizer.apply_chat_template("hello")
+            out = tokenizer.apply_chat_template([{"role": "user", "content": "Hi"}])
             return bool(out and len(out) > 0)
         except Exception:
             return False
 
     is_instruct = is_instruct_tokenizer(tokenizer)
 
-    # 自动纠正 apply_chat_template 配置
     if is_instruct and not apply_chat_template:
-        logger.warning("Tokenizer looks like an instruct/chat model, but apply_chat_template=False. Setting to True.")
+        logger.info("Tokenizer looks like an instruct/chat model, but apply_chat_template=False. Setting to True.")
         apply_chat_template = True
     elif not is_instruct and apply_chat_template:
-        logger.warning("Tokenizer is not an instruct/chat model, but apply_chat_template=True. Setting to False.")
+        logger.info("Tokenizer is not an instruct/chat model, but apply_chat_template=True. Setting to False.")
         apply_chat_template = False
-
 
     def tokenize_example_batch(examples):
         if not apply_chat_template:
@@ -307,11 +307,11 @@ def get_ultrachat_dataset(
                 examples["messages"], tokenizer, seqlen, system_prompt=system_prompt
             )
 
-
     dataset = dataset.map(tokenize_example_batch, batched=True)
     return dataset
 
-@register_dataset(["madao33/new-title-chinese","new-title-chinese"])
+
+@register_dataset(["madao33/new-title-chinese", "new-title-chinese"])
 def get_new_chinese_title_dataset(
         tokenizer,
         seqlen,
@@ -363,7 +363,7 @@ def get_new_chinese_title_dataset(
 
     tokenizer_function = get_tokenizer_function()
 
-    calib_dataset = load_dataset(dataset_name, split=split)
+    calib_dataset = load_dataset("madao33/new-title-chinese", split=split)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
