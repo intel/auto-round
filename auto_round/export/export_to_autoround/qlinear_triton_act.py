@@ -141,8 +141,9 @@ class QuantLinear(nn.Module):
         else:
             repeat_zeros = zeros
 
-        intweight =  torch.round(W.to(device) / repeat_scales[:,:W.shape[1]] + repeat_zeros[:,:W.shape[1]])
-
+        intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]]).to(
+            torch.int32
+        )
         del repeat_scales
         intweight = intweight.reshape(-1, intweight.shape[1] // 32 * self.bits, 32 // self.bits)
         order_map = torch.arange(0, 32 // self.bits, device=device) * self.bits
