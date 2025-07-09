@@ -1016,20 +1016,13 @@ class AutoRound(object):
                 self.layer_config[name]["data_type"] = m.data_type
 
         # Step 2: Try quantization on GPU first, fall back to CPU if OOM
-        try:
-            m.to(self.device)
-            m = WrapperLinear(
-                m,
-                enable_minmax_tuning=False,
-                enable_norm_bias_tuning=False,
-                enable_round_tuning=False,
-            )
-            m = m.unwrapper({})
-            m.to("cpu")
-        except RuntimeError as e:
-            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                logger.warning("Out of VRAM, falling back to CPU.")
-                m.to("cpu")
+        # if only export gguf, using gguf-packing instead of rtn
+        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0]:
+            m.scale = None
+            m.zp = None
+        else:
+            try:
+                m.to(self.device)
                 m = WrapperLinear(
                     m,
                     enable_minmax_tuning=False,
@@ -1037,11 +1030,23 @@ class AutoRound(object):
                     enable_round_tuning=False,
                 )
                 m = m.unwrapper({})
-            else:
-                raise
+                m.to("cpu")
+            except RuntimeError as e:
+                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                    logger.warning("Out of VRAM, falling back to CPU.")
+                    m.to("cpu")
+                    m = WrapperLinear(
+                        m,
+                        enable_minmax_tuning=False,
+                        enable_norm_bias_tuning=False,
+                        enable_round_tuning=False,
+                    )
+                    m = m.unwrapper({})
+                else:
+                    raise
 
-        if self.low_gpu_mem_usage:
-            clear_memory()
+            if self.low_gpu_mem_usage:
+                clear_memory()
 
         # Step 3: Optional immediate packing/export
         if self.is_packing_immediate:
