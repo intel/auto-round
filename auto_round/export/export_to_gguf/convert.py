@@ -80,6 +80,8 @@ class SentencePieceTokenTypes(IntEnum):
 
 AnyModel = TypeVar("AnyModel", bound="type[Model]")
 
+import gguf
+gguf.TensorNameMap
 class OriModel:
     _model_classes: dict[str, type[Model]] = {}
 
@@ -276,7 +278,13 @@ class OriModel:
     def map_tensor_name(self, name: str, try_suffixes: Sequence[str] = (".weight", ".bias")) -> str:
         new_name = self.tensor_map.get_name(key=name, try_suffixes=try_suffixes)
         if new_name is None:
-            raise ValueError(f"Can not map tensor {name!r}")
+            # patch for new version transformers
+            if "language_model" in name:
+                new_name = self.tensor_map.get_name(key=name.replace(".language_model", ""), try_suffixes=try_suffixes)
+            elif "visual" in name:
+                new_name = self.tensor_map.get_name(key=name.replace("model.visual", "visual"), try_suffixes=try_suffixes)
+            if new_name is None:
+                raise ValueError(f"Can not map tensor {name!r}")
         return new_name
 
     def set_gguf_parameters(self):

@@ -1191,7 +1191,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
     for format in GGUF_CONFIG:
         if format in formats:
             if format == "q6_k_s":
-                logger.warning("Please not that q6_k_s is q6_k.")
+                logger.warning("Please note that q6_k_s is q6_k.")
             try:
                 from auto_round.export.export_to_gguf.convert import Model
             except:
