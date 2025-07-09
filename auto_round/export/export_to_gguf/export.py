@@ -110,8 +110,12 @@ def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer, p
         if processor is not None:
             processor.save_pretrained(tmp_work_dir)
 
-        gguf_model_instance_global = create_model_class(output_dir, model, layer_config, backend,
-                                                        low_cpu_mem_usage=True, model_type=model_type)
+        gguf_model_instance_global = [create_model_class(output_dir, model, layer_config, backend,
+                                                        low_cpu_mem_usage=True, model_type=ModelType.TEXT)]
+        if model_type == ModelType.MMPROJ:
+            gguf_model_instance_global.append(
+                create_model_class(
+                    output_dir, model, layer_config, backend, low_cpu_mem_usage=True, model_type=ModelType.MMPROJ))
 
         if not hasattr(model, "last_layer_name_to_block_name"):
             block_name_to_last_layer_name = {}
@@ -131,8 +135,9 @@ def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer, p
             model.last_layer_name_to_block_name = last_layer_name_to_block_name
     if name in model.last_layer_name_to_block_name:
         ##packing block
-        gguf_model_instance_global.current_packing_block = model.last_layer_name_to_block_name[name]
-        gguf_model_instance_global.prepare_tensors()
+        for gguf_model in gguf_model_instance_global:
+            gguf_model.current_packing_block = model.last_layer_name_to_block_name[name]
+            gguf_model.prepare_tensors()
 
         block = get_module(model, model.last_layer_name_to_block_name[name])
         for n, m in block.named_modules():
@@ -144,7 +149,8 @@ def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer, p
         gc.collect()
         model.last_layer_name_to_block_name.pop(name)
         if len(model.last_layer_name_to_block_name) == 0:
-            gguf_model_instance_global.current_packing_block = None
+            for gguf_model in gguf_model_instance_global:
+                gguf_model.current_packing_block = None
 
 
 @torch.inference_mode()
@@ -170,12 +176,15 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, v
             tokenizer.save_pretrained(tmp_work_dir)
         config.save_pretrained(tmp_work_dir)
 
-        model_type = ModelType.MMPROJ if vlm else ModelType.TEXT,
-        gguf_model_instance_global = create_model_class(output_dir, model, layer_config, backend, model_type=model_type)
+        gguf_model_instance_global = [create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.TEXT)]
+        if vlm:
+            gguf_model_instance_global.append(
+                create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.MMPROJ))
 
-    gguf_model_instance_global.write()
-    rt = time.time() - st
-    logger.info(f"Model successfully exported to {gguf_model_instance_global.fname_out}, running time={rt}")
+    for gguf_model in gguf_model_instance_global:
+        gguf_model.write()
+        rt = time.time() - st
+        logger.info(f"Model successfully exported to {gguf_model.fname_out}, running time={rt}")
     del gguf_model_instance_global
     shutil.rmtree(tmp_work_dir, ignore_errors=True)
 

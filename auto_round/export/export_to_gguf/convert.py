@@ -675,7 +675,7 @@ class ModelBase(OriModel):
                 #     data_qtype = gguf.GGMLQuantizationType.F32
                 # else:
                 #     data_qtype = gguf.GGMLQuantizationType.F16
-                data_qtype = gguf.GGMLQuantizationType.F32  ##FP16 has issues at inference
+                data_qtype = gguf.GGMLQuantizationType.F16  ##FP16 has issues at inference
                 data = data_torch.to(torch.float32).squeeze().cpu().numpy()
         else:
             # if data_torch.dtype == torch.float32:
@@ -683,7 +683,7 @@ class ModelBase(OriModel):
             # else:
             #     data_qtype = gguf.GGMLQuantizationType.F16
             # data = data_torch.squeeze().cpu().numpy()
-            data_qtype = gguf.GGMLQuantizationType.F32
+            data_qtype = gguf.GGMLQuantizationType.F16
             data = data_torch.to(torch.float32).squeeze().cpu().numpy()
         return data, data_qtype
 
@@ -691,7 +691,7 @@ class ModelBase(OriModel):
         name = name[:-len('.weight')]
         if name not in layer_config or layer_config[name]['bits'] >= 16:
             if isinstance(data_qtype, bool):
-                return gguf.GGMLQuantizationType.F32
+                return gguf.GGMLQuantizationType.F16
             return data_qtype
         bits = layer_config[name]['bits']
         super_bits = layer_config[name]["super_bits"]
@@ -3291,10 +3291,16 @@ class Qwen2VLModel(TextModel):
         del bid  # unused
         if name.startswith("thinker."):
             name = name.replace("thinker.", "")
-        if name.startswith("visual") or name.startswith("audio") or \
-                name.startswith("talker") or name.startswith("token2wav"):
-            # skip multimodal tensors
-            return []
+
+        # patch for new version huggingface
+        mm_keys = ["visual", "audio", "talker", "token2wav"]
+        for key in mm_keys:
+            if name.startswith(key) or name.startswith(f"model.{key}"):
+                return []
+        # if name.startswith("visual") or name.startswith("audio") or \
+        #         name.startswith("talker") or name.startswith("token2wav"):
+        #     # skip multimodal tensors
+        #     return []
         return [(self.map_tensor_name(name), data_torch)]
 
 
@@ -3349,6 +3355,9 @@ class Qwen2VLVisionModel(MmprojModel):
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
+        # patch for new version huggingface
+        if name.startswith("model."):
+            name = name.replace("model.", "")
         if name.startswith("visual."):
             # process visual tensors
             # split QKV tensors if needed
