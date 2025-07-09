@@ -28,6 +28,7 @@ def simple_evaluate_user_model(
         batch_size: Optional[int] = 1,
         max_batch_size: Optional[int] = 64,
         eval_model_dtype = "auto",
+        add_bos_token: bool = False,
         **kwargs
 ):
     hflm = HFLM(
@@ -35,7 +36,8 @@ def simple_evaluate_user_model(
         tokenizer=tokenizer,
         batch_size=batch_size,
         max_batch_size=max_batch_size,
-        dtype=eval_model_dtype)
+        dtype=eval_model_dtype,
+        add_bos_token=add_bos_token)
     return lm_simple_evaluate(
         model=hflm, model_args=None, batch_size=batch_size, max_batch_size=max_batch_size, **kwargs)
 

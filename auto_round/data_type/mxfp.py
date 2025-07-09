@@ -42,7 +42,6 @@ FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     if ebits != 0:
         private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
-
         # The minimum representable exponent for 8 exp bits is -126
         min_exp = -(2 ** (ebits - 1)) + 2
         private_exp = private_exp.clip(min=min_exp)
@@ -51,7 +50,6 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
 
     # Scale up so appropriate number of mbits are in the integer portion of the number
     tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** private_exp) * (2 ** (mbits - 2))
-
     if mantissa_rounding == "even":
         abs_tensor = torch.abs(tensor)
         mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
@@ -63,10 +61,6 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     else:
         raise ValueError("mantissa_rounding only supports even, nearest or floor.")
 
-    ##the clamp is False in official code
-    # max_mantissa = 2 ** (mbits - 1) - 1 ## this is incorrect
-    # tensor = torch.clamp(tensor, -max_mantissa, max_mantissa)
-
     # Undo scaling
     tensor = tensor / (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** (mbits - 2)) * (2 ** private_exp)
 
@@ -74,6 +68,7 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     return tensor
 
 
+@torch.compile()
 def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
              mantissa_rounding="even", data_type="mx_fp", **kwargs):
     """Quantize the given tensor using the specified parameters.
@@ -101,34 +96,25 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
     orig_dtype = tensor.dtype
+    tensor = tensor.to(torch.float32)
     shared_exp, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
     if isinstance(max_scale, torch.Tensor):
         shared_exp *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
     else:
         shared_exp *= max_scale
 
-    shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
+    # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
+    shared_exp = torch.where(shared_exp == 0, torch.ones_like(shared_exp), torch.log2(shared_exp))
     shared_exp = floor_ste(shared_exp)
-    # if flush_fp32_subnorms:
-    #     tensor = tensor * (shared_exp > -FP32_EXPONENT_BIAS).type(tensor.dtype)
-
     scale_emax = 2 ** (8 - 1) - 1
-    shared_exp[shared_exp == torch.inf] = scale_emax + emax
-    shared_exp[shared_exp == -torch.inf] = -scale_emax + emax
-    shared_exp = (shared_exp - emax)
+    shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
-    shared_exp[shared_exp > scale_emax] = scale_emax  ##changed Nan
-    shared_exp[shared_exp < -scale_emax] = -scale_emax
-    if (shared_exp.dtype == torch.float16 and (torch.any(shared_exp > 15) or torch.any(shared_exp < -24))) or (
-            shared_exp.dtype == torch.bfloat16 and torch.any((shared_exp < -126))):
-        tensor = tensor.to(torch.float32)
-        shared_exp = shared_exp.to(torch.float32)
-    tensor = tensor / (2 ** shared_exp)
-    tensor = tensor + v
+    scale = torch.pow(2, shared_exp)
+    tensor = tensor / scale + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
-    tensor = tensor * (2 ** shared_exp)
+    tensor = tensor * scale
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
@@ -137,13 +123,11 @@ for key in MXFP_FORMAT_CACHE.keys():
     QUANT_FUNC_WITH_DTYPE[key] = quant_mx
 
 if __name__ == "__main__":
-    data = torch.tensor([0.0, 0.25, 0.4,0.75, 1.25,1.4, 1.75, 2.5, 2.9,3.5, 5.0, 5.1])
+    data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])
     data1 = quant_element(data, 2, 3, 6.0)
-    gt = torch.tensor([0.0,0.0,0.5,1.0,1.0,1.5,2.0,2.0,3.0,4.0,4.0,6.0])
-    assert(torch.sum(torch.abs(data1-gt))<1e-6)
+    gt = torch.tensor([0.0, 0.0, 0.5, 1.0, 1.0, 1.5, 2.0, 2.0, 3.0, 4.0, 4.0, 6.0])
+    assert (torch.sum(torch.abs(data1 - gt)) < 1e-6)
 
-    data_neg = data*-1
+    data_neg = data * -1
     data2 = quant_element(data_neg, 2, 3, 6.0)
-    assert(torch.sum(torch.abs(data2-gt*-1))<1e-6)
-
-
+    assert (torch.sum(torch.abs(data2 - gt * -1)) < 1e-6)

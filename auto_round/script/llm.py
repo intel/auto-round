@@ -581,13 +581,18 @@ def tune(args):
                 args.eval_bs = 16
             from auto_round.eval.evaluation import simple_evaluate_user_model
             st = time.time()
+            add_bos_token=False
+            if "llama" in args.model.lower():
+                add_bos_token=True
             res = simple_evaluate_user_model(
                 model,
                 tokenizer,
                 tasks=tasks,
                 batch_size=args.eval_bs,
                 device=device_str,
-                eval_model_dtype=eval_model_dtype)
+                eval_model_dtype=eval_model_dtype,
+                add_bos_token=add_bos_token
+                )
             print(make_table(res))
             print("evaluation running time=%ds" % (time.time() - st))
     else:
