@@ -38,7 +38,7 @@ class SupportedFormats:
     def __init__(self):
         self._support_format = (
             "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel",
-            "auto_round:auto_awq", "itrex", "itrex_xpu", "fake")
+            "auto_round:auto_awq", "itrex", "itrex_xpu", "fake", "mx_fp", "nv_fp")
         self._gguf_format = tuple(GGUF_CONFIG.keys())
         self._support_list = self._support_format + self._gguf_format
 

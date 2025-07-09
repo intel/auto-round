@@ -76,6 +76,20 @@ def _packing_layer_with_autoawq(*args, **kwargs):
     return pack_layer(*args, **kwargs)
 
 
+@register_format("mx_fp")
+def _save_quantized_as_mxfp(*args, **kwargs):
+    from auto_round.export.export_to_fp.export import save_quantized_as_fp
+
+    return save_quantized_as_fp(*args, **kwargs)
+
+
+@register_format("nv_fp")
+def _save_quantized_as_nvfp(*args, **kwargs):
+    from auto_round.export.export_to_fp.export import save_quantized_as_fp
+
+    return save_quantized_as_fp(*args, **kwargs)
+
+
 @register_format("llmcompressor")
 def _save_quantized_as_llmcompressor(*args, **kwargs):
     from auto_round.export.export_to_llmcompressor.export import save_quantized_as_llmcompressor
