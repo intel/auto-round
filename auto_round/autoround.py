@@ -171,7 +171,6 @@ class AutoRound(object):
             super_group_size: int = None,
             disable_opt_rtn: bool = False,
             model_kwargs: dict = None,
-            vlm: bool = False,
             **kwargs,
     ):
         if kwargs:
@@ -261,7 +260,7 @@ class AutoRound(object):
 
         self.disable_opt_rtn = disable_opt_rtn
 
-        self.vlm = vlm
+        self.vlm = kwargs.get("vlm", False)
 
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
@@ -2450,7 +2449,6 @@ class AutoRound(object):
             backend=backend,
             to_quant_block_names=self.to_quant_block_names,
             quant_block_list=self.quant_block_list,
-            vlm=self.vlm,
             **kwargs
         )
         return compressed_model
@@ -2684,7 +2682,6 @@ class AutoRoundOPT(AutoRound):
             super_bits: int = None,
             super_group_size: int = None,
             disable_opt_rtn: bool = False,
-            vlm: bool = False,
             **kwargs,
     ):
         super(AutoRoundOPT, self).__init__(
@@ -2727,7 +2724,6 @@ class AutoRoundOPT(AutoRound):
             device_map=device_map,
             super_bits=super_bits,
             super_group_size=super_group_size,
-            vlm=vlm,
             **kwargs,
         )
 
@@ -2865,7 +2861,6 @@ class AutoRoundAdam(AutoRoundOPT):
             super_bits: int = None,
             super_group_size: int = None,
             disable_opt_rtn: bool = False,
-            vlm: bool = False,
             **kwargs,
     ):
         super(AutoRoundAdam, self).__init__(
@@ -2909,6 +2904,5 @@ class AutoRoundAdam(AutoRoundOPT):
             optimizer=optimizer,
             super_bits=super_bits,
             super_group_size=super_group_size,
-            vlm=vlm,
             **kwargs,
         )
