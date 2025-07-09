@@ -18,8 +18,10 @@ import shutil
 import torch
 from pathlib import Path
 import time
-from auto_round.export.export_to_gguf.convert import ModelBase
+from auto_round.export.export_to_gguf.convert import ModelBase, ModelType
 from auto_round.utils import logger, LazyImport, get_block_names, flatten_list, check_to_quantized, get_module
+
+TMP_DIR_NAME = "tmp_dir"
 
 gguf = LazyImport("gguf")
 
@@ -46,8 +48,8 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
 }
 
 
-def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0", low_cpu_mem_usage=False):
-    tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
+def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0", low_cpu_mem_usage=False, model_type=ModelType.TEXT):
+    tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
     with torch.inference_mode():
         hparams = ModelBase.load_hparams(tmp_work_dir)
         if "architectures" in hparams:
@@ -60,11 +62,11 @@ def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0", low
                 elif model_architecture.replace("ConditionalGeneration", "CausalLM") in ModelBase._model_classes:
                     model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
         try:
-            model_class = ModelBase.from_model_architecture(model_architecture)
+            model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
         except NotImplementedError:
             logger.error(f"Model {model_architecture} is not supported")
             sys.exit(1)
-        model_class = ModelBase.from_model_architecture(model_architecture)
+        model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
         model_name = model.name_or_path.split('/')
         if len(model_name[-1]) == 0:
             model_name = model_name[-2]
@@ -93,21 +95,23 @@ def create_model_class(output_dir, model, layer_config, backend="gguf:q4_0", low
 
 
 @torch.inference_mode()
-def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer):
+def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer, processor=None, model_type=ModelType.TEXT):
     """Export the model to gguf format."""
     global gguf_model_instance_global
-    tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
+    tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
     if output_dir is not None and os.path.exists(output_dir) and not os.path.exists(tmp_work_dir):
         logger.warning_once(f"{output_dir} already exists, this may cause model conflict")
-    tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
+    tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
     if "gguf_model_instance_global" not in globals():
         config = model.config
+        config.save_pretrained(tmp_work_dir)
         if tokenizer is not None:
             tokenizer.save_pretrained(tmp_work_dir)
-        config.save_pretrained(tmp_work_dir)
+        if processor is not None:
+            processor.save_pretrained(tmp_work_dir)
 
         gguf_model_instance_global = create_model_class(output_dir, model, layer_config, backend,
-                                                        low_cpu_mem_usage=True)
+                                                        low_cpu_mem_usage=True, model_type=model_type)
 
         if not hasattr(model, "last_layer_name_to_block_name"):
             block_name_to_last_layer_name = {}
@@ -144,9 +148,9 @@ def pack_gguf_layer(name, model, backend, output_dir, layer_config, tokenizer):
 
 
 @torch.inference_mode()
-def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, **kwargs):
+def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, vlm=False, **kwargs):
     """Export the model to gguf format."""
-    tmp_work_dir = Path(os.path.join(output_dir, 'tmp_dir'))
+    tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
     if output_dir is not None and os.path.exists(output_dir) and not os.path.exists(tmp_work_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
 
@@ -166,7 +170,8 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, *
             tokenizer.save_pretrained(tmp_work_dir)
         config.save_pretrained(tmp_work_dir)
 
-        gguf_model_instance_global = create_model_class(output_dir, model, layer_config, backend)
+        model_type = ModelType.MMPROJ if vlm else ModelType.TEXT,
+        gguf_model_instance_global = create_model_class(output_dir, model, layer_config, backend, model_type=model_type)
 
     gguf_model_instance_global.write()
     rt = time.time() - st

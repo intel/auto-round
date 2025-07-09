@@ -29,7 +29,7 @@ from packaging import version
 import gc
 from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 import transformers
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES, GGUF_INNER_CONFIG, QK_K
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES, GGUF_INNER_CONFIG, QK_K, ModelType
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -1170,11 +1170,10 @@ def get_layer_features(layer):
     return None, None  # Unsupported layer type
 
 
-def _gguf_args_check(args_or_ar, format_str=None):
+def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     from auto_round.utils import logger
-    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
     import argparse
-
+    
     if format_str is None:
         args_or_ar.format = args_or_ar.format.replace("q*_", f"q{args_or_ar.bits}_")
         format_str = args_or_ar.format
@@ -1211,7 +1210,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
                 hparams = ModelBase.load_hparams(Path(args_or_ar.model))
                 model_architecture = hparams["architectures"][0]
                 try:
-                    model_class = ModelBase.from_model_architecture(model_architecture)
+                    model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
                 except NotImplementedError:
                     logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                     sys.exit(1)
@@ -1606,7 +1605,7 @@ def _gguf_type_fallback(gguf_type):
     return gguf_type
 
 ##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
-def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
+def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type=ModelType.TEXT):
     # TODO: support for other format later
     target_gguf_format = next((fmt for fmt in gguf_format if fmt != "fake"), None)
 
@@ -1622,7 +1621,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             elif model_architecture.replace("ConditionalGeneration", "CausalLM") in ModelBase._model_classes:
                 model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
     try:
-        model_class = ModelBase.from_model_architecture(model_architecture)
+        model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
     except NotImplementedError:
         return layer_config, {}
 

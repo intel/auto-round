@@ -86,8 +86,6 @@ class ModelType(IntEnum):
 AnyModel = TypeVar("AnyModel", bound="type[ModelBase]")
 
 
-import gguf
-gguf.TensorNameMap
 class OriModel:
     _model_classes: dict[ModelType, dict[str, type[ModelBase]]] = {
         ModelType.TEXT: {},
@@ -296,7 +294,7 @@ class OriModel:
             # patch for new version transformers
             if "language_model" in name:
                 new_name = self.tensor_map.get_name(key=name.replace(".language_model", ""), try_suffixes=try_suffixes)
-            elif "visual" in name:
+            if "visual" in name:
                 new_name = self.tensor_map.get_name(key=name.replace("model.visual", "visual"), try_suffixes=try_suffixes)
             if new_name is None:
                 raise ValueError(f"Can not map tensor {name!r}")
@@ -550,6 +548,8 @@ class ModelBase(OriModel):
             dry_run: bool = False,
             small_first_shard: bool = False,
             hparams: dict[str, Any] | None = None):
+        if self.model_arch == gguf.MODEL_ARCH.MMPROJ and fname_out.is_dir():
+            fname_out = fname_out / "mmproj-model.gguf"
         self.model = model
         self.layer_config = layer_config
         self.low_cpu_mem_usage = self._need_low_cpu_mem(low_cpu_mem_usage)

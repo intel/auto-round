@@ -267,6 +267,7 @@ class AutoRoundMLLM(AutoRound):
             to_quant_block_names=self.to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
+            vlm=True,
             **kwargs,
         )
 
