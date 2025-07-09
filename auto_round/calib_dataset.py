@@ -16,7 +16,7 @@ import json
 import random
 
 import torch
-from datasets import Dataset, IterableDataset
+from datasets import Dataset, IterableDataset, load_dataset
 from datasets import Features, Sequence, Value
 from torch.utils.data import DataLoader
 import sys
@@ -49,17 +49,19 @@ def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=Non
     if system_prompt is None:
         system_prompt = "You are a helpful assistant."
     for text in samples:
-        if system_prompt == "":
-            message = [{"role": "user", "content": text}]
+        message=[]
+        if system_prompt!="":
+            message.append({"role": "system", "content": system_prompt})
+
+        if isinstance(text,list) and isinstance(text[0],dict):
+            message+=text
         else:
-            message = [{"role": "system", "content": system_prompt},
-                       {"role": "user", "content": text}]
+            message.append({"role": "user", "content": text})
         try:
             chat_templated = tokenizer.apply_chat_template(
                 message,
                 tokenize=False,
                 add_generation_prompt=True,
-
             )
         except:
             logger.warning(
@@ -255,7 +257,55 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
     return calib_dataset
 
 
-@register_dataset("madao33/new-title-chinese")
+@register_dataset("HuggingFaceH4/ultrachat_200k")
+def get_ultrachat_dataset(
+    tokenizer,
+    seqlen,
+    dataset_name="HuggingFaceH4/ultrachat_200k",
+    split=None,
+    seed=42,
+    apply_chat_template=True,
+    system_prompt=None,
+):
+    # 加载数据集
+    dataset = load_dataset(dataset_name, split='train_sft', streaming=True, trust_remote_code=True)
+    dataset = dataset.take(20000).shuffle(seed=seed)
+
+    # 检查是否为对话模型
+    def is_instruct_tokenizer(tokenizer):
+        try:
+            out = tokenizer.apply_chat_template("hello")
+            return bool(out and len(out) > 0)
+        except Exception:
+            return False
+
+    is_instruct = is_instruct_tokenizer(tokenizer)
+
+    # 自动纠正 apply_chat_template 配置
+    if is_instruct and not apply_chat_template:
+        logger.warning("Tokenizer looks like an instruct/chat model, but apply_chat_template=False. Setting to True.")
+        apply_chat_template = True
+    elif not is_instruct and apply_chat_template:
+        logger.warning("Tokenizer is not an instruct/chat model, but apply_chat_template=True. Setting to False.")
+        apply_chat_template = False
+
+
+    def tokenize_example_batch(examples):
+        if not apply_chat_template:
+            texts = []
+            for message_list in examples["messages"]:
+                combined = "".join([msg["content"] for msg in message_list])
+                texts.append(combined)
+            return tokenizer(texts, truncation=True, max_length=seqlen)
+        else:
+            return apply_chat_template_to_samples(
+                examples["messages"], tokenizer, seqlen, system_prompt=system_prompt
+            )
+
+
+    dataset = dataset.map(tokenize_example_batch, batched=True)
+    return dataset
+
 def get_new_chinese_title_dataset(
         tokenizer,
         seqlen,
@@ -697,4 +747,3 @@ def get_dataloader(
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
-
