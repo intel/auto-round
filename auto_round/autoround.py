@@ -716,7 +716,7 @@ class AutoRound(object):
         Returns:
             bool: True if the quantization process completes without critical errors.
         """
-        ia_quantized = False
+        is_quantized = False
         for name, module in self.model.named_modules():
             # Skip non-Embedding modules or layers not in config
             if not isinstance(module, torch.nn.Embedding) or name not in self.layer_config:
@@ -727,7 +727,7 @@ class AutoRound(object):
             # Skip layers that are not marked for quantization
             if not check_to_quantized(config):
                 continue
-            ia_quantized = True
+            is_quantized = True
             config["scale_dtype"] = self.scale_dtype
             dtype = config["data_type"]
 
@@ -780,7 +780,7 @@ class AutoRound(object):
             # Release memory
             clear_memory()
 
-        return ia_quantized
+        return is_quantized
 
     def quant_rtn_with_imatrix(self, all_to_quantized_module_names: list[str]) -> None:
         """Performs RTN quantization using input activation statistics (imatrix).
