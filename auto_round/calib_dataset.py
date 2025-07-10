@@ -277,7 +277,7 @@ def get_ultrachat_dataset(
     if split not in all_splits:
         raise ValueError("split must be one of {} for ultrachat_200k ".format(all_splits))
 
-    dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split='train_sft',
+    dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split=split,
                            streaming=True, trust_remote_code=True)
     dataset = dataset.shuffle(seed=seed).take(20000)
 
