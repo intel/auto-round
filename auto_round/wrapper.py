@@ -95,10 +95,11 @@ class WrapperLinear(torch.nn.Module):
         p_dtype = torch.float32  ##parameter dtype
 
         orig_layer = self.orig_layer
-        if hasattr(orig_layer,"weight"):
-            orig_weight = getattr(orig_layer, "get_weight", lambda: orig_layer.weight)()
-        else:
-            orig_weight = orig_layer.orig_weight
+        orig_weight = getattr(orig_layer, "get_weight", lambda: orig_layer.weight)()
+        # if hasattr(orig_layer,"weight"):
+        #     orig_weight = getattr(orig_layer, "get_weight", lambda: orig_layer.weight)()
+        # else:
+        #     orig_weight = orig_layer.orig_weight
         if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             orig_weight = orig_weight.t()
         weight_reshape = reshape_and_pad_tensor(orig_weight.data, orig_layer.group_size)
