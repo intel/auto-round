@@ -173,6 +173,7 @@ class AutoRound(object):
             model_kwargs: dict = None,
             **kwargs,
     ):
+        self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
         self.quantized = False
@@ -260,7 +261,6 @@ class AutoRound(object):
 
         self.disable_opt_rtn = disable_opt_rtn
 
-        self.vlm = kwargs.get("vlm", False)
 
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
@@ -517,10 +517,9 @@ class AutoRound(object):
         Returns:
             list: A list of validated and updated formats.
         """
+        _gguf_args_check(self, format, model_type=ModelType.TEXT)
         if self.vlm:
             _gguf_args_check(self, format, model_type=ModelType.MMPROJ)
-        else:
-            _gguf_args_check(self, format, model_type=ModelType.TEXT)
 
         formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
         from auto_round.utils import SUPPORTED_FORMATS

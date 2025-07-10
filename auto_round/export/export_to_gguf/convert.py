@@ -291,14 +291,7 @@ class OriModel:
     def map_tensor_name(self, name: str, try_suffixes: Sequence[str] = (".weight", ".bias")) -> str:
         new_name = self.tensor_map.get_name(key=name, try_suffixes=try_suffixes)
         if new_name is None:
-            # patch for new version transformers
-            if "language_model" in name:
-                new_name = self.tensor_map.get_name(key=name.replace(".language_model", ""), try_suffixes=try_suffixes)
-            if "visual" in name:
-                new_name = self.tensor_map.get_name(
-                    key=name.replace("model.visual", "visual"), try_suffixes=try_suffixes)
-            if new_name is None:
-                raise ValueError(f"Can not map tensor {name!r}")
+            raise ValueError(f"Can not map tensor {name!r}")
         return new_name
 
     def set_gguf_parameters(self):
@@ -627,7 +620,7 @@ class ModelBase(OriModel):
             data_torch, data_qtype.name.lower(), scale, zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, device=device)
         return data
 
-    def _quant_data(self, data_torch, data_qtype, name, bid):
+    def _quant_data(self, data_torch, data_qtype, name, modify_name, bid):
         suffix = '.weight'
         if suffix in name:
             layer_name = name[:-len(suffix)]
@@ -639,7 +632,7 @@ class ModelBase(OriModel):
                         if hasattr(module, attr) and getattr(module, attr) is not None:
                             attr_tensor = getattr(module, attr)
                             ori_shape = attr_tensor.shape
-                            attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), name, bid)[0][1]
+                            attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid)[0][1]
                             attr_tensor = attr_tensor.reshape(ori_shape)
                             setattr(module, attr, attr_tensor)
                 scale = module.scale if hasattr(module, "scale") else None
@@ -747,6 +740,36 @@ class ModelBase(OriModel):
         #     raise ValueError(f"Unknown file type: {data_qtype}")
         # return data_qtype
 
+    def _special_name_handle(self, name):
+        # for Qwen2VL
+        def remove_prefix(name, key_list):
+            for key in key_list:
+                if key in name and not name.startswith(key):
+                    name = ".".join(name.split(".")[1:])
+                    break
+            return name
+        if self.model_arch == gguf.MODEL_ARCH.QWEN2VL:
+            name = name.replace("language_model.", "")
+            visual_keys =  ["thinker", "visual", "audio", "talker", "token2wav"]
+            name = remove_prefix(name, visual_keys)
+        if isinstance(self, Qwen2VLVisionModel):
+            if "visual." in name and not name.startswith("visual."):
+                name = ".".join(name.split(".")[1:])
+        
+        # for gemma3
+        if self.model_arch == gguf.MODEL_ARCH.GEMMA3 or isinstance(self, Gemma3VisionModel):
+            visual_keys =  ["multi_modal_projector", "vision_tower", "multimodal_projector", "vision_model"]
+            name = remove_prefix(name, visual_keys)
+            
+        # for LlavaForConditionalGeneration
+        if self.model_arch == gguf.MODEL_ARCH.LLAMA:
+            name = name.replace("language_model.", "")
+            # name = name.replace("model.", "")
+        if isinstance(self, LlavaVisionModel):
+            visual_keys =  ["multi_modal_projector", "vision_tower"]
+            name = remove_prefix(name, visual_keys)
+        return name
+    
     def prepare_tensors(self):
         max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
 
@@ -777,7 +800,49 @@ class ModelBase(OriModel):
                     break
 
             clean_weight_list = []
-            for new_name, data_torch in (self.modify_tensors(data_torch, name, bid)):
+
+            modify_name = self._special_name_handle(name)
+            # try:
+            #     self.modify_tensors(data_torch, modify_name, bid)
+            # except ValueError:
+            #     if "language_model" in modify_name:
+            #         modify_name = modify_name.replace("language_model.", "")
+            #     if modify_name not in self.tensor_map.mapping:
+            #         if modify_name.startswith("model."):
+            #             modify_name = modify_name.replace("model.", "")
+                # if modify_name not in self.tensor_map.mapping.keys():
+                #     for i in range(len(modify_name.split(".")) - 1):
+                #         if modify_name.split(".")[i].isdigit():
+                #             continue
+                #         tmp_name = modify_name.split(".")[:i] + modify_name.split(".")[i+1:]
+                #         tmp_name = ".".join(tmp_name)
+                #         if tmp_name in self.tensor_map.mapping.keys():
+                #             modify_name = tmp_name
+                #             break
+                # if modify_name not in self.tensor_map.mapping.keys():
+                #     for key in self.tensor_map.mapping.keys():
+                #         if key.split(".")[-1] != modify_name.split(".")[-2]:
+                #             continue
+                #         for i in range(len(key.split(".")) - 1):
+                #             if key.split(".")[i].isdigit():
+                #                 continue
+                #             tmp_key = key.split(".")[:i] + key.split(".")[i+1:]
+                #             tmp_key = ".".join(tmp_key)
+                #             if tmp_key in modify_name:
+                #                 modify_name = key
+                #                 break
+                # if modify_name not in self.tensor_map.mapping.keys():
+                #     import difflib
+                #     max_sim = -1
+                #     for key in self.tensor_map.mapping.keys():
+                #         if key.split(".")[-1] != modify_name.split(".")[-2]:
+                #             continue
+                #         sim_ratio = difflib.SequenceMatcher(None, modify_name, key).quick_ratio()
+                #         if sim_ratio > max_sim:
+                #             max_sim = sim_ratio
+                #             modify_name = key
+                    
+            for new_name, data_torch in (self.modify_tensors(data_torch, modify_name, bid)):
                 data = data_torch.squeeze().cpu().numpy()
 
                 # if data ends up empty, it means data_torch was a scalar tensor -> restore
@@ -822,7 +887,8 @@ class ModelBase(OriModel):
                 name = self.get_moe_name(name, new_name)
                 clean_weight_list.append(name)
                 # get data_qtype by layer_config
-                data_qtype = self.get_qtype_by_layer_config(self.layer_config, name, data_qtype)
+                if isinstance(data_qtype, bool):
+                    data_qtype = self.get_qtype_by_layer_config(self.layer_config, name, data_qtype)
 
                 # # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
                 # if isinstance(data_qtype, bool):
@@ -886,7 +952,7 @@ class ModelBase(OriModel):
                                 k_b, v_b = torch.split(kv_b, [qk_nope_head_dim, v_head_dim], dim=1)
                                 k_b = k_b.transpose(1, 2)
 
-                                name_kb = name.replace("kv_b_proj", "k_b_proj")
+                                name_kb = modify_name.replace("kv_b_proj", "k_b_proj")
                                 if new_name == self.map_tensor_name(name_kb):
                                     attr_list[attr] = k_b
                                 else:
@@ -902,12 +968,12 @@ class ModelBase(OriModel):
                                 if arr_name[i].isdecimal() and int(arr_name[i]) == (data_torch.shape[0] - 1):
                                     arr_name[i] = str(idx)
                             arr_name = ".".join(arr_name)
-                            arr, data_qtype = self._quant_data(arr, data_qtype, arr_name, bid)
+                            arr, data_qtype = self._quant_data(arr, data_qtype, arr_name, modify_name, bid)
                             new_data.append(arr)
                         data = np.array(new_data)
                         del new_data
                     else:
-                        data, data_qtype = self._quant_data(data_torch, data_qtype, name, bid)
+                        data, data_qtype = self._quant_data(data_torch, data_qtype, name, modify_name, bid)
 
                 shape = gguf.quant_shape_from_byte_shape(
                     data.shape, data_qtype) if data.dtype == np.uint8 else data.shape
@@ -926,6 +992,13 @@ class ModelBase(OriModel):
             if self.low_cpu_mem_usage:
                 for weight_name in clean_weight_list:
                     module = get_module(self.model, ".".join(weight_name.split(".")[:-1]))
+                    for key in ["scale", "zp", "d_scale", "wmin", "d_wmin", "imatrix"]:
+                        if hasattr(module, key):
+                            setattr(module, key, None)
+                        if hasattr(module, "w_" + key):
+                            setattr(module, "w_" + key, None)
+                    if self.model_arch == gguf.MODEL_ARCH.LLAMA and "embed_tokens.weight" in weight_name:
+                        continue
                     clean_module_parameter(module, weight_name.split(".")[-1])
 
 
@@ -3293,15 +3366,10 @@ class Qwen2VLModel(TextModel):
         if name.startswith("thinker."):
             name = name.replace("thinker.", "")
 
-        # patch for new version huggingface
-        mm_keys = ["visual", "audio", "talker", "token2wav"]
-        for key in mm_keys:
-            if name.startswith(key) or name.startswith(f"model.{key}"):
-                return []
-        # if name.startswith("visual") or name.startswith("audio") or \
-        #         name.startswith("talker") or name.startswith("token2wav"):
-        #     # skip multimodal tensors
-        #     return []
+        if name.startswith("visual") or name.startswith("audio") or \
+                name.startswith("talker") or name.startswith("token2wav"):
+            # skip multimodal tensors
+            return []
         return [(self.map_tensor_name(name), data_torch)]
 
 
@@ -3356,9 +3424,6 @@ class Qwen2VLVisionModel(MmprojModel):
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
-        # patch for new version huggingface
-        if name.startswith("model."):
-            name = name.replace("model.", "")
         if name.startswith("visual."):
             # process visual tensors
             # split QKV tensors if needed
