@@ -431,8 +431,8 @@ class AutoRound(object):
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
 
-        if "nv_fp" in self.data_type and (self.group_size != 32 or self.group_size != 16):
-            logger.warning("mx_fp should only support group_size of 16/32 in real deployment")
+        if "nv_fp" in self.data_type and (self.group_size != 16):
+            logger.warning("nv_fp should only support group_size of 16 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
@@ -445,8 +445,11 @@ class AutoRound(object):
                     f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
                     f" than gradient_accumulate_steps * batch_size")
-        self._dq_check()
 
+        if self.enable_norm_bias_tuning:
+            logger.warning("the `enable_norm_bias_tuning` feature is experimental and currently has limited support.")
+
+        self._dq_check()
 
     def _check_compatibility(self):
 
@@ -498,31 +501,20 @@ class AutoRound(object):
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("group_size of 0 is not supported for data_type other than fp8 ")
 
-    def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
-        """Quantizes the model and saves it in the specified format(s).
+    def parse_format_to_list(self, format: str) -> list:
+        """Parses the format string into a list of formats.
 
-        This function checks the validity of the requested format(s), quantizes
-        the model accordingly, and saves it to the specified output directory.
-        If multiple formats are provided, the model is saved separately for each format.
+        This method checks the requested format(s) against the model's
+        quantization settings and adjusts them if necessary. It ensures that
+        the formats are compatible with the model's data type, bit width,
+        and activation quantization settings.
 
         Args:
-            output_dir (str, optional): The directory where the quantized model
-                will be saved. Defaults to "tmp_autoround".
-            format (str, optional): The quantization format(s) to use, separated
-                by commas if multiple. Defaults to "auto_round".
-            inplace (bool, optional): Whether to modify the model in place if only
-                one format is used. Defaults to True.
-            **kwargs: Additional arguments for the quantization and saving process.
+            format (str): The requested format(s) for quantization, separated by commas.
 
         Returns:
-            model: A qdq model or packed model based on the configurations
-            folders: The folder paths where the quantized models are saved.
-
-        Raises:
-            ValueError: If an unsupported format is specified.
+            list: A list of validated and updated formats.
         """
-        # Validate and process the specified formats
-        self.orig_output_dir = output_dir
         _gguf_args_check(self, format)
 
         formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
@@ -561,12 +553,6 @@ class AutoRound(object):
                     )
                     formats = ["auto_round"]
 
-        # If multiple formats are specified, enforce inplace=False
-        if len(formats) > 1:
-            inplace = False
-        self.inplace = kwargs.get("inplace", inplace)
-        kwargs.pop("inplace", None)
-
         # Adjust format settings based on compatibility
         for index in range(len(formats)):
             format = formats[index]
@@ -591,14 +577,98 @@ class AutoRound(object):
             return [x for x in lst if not (x in seen or seen.add(x))]
 
         formats = remove_duplicates(formats)
-        self.formats = formats
+        for format in formats:
+            self._check_supported_format(format)
+        return formats
+
+    def _check_supported_format(self, format: str) -> bool:
+        """Checks if the specified format is supported.
+
+        This method validates the requested format against the model's bit width,
+        group size, symmetry, and activation quantization settings. It raises an
+        error if the format is incompatible with the current model configuration.
+
+        Args:
+            format (str): The requested format for quantization.
+
+        Returns:
+            bool: True if the format is supported, False otherwise.
+        """
+        format = format.replace("q*_", f"q{self.bits}_")
+        # only support to export afp8
+        if self.act_bits <= 8:
+            if "fp8" not in self.act_data_type or self.act_dynamic:
+                if format == "llmcompressor":
+                    bits, group_size, sym, act_bits = 8, -1, True, 8
+                    assert self.bits == bits and self.group_size == group_size and self.sym == sym \
+                        and self.act_bits == act_bits and self.act_dynamic, \
+                        f"Currently only support to export llmcompressor format for dynamic quantized" \
+                        f" W{self.bits}A{self.act_bits} model, but got bits={self.bits}," \
+                        f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
+                elif format != "fake":
+                    logger.warning(
+                        f"Currently only support to export auto_round format quantized model"
+                        " with fp8 dtype activation for activation quantization."
+                        " Change format to fake and save."
+                    )
+                    format = "fake"
+            else:
+                if format != "auto_round":
+                    logger.warning(
+                        f"Currently only support to export auto_round format for static W{self.bits}AFP8 model,"
+                        " change format to auto_round"
+                    )
+                    format = "auto_round"
+
+        if re.search(r"q\d_k", format) and not self.data_type.endswith("_dq"):
+            logger.error(
+                f"datatype<{self.data_type}> not support to export {format} format."
+                " Please change export format or `data_type`."
+            )
+            sys.exit(-1)
+
+    def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
+        """Quantizes the model and saves it in the specified format(s).
+
+        This function checks the validity of the requested format(s), quantizes
+        the model accordingly, and saves it to the specified output directory.
+        If multiple formats are provided, the model is saved separately for each format.
+
+        Args:
+            output_dir (str, optional): The directory where the quantized model
+                will be saved. Defaults to "tmp_autoround".
+            format (str, optional): The quantization format(s) to use, separated
+                by commas if multiple. Defaults to "auto_round".
+            inplace (bool, optional): Whether to modify the model in place if only
+                one format is used. Defaults to True.
+            **kwargs: Additional arguments for the quantization and saving process.
+
+        Returns:
+            model: A qdq model or packed model based on the configurations
+            folders: The folder paths where the quantized models are saved.
+
+        Raises:
+            ValueError: If an unsupported format is specified.
+        """
+        # Validate and process the specified formats
+        self.orig_output_dir = output_dir
+
+        # check and update the format based on the current configuration
+        format_list = self.parse_format_to_list(format)
+        self.formats = format_list
+
+        # If multiple formats are specified, enforce inplace=False
+        if len(format_list) > 1:
+            inplace = False
+        self.inplace = kwargs.get("inplace", inplace)
+        kwargs.pop("inplace", None)
 
         # Perform model quantization
         model, _ = self.quantize()
 
-        # Save the quantized model in the specified formats
+        # Save the quantized model in the specified format_list
         folders = []
-        for format in formats:
+        for format in format_list:
             if "gptq" in format and not self.sym:
                 logger.warning(
                     "The asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
@@ -946,20 +1016,13 @@ class AutoRound(object):
                 self.layer_config[name]["data_type"] = m.data_type
 
         # Step 2: Try quantization on GPU first, fall back to CPU if OOM
-        try:
-            m.to(self.device)
-            m = WrapperLinear(
-                m,
-                enable_minmax_tuning=False,
-                enable_norm_bias_tuning=False,
-                enable_round_tuning=False,
-            )
-            m = m.unwrapper({})
-            m.to("cpu")
-        except RuntimeError as e:
-            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                logger.warning("Out of VRAM, falling back to CPU.")
-                m.to("cpu")
+        # if only export gguf, using gguf-packing instead of rtn
+        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0]:
+            m.scale = None
+            m.zp = None
+        else:
+            try:
+                m.to(self.device)
                 m = WrapperLinear(
                     m,
                     enable_minmax_tuning=False,
@@ -967,11 +1030,23 @@ class AutoRound(object):
                     enable_round_tuning=False,
                 )
                 m = m.unwrapper({})
-            else:
-                raise
+                m.to("cpu")
+            except RuntimeError as e:
+                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                    logger.warning("Out of VRAM, falling back to CPU.")
+                    m.to("cpu")
+                    m = WrapperLinear(
+                        m,
+                        enable_minmax_tuning=False,
+                        enable_norm_bias_tuning=False,
+                        enable_round_tuning=False,
+                    )
+                    m = m.unwrapper({})
+                else:
+                    raise
 
-        if self.low_gpu_mem_usage:
-            clear_memory()
+            if self.low_gpu_mem_usage:
+                clear_memory()
 
         # Step 3: Optional immediate packing/export
         if self.is_packing_immediate:
@@ -2334,10 +2409,6 @@ class AutoRound(object):
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
-        for n, m in self.model.named_modules():
-            if isinstance(m, tuple(self.supported_types)):
-                m.name = n
-
         for i in range(0, len(block_names), nblocks):
             if i != 0:
                 pbar.update(1)
@@ -2373,7 +2444,7 @@ class AutoRound(object):
                             pack_gguf_layer(tmp_m.tmp_name, self.model, self.formats[0], output_dir, self.layer_config,
                                             self.tokenizer)
                         else:
-                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.name, self.model, self.formats[0])
+                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
         pbar.set_description(f"Quantizing done")
         pbar.update(1)
         pbar.close()
@@ -2402,31 +2473,7 @@ class AutoRound(object):
         Returns:
             object: The compressed model object.
         """
-        format = format.replace("q*_", f"q{self.bits}_")
-        # only support to export afp8
-        if self.act_bits <= 8:
-            if "fp8" not in self.act_data_type or self.act_dynamic:
-                if format != "fake":
-                    logger.warning(
-                        f"Currently only support to export auto_round format quantized model"
-                        " with fp8 dtype activation for activation quantization."
-                        " Change format to fake and save."
-                    )
-                    format = "fake"
-            else:
-                if format != "auto_round":
-                    logger.warning(
-                        f"Currently only support to export auto_round format for static W{self.bits}AFP8 model,"
-                        " change format to auto_round"
-                    )
-                    format = "auto_round"
-
-        if re.search(r"q\d_k", format) and not self.data_type.endswith("_dq"):
-            logger.error(
-                f"datatype<{self.data_type}> not support to export {format} format."
-                " Please change export format or `data_type`."
-            )
-            sys.exit(-1)
+        self._check_supported_format(format)
 
         if self.low_cpu_mem_usage:
             self.model = self.model.to('cpu')

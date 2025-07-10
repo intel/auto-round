@@ -224,6 +224,25 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
 
+
+    def test_enable_norm_bias_tuning_qwen3(self):
+        bits, group_size, sym = 4, 128, True
+        model_name = "Qwen/Qwen3-0.6B"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=10,
+            enable_norm_bias_tuning=True,
+            dataset=self.llm_dataloader,
+        )
+        autoround.quantize()
+
     def test_disable_minmax_tuning(self):
         bits, group_size, sym = 4, -1, True
         autoround = AutoRound(
