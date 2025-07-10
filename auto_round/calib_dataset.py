@@ -107,7 +107,7 @@ def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False, system_
     return default_tokenizer_function
 
 
-@register_dataset(["NeelNanda/pile-10k","pile-10k"])
+@register_dataset(["NeelNanda/pile-10k", "pile-10k"])
 def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42,
                      apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -209,7 +209,7 @@ def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=No
     return calib_dataset
 
 
-@register_dataset(["codeparrot/github-code-clean","github-code-clean"])
+@register_dataset(["codeparrot/github-code-clean", "github-code-clean"])
 def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/github-code-clean", split=None, seed=42,
                                   apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -251,11 +251,11 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
     tokenizer_function = get_default_tokenizer_function()
 
     dataset_mit = load_dataset("codeparrot/github-code-clean", "all-mit", split='train',
-                                 streaming=True, trust_remote_code=True)
-    dataset_apache= load_dataset("codeparrot/github-code-clean", "all-apache-2.0", split='train',
-                                  streaming=True, trust_remote_code=True)
+                               streaming=True, trust_remote_code=True).shuffle(seed=seed)
+    dataset_apache = load_dataset("codeparrot/github-code-clean", "all-apache-2.0", split='train',
+                                  streaming=True, trust_remote_code=True).shuffle(seed=seed)
     calib_dataset = concatenate_datasets([dataset_mit, dataset_apache])
-    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000) ##TODO concat data'shuffle may have bugs
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
@@ -280,7 +280,6 @@ def get_ultrachat_dataset(
     dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split='train_sft',
                            streaming=True, trust_remote_code=True)
     dataset = dataset.shuffle(seed=seed).take(20000)
-
 
     def is_instruct_tokenizer(tokenizer):
         try:
@@ -311,6 +310,49 @@ def get_ultrachat_dataset(
             )
 
     dataset = dataset.map(tokenize_example_batch, batched=True)
+    return dataset
+
+
+@register_dataset(["openbmb/Ultra-FineWeb", "openbmb/Ultra-FineWeb"])
+def get_ultrafinweb_dataset(
+        tokenizer,
+        seqlen,
+        dataset_name="openbmb/Ultra-FineWeb",
+        split=None,
+        seed=42,
+        apply_chat_template=True,
+        system_prompt=None,
+):
+    if split is not None:
+        if split not in ["en", "zh"]:
+            raise ValueError("split must be one of ['en', 'zh'] for Ultra-FineWeb dataset")
+        calib_dataset = load_dataset("openbmb/Ultra-FineWeb", split=split,
+                                  streaming=True, trust_remote_code=True)
+    else:
+        calib_dataset = load_dataset("openbmb/Ultra-FineWeb", split='en',
+                                  streaming=True, trust_remote_code=True)
+        # dataset_ch = load_dataset("openbmb/Ultra-FineWeb", split='zh',
+        #                           streaming=True, trust_remote_code=True).shuffle(seed=seed).take(2000)
+
+        # calib_dataset = concatenate_datasets([dataset_en, dataset_ch]) ##concat dasetset could not shuffle
+
+
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(20000)
+
+    def get_default_tokenizer_function():
+        def default_tokenizer_function(examples):
+            if not apply_chat_template:
+                example = tokenizer(examples["content"], truncation=True, max_length=seqlen)
+            else:
+                example = apply_chat_template_to_samples(examples["content"], tokenizer, seqlen,
+                                                         system_prompt=system_prompt)
+            return example
+
+        return default_tokenizer_function
+
+    tokenizer_function = get_default_tokenizer_function()
+
+    dataset = calib_dataset.map(tokenizer_function, batched=True)
     return dataset
 
 
