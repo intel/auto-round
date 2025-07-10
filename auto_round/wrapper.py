@@ -259,10 +259,10 @@ class WrapperLinear(torch.nn.Module):
 
         if isinstance(scale, dict):
             _set_dict_attr(scale, "scale")
-        elif scale.numel() > 1:
-            self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
         elif scale is None:
             self.orig_layer.scale = None
+        elif scale.numel() > 1:
+            self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
         else:
             self.orig_layer.scale = scale.view(-1).to("cpu")
 
