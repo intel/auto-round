@@ -16,7 +16,7 @@ import json
 import random
 
 import torch
-from datasets import Dataset, IterableDataset
+from datasets import Dataset, IterableDataset, load_dataset, concatenate_datasets
 from datasets import Features, Sequence, Value
 from torch.utils.data import DataLoader
 import sys
@@ -38,7 +38,12 @@ def register_dataset(name):
     """
 
     def register(dataset):
-        CALIB_DATASETS[name] = dataset
+        if isinstance(name, list):
+            names = name
+        else:
+            names = [name]
+        for tmp_name in names:
+            CALIB_DATASETS[tmp_name] = dataset
         return dataset
 
     return register
@@ -46,20 +51,22 @@ def register_dataset(name):
 
 def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=None):
     rendered_messages = []
-    if system_prompt is None:
-        system_prompt = "You are a helpful assistant."
+    # if system_prompt is None: ## remove system prompt as models like deepseek don't recommend using it
+    #     system_prompt = "You are a helpful assistant."
     for text in samples:
-        if system_prompt == "":
-            message = [{"role": "user", "content": text}]
+        message = []
+        if system_prompt is not None and system_prompt != "":
+            message.append({"role": "system", "content": system_prompt})
+
+        if isinstance(text, list) and isinstance(text[0], dict):
+            message += text
         else:
-            message = [{"role": "system", "content": system_prompt},
-                       {"role": "user", "content": text}]
+            message.append({"role": "user", "content": text})
         try:
             chat_templated = tokenizer.apply_chat_template(
                 message,
                 tokenize=False,
                 add_generation_prompt=True,
-
             )
         except:
             logger.warning(
@@ -100,7 +107,7 @@ def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False, system_
     return default_tokenizer_function
 
 
-@register_dataset("NeelNanda/pile-10k")
+@register_dataset(["NeelNanda/pile-10k", "pile-10k"])
 def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split=None, seed=42,
                      apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -123,7 +130,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template,
                                                 system_prompt=system_prompt)
     try:
-        calib_dataset = load_dataset(dataset_name, split=split)
+        calib_dataset = load_dataset("NeelNanda/pile-10k", split=split)
     except Exception as e:
         import ssl
         error_message = str(e)
@@ -141,7 +148,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
     return calib_dataset
 
 
-@register_dataset("swift/pile-val-backup")
+@register_dataset(["swift/pile-val-backup", "pile-val-backup"])
 def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup", split=None, seed=42,
                          apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -168,14 +175,13 @@ def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup"
     from modelscope import MsDataset  # pylint: disable=E0401
     calib_dataset = MsDataset.load('swift/pile-val-backup',
                                    'default', split=split).to_iterable_dataset()  # , use_streaming=True
-    calib_dataset = calib_dataset.take(10000)
-    calib_dataset = calib_dataset.shuffle(seed=seed)
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
 
 
-@register_dataset("BAAI/CCI3-HQ")
+@register_dataset(["BAAI/CCI3-HQ", "CCI3-HQ"])
 def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_chat_template=False,
                         system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -196,15 +202,14 @@ def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=No
     tokenizer_function = get_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template,
                                                 system_prompt=system_prompt)
 
-    calib_dataset = load_dataset(dataset_name, split='train', streaming=True)
-    calib_dataset = calib_dataset.take(10000)
-    calib_dataset = calib_dataset.shuffle(seed=seed)
+    calib_dataset = load_dataset("BAAI/CCI3-HQ", split='train', streaming=True)
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
 
 
-@register_dataset("codeparrot/github-code-clean")
+@register_dataset(["codeparrot/github-code-clean", "github-code-clean"])
 def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/github-code-clean", split=None, seed=42,
                                   apply_chat_template=False, system_prompt=None):
     """Returns a dataloader for the specified dataset and split.
@@ -243,19 +248,115 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
 
         return default_tokenizer_function
 
-    from datasets import load_dataset
-
     tokenizer_function = get_default_tokenizer_function()
 
-    calib_dataset = load_dataset(dataset_name, split='train', streaming=True, trust_remote_code=True)
-    calib_dataset = calib_dataset.take(10000)
-    calib_dataset = calib_dataset.shuffle(seed=seed)
+    dataset_mit = load_dataset("codeparrot/github-code-clean", "all-mit", split='train',
+                               streaming=True, trust_remote_code=True).shuffle(seed=seed)
+    dataset_apache = load_dataset("codeparrot/github-code-clean", "all-apache-2.0", split='train',
+                                  streaming=True, trust_remote_code=True).shuffle(seed=seed)
+    calib_dataset = concatenate_datasets([dataset_mit, dataset_apache])
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000) ##TODO concat data'shuffle may have bugs
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
 
 
-@register_dataset("madao33/new-title-chinese")
+@register_dataset(["HuggingFaceH4/ultrachat_200k", "ultrachat_200k"])
+def get_ultrachat_dataset(
+        tokenizer,
+        seqlen,
+        dataset_name="HuggingFaceH4/ultrachat_200k",
+        split=None,
+        seed=42,
+        apply_chat_template=True,
+        system_prompt=None,
+):
+    if split is None:
+        split = "train_sft"
+    all_splits = ["train_sft", "test_sft", "train_gen", "test_gen"]
+    if split not in all_splits:
+        raise ValueError("split must be one of {} for ultrachat_200k ".format(all_splits))
+
+    dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split=split,
+                           streaming=True, trust_remote_code=True)
+    dataset = dataset.shuffle(seed=seed).take(20000)
+
+    def is_instruct_tokenizer(tokenizer):
+        try:
+            out = tokenizer.apply_chat_template([{"role": "user", "content": "Hi"}])
+            return bool(out and len(out) > 0)
+        except Exception:
+            return False
+
+    is_instruct = is_instruct_tokenizer(tokenizer)
+
+    if is_instruct and not apply_chat_template:
+        logger.info("Tokenizer looks like an instruct/chat model, but apply_chat_template=False. Setting to True.")
+        apply_chat_template = True
+    elif not is_instruct and apply_chat_template:
+        logger.info("Tokenizer is not an instruct/chat model, but apply_chat_template=True. Setting to False.")
+    apply_chat_template = False
+
+    def tokenize_example_batch(examples):
+        if not apply_chat_template:
+            texts = []
+            for message_list in examples["messages"]:
+                combined = "".join([msg["content"] for msg in message_list])
+                texts.append(combined)
+            return tokenizer(texts, truncation=True, max_length=seqlen)
+        else:
+            return apply_chat_template_to_samples(
+                examples["messages"], tokenizer, seqlen, system_prompt=system_prompt
+            )
+
+    dataset = dataset.map(tokenize_example_batch, batched=True)
+    return dataset
+
+
+@register_dataset(["openbmb/Ultra-FineWeb", "openbmb/Ultra-FineWeb"])
+def get_ultrafinweb_dataset(
+        tokenizer,
+        seqlen,
+        dataset_name="openbmb/Ultra-FineWeb",
+        split=None,
+        seed=42,
+        apply_chat_template=True,
+        system_prompt=None,
+):
+    if split is not None:
+        if split not in ["en", "zh"]:
+            raise ValueError("split must be one of ['en', 'zh'] for Ultra-FineWeb dataset")
+        calib_dataset = load_dataset("openbmb/Ultra-FineWeb", split=split,
+                                  streaming=True, trust_remote_code=True)
+    else:
+        calib_dataset = load_dataset("openbmb/Ultra-FineWeb", split='en',
+                                  streaming=True, trust_remote_code=True)
+        # dataset_ch = load_dataset("openbmb/Ultra-FineWeb", split='zh',
+        #                           streaming=True, trust_remote_code=True).shuffle(seed=seed).take(2000)
+
+        # calib_dataset = concatenate_datasets([dataset_en, dataset_ch]) ##concat dasetset could not shuffle
+
+
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(20000)
+
+    def get_default_tokenizer_function():
+        def default_tokenizer_function(examples):
+            if not apply_chat_template:
+                example = tokenizer(examples["content"], truncation=True, max_length=seqlen)
+            else:
+                example = apply_chat_template_to_samples(examples["content"], tokenizer, seqlen,
+                                                         system_prompt=system_prompt)
+            return example
+
+        return default_tokenizer_function
+
+    tokenizer_function = get_default_tokenizer_function()
+
+    dataset = calib_dataset.map(tokenizer_function, batched=True)
+    return dataset
+
+
+@register_dataset(["madao33/new-title-chinese", "new-title-chinese"])
 def get_new_chinese_title_dataset(
         tokenizer,
         seqlen,
@@ -307,7 +408,7 @@ def get_new_chinese_title_dataset(
 
     tokenizer_function = get_tokenizer_function()
 
-    calib_dataset = load_dataset(dataset_name, split=split)
+    calib_dataset = load_dataset("madao33/new-title-chinese", split=split)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
@@ -697,4 +798,3 @@ def get_dataloader(
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
-

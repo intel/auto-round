@@ -17,12 +17,13 @@ pip install auto-round
 
 The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in huggingface is adopted as the default
 calibration data and will be downloaded automatically from the datasets Hub. Other available datasets include:
-
 - `swift/pile-val-backup` from modelscope for addressing HF network issue
 - `BAAI/CCI3-HQ` for Chinese
 - `codeparrot/github-code-clean` for code
+- `HuggingFaceH4/ultrachat_200k` for chat data
 - `madao33/new-title-chinese` for Chinese
 - `mbpp` for code
+- `openbmb/Ultra-FineWeb`
 
 ### Customized Dataset
 
