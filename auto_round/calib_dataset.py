@@ -175,8 +175,7 @@ def get_pile_val_dataset(tokenizer, seqlen, dataset_name="swift/pile-val-backup"
     from modelscope import MsDataset  # pylint: disable=E0401
     calib_dataset = MsDataset.load('swift/pile-val-backup',
                                    'default', split=split).to_iterable_dataset()  # , use_streaming=True
-    calib_dataset = calib_dataset.take(10000)
-    calib_dataset = calib_dataset.shuffle(seed=seed)
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
@@ -204,8 +203,7 @@ def get_cci3_hq_dataset(tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=No
                                                 system_prompt=system_prompt)
 
     calib_dataset = load_dataset("BAAI/CCI3-HQ", split='train', streaming=True)
-    calib_dataset = calib_dataset.take(10000)
-    calib_dataset = calib_dataset.shuffle(seed=seed)
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
@@ -257,8 +255,7 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
     dataset_apache= load_dataset("codeparrot/github-code-clean", "all-apache-2.0", split='train',
                                   streaming=True, trust_remote_code=True)
     calib_dataset = concatenate_datasets([dataset_mit, dataset_apache])
-    calib_dataset = calib_dataset.take(10000)
-    calib_dataset = calib_dataset.shuffle(seed=seed)
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
@@ -282,7 +279,7 @@ def get_ultrachat_dataset(
 
     dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split='train_sft',
                            streaming=True, trust_remote_code=True)
-    dataset = dataset.take(20000).shuffle(seed=seed)
+    dataset = dataset.shuffle(seed=seed).take(20000)
 
 
     def is_instruct_tokenizer(tokenizer):
@@ -292,13 +289,13 @@ def get_ultrachat_dataset(
         except Exception:
             return False
 
-    # is_instruct = is_instruct_tokenizer(tokenizer)
-    #
-    # if is_instruct and not apply_chat_template:
-    #     logger.info("Tokenizer looks like an instruct/chat model, but apply_chat_template=False. Setting to True.")
-    #     apply_chat_template = True
-    # elif not is_instruct and apply_chat_template:
-    #     logger.info("Tokenizer is not an instruct/chat model, but apply_chat_template=True. Setting to False.")
+    is_instruct = is_instruct_tokenizer(tokenizer)
+
+    if is_instruct and not apply_chat_template:
+        logger.info("Tokenizer looks like an instruct/chat model, but apply_chat_template=False. Setting to True.")
+        apply_chat_template = True
+    elif not is_instruct and apply_chat_template:
+        logger.info("Tokenizer is not an instruct/chat model, but apply_chat_template=True. Setting to False.")
     apply_chat_template = False
 
     def tokenize_example_batch(examples):
