@@ -16,7 +16,7 @@ import json
 import random
 
 import torch
-from datasets import Dataset, IterableDataset, load_dataset
+from datasets import Dataset, IterableDataset, load_dataset, concatenate_datasets
 from datasets import Features, Sequence, Value
 from torch.utils.data import DataLoader
 import sys
@@ -250,12 +250,13 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
 
         return default_tokenizer_function
 
-    from datasets import load_dataset
-
     tokenizer_function = get_default_tokenizer_function()
 
-    calib_dataset = load_dataset("codeparrot/github-code-clean", split='train',
+    dataset_mit = load_dataset("codeparrot/github-code-clean", "all-mit", split='train',
                                  streaming=True, trust_remote_code=True)
+    dataset_apache= load_dataset("codeparrot/github-code-clean", "all-apache-2.0", split='train',
+                                  streaming=True, trust_remote_code=True)
+    calib_dataset = concatenate_datasets([dataset_mit, dataset_apache])
     calib_dataset = calib_dataset.take(10000)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
@@ -273,6 +274,11 @@ def get_ultrachat_dataset(
         apply_chat_template=True,
         system_prompt=None,
 ):
+    if split is None:
+        split = "train_sft"
+    all_splits = ["train_sft", "test_sft", "train_gen", "test_gen"]
+    if split not in all_splits:
+        raise ValueError("split must be one of {} for ultrachat_200k ".format(all_splits))
 
     dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split='train_sft',
                            streaming=True, trust_remote_code=True)
@@ -286,14 +292,14 @@ def get_ultrachat_dataset(
         except Exception:
             return False
 
-    is_instruct = is_instruct_tokenizer(tokenizer)
-
-    if is_instruct and not apply_chat_template:
-        logger.info("Tokenizer looks like an instruct/chat model, but apply_chat_template=False. Setting to True.")
-        apply_chat_template = True
-    elif not is_instruct and apply_chat_template:
-        logger.info("Tokenizer is not an instruct/chat model, but apply_chat_template=True. Setting to False.")
-        apply_chat_template = False
+    # is_instruct = is_instruct_tokenizer(tokenizer)
+    #
+    # if is_instruct and not apply_chat_template:
+    #     logger.info("Tokenizer looks like an instruct/chat model, but apply_chat_template=False. Setting to True.")
+    #     apply_chat_template = True
+    # elif not is_instruct and apply_chat_template:
+    #     logger.info("Tokenizer is not an instruct/chat model, but apply_chat_template=True. Setting to False.")
+    apply_chat_template = False
 
     def tokenize_example_batch(examples):
         if not apply_chat_template:
