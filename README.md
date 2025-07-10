@@ -34,7 +34,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## What's New
 
-* [2025.05] AutoRound now offers experimental support for the widely used **GGUF** format. We currently recommend using
+* [2025.07] AutoRound now offers experimental support for the widely used **GGUF** format. We currently recommend using
   RTN mode (--iters 0) for all the bits except 3. A more advanced algorithm tailored for some specific configurations is likely
   to be introduced in the upcoming release. Example models are
   available on the Intel Hugging Face space, including
