@@ -1331,7 +1331,7 @@ def mllm_load_model(
         **kwargs):
     import json
     import transformers
-    from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
+    from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM, AutoModel
     from huggingface_hub import HfApi, hf_hub_download, HfFileSystem
 
     if os.path.isdir(pretrained_model_name_or_path):
@@ -1626,7 +1626,6 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
         if hasattr(getattr(model.config, sub_attr), name):
             n_layer = getattr(getattr(model.config, sub_attr), name)
             break
-    breakpoint()
     if n_layer is None:
         return layer_config, {}
 

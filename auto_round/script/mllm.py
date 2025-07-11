@@ -195,6 +195,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
 
+        self.add_argument("--disable_opt_rtn", action='store_true',
+                          help="whether to disable optimization of the RTN mode(iters=0) (default is False).")
+
 
 def setup_parser():
     parser = BasicArgumentParser()
@@ -445,6 +448,7 @@ def tune(args):
         device_map=args.device_map,
         model_kwargs=model_kwargs,
         data_type=args.data_type,
+        disable_opt_rtn=args.disable_opt_rtn,
         )
     
     model_name = args.model.rstrip("/")
