@@ -34,12 +34,17 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## What's New
 
-* [2025.05] AutoRound now offers experimental support for the widely used **GGUF** format. We currently recommend using
-  RTN mode (--iters 0) for all the bits except 3. A more advanced algorithm tailored for some specific configurations is likely
-  to be introduced in the upcoming release. Example models are
-  available on the Intel Hugging Face space, including
-  [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v0](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v0)
-  and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v0](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v0)
+[//]: # (* [2025.07] AutoRound now offers experimental support for the widely used **GGUF** format. We currently recommend using)
+
+[//]: # (  RTN mode &#40;--iters 0&#41; for all the bits except 3. A more advanced algorithm tailored for some specific configurations is likely)
+
+[//]: # (  to be introduced in the upcoming release. Example models are)
+
+[//]: # (  available on the Intel Hugging Face space, including)
+
+[//]: # (  [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v0]&#40;https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v0&#41;)
+
+[//]: # (  and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v0]&#40;https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v0&#41;)
 * [2025.05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer
   to [DeepSeek-R1-0528-int2-mixed-sym-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int2-mixed-sym-inc), [DeepSeek-R1-0528-int4-sym-gptq-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-gptq-inc-auto-round)
   and [DeepSeek-R1-0528-int4-asym-awq-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-awq-inc-auto-round) for
