@@ -1934,6 +1934,16 @@ class AutoRound(object):
                 minmax_params.append(wrapper_linear.params[key])
             else:
                 round_params.append(wrapper_linear.value)
+        if len(round_params) + len(minmax_params) <= 0:
+            dump_info = (
+                f"quantized {layer_name}"
+            )
+            logger.info(dump_info)
+            with torch.no_grad():
+                unwrapper_layer(self.model, wrapper_linear, layer_name, {})
+            mv_module_from_gpu(layer, self.low_cpu_mem_usage)
+
+
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
@@ -2123,6 +2133,8 @@ class AutoRound(object):
                 f"layers in the block"
             )
             logger.info(dump_info)
+            unwrapper_block(block, {}) ## TODO Quant layer should change
+            mv_module_from_gpu(block, self.low_cpu_mem_usage)
             return output, output
 
         if self.lr_scheduler is None:
