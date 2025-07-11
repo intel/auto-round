@@ -271,24 +271,25 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
     
     def test_all_format(self):
+        from auto_round.export.export_to_gguf.config import GGUF_CONFIG
         model_name = "Qwen/Qwen2.5-7B-Instruct"
         python_path = sys.executable
-        for gguf_format in ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2_k_s", "q4_k_m", "q3_k_s", "q5_k_s", "q6_k"]:
+        for gguf_format in GGUF_CONFIG.keys():
             res = os.system(
                 f"cd ../.. && {python_path} -m auto_round --model {model_name} "
-                f" --bs 16 --iters 1 --nsamples 1 --format gguf:{gguf_format}"
+                f" --bs 16 --iters 1 --nsamples 1 --format {gguf_format}"
             )
             if res > 0 or res == -1:
                 assert False, "cmd line test fail, please have a check"
-            shutil.rmtree("./saved", ignore_errors=True)
+            shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
             res = os.system(
                 f"cd ../.. && {python_path} -m auto_round --model {model_name} "
-                f" --bs 16 --iters 0 --nsamples 1 --format fake,gguf:{gguf_format}"
+                f" --bs 16 --iters 0 --nsamples 1 --format fake,{gguf_format}"
             )
             if res > 0 or res == -1:
                 assert False, "cmd line test fail, please have a check"
-            shutil.rmtree("./saved", ignore_errors=True)
+            shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()
