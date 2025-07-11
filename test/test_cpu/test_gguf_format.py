@@ -269,6 +269,26 @@ class TestGGUF(unittest.TestCase):
         self.assertEqual(autoround.model.model.layers[10].mlp.gate_proj.bits, 8)
         self.assertEqual(autoround.layer_config['model.layers.10.mlp.gate_proj']['mostly'], "gguf:q8_0")
         shutil.rmtree("./saved", ignore_errors=True)
+    
+    def test_all_format(self):
+        model_name = "Qwen/Qwen2.5-7B-Instruct"
+        python_path = sys.executable
+        for gguf_format in ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2_k_s", "q4_k_m", "q3_k_s", "q5_k_s", "q6_k"]:
+            res = os.system(
+                f"cd ../.. && {python_path} -m auto_round --model {model_name} "
+                f" --bs 16 --iters 1 --nsamples 1 --format gguf:{gguf_format}"
+            )
+            if res > 0 or res == -1:
+                assert False, "cmd line test fail, please have a check"
+            shutil.rmtree("./saved", ignore_errors=True)
+
+            res = os.system(
+                f"cd ../.. && {python_path} -m auto_round --model {model_name} "
+                f" --bs 16 --iters 0 --nsamples 1 --format fake,gguf:{gguf_format}"
+            )
+            if res > 0 or res == -1:
+                assert False, "cmd line test fail, please have a check"
+            shutil.rmtree("./saved", ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()

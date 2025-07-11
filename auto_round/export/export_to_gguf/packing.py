@@ -300,7 +300,7 @@ def q4_0_quant_block(blocks, scale=None, zp=None, **kwargs):
         d = scale.reshape((-1, 1))
     else:
         imax = abs(blocks).argmax(axis=-1, keepdims=True)
-        max = np.take_along_axis(blocks, imax, axis=-1)
+        max = torch.take_along_dim(blocks, imax, axis=-1)
         d = max / -8
     id = torch.where(d == 0, 0, 1 / d)
 
@@ -345,7 +345,7 @@ def q5_0_quant_block(blocks: np.array, scale=None, zp=None, **kwargs):
         d = scale.reshape((-1, 1))
     else:
         imax = abs(blocks).argmax(axis=-1, keepdims=True)
-        max = torch.take_along_dim(blocks, imax, dim=-1)[0]
+        max = torch.take_along_dim(blocks, imax, dim=-1)
         d = max / -16
 
     id = torch.where(d == 0, 0, 1 / d)
