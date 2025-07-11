@@ -136,7 +136,8 @@ class HFProcessor(BasicProcessor):
                     messages, tokenize=False, add_generation_prompt=not continue_final_message,
                     continue_final_message=continue_final_message, )
         if image is not None:
-            image = self.image_processor(image)
+            image = self.default_image_processor(image)
+            # image = self.image_processor(image)
         ret = self.processor(
             text=text, images=image, return_tensors="pt")
         return ret

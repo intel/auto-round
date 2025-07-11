@@ -950,7 +950,8 @@ class AutoRound(object):
         if not tie_word_embeddings:
             lm_head_name: str = get_lm_head_name(self.model)
             config: dict[str, Any] = GGUF_CONFIG[GGUF_CONFIG[target_format]["lm_head"]]
-            check_fixed_by_user =  self.layer_config[lm_head_name].get("fixed_by_user", False)
+            check_fixed_by_user = self.layer_config[lm_head_name].get(
+                "fixed_by_user", False) if lm_head_name in self.layer_config else None
             self._apply_config_to_layer(lm_head_name, config, check_fixed_by_user=check_fixed_by_user)
             return True
 
@@ -1072,6 +1073,7 @@ class AutoRound(object):
                         self.layer_config,
                         self.tokenizer,
                         processor=self.processor if hasattr(self, "processor") else None,
+                        image_processor=self.image_processor if hasattr(self, "image_processor") else None,
                         model_type=model_type)
                 else:
                     PACKING_LAYER_WITH_FORMAT[target_backend](
@@ -2348,6 +2350,7 @@ class AutoRound(object):
                                 self.layer_config,
                                 self.tokenizer,
                                 processor=self.processor if hasattr(self, "processor") else None,
+                                image_processor=self.image_processor if hasattr(self, "image_processor") else None,
                                 model_type=model_type)
                         else:
                             PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])

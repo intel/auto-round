@@ -1173,7 +1173,7 @@ def get_layer_features(layer):
 def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     from auto_round.utils import logger
     import argparse
-    
+
     if format_str is None:
         args_or_ar.format = args_or_ar.format.replace("q*_", f"q{args_or_ar.bits}_")
         format_str = args_or_ar.format
@@ -1394,6 +1394,12 @@ def mllm_load_model(
                 pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
             processor = AutoProcessor.from_pretrained(
                 pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            try:
+                from transformers import AutoImageProcessor
+                image_processor = AutoImageProcessor.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            except Exception as e:
+                pass
 
     model = model.eval()
     model = _to_model_dtype(model, model_dtype)
@@ -1623,9 +1629,10 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
         if hasattr(model.config, name):
             n_layer = getattr(model.config, name)
             break
-        if hasattr(getattr(model.config, sub_attr), name):
-            n_layer = getattr(getattr(model.config, sub_attr), name)
-            break
+        if hasattr(model.config, sub_attr):
+            if hasattr(getattr(model.config, sub_attr), name):
+                n_layer = getattr(getattr(model.config, sub_attr), name)
+                break
     if n_layer is None:
         return layer_config, {}
 
@@ -1826,10 +1833,10 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             and 'Deepseek' in model.config.architectures[0]:
             fallback = False
 
-            # calc if need fallback 
+            # calc if need fallback
             qk_nope_head_dim = model.config.qk_nope_head_dim
             kv_b_shape = get_module(model, layer_name).weight.shape
-            
+
             if qk_nope_head_dim < QK_K or qk_nope_head_dim % QK_K != 0 \
                 or kv_b_shape[-1] < QK_K or kv_b_shape[-1] % QK_K != 0:
                 fallback = True
@@ -1905,6 +1912,8 @@ def flatten_list(nested_list):
     return flattened
 
 def clean_module_parameter(submodule, parameter):
+    if submodule is None:
+        return
     is_buffer = parameter in submodule._buffers
     with torch.no_grad():
         if is_buffer:

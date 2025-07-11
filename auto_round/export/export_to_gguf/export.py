@@ -98,7 +98,7 @@ def create_model_class(
 
 @torch.inference_mode()
 def pack_gguf_layer(
-        name, model, backend, output_dir, layer_config, tokenizer, processor=None, model_type=ModelType.TEXT):
+        name, model, backend, output_dir, layer_config, tokenizer, processor=None, image_processor=None, model_type=ModelType.TEXT):
     """Export the model to gguf format."""
     global gguf_model_instance_global
     tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
@@ -112,6 +112,8 @@ def pack_gguf_layer(
             tokenizer.save_pretrained(tmp_work_dir)
         if processor is not None:
             processor.save_pretrained(tmp_work_dir)
+        if image_processor is not None:
+            image_processor.save_pretrained(tmp_work_dir)
 
         gguf_model_instance_global = [
             create_model_class(
@@ -169,16 +171,18 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, v
 
     model = kwargs["model"]
     if "gguf_model_instance_global" not in globals():
+        config = model.config
+        config.save_pretrained(tmp_work_dir)
         tokenizer = kwargs.get("tokenizer", None)
-        config = model.config
         if tokenizer is not None:
             tokenizer.save_pretrained(tmp_work_dir)
-        config.save_pretrained(tmp_work_dir)
-
-        config = model.config
-        if tokenizer is not None:
-            tokenizer.save_pretrained(tmp_work_dir)
-        config.save_pretrained(tmp_work_dir)
+        processor = kwargs.get("processor", None)
+        if processor is not None:
+            processor.save_pretrained(tmp_work_dir)
+        image_processor = kwargs.get("image_processor", None)
+        if image_processor is not None:
+            image_processor.save_pretrained(tmp_work_dir)
+        
 
         gguf_model_instance_global = [
             create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.TEXT)
