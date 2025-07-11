@@ -52,7 +52,7 @@ def _only_text_test(model, tokenizer, device, model_type):
 
     try:
         inputs = inputs.to(device)
-        # model = model.to(device)
+        model = model.to(device)
         model(**inputs)
         return True
     except RuntimeError as e:
