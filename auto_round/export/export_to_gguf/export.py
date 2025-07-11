@@ -98,7 +98,15 @@ def create_model_class(
 
 @torch.inference_mode()
 def pack_gguf_layer(
-        name, model, backend, output_dir, layer_config, tokenizer, processor=None, image_processor=None, model_type=ModelType.TEXT):
+        name,
+        model,
+        backend,
+        output_dir,
+        layer_config,
+        tokenizer,
+        processor=None,
+        image_processor=None,
+        model_type=ModelType.TEXT):
     """Export the model to gguf format."""
     global gguf_model_instance_global
     tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
@@ -156,7 +164,7 @@ def pack_gguf_layer(
         model.last_layer_name_to_block_name.pop(name)
         if len(model.last_layer_name_to_block_name) == 0:
             for gguf_model in gguf_model_instance_global:
-                    gguf_model.current_packing_block = None
+                gguf_model.current_packing_block = None
 
 
 @torch.inference_mode()
@@ -182,7 +190,7 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, v
         image_processor = kwargs.get("image_processor", None)
         if image_processor is not None:
             image_processor.save_pretrained(tmp_work_dir)
-        
+
 
         gguf_model_instance_global = [
             create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.TEXT)
