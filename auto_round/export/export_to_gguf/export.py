@@ -18,7 +18,7 @@ import shutil
 import torch
 from pathlib import Path
 import time
-from auto_round.export.export_to_gguf.convert import ModelBase, ModelType
+from auto_round.export.export_to_gguf.convert import ModelBase, ModelType, get_model_architecture
 from auto_round.utils import logger, LazyImport, get_block_names, flatten_list, check_to_quantized, get_module
 
 TMP_DIR_NAME = "tmp_dir"
@@ -53,15 +53,16 @@ def create_model_class(
     tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
     with torch.inference_mode():
         hparams = ModelBase.load_hparams(tmp_work_dir)
-        if "architectures" in hparams:
-            model_architecture = hparams["architectures"][0]
-        else:
-            model_architecture = type(model).__name__
-            if model_architecture not in ModelBase._model_classes:
-                if model_architecture.replace("CausalLM", "ConditionalGeneration") in ModelBase._model_classes:
-                    model_architecture = model_architecture.replace("CausalLM", "ConditionalGeneration")
-                elif model_architecture.replace("ConditionalGeneration", "CausalLM") in ModelBase._model_classes:
-                    model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
+        model_architecture = get_model_architecture(hparams=hparams, model_type=model_type)
+        # if "architectures" in hparams:
+        #     model_architecture = hparams["architectures"][0]
+        # else:
+        #     model_architecture = type(model).__name__
+        #     if model_architecture not in ModelBase._model_classes:
+        #         if model_architecture.replace("CausalLM", "ConditionalGeneration") in ModelBase._model_classes:
+        #             model_architecture = model_architecture.replace("CausalLM", "ConditionalGeneration")
+        #         elif model_architecture.replace("ConditionalGeneration", "CausalLM") in ModelBase._model_classes:
+        #             model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
         try:
             model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
         except NotImplementedError:
@@ -120,7 +121,6 @@ def pack_gguf_layer(
             gguf_model_instance_global.append(
                 create_model_class(
                     output_dir, model, layer_config, backend, low_cpu_mem_usage=True, model_type=ModelType.MMPROJ))
-
         if not hasattr(model, "last_layer_name_to_block_name"):
             block_name_to_last_layer_name = {}
             block_names = get_block_names(model, quant_vision=True)
@@ -154,7 +154,7 @@ def pack_gguf_layer(
         model.last_layer_name_to_block_name.pop(name)
         if len(model.last_layer_name_to_block_name) == 0:
             for gguf_model in gguf_model_instance_global:
-                gguf_model.current_packing_block = None
+                    gguf_model.current_packing_block = None
 
 
 @torch.inference_mode()

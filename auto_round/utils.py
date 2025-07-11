@@ -1610,16 +1610,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
     target_gguf_format = next((fmt for fmt in gguf_format if fmt != "fake"), None)
 
     import gguf  # pylint: disable=E0401
-    from auto_round.export.export_to_gguf.convert import ModelBase
-    if model.config.architectures is not None:
-        model_architecture = model.config.architectures[0]
-    else:
-        model_architecture = type(model).__name__
-        if model_architecture not in ModelBase._model_classes:
-            if model_architecture.replace("CausalLM", "ConditionalGeneration") in ModelBase._model_classes:
-                model_architecture = model_architecture.replace("CausalLM", "ConditionalGeneration")
-            elif model_architecture.replace("ConditionalGeneration", "CausalLM") in ModelBase._model_classes:
-                model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
+    from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
+    model_architecture = get_model_architecture(hparams=model.config.to_dict(), model_type=model_type)
     try:
         model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
     except NotImplementedError:
@@ -1627,8 +1619,14 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
 
     n_layer = None
     for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers"]:
+        sub_attr = "text_config" if model_type == ModelType.TEXT else "vision_config"
         if hasattr(model.config, name):
             n_layer = getattr(model.config, name)
+            break
+        if hasattr(getattr(model.config, sub_attr), name):
+            n_layer = getattr(getattr(model.config, sub_attr), name)
+            break
+    breakpoint()
     if n_layer is None:
         return layer_config, {}
 
