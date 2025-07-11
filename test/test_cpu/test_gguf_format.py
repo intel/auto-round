@@ -257,7 +257,7 @@ class TestGGUF(unittest.TestCase):
             disable_opt_rtn=True 
         )
         quantized_model_path = "./saved"
-        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m")
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m,fake")
         self.assertEqual(autoround.layer_config["model.layers.11.self_attn.v_proj"]["super_group_size"], 16)
         self.assertEqual(autoround.layer_config["model.layers.11.self_attn.v_proj"]["data_type"], "int_sym_dq")
         self.assertEqual(autoround.layer_config["model.layers.7.self_attn.v_proj"]["data_type"], "int_asym_dq")

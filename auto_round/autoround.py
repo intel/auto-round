@@ -25,7 +25,7 @@ from torch import autocast
 from tqdm import tqdm
 import accelerate
 
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.wrapper import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from auto_round.utils import (
     CpuInfo,
@@ -173,6 +173,7 @@ class AutoRound(object):
             model_kwargs: dict = None,
             **kwargs,
     ):
+        self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
         self.quantized = False
@@ -259,6 +260,7 @@ class AutoRound(object):
         self.super_group_size = super_group_size
 
         self.disable_opt_rtn = disable_opt_rtn
+
 
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
@@ -515,7 +517,9 @@ class AutoRound(object):
         Returns:
             list: A list of validated and updated formats.
         """
-        _gguf_args_check(self, format)
+        _gguf_args_check(self, format, model_type=ModelType.TEXT)
+        if self.vlm:
+            _gguf_args_check(self, format, model_type=ModelType.MMPROJ)
 
         formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
         from auto_round.utils import SUPPORTED_FORMATS
@@ -947,7 +951,8 @@ class AutoRound(object):
         if not tie_word_embeddings:
             lm_head_name: str = get_lm_head_name(self.model)
             config: dict[str, Any] = GGUF_CONFIG[GGUF_CONFIG[target_format]["lm_head"]]
-            check_fixed_by_user =  self.layer_config[lm_head_name].get("fixed_by_user", False)
+            check_fixed_by_user = self.layer_config[lm_head_name].get(
+                "fixed_by_user", False) if lm_head_name in self.layer_config else None
             self._apply_config_to_layer(lm_head_name, config, check_fixed_by_user=check_fixed_by_user)
             return True
 
@@ -1060,10 +1065,17 @@ class AutoRound(object):
                 if has_gguf:
                     from auto_round.export.export_to_gguf.export import pack_gguf_layer
                     output_dir = self.get_save_folder_name(self.formats[0])
+                    model_type = ModelType.MMPROJ if self.vlm else ModelType.TEXT
                     pack_gguf_layer(
-                        name, self.model, self.formats[0],
-                        output_dir, self.layer_config, self.tokenizer
-                    )
+                        name,
+                        self.model,
+                        self.formats[0],
+                        output_dir,
+                        self.layer_config,
+                        self.tokenizer,
+                        processor=self.processor if hasattr(self, "processor") else None,
+                        image_processor=self.image_processor if hasattr(self, "image_processor") else None,
+                        model_type=model_type)
                 else:
                     PACKING_LAYER_WITH_FORMAT[target_backend](
                         name, self.model, self.formats[0]
@@ -1220,8 +1232,11 @@ class AutoRound(object):
             if len(self.formats) == 1 and self.formats[0] == "fake":
                 only_gguf = False
             if only_gguf:
-                self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(self.layer_config, self.formats,
-                                                                                        self.model)
+                self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
+                    self.layer_config, self.formats, self.model, model_type=ModelType.TEXT)
+                if self.vlm:
+                    self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
+                        self.layer_config, self.formats, self.model, model_type=ModelType.MMPROJ)
             # Determine if immediate packing is required
             formats = self.formats
             if (len(formats) == 1 and
@@ -2339,8 +2354,17 @@ class AutoRound(object):
                         if has_gguf:
                             from auto_round.export.export_to_gguf.export import pack_gguf_layer
                             output_dir = self.get_save_folder_name(self.formats[0])
-                            pack_gguf_layer(tmp_m.tmp_name, self.model, self.formats[0], output_dir, self.layer_config,
-                                            self.tokenizer)
+                            model_type = ModelType.MMPROJ if self.vlm else ModelType.TEXT
+                            pack_gguf_layer(
+                                tmp_m.tmp_name,
+                                self.model,
+                                self.formats[0],
+                                output_dir,
+                                self.layer_config,
+                                self.tokenizer,
+                                processor=self.processor if hasattr(self, "processor") else None,
+                                image_processor=self.image_processor if hasattr(self, "image_processor") else None,
+                                model_type=model_type)
                         else:
                             PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
         pbar.set_description(f"Quantizing done")
