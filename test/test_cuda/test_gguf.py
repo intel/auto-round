@@ -171,5 +171,26 @@ class TestAutoRound(unittest.TestCase):
         self.assertGreater(result['results']['piqa']['acc,none'], 0.55)
         shutil.rmtree("./saved", ignore_errors=True)
     
+    def test_all_format(self):
+        from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+        python_path = sys.executable
+        for model_name in ["/models/Qwen3-8B/", "/models/Llama-3.2-3B/"]:
+            for gguf_format in GGUF_CONFIG.keys():
+                res = os.system(
+                    f"cd ../.. && {python_path} -m auto_round --model {model_name} "
+                    f" --bs 16 --iters 1 --nsamples 1 --format fake,{gguf_format}"
+                )
+                if res > 0 or res == -1:
+                    assert False, "cmd line test fail, please have a check"
+                shutil.rmtree("../../tmp_autoround", ignore_errors=True)
+
+                res = os.system(
+                    f"cd ../.. && {python_path} -m auto_round --model {model_name} "
+                    f" --bs 16 --iters 0 --nsamples 1 --format {gguf_format}"
+                )
+                if res > 0 or res == -1:
+                    assert False, "cmd line test fail, please have a check"
+                shutil.rmtree("../../tmp_autoround", ignore_errors=True)
+    
 if __name__ == "__main__":
     unittest.main()
