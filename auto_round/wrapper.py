@@ -101,11 +101,14 @@ class WrapperLinear(torch.nn.Module):
         weight_reshape = reshape_and_pad_tensor(orig_weight.data, orig_layer.group_size)
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
         self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
-        self._init_params("value", p_dtype, weight_reshape.shape, 0, self.enable_round_tuning)
+        self._init_params("value", p_dtype, weight_reshape.shape, 0,
+                          self.enable_round_tuning and self.orig_layer.bits < 16)
         # Min-max scale initialization
         shape = get_scale_shape(orig_weight, orig_layer.group_size)
-        self._init_params("min_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
-        self._init_params("max_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
+        self._init_params("min_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning
+                                                             and self.orig_layer.bits < 16))
+        self._init_params("max_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning
+                                                             and self.orig_layer.bits < 16))
 
         self.weight_quant_func, self.data_type = get_quant_func(orig_layer.data_type, orig_layer.bits,
                                                                 orig_layer.sym)
@@ -151,6 +154,8 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             tuple: Quantized weight, scale, and zero point.
         """
+        if self.orig_layer.bits >= 16:
+            return self.orig_layer.weight, None, None
         min_scale.data.clamp_(0, 1.0)
         max_scale.data.clamp_(0, 1.0)
         weight = self.orig_layer.weight
@@ -254,6 +259,8 @@ class WrapperLinear(torch.nn.Module):
 
         if isinstance(scale, dict):
             _set_dict_attr(scale, "scale")
+        elif scale is None:
+            self.orig_layer.scale = None
         elif scale.numel() > 1:
             self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
         else:
