@@ -240,8 +240,8 @@ class WrapperLinear(torch.nn.Module):
             self.orig_layer.to(self.device)
         ##unwrapper weight
         qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
-        if hasattr(self.orig_layer, "imatrix"):
-            self.orig_layer.imatrix = None
+        # if hasattr(self.orig_layer, "imatrix"):
+        #     self.orig_layer.imatrix = None
         self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
 
