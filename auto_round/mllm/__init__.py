@@ -17,3 +17,9 @@ from .template import Template, get_template, TEMPLATES
 from .autoround_mllm import AutoRoundMLLM
 from ..utils import LazyImport
 from .eval import mllm_eval, lmms_eval
+
+def __getattr__(name):
+    if name == 'heavy_module':
+        from . import heavy_module
+        return heavy_module
+    raise AttributeError(f"Module 'myproject' has no attribute '{name}'")

@@ -59,6 +59,7 @@ from auto_round.utils import logger, LazyImport
 from .quant import ggml_quant
 
 gguf = LazyImport("gguf")
+os.environ["TOKENIZERS_PARALLELISM"]="False"
 
 ###### MODEL DEFINITIONS ######
 

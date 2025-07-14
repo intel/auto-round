@@ -171,7 +171,7 @@ def unsupport_meta_device(model):
     bool: True if the model is valid, False otherwise. 
     """
     target_device = None
-    for param in model.parameters():
+    for name, param in model.named_parameters():
         if target_device is None:
             target_device = param.device
         if param.device != target_device:

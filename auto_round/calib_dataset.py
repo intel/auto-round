@@ -218,7 +218,7 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
 
     tokenizer_function = get_default_tokenizer_function(tokenizer, seqlen, apply_chat_template=apply_chat_template)
 
-    calib_dataset = load_dataset(dataset_name, split='train', streaming=True)
+    calib_dataset = load_dataset(dataset_name, split='train', streaming=True, trust_remote_code=True)
     calib_dataset = calib_dataset.take(10000)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)

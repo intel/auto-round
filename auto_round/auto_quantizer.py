@@ -41,8 +41,8 @@ from transformers.pytorch_utils import Conv1D
 from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
-from auto_round.utils import (get_module, set_module, is_hpu_supported, get_block_names,
-                              get_multimodal_block_names, find_matching_blocks)
+from auto_round.utils import (
+    get_module, set_module, is_hpu_supported, get_block_names, get_multimodal_block_names, find_matching_blocks)
 
 from auto_round.backend import get_layer_backend, dynamic_import_inference_linear
 
@@ -102,8 +102,7 @@ def is_auto_round_available():
         else:
             raise ImportError(
                 f"Found an incompatible version of auto-round. Found version {version_autoround},"
-                f" but only version above {AUTOROUND_MINIMUM_VERSION} are supported"
-            )
+                f" but only version above {AUTOROUND_MINIMUM_VERSION} are supported")
 
 
 #
@@ -138,8 +137,7 @@ class AutoHfQuantizer:
         if quant_method not in AUTO_QUANTIZER_MAPPING.keys() and "auto-round" not in quant_method:
             raise ValueError(
                 f"Unknown quantization type, got {quant_method} - supported types are:"
-                f" {list(AUTO_QUANTIZER_MAPPING.keys())}"
-            )
+                f" {list(AUTO_QUANTIZER_MAPPING.keys())}")
         if "auto-round" in quant_method or is_hpu_supported():  # pragma: no cover
             target_cls = AutoRoundQuantizer
         else:
@@ -154,9 +152,9 @@ class AutoHfQuantizer:
 
     @classmethod
     def merge_quantization_configs(
-            cls,
-            quantization_config: Union[dict, QuantizationConfigMixin],
-            quantization_config_from_args: Optional[QuantizationConfigMixin],
+        cls,
+        quantization_config: Union[dict, QuantizationConfigMixin],
+        quantization_config_from_args: Optional[QuantizationConfigMixin],
     ):
         """Handles situations where both quantization_config
         from args and quantization_config from model config are present."""
@@ -183,14 +181,13 @@ class AutoHfQuantizer:
                 setattr(quantization_config, attr, val)
             warning_msg += (
                 f"However, loading attributes (e.g. {list(loading_attr_dict.keys())}) "
-                f"will be overwritten with the one you passed to `from_pretrained`. The rest will be ignored."
-            )
+                f"will be overwritten with the one you passed to `from_pretrained`. The rest will be ignored.")
 
         if warning_msg != "":
             warnings.warn(warning_msg)
 
         return quantization_config
-    
+
     @staticmethod
     def supports_quant_method(quantization_config_dict):
         from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
@@ -210,8 +207,7 @@ class AutoHfQuantizer:
             logger.warning(
                 f"Unknown quantization type, got {quant_method} - supported types are:"
                 f" {list(AUTO_QUANTIZER_MAPPING.keys())}. Hence, we will skip the quantization. "
-                "To remove the warning, you can delete the quantization_config attribute in config.json"
-            )
+                "To remove the warning, you can delete the quantization_config attribute in config.json")
             return False
         return True
 
@@ -237,15 +233,15 @@ class AutoRoundConfig(QuantizationConfigMixin):
     """
 
     def __init__(
-            self,
-            bits: int = 4,
-            tokenizer: Any = None,
-            dataset: str = None,
-            group_size: int = 128,
-            sym: bool = False,
-            backend="auto",
-            layer_config: dict = None,
-            **kwargs,
+        self,
+        bits: int = 4,
+        tokenizer: Any = None,
+        dataset: str = None,
+        group_size: int = 128,
+        sym: bool = False,
+        backend="auto",
+        layer_config: dict = None,
+        **kwargs,
     ):
 
         self.bits = bits
@@ -293,8 +289,9 @@ class AutoRoundQuantizer(HfQuantizer):
 
     def validate_environment(self, *args, **kwargs):
         if not is_auto_round_available():
-            raise ImportError("Loading a AutoRound quantized model requires auto-round library (`pip install "
-                              "auto-round`)")
+            raise ImportError(
+                "Loading a AutoRound quantized model requires auto-round library (`pip install "
+                "auto-round`)")
         else:
             try:
                 import auto_round
@@ -302,8 +299,9 @@ class AutoRoundQuantizer(HfQuantizer):
             except:
                 autoround_version = version.parse(importlib.metadata.version("auto_round"))
             if autoround_version < version.parse("0.2.0"):
-                raise ImportError("You need a version of auto_round > 0.2.0 to use AutoRound: `pip install --upgrade "
-                                  "auto-round` or install from source")
+                raise ImportError(
+                    "You need a version of auto_round > 0.2.0 to use AutoRound: `pip install --upgrade "
+                    "auto-round` or install from source")
 
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:
@@ -429,16 +427,16 @@ class AutoRoundQuantizer(HfQuantizer):
 
         bits = quantization_config.bits
         group_size = quantization_config.group_size
-        data_type = quantization_config.data_type if hasattr(quantization_config,
-                                                             "data_type") else "int"  # pragma: no cover
+        data_type = quantization_config.data_type if hasattr(
+            quantization_config, "data_type") else "int"  # pragma: no cover
         sym = quantization_config.sym
-        
-        quant_block_list = quantization_config.quant_block_list if hasattr(quantization_config,
-                                                                                   "quant_block_list") else None
+
+        quant_block_list = quantization_config.quant_block_list if hasattr(
+            quantization_config, "quant_block_list") else None
 
         if quant_block_list is None:
-            to_quant_block_names = quantization_config.to_quant_block_names if hasattr(quantization_config,
-                                                                                   "to_quant_block_names") else None
+            to_quant_block_names = quantization_config.to_quant_block_names if hasattr(
+                quantization_config, "to_quant_block_names") else None
             if to_quant_block_names is not None:
                 if isinstance(to_quant_block_names, (list, tuple)):
                     quant_block_list = to_quant_block_names
@@ -568,15 +566,14 @@ class AutoRoundQuantizer(HfQuantizer):
             else:
                 target_backend = self.find_backend(target_backend)  # TODO: Move out if have supported marlin
                 layer_backend = get_layer_backend(
-                    target_device, target_backend, orig_backend, bits, group_size, sym, in_features, out_features
-                )
+                    target_device, target_backend, orig_backend, bits, group_size, sym, in_features, out_features)
             if "gptq" in layer_backend and "exllamav2" in layer_backend:
                 try:
                     from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
                 except:
                     logger.warning_once(
                         "For better inference performance, please install exllamav2 kernel "
-                        "via `pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`")
+                        "via `+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`")
 
             QuantLinear = dynamic_import_inference_linear(layer_backend, bits, group_size, sym)
 
@@ -594,11 +591,7 @@ class AutoRoundQuantizer(HfQuantizer):
                 )
             elif "awq" in layer_backend:
                 new_layer = QuantLinear.from_linear(  # pylint: disable=E1123
-                    layer,
-                    bits,
-                    group_size,
-                    init_only=True
-                )
+                    layer, bits, group_size, init_only=True)
             else:
                 try:
                     new_layer = QuantLinear(  # pylint: disable=E1123
@@ -632,10 +625,8 @@ class AutoRoundQuantizer(HfQuantizer):
         for n, m in model.named_modules():
             if isinstance(m, cpu_layers):
                 layers.append((n, m))
-        for n, layer in tqdm(layers, desc=message, total=len(layers),
-                             leave=True):
+        for n, layer in tqdm(layers, desc=message, total=len(layers), leave=True):
             layer.post_init()
-
 
         return model
 
@@ -684,12 +675,11 @@ class AutoRoundQuantizer(HfQuantizer):
                 import gptqmodel_marlin_cuda_inference  # pylint: disable=E0401
 
                 # Initialize the necessary parameters for the new module.
-                new_module.g_idx = torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device),
-                                                      requires_grad=False)
-                new_module.g_idx_sort_indices = torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device),
-                                                                   requires_grad=False)
-                new_module.zp = torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device),
-                                                   requires_grad=False)
+                new_module.g_idx = torch.nn.Parameter(
+                    torch.empty(0, dtype=torch.int, device=device), requires_grad=False)
+                new_module.g_idx_sort_indices = torch.nn.Parameter(
+                    torch.empty(0, dtype=torch.int, device=device), requires_grad=False)
+                new_module.zp = torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device), requires_grad=False)
                 new_module.bias = m.bias
 
                 # Repack the quantized weight for the Marlin format.
@@ -705,11 +695,7 @@ class AutoRoundQuantizer(HfQuantizer):
 
                 # Permute scales for the new module's configuration.
                 marlin_scales = marlin_permute_scales(
-                    m.scales,
-                    size_k=m.infeatures,
-                    size_n=m.outfeatures,
-                    group_size=m.group_size
-                )
+                    m.scales, size_k=m.infeatures, size_n=m.outfeatures, group_size=m.group_size)
 
                 new_module.scales.resize_(marlin_scales.shape)
                 new_module.scales = nn.Parameter(marlin_scales, requires_grad=False)
@@ -739,9 +725,9 @@ class AutoRoundQuantizer(HfQuantizer):
 
         model.quantize_config = StoreAttr()
         if self.need_marlin_repacking:
-            require_version("gptqmodel",
-                            "marlin format requires gptqmodel to be installed, "
-                            "`pip install -v gptqmodel --no-build-isolation `")
+            require_version(
+                "gptqmodel", "marlin format requires gptqmodel to be installed, "
+                "`pip install -v gptqmodel --no-build-isolation `")
             self.repack_marlin(model)
         from auto_round_extension.cuda.post_init import autoround_post_init
         model = autoround_post_init(model)
@@ -781,4 +767,3 @@ if version.parse(transformers.__version__) < version.parse("4.38.0"):
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
-

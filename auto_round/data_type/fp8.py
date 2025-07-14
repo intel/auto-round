@@ -29,9 +29,10 @@ def float8_e4m3fn_ste(x: torch.Tensor):
     Returns:
         torch.Tensor: Quantized and dequantized tensor using float8 format.
     """
-    fp8 = (x.to(torch.float8_e4m3fn).to(x.dtype) - x).detach() + x
+    return x
+    # fp8 = (x.to(torch.float8_e4m3fn).to(x.dtype) - x).detach() + x
 
-    return fp8
+    # return fp8
 
 
 @register_dtype("fp8_dynamic_per_token_sym")

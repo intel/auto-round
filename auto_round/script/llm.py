@@ -348,8 +348,8 @@ def tune(args):
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
 
     import torch
-    if not args.disable_deterministic_algorithms:
-        torch.use_deterministic_algorithms(True, warn_only=True)
+    # if not args.disable_deterministic_algorithms:
+    #     torch.use_deterministic_algorithms(True, warn_only=True)
         # logger.info("`torch.use_deterministic_algorithms` is enabled by default for reproducibility "
         #             "and can be disabled using the `--disable_deterministic_algorithms` argument.")
 
@@ -401,6 +401,8 @@ def tune(args):
             torch_dtype=torch_dtype,
             trust_remote_code=not args.disable_trust_remote_code,
             device_map="auto" if use_auto_mapping else None)
+        # from ds.mtp_model import load_ds_mtp
+        # model = load_ds_mtp(model_name)
 
     from auto_round import AutoRound, AutoRoundAdam
 
@@ -484,6 +486,10 @@ def tune(args):
 
     enable_torch_compile = False if "--disable_torch_compile" in sys.argv else None
 
+    # import json
+    # args.device_map = json.load(open('device_map.json', 'r'))
+    # print(args.device_map)
+
     autoround = round(
         model,
         tokenizer,
@@ -518,6 +524,42 @@ def tune(args):
         act_dynamic=not args.disable_act_dynamic,
         device_map=args.device_map)
     model, _ = autoround.quantize()
+
+    # dataset_name = args.dataset.split("/")[-1]
+    # output_config_path = f"{dataset_name}_act.csv"    
+    # with open(output_config_path, "w") as f:
+    #     f.write("name,act_max,act_min,act_min_abs")
+    #     for n, m in model.named_modules():
+    #         if hasattr(m, "bits") and m.bits <= 8:
+    #             if not hasattr(m, "act_max"):
+    #                 m.act_max = None
+    #             if not hasattr(m, "act_min"):
+    #                 m.act_min = None
+    #             if not hasattr(m, "act_min_abs"):
+    #                 m.act_min_abs = None
+    #             f.write(f"{n},{m.act_max},{m.act_min},{m.act_min_abs}\n")
+    
+    # output_config_path = "/data4/hengguo/DeepSeek-V3-bf16-layer-config-no-ste.pickle"
+    # output_config_path = "/data2/hengguo/DeepSeek-V3-0324-bf16-w4afp8.pickle"
+    output_config_path = "/data2/hengguo/Qwen3-30B-A3B-w8afp8.pickle"
+    # output_config_path = "/data2/hengguo/Qwen3-32B-w8afp8.pickle"
+    layer_config = {}
+    for n, m in model.named_modules():
+        if hasattr(m, "bits") and m.bits <= 8:
+            try:
+                layer_config[n.replace(".orig_layer", "")] = {
+                "act_max": m.act_max,
+                "act_min": m.act_min,
+                "input_scale_inv": m.input_scale_inv.to("cpu"),
+                "weight_scale_inv": m.weight_scale_inv.to("cpu")
+            }
+            except:
+                print(n.replace(".orig_layer", "") + "not activate")
+                continue
+    import pickle
+    pickle.dump(layer_config, open(output_config_path, "wb"))
+    exit()
+
     model_name = args.model.rstrip("/")
     if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
         import shutil

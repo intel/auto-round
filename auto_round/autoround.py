@@ -375,6 +375,7 @@ class AutoRound(object):
             self.model = self.model.to(self.amp_dtype)
 
         layer_names = self.get_quantized_layer_names_outside_blocks()
+        # self.layer_config["mtp.eh_proj"] = {'data_type': 'fp8_sym_per_channel', 'bits': 8, 'group_size': -1, 'sym': True, 'scale_dtype': torch.float16, 'act_bits': 8, 'act_group_size': -1, 'act_sym': True, 'act_dynamic': False, 'act_data_type': 'fp8_sym'}
         self.start_time = time.time()
         all_first_block_names = [block[0] for block in all_blocks]
         logger.info("start to cache block inputs")
@@ -1062,10 +1063,26 @@ class AutoRound(object):
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
+            if input.shape[0] == 0:
+                return
             if not hasattr(module, "act_max"):
                 module.act_max = torch.abs(input).max().item()
             else:
                 module.act_max = max(torch.abs(input).max().item(), module.act_max)
+            if not hasattr(module, "act_min"):
+                module.act_min = input.min().item()
+            else:
+                module.act_min = min(input.min().item(), module.act_min)
+            if not hasattr(module, "act_min_abs"):
+                module.act_min_abs = torch.abs(input).min().item()
+            else:
+                module.act_min_abs = min(torch.abs(input).min().item(), module.act_min_abs)
+            act_quant_func, act_data_type = get_quant_func(
+                module.act_data_type,
+                module.act_bits,
+                module.act_sym)
+            qdq_x, scale, zp = act_quant_func(input, bits=module.act_bits,group_size=-1,scale_dtype=module.scale_dtype,data_type=module.act_data_type,tensor_max=module.act_max)
+            module.input_scale_inv = scale
 
         hook_handles = []
 
@@ -1115,8 +1132,13 @@ class AutoRound(object):
                 layer = m
                 weight_quant_func, data_type = get_quant_func(layer.data_type, layer.bits,
                                                               layer.sym)
-                qdq_weight,_,_ = weight_quant_func(layer.weight, bits=layer.bits, group_size=layer.group_size, data_type=data_type,
+                qdq_weight,scale,zp = weight_quant_func(layer.weight, bits=layer.bits, group_size=layer.group_size, data_type=data_type,
                                                q_scale_thresh=1e-5)
+                scale, _ = layer.weight.abs().max(-1) 
+                scale /= torch.finfo(torch.float8_e4m3fn).max
+                scale = scale = scale.unsqueeze(-1)
+                layer.weight_scale_inv = scale
+
                 layer.weight.data.copy_(qdq_weight)
 
                 act_quant_func, act_data_type = get_quant_func(layer.act_data_type,
