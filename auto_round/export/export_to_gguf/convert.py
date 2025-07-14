@@ -670,7 +670,7 @@ class ModelBase(OriModel):
                 #     data_qtype = gguf.GGMLQuantizationType.F32
                 # else:
                 #     data_qtype = gguf.GGMLQuantizationType.F16
-                data_qtype = gguf.GGMLQuantizationType.F16  ##FP16 has issues at inference
+                data_qtype = gguf.GGMLQuantizationType.F32  ##FP16 has issues at inference
                 data = data_torch.to(torch.float32).squeeze().cpu().numpy()
         else:
             # if data_torch.dtype == torch.float32:
@@ -678,7 +678,7 @@ class ModelBase(OriModel):
             # else:
             #     data_qtype = gguf.GGMLQuantizationType.F16
             # data = data_torch.squeeze().cpu().numpy()
-            data_qtype = gguf.GGMLQuantizationType.F16
+            data_qtype = gguf.GGMLQuantizationType.F32
             data = data_torch.to(torch.float32).squeeze().cpu().numpy()
         return data, data_qtype
 
@@ -686,7 +686,7 @@ class ModelBase(OriModel):
         name = name[:-len('.weight')]
         if name not in layer_config or layer_config[name]['bits'] >= 16:
             if isinstance(data_qtype, bool):
-                return gguf.GGMLQuantizationType.F16
+                return gguf.GGMLQuantizationType.F32
             return data_qtype
         bits = layer_config[name]['bits']
         super_bits = layer_config[name]["super_bits"]

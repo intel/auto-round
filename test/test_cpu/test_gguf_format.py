@@ -269,6 +269,19 @@ class TestGGUF(unittest.TestCase):
         self.assertEqual(autoround.model.model.layers[10].mlp.gate_proj.bits, 8)
         self.assertEqual(autoround.layer_config['model.layers.10.mlp.gate_proj']['mostly'], "gguf:q8_0")
         shutil.rmtree("./saved", ignore_errors=True)
+
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            layer_config=layer_config,
+            iters=0,
+            seqlen=1,
+            dataset=self.llm_dataloader,
+            disable_opt_rtn=False 
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_k_m,fake")
+        shutil.rmtree("./saved", ignore_errors=True)
     
     def test_all_format(self):
         from auto_round.export.export_to_gguf.config import GGUF_CONFIG

@@ -473,27 +473,6 @@ def tune(args):
     model.eval()
     clear_memory()
 
-    # model, _ = autoround.quantize()
-
-    # model.eval()
-    # clear_memory()
-
-    # if model_name.split('/')[-1].strip('.') == "":
-    #     export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
-    # else:
-    #     export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
-
-    # format_list = args.format.replace(' ', '').split(',')
-    # inplace = False if len(format_list) > 1 else True
-    # for format_ in format_list:
-    #     save_format_ = format_.replace(":", "-").replace("_", "-")
-    #     eval_folder = os.path.join(export_dir, save_format_) if len(formats) > 1 else export_dir
-    #     safe_serialization = True
-    #     if hasattr(autoround.model, "config") and hasattr(autoround.model.config, "model_type"):
-    #         if "phi3_v" in autoround.model.config.model_type:
-    #             safe_serialization = False
-    #     autoround.save_quantized(eval_folder, format=format_, inplace=inplace, safe_serialization=safe_serialization)
-
 
 def eval(args):
     set_cuda_visible_devices(args.device)
