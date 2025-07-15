@@ -115,7 +115,7 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2, shared_exp)
-    tensor = tensor / scale +v
+    tensor = tensor / scale + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
@@ -161,12 +161,12 @@ def quant_mx_rceil(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
         max_val *= max_scale
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
-    shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), ceil_ste(torch.log2(max_val/max_norm)))
+    shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), ceil_ste(torch.log2(max_val / max_norm)))
     scale_emax = 2 ** (8 - 1) - 1
     shared_exp = shared_exp.clamp(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2, shared_exp)
-    tensor = tensor / scale +v
+    tensor = tensor / scale + v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
@@ -179,6 +179,7 @@ for key in MXFP_FORMAT_CACHE.keys():
     QUANT_FUNC_WITH_DTYPE[key] = quant_mx
     QUANT_FUNC_WITH_DTYPE[key + "_rceil"] = quant_mx_rceil
 QUANT_FUNC_WITH_DTYPE["mx_fp_rceil"] = quant_mx_rceil
+
 if __name__ == "__main__":
     data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])
     data1 = quant_element(data, 2, 3, 6.0)
