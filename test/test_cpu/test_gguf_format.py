@@ -273,10 +273,9 @@ class TestGGUF(unittest.TestCase):
         autoround = AutoRound(
             model,
             tokenizer,
-            layer_config=layer_config,
             iters=0,
-            seqlen=1,
-            dataset=self.llm_dataloader,
+            nsamples=1,
+            seqlen=128,
             disable_opt_rtn=False 
         )
         quantized_model_path = "./saved"
