@@ -238,7 +238,7 @@ class TestGGUF(unittest.TestCase):
 
 
     def test_q4_k_m(self):
-        model_name = "Qwen/Qwen2.5-7B-Instruct"
+        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         layer_config = {
@@ -284,7 +284,7 @@ class TestGGUF(unittest.TestCase):
     
     def test_all_format(self):
         from auto_round.export.export_to_gguf.config import GGUF_CONFIG
-        model_name = "Qwen/Qwen2.5-7B-Instruct"
+        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
         python_path = sys.executable
         for gguf_format in GGUF_CONFIG.keys():
             res = os.system(
