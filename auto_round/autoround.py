@@ -716,6 +716,7 @@ class AutoRound(object):
         Returns:
             bool: True if the quantization process completes without critical errors.
         """
+        is_quantized = False
         for name, module in self.model.named_modules():
             # Skip non-Embedding modules or layers not in config
             if not isinstance(module, torch.nn.Embedding) or name not in self.layer_config:
@@ -726,7 +727,7 @@ class AutoRound(object):
             # Skip layers that are not marked for quantization
             if not check_to_quantized(config):
                 continue
-
+            is_quantized = True
             config["scale_dtype"] = self.scale_dtype
             dtype = config["data_type"]
 
@@ -779,7 +780,7 @@ class AutoRound(object):
             # Release memory
             clear_memory()
 
-        return True
+        return is_quantized
 
     def quant_rtn_with_imatrix(self, all_to_quantized_module_names: list[str]) -> None:
         """Performs RTN quantization using input activation statistics (imatrix).
@@ -1016,20 +1017,13 @@ class AutoRound(object):
                 self.layer_config[name]["data_type"] = m.data_type
 
         # Step 2: Try quantization on GPU first, fall back to CPU if OOM
-        try:
-            m.to(self.device)
-            m = WrapperLinear(
-                m,
-                enable_minmax_tuning=False,
-                enable_norm_bias_tuning=False,
-                enable_round_tuning=False,
-            )
-            m = m.unwrapper({})
-            m.to("cpu")
-        except RuntimeError as e:
-            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                logger.warning("Out of VRAM, falling back to CPU.")
-                m.to("cpu")
+        # if only export gguf, using gguf-packing instead of rtn
+        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0]:
+            m.scale = None
+            m.zp = None
+        else:
+            try:
+                m.to(self.device)
                 m = WrapperLinear(
                     m,
                     enable_minmax_tuning=False,
@@ -1037,11 +1031,23 @@ class AutoRound(object):
                     enable_round_tuning=False,
                 )
                 m = m.unwrapper({})
-            else:
-                raise
+                m.to("cpu")
+            except RuntimeError as e:
+                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                    logger.warning("Out of VRAM, falling back to CPU.")
+                    m.to("cpu")
+                    m = WrapperLinear(
+                        m,
+                        enable_minmax_tuning=False,
+                        enable_norm_bias_tuning=False,
+                        enable_round_tuning=False,
+                    )
+                    m = m.unwrapper({})
+                else:
+                    raise
 
-        if self.low_gpu_mem_usage:
-            clear_memory()
+            if self.low_gpu_mem_usage:
+                clear_memory()
 
         # Step 3: Optional immediate packing/export
         if self.is_packing_immediate:
@@ -1930,6 +1936,16 @@ class AutoRound(object):
                 minmax_params.append(wrapper_linear.params[key])
             else:
                 round_params.append(wrapper_linear.value)
+        if len(round_params) + len(minmax_params) <= 0:
+            dump_info = (
+                f"quantized {layer_name}"
+            )
+            logger.info(dump_info)
+            with torch.no_grad():
+                unwrapper_layer(self.model, wrapper_linear, layer_name, {})
+            mv_module_from_gpu(layer, self.low_cpu_mem_usage)
+
+
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
@@ -2119,6 +2135,8 @@ class AutoRound(object):
                 f"layers in the block"
             )
             logger.info(dump_info)
+            unwrapper_block(block, {}) ## TODO Quant layer should change
+            mv_module_from_gpu(block, self.low_cpu_mem_usage)
             return output, output
 
         if self.lr_scheduler is None:
