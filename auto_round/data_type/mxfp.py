@@ -155,7 +155,7 @@ def quant_mx_rceil(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     data_type = data_type if data_type in MXFP_FORMAT_CACHE else "mx_fp" + str(bits)
     ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
     orig_dtype = tensor.dtype
-    tensor = tensor.to(torch.float32) / max_norm
+    tensor = tensor.to(torch.float32)
     max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
     if isinstance(max_scale, torch.Tensor):
         max_val *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
@@ -163,9 +163,9 @@ def quant_mx_rceil(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
         max_val *= max_scale
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
-    shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))
+    shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), ceil_ste(torch.log2(max_val/max_norm)))
     scale_emax = 2 ** (8 - 1) - 1
-    shared_exp = ceil_ste(shared_exp / max_norm).clamp(min=-scale_emax, max=scale_emax)
+    shared_exp = shared_exp.clamp(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2, shared_exp)
     tensor = tensor / scale
