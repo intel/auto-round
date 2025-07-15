@@ -51,9 +51,6 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even", v=0)
 
     # Scale up so appropriate number of mbits are in the integer portion of the number
     tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** private_exp) * (2 ** (mbits - 2))
-    if isinstance(v, torch.Tensor):
-        v = torch.clamp(v, -1.0, 1.0)
-    tensor = tensor + v * 2.0
     if mantissa_rounding == "even":
         abs_tensor = torch.abs(tensor)
         mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
