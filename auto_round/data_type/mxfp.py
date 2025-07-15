@@ -186,3 +186,4 @@ if __name__ == "__main__":
     data_neg = data * -1
     data2 = quant_element(data_neg, 2, 3, 6.0)
     assert (torch.sum(torch.abs(data2 - gt * -1)) < 1e-6)
+
