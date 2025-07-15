@@ -115,16 +115,15 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2, shared_exp)
-    tensor = tensor / scale
+    tensor = tensor / scale +v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
-    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding, v)
+    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
     tensor = tensor * scale
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
 
-##https://github.com/pytorch/ao/blob/378e17907e12e6a64e2b753de0211b949604f3df/torchao/prototype/mx_formats/mx_tensor.py#L71-L83
 @torch.compile()
 @register_dtype("mx_fp_rceil")
 def quant_mx_rceil(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
@@ -168,9 +167,9 @@ def quant_mx_rceil(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
     shared_exp = shared_exp.clamp(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2, shared_exp)
-    tensor = tensor / scale
+    tensor = tensor / scale +v
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
-    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding, v)
+    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
     tensor = tensor * scale
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
