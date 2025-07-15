@@ -52,8 +52,20 @@ def ggml_quant(
     n_blocks = data.nelement() // block_size
     blocks = data.reshape((n_blocks, block_size))
     quant_func = GGML_QUANT_TYPE[ggml_type]
-    new_data = quant_func(
-        blocks, scale, zp=zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, imatrix=imatrix, original=original)
+    try:
+        new_data = quant_func(
+            blocks, scale, zp=zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, imatrix=imatrix, original=original)
+    except Exception:
+        device = "cpu"
+        blocks = blocks.to(device)
+        scale = scale.to(device) if scale is not None else scale
+        zp = zp.to(device) if zp is not None else zp
+        wmin = wmin.to(device) if wmin is not None else wmin
+        d_scale = d_scale.to(device) if d_scale is not None else d_scale
+        d_wmin = d_wmin.to(device) if d_wmin is not None else d_wmin
+        new_data = quant_func(
+            blocks, scale, zp=zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, imatrix=imatrix, original=original)
+        
 
     assert new_data.shape[-1] == type_size
     new_data = new_data.reshape(*shape[:-1], shape[-1] // block_size * type_size)

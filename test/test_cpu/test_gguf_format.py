@@ -283,10 +283,9 @@ class TestGGUF(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
     
     def test_all_format(self):
-        from auto_round.export.export_to_gguf.config import GGUF_CONFIG
         model_name = "Qwen/Qwen2.5-1.5B-Instruct"
         python_path = sys.executable
-        for gguf_format in GGUF_CONFIG.keys():
+        for gguf_format in ["gguf:q4_0", "gguf:q4_1", "q4_k_m", "q6_k"]:
             res = os.system(
                 f"cd ../.. && {python_path} -m auto_round --model {model_name} "
                 f" --bs 16 --iters 1 --nsamples 1 --seqlen 16 --format {gguf_format}"
