@@ -125,7 +125,6 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
 
 
 @torch.compile()
-@register_dtype("mx_fp_rceil")
 def quant_mx_rceil(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
                    mantissa_rounding="even", data_type="mx_fp", **kwargs):
     """Quantize the given tensor using the specified parameters.
@@ -179,7 +178,7 @@ def quant_mx_rceil(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
 for key in MXFP_FORMAT_CACHE.keys():
     QUANT_FUNC_WITH_DTYPE[key] = quant_mx
     QUANT_FUNC_WITH_DTYPE[key + "_rceil"] = quant_mx_rceil
-
+QUANT_FUNC_WITH_DTYPE["mx_fp_rceil"] = quant_mx_rceil
 if __name__ == "__main__":
     data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])
     data1 = quant_element(data, 2, 3, 6.0)
