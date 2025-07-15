@@ -1069,7 +1069,8 @@ class AutoRound(object):
                     if "mx"  in self.formats[0] or "nv" in self.formats[0]:
                         kwargs["data_type"] = self.data_type
                     PACKING_LAYER_WITH_FORMAT[target_backend](
-                        name, self.model, self.formats[0], **kwargs)
+                        name, self.model, self.formats[0], **kwargs
+                    )
 
                 if self.low_gpu_mem_usage:
                     clear_memory()
@@ -1228,7 +1229,8 @@ class AutoRound(object):
             formats = self.formats
             if (len(formats) == 1 and
                     ("awq" in formats[0] or "gptq" in formats[0] or
-                     "auto_round" in formats[0] or "gguf" in formats[0]) and self.inplace):
+                     "auto_round" in formats[0] or "gguf" in formats[0]
+                     or "mx" in formats[0] or "nv" in formats[0]) and self.inplace):
                 self.is_packing_immediate = True
         if self.iters == 0:
             return self.quantize_rtn()

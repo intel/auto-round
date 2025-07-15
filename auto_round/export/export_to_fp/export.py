@@ -92,11 +92,12 @@ def pack_layer(name, model, backend, data_type):
     set_module(model, name, new_layer)
     qlayer = new_layer
     scale = layer.scale
+    global_scale = layer.global_scale if hasattr(layer, "global_scale") else None
     # zero = layer.zp
     # so far can only pack layer on CPU
     qlayer.to("cpu")
     layer, scale = layer.to("cpu"), scale.to("cpu")
-    qlayer.pack(layer, scale)
+    qlayer.pack(layer, scale, global_scale=global_scale)
     ## no zeros to handle, as mxfp not support asym quantization
     qlayer.to(device)
 
@@ -214,7 +215,7 @@ def save_quantized_as_fp(output_dir, inplace=True, # no gemm implements in autor
 
     if processor is not None:
         processor.save_pretrained(output_dir)
-        
+
     dtype = None
     save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 

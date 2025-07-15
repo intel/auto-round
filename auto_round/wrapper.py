@@ -169,7 +169,7 @@ class WrapperLinear(torch.nn.Module):
             quant_kwargs["super_bits"] = self.orig_layer.super_bits
             quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
 
-        weight_q, scale, zp = self.weight_quant_func(
+        results = self.weight_quant_func(
             weight,
             bits=self.orig_layer.bits,
             group_size=self.orig_layer.group_size,
@@ -184,10 +184,12 @@ class WrapperLinear(torch.nn.Module):
             imatrix=self.orig_layer.imatrix if hasattr(self.orig_layer, "imatrix") else None,
             **quant_kwargs
         )
+        weight_q = results[0]
         weight_q = weight_q.to(weight.dtype)
         if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             weight_q = weight_q.t()
-        return weight_q, scale, zp
+        results = (weight_q,) + results[1:]
+        return results
 
     def _qdq_act(self, x, act_max_scale, act_max=None):
         """Quantizes and dequantizes activations.
@@ -239,7 +241,12 @@ class WrapperLinear(torch.nn.Module):
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
         ##unwrapper weight
-        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
+        results = self._qdq_weight(v, min_scale, max_scale)
+        global_scale = None
+        if len(results) == 4:
+            qdq_weight, scale, global_scale, zp = results
+        else:
+            qdq_weight, scale, zp = results
         # if hasattr(self.orig_layer, "imatrix"):
         #     self.orig_layer.imatrix = None
         self.orig_layer.weight.data.copy_(qdq_weight)
@@ -269,8 +276,6 @@ class WrapperLinear(torch.nn.Module):
         if zp is not None:
             if isinstance(zp, dict):
                 _set_dict_attr(zp, "zp")
-            elif zp is None:
-                self.orig_layer.zp = None
             elif zp.numel() > 1:
                 zp = zp.reshape(shape[0], -1)
                 self.orig_layer.zp = zp.to("cpu")
@@ -278,6 +283,10 @@ class WrapperLinear(torch.nn.Module):
                 self.orig_layer.zp = zp.view(-1).to("cpu")
         else:
             self.orig_layer.zp = None
+
+        if global_scale is not None:
+            assert global_scale.numel() == 1
+            self.orig_layer.global_scale = global_scale.to("cpu")
 
         ##unwrapper bias
         if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
@@ -355,7 +364,7 @@ class WrapperLinear(torch.nn.Module):
             torch.Tensor: Output tensor after applying the wrapped layer.
         """
         x = x.to(self.device)
-        weight_q, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
+        weight_q, *_ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
         if self.enable_act_quant:
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
@@ -419,7 +428,7 @@ class WrapperLayerNorm(torch.nn.Module):
         if best_params is None:
             return self.orig_layer
         v = best_params['v']
-        weight_q, _, _ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
+        weight_q, *_ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
                                          v, q_scale_thresh=self.q_scale_thresh)
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.weight.data.copy_(weight_q)
@@ -427,7 +436,7 @@ class WrapperLayerNorm(torch.nn.Module):
 
     def forward(self, input):
         input = input.to(self.device)
-        weight_q, _, _ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
+        weight_q, *_ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
                                          self.v, q_scale_thresh=self.q_scale_thresh)
         import torch.nn.functional as F
         return F.layer_norm(
@@ -465,7 +474,7 @@ class WrapperLlamaNorm(torch.nn.Module):
         if best_params is None:
             return self.orig_layer
         v = best_params['v']
-        weight_q, _, _ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
+        weight_q, *_ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
                                          v, q_scale_thresh=self.q_scale_thresh)
         self.orig_layer.q_scale_thresh = self.q_scale_thresh
         self.orig_layer.weight.data.copy_(weight_q)
@@ -473,7 +482,7 @@ class WrapperLlamaNorm(torch.nn.Module):
 
     def forward(self, hidden_states):
         hidden_states = hidden_states.to(self.device)
-        weight_q, _, _ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
+        weight_q, *_ = self.quant_func(self.orig_layer.weight, self.bits, self.group_size,
                                          self.v, q_scale_thresh=self.q_scale_thresh)
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
@@ -592,3 +601,4 @@ def unwrapper_block(block, best_params):
                 best_param = None
             orig_layer = m.unwrapper(best_param)
             set_module(block, n, orig_layer)
+

@@ -35,6 +35,7 @@ import torch
 import torch.nn as nn
 import transformers
 from auto_round.data_type.mxfp import FP32_MIN_NORMAL, FP32_EXPONENT_BIAS
+from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 # from auto_round.utils import get_weight_compress_dtype
 logger = getLogger(__name__)
@@ -45,6 +46,16 @@ __all__ = [
     "QuantLinear"
 ]
 
+FLOAT_TO_E2M1 = [
+    0.0,
+    0.5,
+    1.0,
+    1.5,
+    2.0,
+    3.0,
+    4.0,
+    6.0,
+]
 
 class QuantLinear(nn.Module):
     """
@@ -68,6 +79,8 @@ class QuantLinear(nn.Module):
             raise NotImplementedError(
                 "in_feature and out_feature must be divisible by 32."
             )
+        self.is_mx = "mx" in data_type
+        self.is_nv = "nv" in data_type
         self.infeatures = infeatures
         self.outfeatures = outfeatures
         self.bits = bits
@@ -76,7 +89,8 @@ class QuantLinear(nn.Module):
         self.group_size = group_size if group_size != -1 else infeatures
         self.maxq = 2**self.bits - 1
 
-        weight_name = "weight" if self.bits == 8 else "weight_packed"
+        weight_name = "weight" if self.bits == 8 and self.is_mx else "weight_packed"
+        ## TODO check the dtype of weight_packed and weight_scale
         self.register_buffer(
             weight_name,
             torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
@@ -96,9 +110,17 @@ class QuantLinear(nn.Module):
             "weight_scale",
             torch.zeros(
                 (math.ceil(infeatures / self.group_size), outfeatures),
-                dtype=torch.float16,
+                dtype=torch.float16, ## TODO update to correct scale dtype for different bits
             ),
         )
+        if self.is_nv and self.bits == 4:
+            self.register_buffer(
+                "weight_global_scale",
+                torch.zeros(
+                    (1),
+                    dtype=torch.float32,
+                ),
+            )
         if bias:
             self.register_buffer(
                 "bias", torch.zeros((outfeatures), dtype=torch.float16)
@@ -113,7 +135,7 @@ class QuantLinear(nn.Module):
         pass
 
 
-    def pack(self, linear, scales, zeros=None, g_idx=None):
+    def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None):
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         device = "cpu"
@@ -129,19 +151,30 @@ class QuantLinear(nn.Module):
             W = W.t()
 
         tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(linear.weight, self.group_size)
-        scaled_tensor = tensor / (2 ** scales.reshape(tensor.shape[0], -1))
+        if self.is_nv:
+            assert global_scale is not None and global_scale.numel() == 1
+            scaled_tensor = (tensor.to(global_scale.dtype) * get_reciprocal(scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)))
+            scaled_tensor = cast_to_fp4(torch.clamp(scaled_tensor, -6.0, 6.0))
+        else:
+            scaled_tensor = tensor / (2 ** scales.reshape(tensor.shape[0], -1))
         scaled_tensor = revert_tensor_by_pad(scaled_tensor, orig_shape=orig_shape, pad_len=pad_len)
-        scale_uint8 = (scales + E8M0_EXPONENT_BIAS).clamp(0, E8M0_EXPONENT_NAN_VAL).to(torch.uint8)
-        self.weight_scale =  scale_uint8
+        if self.is_mx:
+            final_scale = (scales + E8M0_EXPONENT_BIAS).clamp(0, E8M0_EXPONENT_NAN_VAL).to(torch.uint8)
+        else:
+            final_scale = scales.to(torch.float8_e4m3fn)
+        self.weight_scale =  final_scale
         # self.weight =  get_compressed_weight(scaled_tensor, self.bits, self.data_type) ## TODO
         if self.bits == 8:
             compress_dtype = torch.float8_e4m3fn
             self.weight = scaled_tensor.to(compress_dtype)
-        elif self.bits == 4:
+        else:
             compress_dtype = torch.uint8
             self.weight_packed = self.pack_fp4_to_uint8(scaled_tensor)
+        
+        if global_scale is not None:
+            self.weight_global_scale = global_scale.to(torch.float32)
         return
-    
+
 
     def pack_fp4_to_uint8(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -210,12 +243,10 @@ class QuantLinear(nn.Module):
 
     # def get_compressed_weight(self, tensor, bits, data_type):
     #     data_type = str(data_type)
-    #     is_mx = "mx" in data_type
-    #     is_nv = "nv" in data_type
     #     compress_dtype = None
-    #     if is_mx:
+    #     if self.is_mx:
     #         if bits == 4:
             
-    #     if is_nv:
+    #     if self.is_nv:
     #         pass ## TODO 
 
