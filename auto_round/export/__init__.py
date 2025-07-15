@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.export.register import EXPORT_FORMAT,PACKING_LAYER_WITH_FORMAT, register_format,register_layer_packing
+from auto_round.export.register import EXPORT_FORMAT,PACKING_LAYER_WITH_FORMAT, register_format, register_layer_packing
 
 
 @register_format("auto_gptq")
@@ -76,6 +76,13 @@ def _packing_layer_with_autoawq(*args, **kwargs):
     return pack_layer(*args, **kwargs)
 
 
+@register_format("llmcompressor")
+def _save_quantized_as_llmcompressor(*args, **kwargs):
+    from auto_round.export.export_to_llmcompressor.export import save_quantized_as_llmcompressor
+
+    return save_quantized_as_llmcompressor(*args, **kwargs)
+
+
 @register_format("mx_fp")
 def _save_quantized_as_mxfp(*args, **kwargs):
     from auto_round.export.export_to_fp.export import save_quantized_as_fp
@@ -90,9 +97,16 @@ def _save_quantized_as_nvfp(*args, **kwargs):
     return save_quantized_as_fp(*args, **kwargs)
 
 
-@register_format("llmcompressor")
-def _save_quantized_as_llmcompressor(*args, **kwargs):
-    from auto_round.export.export_to_llmcompressor.export import save_quantized_as_llmcompressor
+@register_layer_packing("mx_fp")
+def _packing_layer_with_mxfp(*args, **kwargs):
+    from auto_round.export.export_to_fp.export import pack_layer
 
-    return save_quantized_as_llmcompressor(*args, **kwargs)
+    return pack_layer(*args, **kwargs)
+
+
+@register_layer_packing("nv_fp")
+def _packing_layer_with_nvfp(*args, **kwargs):
+    from auto_round.export.export_to_fp.export import pack_layer
+
+    return pack_layer(*args, **kwargs)
 
