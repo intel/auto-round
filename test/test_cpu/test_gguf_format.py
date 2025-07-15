@@ -296,7 +296,7 @@ class TestGGUF(unittest.TestCase):
             shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
             res = os.system(
-                f"cd ../.. && {python_path} -m auto_round --model {model_name} --disable_opt_rtn"
+                f"cd ../.. && {python_path} -m auto_round --model {model_name}"
                 f" --bs 16 --iters 0 --nsamples 1 --seqlen 16 --format fake,{gguf_format}"
             )
             if res > 0 or res == -1:
