@@ -301,6 +301,26 @@ class TestGGUF(unittest.TestCase):
             if res > 0 or res == -1:
                 assert False, "cmd line test fail, please have a check"
             shutil.rmtree("../../tmp_autoround", ignore_errors=True)
+    
+    def test_vlm_gguf(self):
+        model_name = "Qwen/Qwen2-VL-2B-Instruct"
+        model_name = "/models/Qwen2-VL-2B-Instruct"
+        from auto_round.mllm.autoround_mllm import AutoRoundMLLM
+        from auto_round.utils import mllm_load_model
+        model, processor, tokenizer, image_processor = mllm_load_model(model_name)
+        autoround = AutoRoundMLLM(
+            model,
+            tokenizer=tokenizer,
+            processor=processor,
+            image_processor=image_processor,
+            iters=0,
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
+        self.assertTrue("mmproj-model.gguf" in os.listdir("./saved"))
+        file_size = os.path.getsize("./saved/Qwen2-VL-2B-Instruct-1.5B-Q4_0.gguf") / 1024 ** 2
+        self.assertAlmostEqual(file_size, 892, delta=1.0)
+        shutil.rmtree("./saved", ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()
