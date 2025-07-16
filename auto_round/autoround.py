@@ -539,24 +539,6 @@ class AutoRound(object):
                 self.scale_dtype = torch.float32
                 logger.info(f"change `scale_dtype` to `torch.float32`")
 
-        # only support to export afp8
-        if self.act_bits <= 8:
-            if "fp8" not in self.act_data_type:
-                if len(formats) > 1 or "fake" not in formats:
-                    logger.warning(
-                        f"Currently only support to export auto_round format quantized model"
-                        " with fp8 dtype activation for activation quantization."
-                        " Change format to fake and save."
-                    )
-                    formats = ["fake"]
-            else:
-                if len(formats) > 1 or "auto_round" not in formats:
-                    logger.warning(
-                        f"Currently only support to export auto_round format for W{self.bits}AFP8 model,"
-                        " change format to auto_round"
-                    )
-                    formats = ["auto_round"]
-
         # Adjust format settings based on compatibility
         for index in range(len(formats)):
             format = formats[index]
@@ -581,8 +563,9 @@ class AutoRound(object):
             return [x for x in lst if not (x in seen or seen.add(x))]
 
         formats = remove_duplicates(formats)
-        for format in formats:
-            self._check_supported_format(format)
+        for i in range(len(formats)):
+            formats[i] = self._check_supported_format(formats[i])
+        formats = remove_duplicates(formats)
         return formats
 
     def _check_supported_format(self, format: str) -> bool:
@@ -631,6 +614,7 @@ class AutoRound(object):
             )
             sys.exit(-1)
 
+        return format
     def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
 
@@ -1098,7 +1082,31 @@ class AutoRound(object):
         """
         if self.amp:
             self.model.to(self.amp_dtype)
-        self.model.to("cpu")
+
+        # all_blocks = get_block_names(self.model)
+        if self.act_bits <= 8:
+            all_blocks = get_block_names(self.model)
+            hook_handles = self.register_act_max_hook(self.model, [blocks[-1] for blocks in all_blocks])
+            try:
+                self.calib(self.nsamples, self.batch_size)
+            except RuntimeError as e: 
+                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                    if len(os.environ.get("CUDA_VISIBLE_DEVICES")) > 1:
+                        raise RuntimeError("Out of memory, please consider reducing nsamples or batch_size")
+                    try:
+                        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+                        from auto_round.utils import register_per_layer_to_device
+                        hook_handles.extend(register_per_layer_to_device(self.model, self.device))
+                        self.calib(self.nsamples, self.batch_size, device=self.device)
+                    except RuntimeError as e:     
+                        if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                            raise RuntimeError("Out of memory, please consider reducing nsamples or batch_size")
+                        else:
+                            raise
+                else:
+                    raise
+            for handle in hook_handles:
+                handle.remove()
 
         all_to_quantized_module_names: list[str] = [
             n for n, m in self.model.named_modules() if check_to_quantized(m)
@@ -1109,6 +1117,7 @@ class AutoRound(object):
         self.quantize_embedding_layer()
 
         if has_gguf_k and not self.disable_opt_rtn:
+            self.model.to("cpu")
             self.quant_rtn_with_imatrix(all_to_quantized_module_names)
         else:
             pbar = tqdm(all_to_quantized_module_names)
@@ -1576,7 +1585,7 @@ class AutoRound(object):
         return output
 
     @torch.no_grad()
-    def calib(self, nsamples, bs):
+    def calib(self, nsamples, bs, device=None):
         """Perform calibration for quantization.
 
         This method calibrates the model for quantization by processing a specified
@@ -1611,11 +1620,12 @@ class AutoRound(object):
             for n, m in embed_layers:
                 m = m.to(self.device)
 
+        device = self.model.device if device is None else device
         for data in self.dataloader:
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
-                input_ids = data.to(self.model.device)
+                input_ids = data.to(device)
                 data_new = input_ids
             elif isinstance(data, str):
                 if self.tokenizer is None:
@@ -1624,7 +1634,7 @@ class AutoRound(object):
                 data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
                 data_new = {}
                 for key in data.keys():
-                    data_new[key] = data[key].to(self.model.device)
+                    data_new[key] = data[key].to(device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
                 data_new = to_device(data)
@@ -1632,7 +1642,7 @@ class AutoRound(object):
             else:
                 data_new = {}
                 for key in data.keys():
-                    data_new[key] = to_device(data[key], self.model.device)
+                    data_new[key] = to_device(data[key], device)
                     if key == 'images':
                         data_new[key] = to_dtype(data_new[key], self.model.dtype)
                 input_ids = data_new["input_ids"]
@@ -2055,7 +2065,7 @@ class AutoRound(object):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
-    def register_act_max_hook(self, model):
+    def register_act_max_hook(self, model, last_block_name=None):
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
@@ -2063,12 +2073,22 @@ class AutoRound(object):
                 module.act_max = torch.abs(input).max().item()
             else:
                 module.act_max = max(torch.abs(input).max().item(), module.act_max)
+        
+        def early_quit_hook(module, input, output):
+            raise NotImplementedError
 
         hook_handles = []
 
         for n, m in model.named_modules():
-            if hasattr(m, "act_dynamic") and m.act_dynamic == False and check_to_quantized(m):
-                hook = m.register_forward_hook(get_act_max_hook)
+            # if hasattr(m, "act_dynamic") and m.act_dynamic == False and check_to_quantized(m):
+            if n in self.layer_config:
+                config = self.layer_config[n]
+                if "act_dynamic" in config and config["act_dynamic"] is False and check_to_quantized(config):
+                    hook = m.register_forward_hook(get_act_max_hook)
+                    hook_handles.append(hook)
+            if (isinstance(last_block_name, list) and n in last_block_name) or \
+                n == last_block_name:
+                hook = m.register_forward_hook(early_quit_hook)
                 hook_handles.append(hook)
         return hook_handles
 
@@ -2395,7 +2415,7 @@ class AutoRound(object):
         Returns:
             object: The compressed model object.
         """
-        self._check_supported_format(format)
+        format = self._check_supported_format(format)
 
         if self.low_cpu_mem_usage:
             self.model = self.model.to('cpu')

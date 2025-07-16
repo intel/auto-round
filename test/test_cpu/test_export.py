@@ -203,6 +203,24 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
     
+    
+    def test_static_afp8_export(self):
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=8,
+            group_size=-1,
+            iters=0,
+            act_bits=8,
+            nsamples=2,
+            data_type="fp8_sym",
+            act_data_type="fp8_sym",
+            act_dynamic=False,
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

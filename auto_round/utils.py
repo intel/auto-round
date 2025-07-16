@@ -1920,3 +1920,30 @@ def clean_module_parameter(submodule, parameter):
             submodule._buffers[parameter] = None
         else:
             submodule._parameters[parameter] = None
+
+def get_named_children(model, pre=[]):
+    """Get all the name and children of given model."""
+    module_list = []
+    if len(list(model.children())) == 0:
+        return [(".".join(pre), model)]
+    for name, module in model.named_children():
+        module_list += get_named_children(module, pre=pre + [name])
+    return module_list
+
+def register_per_layer_to_device(model, device):
+    def forward_pre_hook(module, input):
+        module = module.to(device)
+    
+    def forward_hook(module, input, output):
+        module = mv_module_from_gpu(module)
+        clear_memory()
+    
+    hook_handels = []
+    for n, m in get_named_children(model):
+        hook = m.register_forward_pre_hook(forward_pre_hook)
+        hook_handels.append(hook)
+        hook = m.register_forward_hook(forward_hook)
+        hook_handels.append(hook)
+
+    return hook_handels    
+        

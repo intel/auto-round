@@ -47,7 +47,7 @@ def check_neq_config(config, data_type, bits, group_size, sym):
 
 
 class FP8WOQLinear(torch.nn.Module):
-    def __init__(self, in_features, out_features, weight, weight_scale, bias=None, weight_zp=None):
+    def __init__(self, in_features, out_features, weight, weight_scale, bias=None, weight_zp=None, act_scale=None):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -62,6 +62,9 @@ class FP8WOQLinear(torch.nn.Module):
 
         if weight_zp:
             self.register_buffer('weight_zp', weight_zp.to(torch.bfloat16))
+
+        if act_scale:
+            self.register_buffer('act_scale', weight_scale.to(torch.bfloat16))
 
 
 def pack_layer(layer_name, model, data_type, packing_device=None):
@@ -101,6 +104,7 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
     scale = layer.scale
     zp = layer.zp
     weight = layer.weight
+    act_scale = layer.act_scale if hasattr(layer, "act_scale") else None
     torch_dtype = torch.float8_e4m3fn
     if "fp8_e5m2" in data_type:
         torch_dtype = torch.float8_e5m2
@@ -121,7 +125,8 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
     bias = layer.bias
-    my_linear = FP8WOQLinear(in_features, out_features, q_weight, scale, bias, zp)
+    my_linear = FP8WOQLinear(
+        in_features, out_features, weight=q_weight, weight_scale=scale, bias=bias, weight_zp=zp, act_scale=act_scale)
 
     my_linear.to(device)
     set_module(model, layer_name, my_linear)
