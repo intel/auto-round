@@ -51,8 +51,8 @@ def get_reciprocal(x):
 
 
 FLOAT4_E2M1_MAX = 6.0
-FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max
-FLOAT8_E4M3_MIN = torch.finfo(torch.float8_e4m3fn).min
+FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max if hasattr(torch, "float8_e4m3fn") else 448
+FLOAT8_E4M3_MIN = torch.finfo(torch.float8_e4m3fn).min if hasattr(torch, "float8_e4m3fn") else -448
 
 
 def ref_nvfp4_quant(x, global_scale, block_size=16, v=0):

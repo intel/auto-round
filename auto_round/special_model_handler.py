@@ -22,7 +22,9 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "qwen2_vl",
     "deepseek_vl_v2",
     "chatglm",
-    "idefics3"
+    "idefics3",
+    "llama4",
+    "internvl_chat"
 ]
 
 SPECIAL_SHARED_CACHE_KEYS = {
