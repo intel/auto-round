@@ -304,7 +304,6 @@ class TestGGUF(unittest.TestCase):
     
     def test_vlm_gguf(self):
         model_name = "Qwen/Qwen2-VL-2B-Instruct"
-        model_name = "/models/Qwen2-VL-2B-Instruct"
         from auto_round.mllm.autoround_mllm import AutoRoundMLLM
         from auto_round.utils import mllm_load_model
         model, processor, tokenizer, image_processor = mllm_load_model(model_name)
