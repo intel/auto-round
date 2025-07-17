@@ -360,7 +360,7 @@ def quant_tensor_gguf_asym_dq(
                 if bits == 2:
                     tmp_quant_weights = torch.abs(tensor)
                 elif bits == 4 or bits == 5:
-                    sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / 32  ##Note 32 is different from QK_K
+                    sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / 32  ## Note 32 is different from QK_K
                     av_x = torch.sqrt(sigma2)
                     tmp_quant_weights = torch.abs(tensor) + av_x
                 quant_weights[replace_index, :] = tmp_quant_weights[replace_index, :]
