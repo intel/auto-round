@@ -474,8 +474,8 @@ class AutoRound(object):
                 )
 
         ##check group_size 32 for auto_round
-        if self.data_type == "int" and hasattr(self, "formats") and (
-                "auto_round" in self.formats or "auto_gptq" in self.formats or "auto_awq" in self.formats):
+        if self.data_type == "int" and hasattr(self, "formats") and any(
+        key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq")):
             for n, m in self.model.named_modules():
                 if isinstance(m, self.supported_types):
                     if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
@@ -561,7 +561,7 @@ class AutoRound(object):
         for index in range(len(formats)):
             format = formats[index]
             if format == "auto_round":
-                if self.sym or self.bits == 3 and "int" in self.data_type:
+                if (self.sym or self.bits == 3) and "int" in self.data_type:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
                 if self.bits == 4 and not self.sym and "int" in self.data_type:
@@ -1204,7 +1204,6 @@ class AutoRound(object):
                         all_to_quantized_module_names.remove(m.tmp_name)
 
                 mv_module_from_gpu(block, self.low_cpu_mem_usage)
-                clear_memory()
                 pbar.update(1)
 
         pbar.close()
@@ -2925,3 +2924,4 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+
