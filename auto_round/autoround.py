@@ -1204,6 +1204,7 @@ class AutoRound(object):
                         all_to_quantized_module_names.remove(m.tmp_name)
 
                 mv_module_from_gpu(block, self.low_cpu_mem_usage)
+                clear_memory()
                 pbar.update(1)
 
         pbar.close()

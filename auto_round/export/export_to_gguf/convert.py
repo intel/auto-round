@@ -602,7 +602,8 @@ class ModelBase(OriModel):
         for name, tensor in self.model.named_parameters():
             yield name, tensor
 
-    def _quant_data_with_args(self, data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
+    def _quant_data_with_args(
+            self, data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
         if torch.cuda.is_available():
             device = "cuda"
         elif torch.xpu.is_available():
