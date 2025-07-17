@@ -600,7 +600,7 @@ class AutoRound(object):
                     )
                     format = "fake"
             else:
-                if format != "auto_round":
+                if not format.startswith("auto_round"):
                     logger.warning(
                         f"Currently only support to export auto_round format for static W{self.bits}AFP8 model,"
                         " change format to auto_round"
@@ -1083,31 +1083,6 @@ class AutoRound(object):
         if self.amp:
             self.model.to(self.amp_dtype)
 
-        # all_blocks = get_block_names(self.model)
-        if self.act_bits <= 8:
-            all_blocks = get_block_names(self.model)
-            hook_handles = self.register_act_max_hook(self.model, [blocks[-1] for blocks in all_blocks])
-            try:
-                self.calib(self.nsamples, self.batch_size)
-            except RuntimeError as e: 
-                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                    if len(os.environ.get("CUDA_VISIBLE_DEVICES")) > 1:
-                        raise RuntimeError("Out of memory, please consider reducing nsamples or batch_size")
-                    try:
-                        self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-                        from auto_round.utils import register_per_layer_to_device
-                        hook_handles.extend(register_per_layer_to_device(self.model, self.device))
-                        self.calib(self.nsamples, self.batch_size, device=self.device)
-                    except RuntimeError as e:     
-                        if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
-                            raise RuntimeError("Out of memory, please consider reducing nsamples or batch_size")
-                        else:
-                            raise
-                else:
-                    raise
-            for handle in hook_handles:
-                handle.remove()
-
         all_to_quantized_module_names: list[str] = [
             n for n, m in self.model.named_modules() if check_to_quantized(m)
         ]
@@ -1116,9 +1091,26 @@ class AutoRound(object):
 
         self.quantize_embedding_layer()
 
+        self.model.to("cpu")
         if has_gguf_k and not self.disable_opt_rtn:
-            self.model.to("cpu")
             self.quant_rtn_with_imatrix(all_to_quantized_module_names)
+        elif self.act_bits <=8 and self.act_dynamic is False:
+            hook_handles = self.register_act_max_hook(self.model)
+            try:
+                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+            except RuntimeError as e:
+                logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
+                self.model = self.model.to("cpu")
+                clear_memory()
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    import accelerate
+                    accelerate.hooks.remove_hook_from_submodules(self.model)
+                orig_device = self.device
+                self.device = "cpu"
+                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                self.device = orig_device
+            for handle in hook_handles:
+                handle.remove()
         else:
             pbar = tqdm(all_to_quantized_module_names)
             for name in pbar:
@@ -1191,16 +1183,18 @@ class AutoRound(object):
                             continue
                         hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                         add_hook_to_module(m, hook, True)
+                else:
+                    block = block.to(self.device)
 
-                    input_ids = self.get_block_outputs(
-                        block,
-                        input_ids,
-                        input_others,
-                        self.batch_size * self.infer_bs_coeff,
-                        self.device,
-                        self.cache_device,
-                    )
+                input_ids = self.get_block_outputs(
+                    block,
+                    input_ids,
+                    input_others,
+                    self.batch_size * self.infer_bs_coeff,
+                    self.device,
+                    self.cache_device,)
 
+                if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
                 # Normalize imatrix and quantize layers
@@ -2073,7 +2067,7 @@ class AutoRound(object):
                 module.act_max = torch.abs(input).max().item()
             else:
                 module.act_max = max(torch.abs(input).max().item(), module.act_max)
-        
+
         def early_quit_hook(module, input, output):
             raise NotImplementedError
 
@@ -2083,7 +2077,8 @@ class AutoRound(object):
             # if hasattr(m, "act_dynamic") and m.act_dynamic == False and check_to_quantized(m):
             if n in self.layer_config:
                 config = self.layer_config[n]
-                if "act_dynamic" in config and config["act_dynamic"] is False and check_to_quantized(config):
+                if config["bits"] <= 8 and "act_dynamic" in config and config[
+                        "act_dynamic"] is False and check_to_quantized(config):
                     hook = m.register_forward_hook(get_act_max_hook)
                     hook_handles.append(hook)
             if (isinstance(last_block_name, list) and n in last_block_name) or \

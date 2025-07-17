@@ -213,14 +213,22 @@ class TestAutoRound(unittest.TestCase):
             iters=0,
             act_bits=8,
             nsamples=2,
-            data_type="fp8_sym",
-            act_data_type="fp8_sym",
+            data_type="fp8",
+            act_data_type="fp8",
             act_dynamic=False,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+        import os
+        from safetensors import safe_open
+        f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
+        self.assertIn("model.decoder.layers.8.self_attn.k_proj.act_scale", f.keys())
+        self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.act_scale").shape, torch.Size([1,1]))
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
+
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()
