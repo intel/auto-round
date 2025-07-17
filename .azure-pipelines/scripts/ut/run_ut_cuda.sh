@@ -43,7 +43,7 @@ function run_unit_test() {
 
     uv pip install -v git+https://github.com/casper-hansen/AutoAWQ.git --no-build-isolation
     uv pip install -v git+https://github.com/ModelCloud/GPTQModel.git@v2.2.0 --no-build-isolation
-    CMAKE_ARGS="-DGGML_CUDA=on" uv pip install llama-cpp-python
+    CMAKE_ARGS="-DGGML_CUDA=on -DLLAVA_BUILD=off" uv pip install llama-cpp-python
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r requirements.txt
 
