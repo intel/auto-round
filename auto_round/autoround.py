@@ -2058,7 +2058,7 @@ class AutoRound(object):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
-    def register_act_max_hook(self, model, last_block_name=None):
+    def register_act_max_hook(self, model):
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
@@ -2067,23 +2067,23 @@ class AutoRound(object):
             else:
                 module.act_max = max(torch.abs(input).max().item(), module.act_max)
 
-        def early_quit_hook(module, input, output):
-            raise NotImplementedError
-
         hook_handles = []
 
         for n, m in model.named_modules():
-            # if hasattr(m, "act_dynamic") and m.act_dynamic == False and check_to_quantized(m):
+            # for block
+            if hasattr(m, "act_dynamic") and m.act_dynamic == False and check_to_quantized(m):
+                hook = m.register_forward_hook(get_act_max_hook)
+                hook_handles.append(hook)
+                continue
+
+            # for whole model, RTN
             if n in self.layer_config:
                 config = self.layer_config[n]
                 if config["bits"] <= 8 and "act_dynamic" in config and config[
                         "act_dynamic"] is False and check_to_quantized(config):
                     hook = m.register_forward_hook(get_act_max_hook)
                     hook_handles.append(hook)
-            if (isinstance(last_block_name, list) and n in last_block_name) or \
-                n == last_block_name:
-                hook = m.register_forward_hook(early_quit_hook)
-                hook_handles.append(hook)
+                    continue
         return hook_handles
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
