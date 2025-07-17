@@ -1172,7 +1172,7 @@ class AutoRound(object):
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
-
+                block = block.to(self.device)
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate import dispatch_model
