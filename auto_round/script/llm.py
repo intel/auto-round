@@ -486,7 +486,7 @@ def tune(args):
     model_name = args.model.rstrip("/")
 
     if model_name.split('/')[-1].strip('.') == "" and "gguf" not in args.format:
-        if autoround.group_size == -1:
+        if autoround.group_size <= 0:
             if "fp" in autoround.act_data_type:
                 suffix = f"afp{autoround.act_bits}"
             else:
@@ -500,7 +500,7 @@ def tune(args):
         export_dir = os.path.join(args.output_dir,
                                   model_name.split('/')[-1] + "-gguf")
     else:
-        if autoround.group_size == -1:
+        if autoround.group_size <= 0:
             if "fp" in autoround.act_data_type:
                 suffix = f"afp{autoround.act_bits}"
             else:
