@@ -1317,10 +1317,14 @@ def llm_load_model(
                     trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
                 )
             except OSError as e:
+                logger.warning(
+                    f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
                 model = model_cls.from_pretrained(
-                    pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-                    trust_remote_code=False, device_map="auto" if use_auto_mapping else None
-                )
+                    pretrained_model_name_or_path,
+                    low_cpu_mem_usage=True,
+                    torch_dtype=torch_dtype,
+                    trust_remote_code=False,
+                    device_map="auto" if use_auto_mapping else None)
 
     model = model.eval()
     model = _to_model_dtype(model, model_dtype)
