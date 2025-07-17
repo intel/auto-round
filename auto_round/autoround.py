@@ -889,19 +889,19 @@ class AutoRound(object):
                 model = model.to("cpu")
                 clear_memory()
                 self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-            except Exception:
-                # Final fallback: warn and use CPU-only quantization
-                logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
-                model = model.to("cpu")
-                clear_memory()
-                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                    import accelerate
-                    accelerate.hooks.remove_hook_from_submodules(model)
-
-                orig_device = self.device
-                self.device = "cpu"
-                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                self.device = orig_device
+            # except Exception:
+            #     # Final fallback: warn and use CPU-only quantization
+            #     logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
+            #     model = model.to("cpu")
+            #     clear_memory()
+            #     if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+            #         import accelerate
+            #         accelerate.hooks.remove_hook_from_submodules(model)
+            #
+            #     orig_device = self.device
+            #     self.device = "cpu"
+            #     self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+            #     self.device = orig_device
             finally:
                 # Always remove hooks
                 for hook in hooks:
@@ -1172,7 +1172,7 @@ class AutoRound(object):
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
-
+                block = block.to(self.device)
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate import dispatch_model
@@ -1182,8 +1182,6 @@ class AutoRound(object):
                             continue
                         hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                         add_hook_to_module(m, hook, True)
-                else:
-                    block = block.to(self.device)
 
                 input_ids = self.get_block_outputs(
                     block,
