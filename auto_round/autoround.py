@@ -1579,7 +1579,7 @@ class AutoRound(object):
         return output
 
     @torch.no_grad()
-    def calib(self, nsamples, bs, device=None):
+    def calib(self, nsamples, bs):
         """Perform calibration for quantization.
 
         This method calibrates the model for quantization by processing a specified
@@ -1614,12 +1614,11 @@ class AutoRound(object):
             for n, m in embed_layers:
                 m = m.to(self.device)
 
-        device = self.model.device if device is None else device
         for data in self.dataloader:
             if data is None:
                 continue
             if isinstance(data, torch.Tensor):
-                input_ids = data.to(device)
+                input_ids = data.to(self.model.device)
                 data_new = input_ids
             elif isinstance(data, str):
                 if self.tokenizer is None:
@@ -1628,7 +1627,7 @@ class AutoRound(object):
                 data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
                 data_new = {}
                 for key in data.keys():
-                    data_new[key] = data[key].to(device)
+                    data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
             elif isinstance(data, tuple) or isinstance(data, list):
                 data_new = to_device(data)
@@ -1636,7 +1635,7 @@ class AutoRound(object):
             else:
                 data_new = {}
                 for key in data.keys():
-                    data_new[key] = to_device(data[key], device)
+                    data_new[key] = to_device(data[key], self.model.device)
                     if key == 'images':
                         data_new[key] = to_dtype(data_new[key], self.model.dtype)
                 input_ids = data_new["input_ids"]
