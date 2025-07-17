@@ -20,7 +20,7 @@ from .utils import (
     check_to_quantized,
     get_scale_shape,
     set_module,
-    logger
+    logger, SUPPORTED_LAYER_TYPES
 )
 
 
@@ -34,6 +34,8 @@ def reshape_and_pad_tensor(v, group_size=-1):
     Returns:
         torch.Tensor: The reshaped tensor. If padding is applied, the padded tensor is returned.
     """
+    if group_size == 0:
+        return v.reshape(1, -1)
     if group_size == -1 or v.shape[1] < group_size:
         return v
     if v.shape[1] % group_size == 0:
@@ -76,11 +78,12 @@ class WrapperLinear(torch.nn.Module):
         self.enable_round_tuning = enable_round_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
-        self.q_scale_thresh = 1e-5
+        if (hasattr(self.orig_layer, "scale_dtype") and self.orig_layer.scale_dtype == torch.float32):
+            self.q_scale_thresh = 1e-8
+        else:
+            self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
         self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
-
-
 
     def _init_tuning_params_and_quant_func(self):
         """Initializes tuning parameters and quantization functions.
@@ -98,11 +101,14 @@ class WrapperLinear(torch.nn.Module):
         weight_reshape = reshape_and_pad_tensor(orig_weight.data, orig_layer.group_size)
         self.weight_min = torch.clamp(weight_reshape.min(1)[0], max=0)
         self.weight_max = torch.clamp(weight_reshape.max(1)[0], min=0)
-        self._init_params("value", p_dtype, weight_reshape.shape, 0, self.enable_round_tuning)
+        self._init_params("value", p_dtype, weight_reshape.shape, 0,
+                          self.enable_round_tuning and self.orig_layer.bits < 16)
         # Min-max scale initialization
         shape = get_scale_shape(orig_weight, orig_layer.group_size)
-        self._init_params("min_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
-        self._init_params("max_scale", p_dtype, shape, 1.0, self.enable_minmax_tuning)
+        self._init_params("min_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning
+                                                             and self.orig_layer.bits < 16))
+        self._init_params("max_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning
+                                                             and self.orig_layer.bits < 16))
 
         self.weight_quant_func, self.data_type = get_quant_func(orig_layer.data_type, orig_layer.bits,
                                                                 orig_layer.sym)
@@ -148,6 +154,8 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             tuple: Quantized weight, scale, and zero point.
         """
+        if self.orig_layer.bits >= 16:
+            return self.orig_layer.weight, None, None
         min_scale.data.clamp_(0, 1.0)
         max_scale.data.clamp_(0, 1.0)
         weight = self.orig_layer.weight
@@ -173,6 +181,7 @@ class WrapperLinear(torch.nn.Module):
             tensor_max=self.weight_max,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
+            imatrix=self.orig_layer.imatrix if hasattr(self.orig_layer, "imatrix") else None,
             **quant_kwargs
         )
         weight_q = weight_q.to(weight.dtype)
@@ -231,7 +240,8 @@ class WrapperLinear(torch.nn.Module):
             self.orig_layer.to(self.device)
         ##unwrapper weight
         qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
-
+        # if hasattr(self.orig_layer, "imatrix"):
+        #     self.orig_layer.imatrix = None
         self.orig_layer.weight.data.copy_(qdq_weight)
         self.orig_layer.weight.grad = None
 
@@ -249,15 +259,23 @@ class WrapperLinear(torch.nn.Module):
 
         if isinstance(scale, dict):
             _set_dict_attr(scale, "scale")
-        else:
+        elif scale is None:
+            self.orig_layer.scale = None
+        elif scale.numel() > 1:
             self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
+        else:
+            self.orig_layer.scale = scale.view(-1).to("cpu")
 
         if zp is not None:
             if isinstance(zp, dict):
                 _set_dict_attr(zp, "zp")
-            else:
+            elif zp is None:
+                self.orig_layer.zp = None
+            elif zp.numel() > 1:
                 zp = zp.reshape(shape[0], -1)
-                self.orig_layer.zp = zp.to("cpu") if zp is not None else None
+                self.orig_layer.zp = zp.to("cpu")
+            else:
+                self.orig_layer.zp = zp.view(-1).to("cpu")
         else:
             self.orig_layer.zp = None
 
@@ -464,12 +482,13 @@ class WrapperLlamaNorm(torch.nn.Module):
         return (weight_q * hidden_states.to(input_dtype)).to(self.output_device)
 
 
-norm_mapping = {}
-norm_mapping["LayerNorm"] = WrapperLayerNorm
-norm_mapping["LlamaRMSNorm"] = WrapperLlamaNorm
-norm_mapping["Qwen2RMSNorm"] = WrapperLlamaNorm
-norm_mapping["Phi3RMSNorm"] = WrapperLlamaNorm
-norm_mapping["MistralRMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING = {}
+NORM_MAPPING["LayerNorm"] = WrapperLayerNorm
+NORM_MAPPING["LlamaRMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING["Qwen2RMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING["Phi3RMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING["MistralRMSNorm"] = WrapperLlamaNorm
+NORM_MAPPING["Qwen3RMSNorm"] = WrapperLlamaNorm
 
 
 class WrapperMultiblock(torch.nn.Module):
@@ -506,7 +525,7 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
     quantized_layers = []
     unquantized_layers = []
     for n, m in block.named_modules():
-        if isinstance(m, (torch.nn.Linear, transformers.pytorch_utils.Conv1D)):
+        if isinstance(m, SUPPORTED_LAYER_TYPES):
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
                 continue
@@ -520,18 +539,18 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
             set_module(block, n, new_m)
             quantized_layers.append(n)
 
-        if enable_norm_bias_tuning:
+        elif enable_norm_bias_tuning:
             if "norm" in m.__class__.__name__.lower():
-                if m.__class__.__name__ in norm_mapping.keys():
-                    wrapper_layer_class = norm_mapping[m.__class__.__name__]
+                if m.__class__.__name__ in NORM_MAPPING.keys():
+                    wrapper_layer_class = NORM_MAPPING[m.__class__.__name__]
                     new_m = wrapper_layer_class(m, device=device)
-                    setattr(block, n, new_m)
+                    set_module(block, n, new_m)
                 elif "RMSNorm" in m.__class__.__name__:
                     logger.warning_once(
                         f"use LlamaRMSNorm to wrap {m.__class__.__name__}, please check the correctness yourself")
-                    wrapper_layer_class = norm_mapping["LlamaRMSNorm"]
+                    wrapper_layer_class = NORM_MAPPING["LlamaRMSNorm"]
                     new_m = wrapper_layer_class(m, device=device)
-                    setattr(block, n, new_m)
+                    set_module(block, n, new_m)
                 else:
                     logger.warning_once(f"{m.__class__.__name__} is not supported")
 

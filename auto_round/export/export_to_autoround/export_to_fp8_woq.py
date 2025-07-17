@@ -1,4 +1,4 @@
-# Copyright (c) 2024 Intel Corporation
+# Copyright (c) 2025 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,22 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import copy
-import json
 import os
-
 import torch
-import torch.nn as nn
-import transformers
-
-from auto_round.utils import get_module, logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
-    filter_quantization_config, SUPPORTED_FORMATS
+import json
+from auto_round.utils import logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
+    filter_quantization_config, get_module, check_start_with_block_name
 import threadpoolctl as tctl
-import inspect
+import transformers
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
-from auto_round.utils import get_autogptq_packing_qlinear, check_start_with_block_name
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -52,89 +46,25 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
 
 
-def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):
-    """
-    Dynamically imports and returns the appropriate QuantLinear class based on the specified backend and parameters.
+class FP8WOQLinear(torch.nn.Module):
+    def __init__(self, in_features, out_features, weight, weight_scale, bias=None, weight_zp=None):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = torch.nn.Parameter(weight, requires_grad=False)
 
-    Args:
-        backend (str): The backend to be used for quantization. Supported values include "auto_round" "awq" and "gptq".
-        bits (int): The number of bits for quantization.
-        group_size (int): The group size for quantization.
-        sym (bool): Flag indicating whether to use symmetric quantization.
+        if bias is not None:
+            self.bias = torch.nn.Parameter(bias, requires_grad=False)
+        else:
+            self.register_parameter("bias", None)
 
-    Returns:
-        class: The dynamically imported QuantLinear class configured according to the specified parameters.
+        self.register_buffer('weight_scale', weight_scale.to(torch.bfloat16))
 
-    Raises:
-        ValueError: If the backend is not supported.
-    """
-    if "auto_round" in backend and "awq" not in backend and "gptq" not in backend:
-        if act_bits <= 8:  ##easily have bug for other configuration, need to refine code later
-            import auto_round.export.export_to_autoround.qlinear_triton_act
-            return auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
-        from auto_round_extension.torch.qlinear_torch import QuantLinear
-        return QuantLinear
-    elif "gptqmodel" in backend:
-        from auto_round_extension.torch.qlinear_torch import QuantLinear
-        return QuantLinear
-    elif "auto_round" in backend and "gptq" in backend and "gptqmodel" not in backend:
-        from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
-        return QuantLinear
-    elif "awq" in backend:
-        from ..export_to_awq.utils import WQLinear_GEMM
-        return WQLinear_GEMM
-    elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
-        return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
-    else:
-        raise ValueError(
-            f"unsupported backend: '{backend}'. Supported backends are: {', '.join(SUPPORTED_FORMATS)}")
+        if weight_zp:
+            self.register_buffer('weight_zp', weight_zp.to(torch.bfloat16))
 
 
-def pack_qact_layer(name, model):
-    layer = get_module(model, name)
-    if hasattr(layer, "orig_layer"):
-        layer = layer.orig_layer
-
-    if layer.bits > 8:
-        return
-
-    device = layer.weight.device
-    bits = layer.bits
-    group_size = layer.group_size
-    act_bits = layer.act_bits
-
-    act_scale = layer.act_scale if hasattr(layer, "act_scale") else None
-    w_bf16_to_fp8_scale = layer.w_bf16_to_fp8_scale if hasattr(layer, "w_bf16_to_fp8_scale") else None
-    scale = layer.scale
-    zp = layer.zp
-    import auto_round.export.export_to_autoround.qlinear_triton_act
-    QuantLinear = auto_round.export.export_to_autoround.qlinear_triton_act.QuantLinear
-
-    if isinstance(layer, nn.Linear):
-        in_features = layer.in_features
-        out_features = layer.out_features
-    elif isinstance(layer, nn.Conv2d):
-        in_features = layer.in_channels
-        out_features = layer.out_channels
-    elif isinstance(layer, transformers.pytorch_utils.Conv1D):
-        in_features = layer.weight.shape[0]
-        out_features = layer.weight.shape[1]
-    bias = layer.bias is not None
-    use_pc = False
-    new_layer = QuantLinear(  ##pylint: disable=E1123
-        bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype, use_pc=use_pc
-    )
-    new_layer.device = device
-    set_module(model, name, new_layer)
-    qlayer = new_layer
-
-    qlayer.to("cpu")
-
-    qlayer.pack(layer, scale, zp, act_scale, w_bf16_to_fp8_scale)
-    qlayer.to(device)
-
-
-def pack_layer(layer_name, model, backend):
+def pack_layer(layer_name, model, data_type, packing_device=None):
     """
      Packs a model layer for quantization based on its type and configuration.
 
@@ -151,6 +81,12 @@ def pack_layer(layer_name, model, backend):
     Returns:
         None: The function modifies the model in place.
     """
+    if packing_device is None:
+        packing_device = "cpu"
+        if torch.cuda.is_available():
+            packing_device = "cuda"
+        elif torch.xpu.is_available():
+            packing_device = "xpu"
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
@@ -158,108 +94,40 @@ def pack_layer(layer_name, model, backend):
     if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
 
-    if int(layer.act_bits) <= 8:
-        return pack_qact_layer(layer_name, model)
-
-    if "fp8" in backend:
-        from auto_round.export.export_to_autoround.export_to_fp8_woq import pack_layer
-        return pack_layer(layer_name,model,backend)
-
     if not check_to_quantized(layer):
         return
 
     device = layer.weight.device
-    bits = layer.bits
-    group_size = layer.group_size
-    sym = layer.sym
-    act_bits = layer.act_bits
-
     scale = layer.scale
     zp = layer.zp
-    QuantLinear = dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits)
-
-    if isinstance(layer, nn.Linear):
+    weight = layer.weight
+    torch_dtype = torch.float8_e4m3fn
+    if "fp8_e5m2" in data_type:
+        torch_dtype = torch.float8_e5m2
+    info = torch.finfo(torch_dtype)
+    if zp is not None:
+        q_weight = weight.to(packing_device) / scale.to(packing_device) + zp.to(packing_device)
+    else:
+        q_weight = weight.to(packing_device) / scale.to(packing_device)
+    q_weight = torch.clamp(q_weight, info.min, info.max)
+    q_weight = q_weight.to(torch_dtype)
+    if isinstance(layer, torch.nn.Linear):
         in_features = layer.in_features
         out_features = layer.out_features
-    elif isinstance(layer, nn.Conv2d):
-        in_features = layer.in_channels
-        out_features = layer.out_channels
+    # elif isinstance(layer, nn.Conv2d):
+    #     in_features = layer.in_channels
+    #     out_features = layer.out_channels
     elif isinstance(layer, transformers.pytorch_utils.Conv1D):
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
-    bias = layer.bias is not None
+    bias = layer.bias
+    my_linear = FP8WOQLinear(in_features, out_features, q_weight, scale, bias, zp)
 
-    if "awq" not in backend:
-        new_layer = QuantLinear(  ##pylint: disable=E1123
-            bits, group_size, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
-        )
-        new_layer.device = device
-        set_module(model, layer_name, new_layer)
-        qlayer = new_layer
-        import auto_round_extension.torch.qlinear_torch
-        if sym and isinstance(QuantLinear, (auto_round_extension.torch.qlinear_torch.QuantLinear)):
-            zp = int(zp.flatten()[0])
-
-        qlayer.to("cpu")
-        ##force to float32 to be compatible with torch 2.0
-        sig = inspect.signature(qlayer.pack)
-        param_count = len(sig.parameters)
-        if param_count == 2:
-            qlayer.pack(layer, scale)
-        else:
-            qlayer.pack(layer, scale, zp, None)
-        qlayer.to(device)
-    else:
-        scale, zp = scale.to(torch.float32), zp.to(torch.float32)
-        scale = scale.t().contiguous()
-        zp = zp.t().contiguous()
-        if sym:
-            zp = int(zp.flatten()[0])
-
-        if bits != 4:
-            logger.error("AutoAWQ format only supports 4-bits quantization.")
-        qlayer = QuantLinear.from_linear(
-            linear=layer,
-            w_bit=bits,
-            group_size=group_size,
-            init_only=False,
-            scales=scale,
-            zeros=zp,
-        )
-        qlayer.to(device)
-        set_module(model, layer_name, qlayer)
+    my_linear.to(device)
+    set_module(model, layer_name, my_linear)
 
 
-def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):
-    """
-    Saves a quantized model in the auto-round format.
-
-    Args:
-        output_dir (str): The directory where the quantized model will be saved.
-        inplace (bool, optional): If True, modifies the model in place. Otherwise, creates a deepcopy of the model.
-                                Default is True.
-        backend (str, optional): The backend to be used for quantization.
-                                  Default is "autoround:exllamav2".
-        **kwargs: Additional keyword arguments including:
-            - model (nn.Module): The model to be quantized.
-            - layer_config (dict): The layer configuration for each layer.
-            - serialization_dict (dict): The serialization configuration.
-            - tokenizer (Tokenizer, optional): The tokenizer to be saved.
-
-    Returns:
-        None
-
-    Raises:
-        ValueError: If the backend is not supported.
-    """
-    if "fp8" in kwargs.get("data_type", None) and kwargs.get("act_bits", 16) >= 16:
-        from auto_round.export.export_to_autoround.export_to_fp8_woq import save_quantized_as_autoround
-        return save_quantized_as_autoround(output_dir, inplace=inplace, backend="auto_round", **kwargs)
-
-    ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
-    if (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
-        backend = backend.replace('auto_round', 'auto_round:auto_gptq')
-
+def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", **kwargs):
     model = kwargs["model"]
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     if not inplace:
@@ -269,7 +137,11 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     quantization_config = kwargs["serialization_dict"]
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
     quantization_config["quant_method"] = "auto-round"
-    quantization_config["packing_format"] = backend
+    if "e5m2" in kwargs.get("data_type", "fp8"):
+        quantization_config["fmt"] = "e5m2"
+    else:
+        quantization_config["fmt"] = "e4m3"
+    quantization_config["activation_scheme"] = "dynamic"
 
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
@@ -309,12 +181,17 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     max_workers = 1
     if not torch.cuda.is_available() or not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
+    packing_device = "cpu"
+    if torch.cuda.is_available():
+        packing_device = "cuda"
+    elif torch.xpu.is_available():
+        packing_device = "xpu"
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
-                    pack_layer(name, model, backend)
+                    pack_layer(name, model, kwargs.get("data_type", "fp8"), packing_device)
                 pbar.update(1)
 
             for _ in executor.map(wrapper, names):
@@ -346,7 +223,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     return model
 
 
-def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None):
+def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True,
+         dtype=None):
     """Save model state dict and configs.
 
     Args:
@@ -379,4 +257,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-

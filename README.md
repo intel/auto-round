@@ -23,7 +23,7 @@ AutoRound also offers a variety of useful features, including mixed-bit tuning a
 support for exporting to formats like GPTQ/AWQ/GGUF, and flexible tuning recipes. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
 details and quantized models in several Hugging Face Spaces,
-e.g. [OPEA](https://huggingface.co/OPEA), [Kaitchup](https://huggingface.co/kaitchup)
+e.g. [OPEA](https://huggingface.co/OPEA), [Intel](https://huggingface.co/Intel), [Kaitchup](https://huggingface.co/kaitchup)
 and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 <div align="center">
@@ -33,12 +33,14 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 <div align="left">
 
 ## What's New
-* [2025.05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer to [DeepSeek-R1-0528-int2-mixed-sym-inc](./docs/DeepSeek-R1-0528-int2-mixed-sym-inc.md), [DeepSeek-R1-0528-int4-sym-gptq-inc](./docs/DeepSeek-R1-0528-int4-sym-gptq-inc.md) and [DeepSeek-R1-0528-int4-asym-awq-inc](./docs/DeepSeek-R1-0528-int4-asym-awq-inc.md) for more details.
+
+* [2025.07] AutoRound now offers experimental support for **GGUF** format, and recommends using RTN mode (--iters 0) for all bits other than 3 bits. A more advanced algorithm tailored for specific configurations may be available in upcoming release. Example models: [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v0](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v0) and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v0](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v0).
+* [2025.05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer
+  to [DeepSeek-R1-0528-int2-mixed-sym-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int2-mixed-sym-inc), [DeepSeek-R1-0528-int4-sym-gptq-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-gptq-inc-auto-round)
+  and [DeepSeek-R1-0528-int4-asym-awq-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-awq-inc-auto-round) for
+  more details.
 * [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
   vLLM versions later than v0.85.post1.
-* [2025/04] AutoRound provides some recipes for **Qwen3** series, please refer
-  to [Qwen3-8B-sym-recipe](./docs/Qwen3-8B-sym-recipe.md) and [Qwen3-14B-sym-recipe](./docs/Qwen3-14B-sym-recipe.md) for
-  more details.
 * [2025/04] AutoRound has been integrated into **Transformers**. You can run models in the AutoRound format directly
   with
   Transformers versions later than 4.51.3.
@@ -277,9 +279,11 @@ models. Besides, recently 3 bits may have some accuracy issues in Transformers.
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
 adopted within the community, **only 4-bits quantization is supported**.
 
-**GGUF** Format: This format is well-suited for CPU devices and is widely adopted by the community. Mixed-bit
-configs like `q4_k_m` are not supported yet. Please note: In contrast to the official implementation, AutoRound does not
-quantize the embedding layer or the LM head layer by default.
+**llmcompressor Format**: This format is for reusing llmcompressor format,  **only INT8 W8A8 dynamic quantization is
+supported**.
+
+**GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
+community.
 
 ### Quantization Costs
 
@@ -341,18 +345,18 @@ Triton, but the final choice depends on factors such as bits, group_size, packin
 backend may not always be the most suitable for certain devices. Please refer
 to the following table for the details and specify the backend you want.
 
-| Name                                 | Devices      | Bits    | Dtypes    | Priority | Packing format  | Requirements                     |
-|--------------------------------------|--------------|---------|-----------|----------|-----------------|----------------------------------|
-| ipex                                 | cpu/xpu      | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch      |
+| Name                                 | Devices      | Bits    | Dtypes    | Priority | Packing format  | Requirements                          |
+|--------------------------------------|--------------|---------|-----------|----------|-----------------|---------------------------------------|
+| ipex                                 | cpu/xpu      | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch           |
 | itrex                                | cpu          | 2,4,8   | BF16/FP16 | 1        | gptq_zp+-1/awq  | <br/>intel-extension-for-transformers |
-| marlin                               | cuda         | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                        |
-| exllamav2 or<br/>gptqmodel:exllamav2 | cuda         | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                        |
-| exllamav2 or<br/>gptq:exllamav2      | cuda         | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                        |
-| gptq:cuda                            | cuda         | 2,3,4,8 | FP16      | 1        | gptq_zp+-1      | auto-gptq                        |
-| triton                               | xpu/cuda     | 2,4,8   | BF16/FP16 | 2        | gptq/gptq_zp+-1 | auto-round                       |
-| awq                                  | cuda         | 4       | FP16      | 5        | awq             | auto-awq                         |
-| hpu                                  | hpu          | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                       |
-| torch                                | xpu/cpu/cuda | 2,3,4,8 | BF16/FP16 | 0        | gptq/gptq_zp+-1 | auto-round                       |
+| marlin                               | cuda         | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                             |
+| exllamav2 or<br/>gptqmodel:exllamav2 | cuda         | 4       | BF16/FP16 | 5        | gptq            | gptqmodel                             |
+| exllamav2 or<br/>gptq:exllamav2      | cuda         | 4       | FP16      | 5        | gptq_zp+-1      | auto-gptq                             |
+| gptq:cuda                            | cuda         | 2,3,4,8 | FP16      | 1        | gptq_zp+-1      | auto-gptq                             |
+| triton                               | xpu/cuda     | 2,4,8   | BF16/FP16 | 2        | gptq/gptq_zp+-1 | auto-round                            |
+| awq                                  | cuda         | 4       | FP16      | 5        | awq             | auto-awq                              |
+| hpu                                  | hpu          | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                            |
+| torch                                | xpu/cpu/cuda | 2,3,4,8 | BF16/FP16 | 0        | gptq/gptq_zp+-1 | auto-round                            |
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -510,5 +514,6 @@ If you find AutoRound useful for your research, please cite our paper:
   year={2023}
 }
 ```
+
 
 

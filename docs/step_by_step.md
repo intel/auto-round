@@ -17,12 +17,13 @@ pip install auto-round
 
 The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in huggingface is adopted as the default
 calibration data and will be downloaded automatically from the datasets Hub. Other available datasets include:
-
 - `swift/pile-val-backup` from modelscope for addressing HF network issue
 - `BAAI/CCI3-HQ` for Chinese
 - `codeparrot/github-code-clean` for code
+- `HuggingFaceH4/ultrachat_200k` for chat data
 - `madao33/new-title-chinese` for Chinese
 - `mbpp` for code
+- `openbmb/Ultra-FineWeb`
 
 ### Customized Dataset
 
@@ -242,10 +243,8 @@ autoround.quantize_and_save(output_dir, format='auto_round')
 ```
 
 ### GGUF format
-
-This format is well-suited for CPU devices and is widely adopted by the community. Mixed bits 
-configs like q4_k_m have not been supported yet. Please note: In contrast to the official implementation, AutoRound does not quantize the embedding layer or the LM head layer by default.
-
+Experimental feature. This format is well-suited for CPU devices and is widely adopted by the community. 
+This format is well-suited for CPU devices and is widely adopted by the community.
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound

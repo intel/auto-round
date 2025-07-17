@@ -19,4 +19,5 @@ from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 import auto_round.data_type.w4fp8
 from auto_round.data_type.utils import get_quant_func
 import auto_round.data_type.nvfp
+import auto_round.data_type.gguf
 
