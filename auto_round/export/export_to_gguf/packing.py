@@ -161,7 +161,8 @@ def make_q3_quants(data, bits, do_rmse=False):
                 L[:,:, i][replace_idx] = new_L[replace_idx]
                 sumlx = slx
                 suml2 = sl2
-        return sumlx / suml2, L.to(torch.uint8)
+        isuml2 = torch.where(suml2 == 0, 0, 1 / suml2)
+        return sumlx * isuml2, L.to(torch.uint8)
 
     L = torch.round(iscale * data).clip(-nmax, nmax - 1) + nmax
     scales = torch.where(iscale != 0, 1 / iscale, 0).reshape(iscale.shape[:2])
