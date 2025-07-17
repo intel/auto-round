@@ -261,7 +261,6 @@ class AutoRound(object):
 
         self.disable_opt_rtn = disable_opt_rtn
 
-
         torch.set_printoptions(precision=3, sci_mode=True)
         self.check_configs()
         if self.act_bits <= 8 and self.amp_dtype == torch.float16:
@@ -454,7 +453,6 @@ class AutoRound(object):
         self._dq_check()
 
     def _check_compatibility(self):
-
         ##check gguf and others
         has_gguf = False
         if hasattr(self, "formats"):
@@ -605,7 +603,7 @@ class AutoRound(object):
                 if format == "llmcompressor":
                     bits, group_size, sym, act_bits = 8, -1, True, 8
                     assert self.bits == bits and self.group_size == group_size and self.sym == sym \
-                        and self.act_bits == act_bits and self.act_dynamic, \
+                           and self.act_bits == act_bits and self.act_dynamic, \
                         f"Currently only support to export llmcompressor format for dynamic quantized" \
                         f" W{self.bits}A{self.act_bits} model, but got bits={self.bits}," \
                         f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
@@ -846,7 +844,7 @@ class AutoRound(object):
 
         try:
             # Move model to target device
-            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 :
+            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
 
                 dispatch_model(self.model, self.model.hf_device_map)
@@ -876,9 +874,14 @@ class AutoRound(object):
             # Perform quantization using RTN
             from tqdm import tqdm
             pbar = tqdm(all_to_quantized_module_names)
+            cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
+                if self.low_gpu_mem_usage and cnt % 10 == 0:
+                    clear_memory()
+                    cnt = 1
+                cnt += 1
         except RuntimeError as e:
             try:
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -891,7 +894,8 @@ class AutoRound(object):
                 self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
             except Exception:
                 # Final fallback: warn and use CPU-only quantization
-                logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
+                logger.warning("Fallback to CPU. "
+                               "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`.")
                 model = model.to("cpu")
                 clear_memory()
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -946,7 +950,7 @@ class AutoRound(object):
             if isinstance(module, torch.nn.Embedding):
                 key: str = "lm_head" if tie_word_embeddings else "embedding"
                 config: dict[str, Any] = GGUF_INNER_CONFIG[GGUF_CONFIG[target_format][key]]
-                self._apply_config_to_layer(name, config,True)
+                self._apply_config_to_layer(name, config, True)
 
         if not tie_word_embeddings:
             lm_head_name: str = get_lm_head_name(self.model)
@@ -1023,7 +1027,7 @@ class AutoRound(object):
 
         # Step 2: Try quantization on GPU first, fall back to CPU if OOM
         # if only export gguf, using gguf-packing instead of rtn
-        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0]:
+        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and self.disable_opt_rtn:
             m.scale = None
             m.zp = None
         else:
@@ -1050,9 +1054,6 @@ class AutoRound(object):
                     m = m.unwrapper({})
                 else:
                     raise
-
-            if self.low_gpu_mem_usage:
-                clear_memory()
 
         # Step 3: Optional immediate packing/export
         if self.is_packing_immediate:
@@ -1081,8 +1082,8 @@ class AutoRound(object):
                         name, self.model, self.formats[0]
                     )
 
-                if self.low_gpu_mem_usage:
-                    clear_memory()
+                # if self.low_gpu_mem_usage:
+                #     clear_memory()
         else:
             set_module(self.model, name, m)
 
@@ -1112,9 +1113,14 @@ class AutoRound(object):
             self.quant_rtn_with_imatrix(all_to_quantized_module_names)
         else:
             pbar = tqdm(all_to_quantized_module_names)
+            cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
+                if self.low_gpu_mem_usage and cnt % 10 == 0:
+                    clear_memory()
+                    cnt = 1
+                cnt += 1
 
         self.quantized = True
         return self.model, self.layer_config
@@ -1208,11 +1214,15 @@ class AutoRound(object):
                 pbar.update(1)
 
         pbar.close()
+        cnt = 1
 
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
             self.quantize_layer_via_rtn(name)
-
+            if self.low_gpu_mem_usage and cnt % 10 == 0:
+                clear_memory()
+                cnt = 1
+            cnt += 1
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
@@ -1960,7 +1970,6 @@ class AutoRound(object):
                 unwrapper_layer(self.model, wrapper_linear, layer_name, {})
             mv_module_from_gpu(layer, self.low_cpu_mem_usage)
 
-
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
@@ -2150,7 +2159,7 @@ class AutoRound(object):
                 f"layers in the block"
             )
             logger.info(dump_info)
-            unwrapper_block(block, {}) ## TODO Quant layer should change
+            unwrapper_block(block, {})  ## TODO Quant layer should change
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             return output, output
 
