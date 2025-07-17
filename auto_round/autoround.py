@@ -1183,15 +1183,16 @@ class AutoRound(object):
                         hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                         add_hook_to_module(m, hook, True)
 
-                    input_ids = self.get_block_outputs(
-                        block,
-                        input_ids,
-                        input_others,
-                        self.batch_size * self.infer_bs_coeff,
-                        self.device,
-                        self.cache_device,
-                    )
+                input_ids = self.get_block_outputs(
+                    block,
+                    input_ids,
+                    input_others,
+                    self.batch_size * self.infer_bs_coeff,
+                    self.device,
+                    self.cache_device,
+                )
 
+                if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
                 # Normalize imatrix and quantize layers
