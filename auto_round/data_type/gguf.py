@@ -356,7 +356,7 @@ def quant_tensor_gguf_asym_dq(
             zero_cnt = torch.sum(quant_weights == 0, dim=-1)
             replace_index = zero_cnt > group_size // 2
             if torch.sum(replace_index) > 0:
-                ##fallback to no imatrix
+                ## fallback to no imatrix
                 if bits == 2:
                     tmp_quant_weights = torch.abs(tensor)
                 elif bits == 4 or bits == 5:
