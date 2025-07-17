@@ -1173,7 +1173,7 @@ class AutoRound(object):
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
-
+                block = block.to(self.device)
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate import dispatch_model
@@ -1192,8 +1192,8 @@ class AutoRound(object):
                     input_others,
                     self.batch_size * self.infer_bs_coeff,
                     self.device,
-                    self.cache_device,)
-
+                    self.cache_device,
+                )
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
@@ -1206,6 +1206,7 @@ class AutoRound(object):
                         all_to_quantized_module_names.remove(m.tmp_name)
 
                 mv_module_from_gpu(block, self.low_cpu_mem_usage)
+                clear_memory()
                 pbar.update(1)
 
         pbar.close()
