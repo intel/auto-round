@@ -894,7 +894,8 @@ class AutoRound(object):
                 self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
             except Exception:
                 # Final fallback: warn and use CPU-only quantization
-                logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
+                logger.warning("Fallback to CPU. "
+                               "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`.")
                 model = model.to("cpu")
                 clear_memory()
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
