@@ -34,7 +34,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## What's New
 
-* [2025.07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimzied RTN mode (--iters 0) for
+* [2025.07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
   all bits other than 3 bits. A more advanced algorithm tailored for specific configurations may be available in
   v0.6.1. Example
   models: [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v1](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v1)
