@@ -366,7 +366,7 @@ def quant_tensor_gguf_asym_dq(
                 quant_weights[replace_index, :] = tmp_quant_weights[replace_index, :]
             mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
             if torch.sum(mean_replace_index) > 0:
-                ## use mean value to fill zero value
+                ## use mean values to fill zero values
                 tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[1] - zero_cnt)
                 tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1])
                 quant_weights[mean_replace_index, :] = tmp_quant_weights[mean_replace_index, :]
