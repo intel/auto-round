@@ -160,6 +160,7 @@ def floor_ste(x: torch.Tensor):
     return (x.floor() - x).detach() + x
 
 
+
 def float8_e4m3fn_ste(x: torch.Tensor):
     """Straight-Through Estimator (STE) for float8.
 

@@ -602,7 +602,8 @@ class ModelBase(OriModel):
         for name, tensor in self.model.named_parameters():
             yield name, tensor
 
-    def _quant_data_with_args(self, data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None):
+    def _quant_data_with_args(
+            self, data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
         if torch.cuda.is_available():
             device = "cuda"
         elif torch.xpu.is_available():
@@ -615,9 +616,18 @@ class ModelBase(OriModel):
         d_scale = d_scale.to(torch.float32) if isinstance(d_scale, torch.Tensor) else d_scale
         d_wmin = d_wmin.to(torch.float32) if isinstance(d_wmin, torch.Tensor) else d_wmin
         wmin = wmin.to(torch.float32) if isinstance(wmin, torch.Tensor) else wmin
+        imatrix = imatrix.to(torch.float32) if isinstance(imatrix, torch.Tensor) else imatrix
 
         data = ggml_quant(
-            data_torch, data_qtype.name.lower(), scale, zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, device=device)
+            data_torch,
+            data_qtype.name.lower(),
+            scale,
+            zp,
+            wmin=wmin,
+            d_scale=d_scale,
+            d_wmin=d_wmin,
+            imatrix=imatrix,
+            device=device)
         return data
 
     def _quant_data(self, data_torch, data_qtype, name, modify_name, bid):
@@ -927,6 +937,8 @@ class ModelBase(OriModel):
                                     attr_tensor = getattr(module, attr)
                                 else:
                                     attr_tensor = getattr(module, "w_" + attr)
+                                if attr_tensor is None:
+                                    continue
                                 kv_b = attr_tensor.view(n_head_kv, v_head_dim + qk_nope_head_dim, -1)
                                 k_b, v_b = torch.split(kv_b, [qk_nope_head_dim, v_head_dim], dim=1)
                                 k_b = k_b.transpose(1, 2)
@@ -936,6 +948,7 @@ class ModelBase(OriModel):
                                     attr_list[attr] = k_b
                                 else:
                                     attr_list[attr] = v_b
+                        attr_list["imatrix"] = module.imatrix if hasattr(module, "imatrix") else None
                         data = self._quant_data_with_args(data_torch, data_qtype, **attr_list)
 
                     # for MOE model
