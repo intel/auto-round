@@ -263,7 +263,6 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     qdq_result = (scale * q - wmin).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
 
-    # zp = round_ste(wmin / scale)  # remove this later
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
@@ -338,7 +337,6 @@ def quant_tensor_gguf_asym_dq(
         wmin = wmin.view(-1, 1)
         scale = scale.view(-1, 1)
     else:
-        logger.info(f"{torch.min(imatrix)},{torch.max(imatrix)}")
         imatrix = imatrix.to(tensor.device)
         search_kwargs = {
             2: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
@@ -366,14 +364,12 @@ def quant_tensor_gguf_asym_dq(
                     av_x = torch.sqrt(sigma2)
                     tmp_quant_weights = torch.abs(tensor) + av_x
                 quant_weights[replace_index, :] = tmp_quant_weights[replace_index, :]
-                logger.warning("has all zero")
             mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
             if torch.sum(mean_replace_index) > 0:
                 ## use mean value to fill zero value
                 tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[1] - zero_cnt)
                 tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1])
                 quant_weights[mean_replace_index, :] = tmp_quant_weights[mean_replace_index, :]
-                logger.warning("has part zero")
 
         # sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
         # if imatrix is None:
@@ -559,15 +555,18 @@ def quant_tensor_gguf_sym_dq(
             zero_cnt = torch.sum(quant_weights == 0, dim=-1)
             replace_index = zero_cnt > group_size // 2
             if torch.sum(replace_index) > 0:
-                quant_weights[replace_index, :] = 1.0
-                logger.warning("has all zero")
+                if bits == 6:
+                    quant_weights[replace_index, :] = 1.0
+                else:
+                    sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+                    tmp_quant_weights = torch.sqrt(sigma2 + tensor * tensor)
+                    quant_weights[replace_index, :] = tmp_quant_weights[replace_index, :]
             mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
             if torch.sum(mean_replace_index) > 0:
                 ## use mean value to fill zero value
                 tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[1] - zero_cnt)
                 tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1])
                 quant_weights[mean_replace_index, :] = tmp_quant_weights[mean_replace_index, :]
-                logger.warning("has part zero")
 
         scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
     scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)

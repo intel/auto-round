@@ -454,7 +454,6 @@ class AutoRound(object):
         self._dq_check()
 
     def _check_compatibility(self):
-
         ##check gguf and others
         has_gguf = False
         if hasattr(self, "formats"):
