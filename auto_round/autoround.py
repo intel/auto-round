@@ -1182,6 +1182,8 @@ class AutoRound(object):
                             continue
                         hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                         add_hook_to_module(m, hook, True)
+                else:
+                    block = block.to(self.device)
 
                 input_ids = self.get_block_outputs(
                     block,
