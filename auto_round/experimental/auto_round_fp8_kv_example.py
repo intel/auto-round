@@ -50,14 +50,14 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 autoround = AutoRound(
     model,
     tokenizer,
-    data_type="fp8_to_int_sym",
-    act_data_type="fp8_sym",
     bits=8,
     group_size=-1,
-    sym=True,
-    # Use 0 after https://github.com/intel/auto-round/pull/662
-    iters=1, 
-    seqlen=2,
+    iters=0,
+    act_bits=8,
+    nsamples=2,
+    data_type="fp8",
+    act_data_type="fp8",
+    act_dynamic=False,
 )
 model, qconfig = autoround.quantize()
 assert model is not None, f"Expected q_model to be not None"
