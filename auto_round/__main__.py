@@ -61,9 +61,10 @@ def run_mllm():
         from auto_round.script.llm import setup_eval_parser, eval
         sys.argv.remove("--eval")
         args = setup_eval_parser()
-        args.lm_eval_model = "hf-multimodal"
+        args.mllm = True
         eval(args)
-    elif "--vlmeval":
+    elif "--vlmeval" in sys.argv:
+        sys.argv.remove("--vlmeval")
         run_vlmeavl()
     elif "--lmms" in sys.argv:
         sys.argv.remove("--lmms")

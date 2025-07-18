@@ -211,7 +211,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path")
         self.add_argument(
-            "--lm_eval_model", default="hf", help="Name of lm_eval model, e.g. 'hf' of 'hf-multimodal'"
+            "--mllm", default=False, help="whether to eval multi-model."
         )
         self.add_argument(
             "--device",
@@ -676,7 +676,7 @@ def eval(args):
     else:
         st = time.time()
         res = simple_evaluate(
-            model=args.lm_eval_model, model_args=model_args, tasks=tasks, device=device_str, batch_size=batch_size)
+            model="hf" if args.mllm else "hf-multimodel", model_args=model_args, tasks=tasks, device=device_str, batch_size=batch_size)
         from lm_eval.utils import make_table  # pylint: disable=E0401
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
