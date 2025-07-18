@@ -63,8 +63,7 @@ class TestAutoRound(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         bits, sym = 3, False
         autoround = AutoRound(model, tokenizer, bits=bits, sym=sym)
-        autoround.quantize()
-        autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
+        autoround.quantize_and_save(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
         res = simple_evaluate(model="hf", model_args=model_args,
                             #   tasks="arc_easy",
@@ -127,3 +126,4 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
