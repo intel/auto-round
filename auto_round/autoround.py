@@ -424,10 +424,10 @@ class AutoRound(object):
                 "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently")
 
-        if "mx_fp" in self.data_type or "nv_fp" in self.data_type:
-            logger.warning(
-                "please save the quantized model to fake format "
-                "as real deployment is not supported for mx_fp/nv_fp datatype currently")
+        # if "mx_fp" in self.data_type or "nv_fp" in self.data_type:
+        #     logger.warning(
+        #         "please save the quantized model to fake format "
+        #         "as real deployment is not supported for mx_fp/nv_fp datatype currently")
 
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
@@ -1078,8 +1078,11 @@ class AutoRound(object):
                         image_processor=self.image_processor if hasattr(self, "image_processor") else None,
                         model_type=model_type)
                 else:
+                    kwargs = {}
+                    if "mx"  in self.formats[0] or "nv" in self.formats[0]:
+                        kwargs["data_type"] = self.data_type
                     PACKING_LAYER_WITH_FORMAT[target_backend](
-                        name, self.model, self.formats[0]
+                        name, self.model, self.formats[0], **kwargs
                     )
 
                 # if self.low_gpu_mem_usage:
@@ -1252,7 +1255,8 @@ class AutoRound(object):
             formats = self.formats
             if (len(formats) == 1 and
                     ("awq" in formats[0] or "gptq" in formats[0] or
-                     "auto_round" in formats[0] or "gguf" in formats[0]) and self.inplace):
+                     "auto_round" in formats[0] or "gguf" in formats[0]
+                     or "mx" in formats[0] or "nv" in formats[0]) and self.inplace):
                 self.is_packing_immediate = True
         if self.iters == 0:
             return self.quantize_rtn()
@@ -2376,7 +2380,10 @@ class AutoRound(object):
                                 image_processor=self.image_processor if hasattr(self, "image_processor") else None,
                                 model_type=model_type)
                         else:
-                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
+                            kwargs = {}
+                            if "mx"  in self.formats[0] or "nv" in self.formats[0]:
+                                kwargs["data_type"] = self.data_type
+                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0], **kwargs)
         pbar.set_description(f"Quantizing done")
         pbar.update(1)
         pbar.close()
