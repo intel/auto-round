@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import torch
-from auto_round.data_type.utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.data_type.utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, logger
 from auto_round.data_type.register import register_dtype
 
 
@@ -263,7 +263,6 @@ def quant_tensor_asym_dq(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_
     qdq_result = (scale * q - wmin).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
 
-    # zp = round_ste(wmin / scale)  # remove this later
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
@@ -303,11 +302,11 @@ def quant_tensor_gguf_asym_dq(
     """
     orig_dtype = tensor.dtype
     maxq = 2 ** bits - 1
-    group_size = 16 if bits ==2 else 32
-    super_bits = 4 if bits == 2  else 6
+    group_size = 16 if bits == 2 else 32
+    super_bits = 4 if bits == 2 else 6
     super_group_size = 16 if bits == 2 else 8
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    tensor =tensor.to(torch.float32)
+    tensor = tensor.to(torch.float32)
     if bits not in [2, 4, 5]:
         raise ValueError(f"bits={bits} not supported by rtn_int_asym_dq")
     quant_weights = None
@@ -345,6 +344,33 @@ def quant_tensor_gguf_asym_dq(
             5: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
         }
 
+        weights = imatrix.reshape(1, -1)
+
+        weights = weights.expand(tensor.numel() // weights.numel(), -1)
+        quant_weights = weights.reshape(tensor.shape)
+
+        if torch.min(quant_weights) == 0:
+            logger.warning_once(
+                "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0")
+
+            zero_cnt = torch.sum(quant_weights == 0, dim=-1)
+            replace_index = zero_cnt > group_size // 2
+            if torch.sum(replace_index) > 0:
+                ## fallback to no imatrix
+                if bits == 2:
+                    tmp_quant_weights = torch.abs(tensor)
+                elif bits == 4 or bits == 5:
+                    sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / 32  ## Note 32 is different from QK_K
+                    av_x = torch.sqrt(sigma2)
+                    tmp_quant_weights = torch.abs(tensor) + av_x
+                quant_weights[replace_index, :] = tmp_quant_weights[replace_index, :]
+            mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
+            if torch.sum(mean_replace_index) > 0:
+                ## use mean values to fill zero values
+                tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[1] - zero_cnt)
+                tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1])
+                quant_weights[mean_replace_index, :] = tmp_quant_weights[mean_replace_index, :]
+
         # sigma2 = torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
         # if imatrix is None:
         #     av_x = torch.sqrt(sigma2)
@@ -352,10 +378,6 @@ def quant_tensor_gguf_asym_dq(
         # else:
         #     imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
         #     quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
-
-        weights = imatrix.reshape(1, -1)
-        weights = weights.expand(tensor.numel() // weights.numel(), -1)
-        quant_weights = weights.reshape(tensor.shape)
 
         params = search_kwargs[bits]
 
@@ -372,7 +394,7 @@ def quant_tensor_gguf_asym_dq(
 
         d_scale, q_scale = make_qp_quants(nmax, scale, sum_quant_weights)
         d_wmin, q_wmin = make_qp_quants(nmax, wmin, sum_quant_weights)
-        
+
         d_scale = d_scale.unsqueeze(-1)
         d_wmin = d_wmin.unsqueeze(-1)
         scale = (d_scale * q_scale).view(-1, 1)
@@ -488,7 +510,7 @@ def quant_tensor_gguf_sym_dq(
 
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
-    
+
     maxq = 2 ** (bits - 1)
     group_size = 16
     super_bits = 6 if bits == 3 else 8
@@ -503,28 +525,50 @@ def quant_tensor_gguf_sym_dq(
     n_blocks = tensor.nelement() // block_size
     # (nb, 16, 16)
     tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
+
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         if bits == 3:
-            scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)  ##TODO this has bug
+            scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)
             ##scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
         elif bits == 6:
             scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
     else:
         imatrix = imatrix.to(tensor.device)
-        if bits == 3:
-            # sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
-            # imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
-            # quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
-            # scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
-            weights = imatrix.reshape(1, -1)
-            weights = weights.expand(tensor.numel() // weights.numel(), -1)
-            quant_weights = weights.reshape(tensor.shape)
-            scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
-        elif bits == 6:
-            weights = imatrix.reshape(1, -1)
-            weights = weights.expand(tensor.numel() // weights.numel(), -1)
-            quant_weights = weights.reshape(tensor.shape)
-            scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
+
+        # if bits == 3:
+        #     # sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+        #     # imatrix = imatrix.reshape(1, -1).expand(tensor.numel() // imatrix.numel(), -1).reshape(tensor.shape)
+        #     # quant_weights = imatrix * torch.sqrt(sigma2 + tensor * tensor)
+        #     # scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
+        #     weights = imatrix.reshape(1, -1)
+        #     weights = weights.expand(tensor.numel() // weights.numel(), -1)
+        #     quant_weights = weights.reshape(tensor.shape)
+        # elif bits == 6:
+
+        weights = imatrix.reshape(1, -1)
+        weights = weights.expand(tensor.numel() // weights.numel(), -1)
+        quant_weights = weights.reshape(tensor.shape)
+        if torch.min(quant_weights) == 0:
+            logger.warning_once(
+                "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0")
+
+            zero_cnt = torch.sum(quant_weights == 0, dim=-1)
+            replace_index = zero_cnt > group_size // 2
+            if torch.sum(replace_index) > 0:
+                if bits == 6:
+                    quant_weights[replace_index, :] = 1.0
+                else:
+                    sigma2 = 2 * torch.sum(tensor ** 2, dim=-1, keepdim=True) / QK_K
+                    tmp_quant_weights = torch.sqrt(sigma2 + tensor * tensor)
+                    quant_weights[replace_index, :] = tmp_quant_weights[replace_index, :]
+            mean_replace_index = (zero_cnt > 0) & (zero_cnt <= group_size // 2)
+            if torch.sum(mean_replace_index) > 0:
+                ## use mean values to fill zero values
+                tmp_quant_weights = torch.sum(quant_weights, dim=-1) / (quant_weights.shape[1] - zero_cnt)
+                tmp_quant_weights = tmp_quant_weights.view(-1, 1).expand(-1, quant_weights.shape[1])
+                quant_weights[mean_replace_index, :] = tmp_quant_weights[mean_replace_index, :]
+
+        scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
     scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
     # conduct double quant
     scale, d_scale = double_quant_tensor_sym(scale, super_bits)
