@@ -79,6 +79,10 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0,**k
     info = torch.finfo(torch.float8_e4m3fn)
     orig_dtype = tensor.dtype
     tensor,orig_shape,pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if isinstance(max_scale, torch.Tensor):
+        max_scale = max_scale.to(tensor.device)
+    if isinstance(v, torch.Tensor):
+        v = v.to(tensor.device)
     if tensor_max is None:  ##dynamic per-token
         max_tensor = torch.max(torch.abs(tensor), dim=-1)[
                          0] * max_scale

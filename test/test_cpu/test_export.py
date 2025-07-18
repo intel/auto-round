@@ -203,6 +203,32 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
     
+    
+    def test_static_afp8_export(self):
+        autoround = AutoRound(
+            self.model,
+            self.tokenizer,
+            bits=8,
+            group_size=-1,
+            iters=0,
+            act_bits=8,
+            nsamples=2,
+            data_type="fp8",
+            act_data_type="fp8",
+            act_dynamic=False,
+        )
+        quantized_model_path = "./saved"
+        autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
+
+        import os
+        from safetensors import safe_open
+        f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
+        self.assertIn("model.decoder.layers.8.self_attn.k_proj.act_scale", f.keys())
+        self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.act_scale").shape, torch.Size([1,1]))
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
+
+        shutil.rmtree(quantized_model_path, ignore_errors=True)
 
 if __name__ == "__main__":
     unittest.main()
