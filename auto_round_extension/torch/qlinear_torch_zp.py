@@ -38,10 +38,6 @@ class QuantLinear(nn.Module):
         super().__init__()
         if bits not in [2, 3, 4, 8]:
             raise NotImplementedError("Only 2,3,4,8 bits are supported.")
-        if infeatures % 32 != 0 or outfeatures % 32 != 0:
-            raise NotImplementedError(
-                "in_feature and out_feature must be divisible by 32."
-            )
         self.infeatures = infeatures
         self.outfeatures = outfeatures
         self.bits = bits
@@ -275,6 +271,7 @@ class QuantLinear(nn.Module):
             repeat_zeros = zeros.repeat_interleave(self.group_size, dim=0)
             weights = repeat_scales * (weight - repeat_zeros)
             
+        weights = weights.to(x_dtype)
         out = torch.matmul(x, weights)
         out = out.to(x_dtype)
         out = out.reshape(out_shape)
@@ -283,3 +280,4 @@ class QuantLinear(nn.Module):
 
 
 __all__ = ["QuantLinear"]
+
