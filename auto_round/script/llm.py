@@ -675,8 +675,15 @@ def eval(args):
         print("evaluation running time=%ds" % (time.time() - st))
     else:
         st = time.time()
+        if "auto" in batch_size and args.mllm:
+            logger.warning("Batch size 'auto' is not yet supported for hf-multimodal models, reset to 16")
+            batch_size = 16
         res = simple_evaluate(
-            model="hf" if args.mllm else "hf-multimodel", model_args=model_args, tasks=tasks, device=device_str, batch_size=batch_size)
+            model="hf" if not args.mllm else "hf-multimodal",
+            model_args=model_args,
+            tasks=tasks,
+            device=device_str,
+            batch_size=batch_size)
         from lm_eval.utils import make_table  # pylint: disable=E0401
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
