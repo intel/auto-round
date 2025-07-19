@@ -675,7 +675,7 @@ def eval(args):
         print("evaluation running time=%ds" % (time.time() - st))
     else:
         st = time.time()
-        if "auto" in batch_size and args.mllm:
+        if "auto" in str(batch_size) and args.mllm:
             logger.warning("Batch size 'auto' is not yet supported for hf-multimodal models, reset to 16")
             batch_size = 16
         res = simple_evaluate(
