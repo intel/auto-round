@@ -474,7 +474,7 @@ def tune(args):
     clear_memory()
 
 
-def eval(args):
+def vlmeval(args):
     set_cuda_visible_devices(args.device)
     device_str, parallelism = get_device_and_parallelism(args.device)
     if parallelism:
