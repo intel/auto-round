@@ -1149,7 +1149,7 @@ class TextModel(ModelBase):
         toktypes: list[int] = []
 
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(self.dir_model)
+        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=True)
         vocab_size = self.hparams.get("vocab_size", len(tokenizer.vocab))
         assert max(tokenizer.vocab.values()) < vocab_size
 
