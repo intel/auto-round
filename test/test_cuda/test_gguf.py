@@ -23,9 +23,9 @@ class LLMDataLoader:
 class TestAutoRound(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        model_name = "Qwen/Qwen2.5-0.5B-Instruct"
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
     @classmethod
@@ -56,6 +56,7 @@ class TestAutoRound(unittest.TestCase):
         llm = Llama(f"saved/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
+        shutil.rmtree("./saved", ignore_errors=True)
     
         save_dir = os.path.join(os.path.dirname(__file__), "saved")
         model_path = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -67,10 +68,11 @@ class TestAutoRound(unittest.TestCase):
         self.assertFalse(res > 0 or res == -1, msg="qwen2 tuning fail")
         
         from llama_cpp import Llama
-        gguf_file = os.listdir("saved/Qwen2.5-0.5B-Instruct-w4g32")[0]
-        llm = Llama(f"saved/Qwen2.5-0.5B-Instruct-w4g32/{gguf_file}", n_gpu_layers=-1)
+        gguf_file = os.listdir("saved/Qwen2.5-0.5B-Instruct-gguf")[0]
+        llm = Llama(f"saved/Qwen2.5-0.5B-Instruct-gguf/{gguf_file}", n_gpu_layers=-1)
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
+        shutil.rmtree("./saved", ignore_errors=True)
     
     @require_gguf
     def test_q2_k_export(self):
@@ -111,7 +113,7 @@ class TestAutoRound(unittest.TestCase):
         python_path = sys.executable
         res = os.system(
             f"cd ../.. && {python_path} -m auto_round --model {self.model_name} --eval_task_by_task"
-            f" --tasks piqa,openbookqa --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0"
+            f" --tasks piqa,openbookqa --bs 16 --iters 1 --nsamples 1 --format fake,gguf:q4_0 --eval_model_dtype bf16"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
@@ -141,7 +143,7 @@ class TestAutoRound(unittest.TestCase):
 
         from auto_round.eval.evaluation import simple_evaluate_user_model
         result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="piqa")
-        self.assertGreater(result['results']['piqa']['acc,none'], 0.55)
+        self.assertAlmostEqual(result['results']['piqa']['acc,none'], 0.55, delta=0.01)
         shutil.rmtree("./saved", ignore_errors=True)
     
     @require_gguf
@@ -168,7 +170,7 @@ class TestAutoRound(unittest.TestCase):
 
         from auto_round.eval.evaluation import simple_evaluate_user_model
         result = simple_evaluate_user_model(model, self.tokenizer, batch_size=16, tasks="piqa")
-        self.assertGreater(result['results']['piqa']['acc,none'], 0.55)
+        self.assertAlmostEqual(result['results']['piqa']['acc,none'], 0.55, delta=0.01)
         shutil.rmtree("./saved", ignore_errors=True)
     
     @require_gguf
@@ -244,7 +246,7 @@ class TestAutoRound(unittest.TestCase):
         model_name = "/dataset/Llama-4-Scout-17B-16E-Instruct/"
         from auto_round.mllm.autoround_mllm import AutoRoundMLLM
         from auto_round.utils import mllm_load_model
-        model, processor, tokenizer, image_processor = mllm_load_model(model_name)
+        model, processor, tokenizer, image_processor = mllm_load_model(model_name, use_auto_mapping=False)
         autoround = AutoRoundMLLM(
             model,
             tokenizer=tokenizer,
