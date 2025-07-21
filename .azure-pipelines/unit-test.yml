@@ -13,6 +13,7 @@ pr:
       - test
       - setup.py
       - requirements.txt
+      - requirements-cpu.txt
       - .azure-pipelines/scripts/ut
       - .azure-pipelines/unit-test.yml
       - .azure-pipelines/template/ut-template.yml
