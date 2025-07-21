@@ -53,7 +53,15 @@ def is_gptqmodel_available():
 
 def greater_than_050():
     try:
-        require_version("auto-round>=0.5.0")
+        require_version("auto-round>=0.5.0")    
+        return True
+    except ImportError:
+        return False
+
+
+def greater_than_051():
+    try:
+        require_version("auto-round>0.5.1")
         return True
     except ImportError:
         return False
@@ -136,6 +144,16 @@ def require_greater_than_050(test_case):
 
     """
     return unittest.skipUnless(greater_than_050(), "test requires auto-round>=0.5.0")(test_case)
+
+
+def require_greater_than_051(test_case):
+    """
+    Decorator marking a test that requires auto-round>0.5.1
+
+    These tests are skipped when auto-round<=0.5.1.
+
+    """
+    return unittest.skipUnless(greater_than_051(), "test requires auto-round>0.5.1")(test_case)
 
 
 def multi_card(test_case):
