@@ -874,11 +874,13 @@ class AutoRound(object):
             # Perform quantization using RTN
             from tqdm import tqdm
             pbar = tqdm(all_to_quantized_module_names)
+            block_names_cnt = len(flatten_list(get_block_names(self.model,True)))
+            clear_mem_freq = len(all_to_quantized_module_names)//block_names_cnt
             cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
-                if self.low_gpu_mem_usage and cnt % 10 == 0:
+                if  cnt % clear_mem_freq == 0:
                     clear_memory()
                     cnt = 1
                 cnt += 1
@@ -1112,12 +1114,14 @@ class AutoRound(object):
         if has_gguf_k and not self.disable_opt_rtn:
             self.quant_rtn_with_imatrix(all_to_quantized_module_names)
         else:
+            block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+            clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
             pbar = tqdm(all_to_quantized_module_names)
             cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
-                if self.low_gpu_mem_usage and cnt % 10 == 0:
+                if  cnt % clear_mem_freq == 0:
                     clear_memory()
                     cnt = 1
                 cnt += 1
@@ -1214,11 +1218,12 @@ class AutoRound(object):
 
         pbar.close()
         cnt = 1
-
+        block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+        clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
             self.quantize_layer_via_rtn(name)
-            if self.low_gpu_mem_usage and cnt % 10 == 0:
+            if  cnt % clear_mem_freq == 0:
                 clear_memory()
                 cnt = 1
             cnt += 1

@@ -114,6 +114,11 @@ def pack_layer(name, model, backend):
     else:
         qlayer.pack(layer, scale, zero, None)
     qlayer.to(device)
+    if hasattr(layer,"weight"):
+        layer.weight = None
+    if hasattr(layer,"bias"):
+        layer.bias = None
+
 
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
