@@ -211,7 +211,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path")
         self.add_argument(
-            "--mllm", default=False, help="whether to eval multi-model."
+            "--mllm", default=False, help="whether to eval multi-modal model."
         )
         self.add_argument(
             "--device",
