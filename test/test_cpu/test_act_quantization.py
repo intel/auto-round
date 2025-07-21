@@ -87,3 +87,4 @@ class TestAutoRoundAct(unittest.TestCase):
             act_data_type="fp8"
         )
         autoround.quantize()
+
