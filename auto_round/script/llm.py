@@ -211,6 +211,9 @@ class EvalArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path")
         self.add_argument(
+            "--mllm", default=False, help="whether to eval multi-modal model."
+        )
+        self.add_argument(
             "--device",
             "--devices",
             default="0",
@@ -672,8 +675,15 @@ def eval(args):
         print("evaluation running time=%ds" % (time.time() - st))
     else:
         st = time.time()
+        if "auto" in str(batch_size) and args.mllm:
+            logger.warning("Batch size 'auto' is not yet supported for hf-multimodal models, reset to 16")
+            batch_size = 16
         res = simple_evaluate(
-            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=batch_size)
+            model="hf" if not args.mllm else "hf-multimodal",
+            model_args=model_args,
+            tasks=tasks,
+            device=device_str,
+            batch_size=batch_size)
         from lm_eval.utils import make_table  # pylint: disable=E0401
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
