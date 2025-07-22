@@ -828,10 +828,10 @@ class AutoRound(object):
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
-                    module.imatrix_cnt = 1
+                    module.imatrix_cnt = input.shape[0]
                 else:
                     module.imatrix += squared
-                    module.imatrix_cnt += 1
+                    module.imatrix_cnt += input.shape[0]
 
             hook_handles = []
             for name, module in model.named_modules():
@@ -1029,7 +1029,7 @@ class AutoRound(object):
 
         # Step 2: Try quantization on GPU first, fall back to CPU if OOM
         # if only export gguf, using gguf-packing instead of rtn
-        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and self.disable_opt_rtn:
+        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
             m.scale = None
             m.zp = None
         else:
