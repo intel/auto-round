@@ -95,7 +95,8 @@ class QuantLinear(nn.Module):
             weight_name,
             torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
         )
-        if self.sym == False:## TODO Currently only sym quant is supported for mxfp dtype. Is weight_zero_point param necessary？
+        if self.sym == False:
+            ## TODO Currently only sym quant is supported for mxfp dtype. Is weight_zero_point param necessary？
             self.register_buffer(
                 "weight_zero_point",
                 torch.zeros(
@@ -153,7 +154,8 @@ class QuantLinear(nn.Module):
         tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(linear.weight, self.group_size)
         if self.is_nv:
             assert global_scale is not None and global_scale.numel() == 1
-            scaled_tensor = (tensor.to(global_scale.dtype) * get_reciprocal(scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)))
+            scaled_tensor = (tensor.to(global_scale.dtype)
+                             * get_reciprocal(scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)))
             scaled_tensor = cast_to_fp4(torch.clamp(scaled_tensor, -6.0, 6.0))
         else:
             scaled_tensor = tensor / (2 ** scales.reshape(tensor.shape[0], -1))
@@ -222,7 +224,6 @@ class QuantLinear(nn.Module):
 
 
     # def get_fp_scale(self, scale_e8m0):
-    #     # https://github.com/pytorch/ao/blob/994a4ba6c869854fcaa6ca7e118fcbd75e6c28cc/torchao/prototype/mx_formats/mx_tensor.py#L337
     #     E8M0_EXPONENT_BIAS = 127
     #     E8M0_EXPONENT_NAN_VAL = 255
 

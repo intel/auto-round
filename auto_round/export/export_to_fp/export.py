@@ -16,7 +16,8 @@ import torch
 
 from .qlinear_fp import QuantLinear  # , get_fp_qlinear
 from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module, SUPPORTED_LAYER_TYPES, filter_quantization_config
+        get_module, logger, set_module, SUPPORTED_LAYER_TYPES, \
+        filter_quantization_config, check_start_with_block_name
 import copy
 import json
 import os
@@ -85,14 +86,16 @@ def pack_layer(name, model, backend, data_type):
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
     new_layer = QuantLinear(  ##pylint: disable=E1123
-        bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype, sym=sym, data_type=data_type
+        bits, group_size, in_features, out_features,
+        bias, weight_dtype=layer.weight.dtype, sym=sym,
+        data_type=data_type
     )
 
     new_layer.device = device
     set_module(model, name, new_layer)
     qlayer = new_layer
     scale = layer.scale
-    global_scale = layer.global_scale if hasattr(layer, "global_scale") else None
+    global_scale = getattr(layer, "weight_global_scale", None)
     # zero = layer.zp
     # so far can only pack layer on CPU
     qlayer.to("cpu")
@@ -170,7 +173,8 @@ def save_quantized_as_fp(output_dir, inplace=True, # no gemm implements in autor
             extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
             extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
         elif layer_config[layer_name]["in_blocks"] or (
-                block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)):
+                block_name_to_quantize is not None and 
+                check_start_with_block_name(layer_name, block_name_to_quantize)):
             neq_keys = check_neq_config(
                 layer_config[layer_name],
                 data_type=quantization_config["data_type"],
@@ -222,7 +226,8 @@ def save_quantized_as_fp(output_dir, inplace=True, # no gemm implements in autor
     return model
 
 
-def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None):
+def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB",
+         safe_serialization: bool = True, dtype=None):
     """Save model state dict and configs.
 
     Args:
