@@ -4010,7 +4010,8 @@ class Phi3MiniModel(TextModel):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} '
+                                f'-> {token.decode("utf-8")!r}'
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -4524,7 +4525,8 @@ class InternLM2Model(TextModel):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} '
+                                f'-> {token.decode("utf-8")!r}'
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -4546,7 +4548,8 @@ class InternLM2Model(TextModel):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} '
+                                f'-> {token.decode("utf-8")!r}'
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -6307,7 +6310,8 @@ class ArcticModel(TextModel):
                             token_score = 0.0
 
                         logger.info(
-                            f"Setting added token {token_id} to '{token_content}' (type: {token_type}, score: {token_score:.2f})"
+                            f"Setting added token {token_id} to '{token_content}'"
+                            f" (type: {token_type}, score: {token_score:.2f})"
                         )
                         tokens[token_id] = token_content.encode("utf-8")
                         toktypes[token_id] = token_type
@@ -6958,10 +6962,6 @@ class T5EncoderModel(TextModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
 
-        # T5 based models contain shared token embeddings tensors saved randomly as either "encoder.embed_tokens.weight",
-        # "decoder.embed_tokens.weight" or "shared.weight" tensor. In some models there are even multiple of them stored
-        # in the safetensors files. We use the first tensor from these three as the token embeddings for both encoder
-        # and decoder and ignore the remaining ones.
         if name in ["decoder.embed_tokens.weight", "encoder.embed_tokens.weight", "shared.weight"]:
             if not self.shared_token_embeddings_found:
                 name = "shared.weight"
