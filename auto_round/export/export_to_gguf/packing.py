@@ -161,13 +161,20 @@ def make_q3_quants(data, bits, do_rmse=False):
                 L[:,:, i][replace_idx] = new_L[replace_idx]
                 sumlx = slx
                 suml2 = sl2
-        isuml2 = torch.where(suml2 == 0, 0, 1 / suml2)
+
+        isuml2 = get_reciprocal(suml2)
         return sumlx * isuml2, L.to(torch.uint8)
 
     L = torch.round(iscale * data).clip(-nmax, nmax - 1) + nmax
-    scales = torch.where(iscale != 0, 1 / iscale, 0).reshape(iscale.shape[:2])
+    scales = get_reciprocal(iscale).reshape(iscale.shape[:2])
     return scales, L.to(torch.uint8)
 
+def get_reciprocal(tensor):
+    if torch.dtype is torch.float16:
+        tensor =  torch.sign(tensor) * torch.clamp(torch.abs(tensor), min=1e-5)
+    else:
+        tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
+    return  torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
 
 def make_qkx2_quants(data, bits, weights=None, rmin=-1.0, rdelta=0.1, nstep=20, use_mad=False):
     nmax = pow(2, bits) - 1
