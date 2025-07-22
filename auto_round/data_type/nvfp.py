@@ -54,6 +54,12 @@ FLOAT4_E2M1_MAX = 6.0
 FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max if hasattr(torch, "float8_e4m3fn") else 448
 FLOAT8_E4M3_MIN = torch.finfo(torch.float8_e4m3fn).min if hasattr(torch, "float8_e4m3fn") else -448
 
+def calculate_gparam(tensor, group_size=16):
+    assert group_size == 16
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    tensor_amax = tensor.abs().max().to(torch.float32)
+    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_amax)
+    return global_scale
 
 def ref_nvfp4_quant(x, global_scale, block_size=16, v=0):
     assert global_scale.dtype == torch.float32
@@ -70,14 +76,15 @@ def ref_nvfp4_quant(x, global_scale, block_size=16, v=0):
 
 
 @register_dtype("nv_fp4")
-def nv_fp4(tensor, bits=4, group_size=16, v=0, **kwargs):
+def nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=None, **kwargs):
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    tensor_amax = tensor.abs().max().to(torch.float32)
-    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_amax)
+    if global_scale is None:
+        tensor_amax = tensor.abs().max().to(torch.float32)
+        global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_amax)
     qdq_res, scale = ref_nvfp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
-    return qdq_res.to(orig_dtype), scale, global_scale, None
+    return qdq_res.to(orig_dtype), scale, None
 
 
 FLOAT8_UE5M3_MAX = 114688
@@ -181,7 +188,7 @@ def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, max_scale=1.0, 
     global_scale = FLOAT8_UE5M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_amax)
     qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
-    return qdq_res.to(orig_dtype), scale, global_scale, None
+    return qdq_res.to(orig_dtype), scale, None
 
 
 @register_dtype("fp4_v2")
@@ -193,7 +200,7 @@ def fp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
     global_scale = 1.0
     qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v, max_scale)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
-    return qdq_res.to(orig_dtype), scale, global_scale, None
+    return qdq_res.to(orig_dtype), scale, None
 
 
 if __name__ == "__main__":

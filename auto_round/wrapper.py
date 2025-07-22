@@ -78,12 +78,18 @@ class WrapperLinear(torch.nn.Module):
         self.enable_round_tuning = enable_round_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
+        self.weight_global_scale = None
+        if "nv_fp" in self.orig_layer.data_type and self.weight_global_scale is None:
+            from auto_round.data_type.nvfp import calculate_gparam
+            self.weight_global_scale = calculate_gparam(self.orig_layer.weight, self.orig_layer.group_size)
         if (hasattr(self.orig_layer, "scale_dtype") and self.orig_layer.scale_dtype == torch.float32):
             self.q_scale_thresh = 1e-8
         else:
             self.q_scale_thresh = 1e-5
+        
         self._init_tuning_params_and_quant_func()
         self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
+        
 
     def _init_tuning_params_and_quant_func(self):
         """Initializes tuning parameters and quantization functions.
@@ -169,7 +175,7 @@ class WrapperLinear(torch.nn.Module):
             quant_kwargs["super_bits"] = self.orig_layer.super_bits
             quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
 
-        results = self.weight_quant_func(
+        weight_q, scale, zp = self.weight_quant_func(
             weight,
             bits=self.orig_layer.bits,
             group_size=self.orig_layer.group_size,
@@ -182,14 +188,13 @@ class WrapperLinear(torch.nn.Module):
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
             imatrix=self.orig_layer.imatrix if hasattr(self.orig_layer, "imatrix") else None,
+            global_scale=getattr(self, "weight_global_scale", None),
             **quant_kwargs
         )
-        weight_q = results[0]
         weight_q = weight_q.to(weight.dtype)
         if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             weight_q = weight_q.t()
-        results = (weight_q,) + results[1:]
-        return results
+        return weight_q, scale, zp
 
     def _qdq_act(self, x, act_max_scale, act_max=None):
         """Quantizes and dequantizes activations.
@@ -205,7 +210,8 @@ class WrapperLinear(torch.nn.Module):
         act_max_scale.data.clamp_(0, 1.0)
         x, scale, zp = self.act_quant_func(x, bits=self.orig_layer.act_bits, group_size=self.orig_layer.act_group_size,
                                            scale_dtype=self.orig_layer.scale_dtype, q_scale_thresh=self.q_scale_thresh,
-                                           data_type=self.act_data_type, max_scale=act_max_scale, tensor_max=act_max)
+                                           data_type=self.act_data_type, max_scale=act_max_scale, tensor_max=act_max,
+                                           global_scale=getattr(self, "weight_global_scale", None))
         return x, scale, zp
 
     def _qdq_bias(self, bias, bias_v):
@@ -221,7 +227,8 @@ class WrapperLinear(torch.nn.Module):
         bias_bits = 4  ## hard code
         bias_group_size = -1
         bias, scale, zp = self.bias_quant_func(bias, bits=bias_bits, group_size=bias_group_size, v=bias_v,
-                                               q_scale_thresh=self.q_scale_thresh)
+                                               q_scale_thresh=self.q_scale_thresh,
+                                               global_scale=getattr(self, "weight_global_scale", None))
         return bias, scale, zp
 
     def unwrapper(self, best_params):
@@ -241,12 +248,7 @@ class WrapperLinear(torch.nn.Module):
         if self.orig_layer.weight.device.type == 'meta':
             self.orig_layer.to(self.device)
         ##unwrapper weight
-        results = self._qdq_weight(v, min_scale, max_scale)
-        global_scale = None
-        if len(results) == 4:
-            qdq_weight, scale, global_scale, zp = results
-        else:
-            qdq_weight, scale, zp = results
+        qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
         # if hasattr(self.orig_layer, "imatrix"):
         #     self.orig_layer.imatrix = None
         self.orig_layer.weight.data.copy_(qdq_weight)
@@ -284,9 +286,10 @@ class WrapperLinear(torch.nn.Module):
         else:
             self.orig_layer.zp = None
 
-        if global_scale is not None:
+        if self.weight_global_scale is not None:
+            global_scale = self.weight_global_scale
             assert global_scale.numel() == 1
-            self.orig_layer.global_scale = global_scale.to("cpu")
+            self.orig_layer.weight_global_scale = global_scale.to("cpu")
 
         ##unwrapper bias
         if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
@@ -562,7 +565,6 @@ def wrapper_block(block, enable_minmax_tuning, enable_norm_bias_tuning, device='
                     set_module(block, n, new_m)
                 else:
                     logger.warning_once(f"{m.__class__.__name__} is not supported")
-
     return quantized_layers, unquantized_layers
 
 

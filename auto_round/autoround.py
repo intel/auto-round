@@ -1110,6 +1110,19 @@ class AutoRound(object):
             n for n, m in self.model.named_modules() if check_to_quantized(m)
         ]
 
+        if "nv_fp" in self.data_type:
+            from auto_round.data_type.nvfp import calculate_gparam
+            from auto_round.data_type.utils import update_fused_layer_weight_global_scales
+            pbar = tqdm(all_to_quantized_module_names)
+            for name in pbar:
+                pbar.set_description(f"Calculate weight global scale: {name}")
+                m = get_module(self.model, name)
+                m.weight_global_scale = calculate_gparam(m.weight, self.group_size)
+
+            modules = list(self.model.modules())
+            for module in tqdm(modules, desc="Update weight global scale for fuse module"):
+                update_fused_layer_weight_global_scales(module)
+
         has_gguf_k = any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", []))
 
         self.quantize_embedding_layer()
@@ -2143,7 +2156,11 @@ class AutoRound(object):
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
             block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device)
-
+        if "nv_fp" in self.data_type:
+            from auto_round.data_type.utils import update_fused_layer_weight_global_scales
+            modules = block.modules()
+            for module in modules:
+                update_fused_layer_weight_global_scales(module)
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():
@@ -2945,4 +2962,6 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+
+
 
