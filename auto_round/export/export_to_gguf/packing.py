@@ -88,7 +88,7 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
     nmax = pow(2, bits - 1)
     imax = abs(data).argmax(axis=-1, keepdims=True)
     group_max = torch.take_along_dim(data, imax, dim=-1)
-    iscales = torch.where(group_max != 0, -nmax / group_max, torch.zeros_like(group_max))
+    iscales = -nmax * get_reciprocal(group_max)
 
     if rmse_type == 0:
         L = (torch.round(iscales * data).clip(-nmax, nmax - 1) + nmax).to(torch.uint8)
@@ -113,7 +113,7 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
         w = torch.sqrt(torch.abs(data))
     sumlx = torch.sum(w * data * L, dim=-1)
     suml2 = torch.sum(w * L * L, dim=-1)
-    scales = torch.where(suml2 != 0, sumlx / suml2, torch.zeros_like(suml2))
+    scales = sumlx * get_reciprocal(suml2)
     if return_early:
         iscales_inv = get_reciprocal(iscales).reshape(iscales.shape[:2])
         scales = torch.where(suml2 > 0, 0.5 * (scales + iscales_inv), iscales_inv)
@@ -123,7 +123,7 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
     for _is in range(-9, 10):
         if _is == 0:
             continue
-        iscales = torch.where(group_max != 0, -(nmax + -0.1 * _is) / nmax, 0)
+        iscales = -(nmax + -0.1 * _is) * get_reciprocal(nmax)
         tmp_L = torch.round(iscales * data).clip(-nmax, nmax - 1)
         sumlx = torch.sum(w * data * L, dim=-1)
         suml2 = torch.sum(w * L * L, dim=-1)
@@ -141,7 +141,7 @@ def make_q3_quants(data, bits, do_rmse=False):
     nmax = pow(2, bits - 1)
     imax = abs(data).argmax(axis=-1, keepdims=True)
     group_max = torch.take_along_dim(data, imax, dim=-1)
-    iscale = torch.where(group_max != 0, -nmax / group_max, torch.zeros_like(group_max))
+    iscale = -nmax * get_reciprocal(group_max)
     if do_rmse:
         L = torch.round(iscale * data).clip(-nmax, nmax - 1)
         w = torch.pow(data, 2)
@@ -441,10 +441,10 @@ def q2_k_quant_block(blocks, scale=None, wmin=None, d_scale=None, d_wmin=None, i
         scales, all_L, mins = make_qkx2_quants(blocks, bits=2, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=True)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]
-        output_d = torch.where(max_scales > 0, max_scales / 15, torch.zeros_like(max_scales))
-        output_dmin = torch.where(max_mins > 0, max_mins / 15., torch.zeros_like(max_mins))
-        id_scales = torch.where(max_scales > 0, 15. / max_scales, torch.zeros_like(max_scales))
-        id_mins = torch.where(max_mins > 0, 15. / max_mins, torch.zeros_like(max_mins))
+        output_d = (max_scales / 15).clamp(min=0)
+        output_dmin = (max_mins / 15).clamp(min=0)
+        id_scales = (15 * get_reciprocal(max_scales)).clamp(min=0)
+        id_mins = (15 * get_reciprocal(max_mins)).clamp(min=0)
 
         replace_ids = (max_scales > 0).squeeze()
         output_scale = torch.zeros_like(scales).to(torch.uint8)
@@ -506,8 +506,8 @@ def q3_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False,
         scales, _ = make_q3_quants(blocks, bits=3, do_rmse=True)
         scales_abs_max = abs(scales).argmax(dim=-1, keepdim=True)
         max_scales_mag = torch.take_along_dim(scales, scales_abs_max, dim=-1)
-        inverse_dq_scale = torch.where(max_scales_mag != 0, -32 / max_scales_mag, torch.zeros_like(max_scales_mag))
-        dq_scale = torch.where(inverse_dq_scale != 0, 1 / inverse_dq_scale, torch.zeros_like(inverse_dq_scale))
+        inverse_dq_scale = -32 * get_reciprocal(max_scales_mag)
+        dq_scale = get_reciprocal(inverse_dq_scale)
         qscale = torch.round(inverse_dq_scale * scales).clip(-32, 31)
         qdq_scale = dq_scale.to(torch.float32) * qscale
         reverse_qdq_scale = get_reciprocal(qdq_scale)
@@ -565,8 +565,8 @@ def q4_k_quant_block(blocks, scale=None, wmin=None, d_scale=None, d_wmin=None, i
         scales, all_L, mins = make_qkx2_quants(blocks, bits=4, rmin=-1, rdelta=0.1, nstep=20, use_mad=False)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]
-        id_scales = torch.where(max_scales > 0, 63. / max_scales, torch.zeros_like(max_scales))
-        id_mins = torch.where(max_mins > 0, 63. / max_mins, torch.zeros_like(max_mins))
+        id_scales = (63 * get_reciprocal(max_scales)).clamp(min=0)
+        id_mins = (63 * get_reciprocal(max_mins)).clamp(min=0)
         output_d = max_scales / 63
         output_dmin = max_mins / 63
         q_scales = torch.round(id_scales * scales).clip(0, 63).to(torch.uint8)
@@ -635,8 +635,8 @@ def q5_k_quant_block(
         scales, all_L, mins = make_qkx2_quants(blocks, bits=5, rmin=-0.5, rdelta=0.1, nstep=15, use_mad=False)
         max_scales = torch.max(scales, dim=-1, keepdim=True)[0]
         max_mins = torch.max(mins, dim=-1, keepdim=True)[0]
-        id_scales = torch.where(max_scales > 0, 63. / max_scales, torch.zeros_like(max_scales))
-        id_mins = torch.where(max_mins > 0, 63. / max_mins, torch.zeros_like(max_mins))
+        id_scales = (63 * get_reciprocal(max_scales)).clamp(min=0)
+        id_mins = (63 * get_reciprocal(max_mins)).clamp(min=0)
         output_d = max_scales / 63
         output_dmin = max_mins / 63
         q_scales = torch.round(id_scales * scales).clip(0, 63).to(torch.uint8)
@@ -702,8 +702,8 @@ def q6_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False,
         scales, all_L = make_qx_quants(blocks, bits=6, rmse_type=1, qw=None)
         imax = abs(scales).argmax(dim=-1, keepdim=True)
         max_scales = torch.take_along_dim(scales, imax, dim=-1)
-        iscales = torch.where(max_scales != 0, -128 / max_scales, torch.zeros_like(max_scales))
-        output_d = torch.where(iscales != 0, 1 / iscales, -1 * torch.ones_like(iscales))
+        iscales = -128 * get_reciprocal(max_scales)
+        output_d = get_reciprocal(iscales)
         output_scale = torch.round(iscales * scales).clip(max=127).to(torch.int8)
         d_tmp = output_d * output_scale.to(torch.float32)
         replace_ids = d_tmp != 0

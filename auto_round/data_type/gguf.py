@@ -70,7 +70,7 @@ def quant_tensor_sym_dq(
 
     scale = scale.view(-1, 1)
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
-    int_w = torch.where(scale != 0, round_ste(tensor / scale + v), torch.zeros_like(scale))
+    int_w = round_ste(tensor * get_reciprocal(scale) + v)
     q = torch.clamp(int_w + zp, 0, 2 ** bits - 1)
     qdq_result = (scale * (q - zp)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
@@ -141,7 +141,7 @@ def double_quant_tensor(tensor, bits):
     scale = wmax / maxq
     scale = scale.view(-1, 1)
     # inverse_scale = torch.where(scale == 0, 0, 1 / scale)
-    inverse_scale = torch.where(wmax > 0, maxq / wmax, torch.zeros_like(wmax)).view(-1, 1)
+    inverse_scale = (maxq * get_reciprocal(wmax)).view(-1, 1)
     qdq_tensor = torch.clamp(round_ste(tensor * inverse_scale), max=maxq) * scale
     return qdq_tensor, scale
 
