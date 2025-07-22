@@ -198,9 +198,6 @@ def require_vlm_env(test_case):
     # pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2
     env_check &= importlib.util.find_spec("llava") is not None
 
-    # pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git
-    env_check &= importlib.util.find_spec("deepseek_vl2") is not None
-
     env_check &= importlib.util.find_spec("xformers") is not None
 
     return unittest.skipUnless(env_check, "Environment is not satisfactory")(test_case)
