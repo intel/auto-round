@@ -228,6 +228,10 @@ def pack_layer(layer_name, model, backend):
         )
         qlayer.to(device)
         set_module(model, layer_name, qlayer)
+    if hasattr(layer,"weight"):
+        layer.weight = None
+    if hasattr(layer,"bias"):
+        layer.bias = None
 
 
 def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):
@@ -307,7 +311,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
     max_workers = 1
-    if not torch.cuda.is_available() or not torch.xpu.is_available():
+    if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
@@ -379,4 +383,5 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
 

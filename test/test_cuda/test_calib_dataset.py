@@ -35,7 +35,7 @@ class TestLocalCalibDataset(unittest.TestCase):
 
     def test_combine_dataset(self):
         dataset = (
-                    "NeelNanda/pile-10k" + ",codeparrot/github-code-clean" + ",BAAI/CCI3-HQ" + ",madao33/new-title-chinese")
+                    "NeelNanda/pile-10k" + ",BAAI/CCI3-HQ" + ",madao33/new-title-chinese")
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=128, dataset=dataset
@@ -45,3 +45,4 @@ class TestLocalCalibDataset(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

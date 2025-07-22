@@ -36,6 +36,7 @@ from .mllm_dataset import get_mllm_dataloader
 from ..low_cpu_mem.utils import get_layers_before_block
 
 
+
 def _only_text_test(model, tokenizer, device, model_type):
     """Test if the model whether can use text-only datasets."""
 
@@ -267,6 +268,7 @@ class AutoRoundMLLM(AutoRound):
             to_quant_block_names=self.to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
+            vlm=True,
             **kwargs,
         )
 

@@ -8,7 +8,7 @@ AutoRound
 [![python](https://img.shields.io/badge/python-3.9%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.5.1-green)](https://github.com/intel/auto-round)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
-<a href="https://huggingface.co/OPEA">
+<a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
 ---
@@ -23,7 +23,7 @@ AutoRound also offers a variety of useful features, including mixed-bit tuning a
 support for exporting to formats like GPTQ/AWQ/GGUF, and flexible tuning recipes. The below
 image presents an overview of AutoRound. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more
 details and quantized models in several Hugging Face Spaces,
-e.g. [OPEA](https://huggingface.co/OPEA), [Intel](https://huggingface.co/Intel), [Kaitchup](https://huggingface.co/kaitchup)
+e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
 and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 <div align="center">
@@ -34,17 +34,11 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
 ## What's New
 
-[//]: # (* [2025.07] AutoRound now offers experimental support for the widely used **GGUF** format. We currently recommend using)
-
-[//]: # (  RTN mode &#40;--iters 0&#41; for all the bits except 3. A more advanced algorithm tailored for some specific configurations is likely)
-
-[//]: # (  to be introduced in the upcoming release. Example models are)
-
-[//]: # (  available on the Intel Hugging Face space, including)
-
-[//]: # (  [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v0]&#40;https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v0&#41;)
-
-[//]: # (  and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v0]&#40;https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v0&#41;)
+* [2025.07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
+  all bits other than 3 bits. A more advanced algorithm tailored for specific configurations may be available in
+  v0.6.1. Example
+  models: [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v1](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v1)
+  and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v1](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v1).
 * [2025.05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer
   to [DeepSeek-R1-0528-int2-mixed-sym-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int2-mixed-sym-inc), [DeepSeek-R1-0528-int4-sym-gptq-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-gptq-inc-auto-round)
   and [DeepSeek-R1-0528-int4-asym-awq-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-awq-inc-auto-round) for
@@ -281,6 +275,9 @@ autoround.save_quantized(output_dir, format='auto_round', inplace=True)
 **AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
 inference. **[2,3,4,8] bits are supported**.
 
+**GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
+community. `q*_k`,`q*_0`,`q*_1` are supported.
+
 **AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
 community, **[2,3,4,8] bits are supported**. However, **the
 asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
@@ -292,8 +289,7 @@ adopted within the community, **only 4-bits quantization is supported**.
 **llmcompressor Format**: This format is for reusing llmcompressor format,  **only INT8 W8A8 dynamic quantization is
 supported**.
 
-**GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
-community.
+
 
 ### Quantization Costs
 
