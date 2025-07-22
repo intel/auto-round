@@ -25,7 +25,7 @@ from torch import autocast
 from tqdm import tqdm
 import accelerate
 
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.wrapper import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
 from auto_round.utils import (
     CpuInfo,
@@ -173,6 +173,7 @@ class AutoRound(object):
             model_kwargs: dict = None,
             **kwargs,
     ):
+        self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
         self.quantized = False
@@ -452,7 +453,6 @@ class AutoRound(object):
         self._dq_check()
 
     def _check_compatibility(self):
-
         ##check gguf and others
         has_gguf = False
         if hasattr(self, "formats"):
@@ -472,8 +472,8 @@ class AutoRound(object):
                 )
 
         ##check group_size 32 for auto_round
-        if self.data_type == "int" and hasattr(self, "formats") and (
-                "auto_round" in self.formats or "auto_gptq" in self.formats or "auto_awq" in self.formats):
+        if self.data_type == "int" and hasattr(self, "formats") and any(
+        key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq")):
             for n, m in self.model.named_modules():
                 if isinstance(m, self.supported_types):
                     if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
@@ -515,7 +515,9 @@ class AutoRound(object):
         Returns:
             list: A list of validated and updated formats.
         """
-        _gguf_args_check(self, format)
+        _gguf_args_check(self, format, model_type=ModelType.TEXT)
+        if self.vlm:
+            _gguf_args_check(self, format, model_type=ModelType.MMPROJ)
 
         formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
         from auto_round.utils import SUPPORTED_FORMATS
@@ -557,7 +559,7 @@ class AutoRound(object):
         for index in range(len(formats)):
             format = formats[index]
             if format == "auto_round":
-                if self.sym or self.bits == 3 and "int" in self.data_type:
+                if self.sym and "int" in self.data_type:
                     format = format.replace('auto_round', 'auto_round:auto_gptq')
                     formats[index] = format
                 if self.bits == 4 and not self.sym and "int" in self.data_type:
@@ -601,7 +603,7 @@ class AutoRound(object):
                 if format == "llmcompressor":
                     bits, group_size, sym, act_bits = 8, -1, True, 8
                     assert self.bits == bits and self.group_size == group_size and self.sym == sym \
-                        and self.act_bits == act_bits and self.act_dynamic, \
+                           and self.act_bits == act_bits and self.act_dynamic, \
                         f"Currently only support to export llmcompressor format for dynamic quantized" \
                         f" W{self.bits}A{self.act_bits} model, but got bits={self.bits}," \
                         f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
@@ -842,7 +844,7 @@ class AutoRound(object):
 
         try:
             # Move model to target device
-            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 :
+            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 from accelerate.big_modeling import dispatch_model
 
                 dispatch_model(self.model, self.model.hf_device_map)
@@ -872,9 +874,16 @@ class AutoRound(object):
             # Perform quantization using RTN
             from tqdm import tqdm
             pbar = tqdm(all_to_quantized_module_names)
+            block_names_cnt = len(flatten_list(get_block_names(self.model,True)))
+            clear_mem_freq = len(all_to_quantized_module_names)//block_names_cnt
+            cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
+                if  cnt % clear_mem_freq == 0:
+                    clear_memory()
+                    cnt = 1
+                cnt += 1
         except RuntimeError as e:
             try:
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -887,7 +896,8 @@ class AutoRound(object):
                 self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
             except Exception:
                 # Final fallback: warn and use CPU-only quantization
-                logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
+                logger.warning("Fallback to CPU. "
+                               "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`.")
                 model = model.to("cpu")
                 clear_memory()
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -942,12 +952,13 @@ class AutoRound(object):
             if isinstance(module, torch.nn.Embedding):
                 key: str = "lm_head" if tie_word_embeddings else "embedding"
                 config: dict[str, Any] = GGUF_INNER_CONFIG[GGUF_CONFIG[target_format][key]]
-                self._apply_config_to_layer(name, config,True)
+                self._apply_config_to_layer(name, config, True)
 
         if not tie_word_embeddings:
             lm_head_name: str = get_lm_head_name(self.model)
             config: dict[str, Any] = GGUF_CONFIG[GGUF_CONFIG[target_format]["lm_head"]]
-            check_fixed_by_user =  self.layer_config[lm_head_name].get("fixed_by_user", False)
+            check_fixed_by_user = self.layer_config[lm_head_name].get(
+                "fixed_by_user", False) if lm_head_name in self.layer_config else None
             self._apply_config_to_layer(lm_head_name, config, check_fixed_by_user=check_fixed_by_user)
             return True
 
@@ -1018,7 +1029,7 @@ class AutoRound(object):
 
         # Step 2: Try quantization on GPU first, fall back to CPU if OOM
         # if only export gguf, using gguf-packing instead of rtn
-        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0]:
+        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and self.disable_opt_rtn:
             m.scale = None
             m.zp = None
         else:
@@ -1046,9 +1057,6 @@ class AutoRound(object):
                 else:
                     raise
 
-            if self.low_gpu_mem_usage:
-                clear_memory()
-
         # Step 3: Optional immediate packing/export
         if self.is_packing_immediate:
             from auto_round.export import PACKING_LAYER_WITH_FORMAT
@@ -1060,10 +1068,17 @@ class AutoRound(object):
                 if has_gguf:
                     from auto_round.export.export_to_gguf.export import pack_gguf_layer
                     output_dir = self.get_save_folder_name(self.formats[0])
+                    model_type = ModelType.MMPROJ if self.vlm else ModelType.TEXT
                     pack_gguf_layer(
-                        name, self.model, self.formats[0],
-                        output_dir, self.layer_config, self.tokenizer
-                    )
+                        name,
+                        self.model,
+                        self.formats[0],
+                        output_dir,
+                        self.layer_config,
+                        self.tokenizer,
+                        processor=self.processor if hasattr(self, "processor") else None,
+                        image_processor=self.image_processor if hasattr(self, "image_processor") else None,
+                        model_type=model_type)
                 else:
                     kwargs = {}
                     if "mx"  in self.formats[0] or "nv" in self.formats[0]:
@@ -1072,8 +1087,8 @@ class AutoRound(object):
                         name, self.model, self.formats[0], **kwargs
                     )
 
-                if self.low_gpu_mem_usage:
-                    clear_memory()
+                # if self.low_gpu_mem_usage:
+                #     clear_memory()
         else:
             set_module(self.model, name, m)
 
@@ -1102,10 +1117,17 @@ class AutoRound(object):
         if has_gguf_k and not self.disable_opt_rtn:
             self.quant_rtn_with_imatrix(all_to_quantized_module_names)
         else:
+            block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+            clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
             pbar = tqdm(all_to_quantized_module_names)
+            cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
+                if  cnt % clear_mem_freq == 0:
+                    clear_memory()
+                    cnt = 1
+                cnt += 1
 
         self.quantized = True
         return self.model, self.layer_config
@@ -1163,7 +1185,7 @@ class AutoRound(object):
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
-
+                block = block.to(self.device)
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate import dispatch_model
@@ -1174,15 +1196,16 @@ class AutoRound(object):
                         hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                         add_hook_to_module(m, hook, True)
 
-                    input_ids = self.get_block_outputs(
-                        block,
-                        input_ids,
-                        input_others,
-                        self.batch_size * self.infer_bs_coeff,
-                        self.device,
-                        self.cache_device,
-                    )
+                input_ids = self.get_block_outputs(
+                    block,
+                    input_ids,
+                    input_others,
+                    self.batch_size * self.infer_bs_coeff,
+                    self.device,
+                    self.cache_device,
+                )
 
+                if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
                 # Normalize imatrix and quantize layers
@@ -1197,11 +1220,16 @@ class AutoRound(object):
                 pbar.update(1)
 
         pbar.close()
-
+        cnt = 1
+        block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+        clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
             self.quantize_layer_via_rtn(name)
-
+            if  cnt % clear_mem_freq == 0:
+                clear_memory()
+                cnt = 1
+            cnt += 1
 
     def quantize(self):
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
@@ -1223,8 +1251,11 @@ class AutoRound(object):
             if len(self.formats) == 1 and self.formats[0] == "fake":
                 only_gguf = False
             if only_gguf:
-                self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(self.layer_config, self.formats,
-                                                                                        self.model)
+                self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
+                    self.layer_config, self.formats, self.model, model_type=ModelType.TEXT)
+                if self.vlm:
+                    self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
+                        self.layer_config, self.formats, self.model, model_type=ModelType.MMPROJ)
             # Determine if immediate packing is required
             formats = self.formats
             if (len(formats) == 1 and
@@ -1947,7 +1978,6 @@ class AutoRound(object):
                 unwrapper_layer(self.model, wrapper_linear, layer_name, {})
             mv_module_from_gpu(layer, self.low_cpu_mem_usage)
 
-
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": self.minmax_lr}], lr=self.lr, weight_decay=0
@@ -2137,7 +2167,7 @@ class AutoRound(object):
                 f"layers in the block"
             )
             logger.info(dump_info)
-            unwrapper_block(block, {}) ## TODO Quant layer should change
+            unwrapper_block(block, {})  ## TODO Quant layer should change
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             return output, output
 
@@ -2343,8 +2373,17 @@ class AutoRound(object):
                         if has_gguf:
                             from auto_round.export.export_to_gguf.export import pack_gguf_layer
                             output_dir = self.get_save_folder_name(self.formats[0])
-                            pack_gguf_layer(tmp_m.tmp_name, self.model, self.formats[0], output_dir, self.layer_config,
-                                            self.tokenizer)
+                            model_type = ModelType.MMPROJ if self.vlm else ModelType.TEXT
+                            pack_gguf_layer(
+                                tmp_m.tmp_name,
+                                self.model,
+                                self.formats[0],
+                                output_dir,
+                                self.layer_config,
+                                self.tokenizer,
+                                processor=self.processor if hasattr(self, "processor") else None,
+                                image_processor=self.image_processor if hasattr(self, "image_processor") else None,
+                                model_type=model_type)
                         else:
                             kwargs = {}
                             if "mx"  in self.formats[0] or "nv" in self.formats[0]:

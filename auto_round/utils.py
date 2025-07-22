@@ -29,7 +29,7 @@ from packaging import version
 import gc
 from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 import transformers
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES, GGUF_INNER_CONFIG, QK_K
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES, GGUF_INNER_CONFIG, QK_K, ModelType
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -1170,9 +1170,8 @@ def get_layer_features(layer):
     return None, None  # Unsupported layer type
 
 
-def _gguf_args_check(args_or_ar, format_str=None):
+def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     from auto_round.utils import logger
-    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
     import argparse
 
     if format_str is None:
@@ -1191,7 +1190,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
     for format in GGUF_CONFIG:
         if format in formats:
             if format == "q6_k_s":
-                logger.warning("Please not that q6_k_s is q6_k.")
+                logger.warning("Please note that q6_k_s is q6_k.")
             try:
                 from auto_round.export.export_to_gguf.convert import ModelBase
             except:
@@ -1211,7 +1210,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
                 hparams = ModelBase.load_hparams(Path(args_or_ar.model))
                 model_architecture = hparams["architectures"][0]
                 try:
-                    model_class = ModelBase.from_model_architecture(model_architecture)
+                    model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
                 except NotImplementedError:
                     logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                     sys.exit(1)
@@ -1307,15 +1306,24 @@ def llm_load_model(
     else:
         if _use_hpu_compile_mode():
             model = model_cls.from_pretrained(
-                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                pretrained_model_name_or_path, torch_dtype=torch_dtype,
                 attn_implementation="eager",
                 trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
             )
         else:
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-                trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
-            )
+            try:
+                model = model_cls.from_pretrained(
+                    pretrained_model_name_or_path, torch_dtype=torch_dtype,
+                    trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
+                )
+            except OSError as e:
+                logger.warning(
+                    f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
+                model = model_cls.from_pretrained(
+                    pretrained_model_name_or_path,
+                    torch_dtype=torch_dtype,
+                    trust_remote_code=False,
+                    device_map="auto" if use_auto_mapping else None)
 
     model = model.eval()
     model = _to_model_dtype(model, model_dtype)
@@ -1332,7 +1340,7 @@ def mllm_load_model(
         **kwargs):
     import json
     import transformers
-    from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
+    from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM, AutoModel
     from huggingface_hub import HfApi, hf_hub_download, HfFileSystem
 
     if os.path.isdir(pretrained_model_name_or_path):
@@ -1395,6 +1403,12 @@ def mllm_load_model(
                 pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
             processor = AutoProcessor.from_pretrained(
                 pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            try:
+                from transformers import AutoImageProcessor
+                image_processor = AutoImageProcessor.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            except Exception as e:
+                pass
 
     model = model.eval()
     model = _to_model_dtype(model, model_dtype)
@@ -1606,30 +1620,28 @@ def _gguf_type_fallback(gguf_type):
     return gguf_type
 
 ##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
-def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
+def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type=ModelType.TEXT):
     # TODO: support for other format later
     target_gguf_format = next((fmt for fmt in gguf_format if fmt != "fake"), None)
 
     import gguf  # pylint: disable=E0401
-    from auto_round.export.export_to_gguf.convert import ModelBase
-    if model.config.architectures is not None:
-        model_architecture = model.config.architectures[0]
-    else:
-        model_architecture = type(model).__name__
-        if model_architecture not in ModelBase._model_classes:
-            if model_architecture.replace("CausalLM", "ConditionalGeneration") in ModelBase._model_classes:
-                model_architecture = model_architecture.replace("CausalLM", "ConditionalGeneration")
-            elif model_architecture.replace("ConditionalGeneration", "CausalLM") in ModelBase._model_classes:
-                model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
+    from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
+    model_architecture = get_model_architecture(hparams=model.config.to_dict(), model_type=model_type)
     try:
-        model_class = ModelBase.from_model_architecture(model_architecture)
+        model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
     except NotImplementedError:
         return layer_config, {}
 
     n_layer = None
     for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers"]:
+        sub_attr = "text_config" if model_type == ModelType.TEXT else "vision_config"
         if hasattr(model.config, name):
             n_layer = getattr(model.config, name)
+            break
+        if hasattr(model.config, sub_attr):
+            if hasattr(getattr(model.config, sub_attr), name):
+                n_layer = getattr(getattr(model.config, sub_attr), name)
+                break
     if n_layer is None:
         return layer_config, {}
 
@@ -1830,10 +1842,10 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             and 'Deepseek' in model.config.architectures[0]:
             fallback = False
 
-            # calc if need fallback 
+            # calc if need fallback
             qk_nope_head_dim = model.config.qk_nope_head_dim
             kv_b_shape = get_module(model, layer_name).weight.shape
-            
+
             if qk_nope_head_dim < QK_K or qk_nope_head_dim % QK_K != 0 \
                 or kv_b_shape[-1] < QK_K or kv_b_shape[-1] % QK_K != 0:
                 fallback = True
@@ -1909,6 +1921,8 @@ def flatten_list(nested_list):
     return flattened
 
 def clean_module_parameter(submodule, parameter):
+    if submodule is None:
+        return
     is_buffer = parameter in submodule._buffers
     with torch.no_grad():
         if is_buffer:

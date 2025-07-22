@@ -542,6 +542,8 @@ class ModelBase(OriModel):
             dry_run: bool = False,
             small_first_shard: bool = False,
             hparams: dict[str, Any] | None = None):
+        if self.model_arch == gguf.MODEL_ARCH.MMPROJ and fname_out.is_dir():
+            fname_out = fname_out / "mmproj-model.gguf"
         self.model = model
         self.layer_config = layer_config
         self.low_cpu_mem_usage = self._need_low_cpu_mem(low_cpu_mem_usage)
@@ -600,7 +602,8 @@ class ModelBase(OriModel):
         for name, tensor in self.model.named_parameters():
             yield name, tensor
 
-    def _quant_data_with_args(self, data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None):
+    def _quant_data_with_args(
+            self, data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
         if torch.cuda.is_available():
             device = "cuda"
         elif torch.xpu.is_available():
@@ -613,13 +616,28 @@ class ModelBase(OriModel):
         d_scale = d_scale.to(torch.float32) if isinstance(d_scale, torch.Tensor) else d_scale
         d_wmin = d_wmin.to(torch.float32) if isinstance(d_wmin, torch.Tensor) else d_wmin
         wmin = wmin.to(torch.float32) if isinstance(wmin, torch.Tensor) else wmin
+        imatrix = imatrix.to(torch.float32) if isinstance(imatrix, torch.Tensor) else imatrix
 
         data = ggml_quant(
-            data_torch, data_qtype.name.lower(), scale, zp, wmin=wmin, d_scale=d_scale, d_wmin=d_wmin, device=device)
+            data_torch,
+            data_qtype.name.lower(),
+            scale,
+            zp,
+            wmin=wmin,
+            d_scale=d_scale,
+            d_wmin=d_wmin,
+            imatrix=imatrix,
+            device=device)
         return data
 
-    def _quant_data(self, data_torch, data_qtype, name, bid):
+    def _quant_data(self, data_torch, data_qtype, name, modify_name, bid):
         suffix = '.weight'
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.xpu.is_available():
+            device = "xpu"
+        else:
+            device = "cpu"
         if suffix in name:
             layer_name = name[:-len(suffix)]
             module = get_module(self.model, layer_name)
@@ -630,17 +648,12 @@ class ModelBase(OriModel):
                         if hasattr(module, attr) and getattr(module, attr) is not None:
                             attr_tensor = getattr(module, attr)
                             ori_shape = attr_tensor.shape
-                            attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), name, bid)[0][1]
+                            # attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid)[0][1]
+                            attr_tensor = self.modify_tensors(attr_tensor, modify_name, bid)[0][1]
                             attr_tensor = attr_tensor.reshape(ori_shape)
                             setattr(module, attr, attr_tensor)
                 scale = module.scale if hasattr(module, "scale") else None
                 zp = module.zp if hasattr(module, "zp") else None
-                if torch.cuda.is_available():
-                    device = "cuda"
-                elif torch.xpu.is_available():
-                    device = "xpu"
-                else:
-                    device = "cpu"
                 data_torch = data_torch.to(torch.float32)
                 scale = scale.to(torch.float32) if isinstance(scale, torch.Tensor) else scale
                 zp = zp.to(torch.float32) if isinstance(zp, torch.Tensor) else zp
@@ -670,20 +683,20 @@ class ModelBase(OriModel):
                 data_qtype = gguf.GGMLQuantizationType.F32  ##FP16 has issues at inference
                 data = data_torch.to(torch.float32).squeeze().cpu().numpy()
         else:
+            # for Llama-4
             # if data_torch.dtype == torch.float32:
             #     data_qtype = gguf.GGMLQuantizationType.F32
             # else:
             #     data_qtype = gguf.GGMLQuantizationType.F16
             # data = data_torch.squeeze().cpu().numpy()
-            data_qtype = gguf.GGMLQuantizationType.F32
-            data = data_torch.to(torch.float32).squeeze().cpu().numpy()
+            # data_qtype = gguf.GGMLQuantizationType.F32
+            # data = data_torch.to(torch.float32).squeeze().cpu().numpy()
+            data = ggml_quant(data_torch, data_qtype.name.lower(), device=device)
         return data, data_qtype
 
     def get_qtype_by_layer_config(self, layer_config, name, data_qtype):
         name = name[:-len('.weight')]
         if name not in layer_config or layer_config[name]['bits'] >= 16:
-            if isinstance(data_qtype, bool):
-                return gguf.GGMLQuantizationType.F32
             return data_qtype
         bits = layer_config[name]['bits']
         super_bits = layer_config[name]["super_bits"]
@@ -738,6 +751,42 @@ class ModelBase(OriModel):
         #     raise ValueError(f"Unknown file type: {data_qtype}")
         # return data_qtype
 
+    def _special_name_handle(self, name):
+        # for Qwen2VL
+        def remove_prefix(name, key_list):
+            for key in key_list:
+                if key in name and not name.startswith(key):
+                    name = ".".join(name.split(".")[1:])
+                    break
+            return name
+        if self.model_arch == gguf.MODEL_ARCH.QWEN2VL:
+            name = name.replace("language_model.", "")
+            visual_keys =  ["thinker", "visual", "audio", "talker", "token2wav"]
+            name = remove_prefix(name, visual_keys)
+        if isinstance(self, Qwen2VLVisionModel):
+            if "visual." in name and not name.startswith("visual."):
+                name = ".".join(name.split(".")[1:])
+
+        # for gemma3
+        if self.model_arch == gguf.MODEL_ARCH.GEMMA3 or isinstance(self, Gemma3VisionModel):
+            visual_keys =  ["multi_modal_projector", "vision_tower", "multimodal_projector", "vision_model"]
+            name = remove_prefix(name, visual_keys)
+
+        # for LlavaForConditionalGeneration
+        if self.model_arch == gguf.MODEL_ARCH.LLAMA:
+            name = name.replace("language_model.", "")
+            # name = name.replace("model.", "")
+        if isinstance(self, LlavaVisionModel):
+            visual_keys =  ["multi_modal_projector", "vision_tower"]
+            name = remove_prefix(name, visual_keys)
+
+        # for InternVisionModel
+        if isinstance(self, InternVisionModel):
+            visual_keys =  ["vision_model"]
+            name = remove_prefix(name, visual_keys)
+
+        return name
+
     def prepare_tensors(self):
         max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
 
@@ -768,7 +817,9 @@ class ModelBase(OriModel):
                     break
 
             clean_weight_list = []
-            for new_name, data_torch in (self.modify_tensors(data_torch, name, bid)):
+
+            modify_name = self._special_name_handle(name)
+            for new_name, data_torch in (self.modify_tensors(data_torch, modify_name, bid)):
                 data = data_torch.squeeze().cpu().numpy()
 
                 # if data ends up empty, it means data_torch was a scalar tensor -> restore
@@ -813,40 +864,53 @@ class ModelBase(OriModel):
                 name = self.get_moe_name(name, new_name)
                 clean_weight_list.append(name)
                 # get data_qtype by layer_config
-                data_qtype = self.get_qtype_by_layer_config(self.layer_config, name, data_qtype)
+                if isinstance(data_qtype, bool):
+                    data_qtype = self.get_qtype_by_layer_config(self.layer_config, name, data_qtype)
 
                 # # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
-                # if isinstance(data_qtype, bool):
-                #     if self.ftype == gguf.LlamaFileType.ALL_F32:
-                #         data_qtype = gguf.GGMLQuantizationType.F32
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_F16:
-                #         data_qtype = gguf.GGMLQuantizationType.F16
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_BF16:
-                #         data_qtype = gguf.GGMLQuantizationType.BF16
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q8_0:
-                #         data_qtype = gguf.GGMLQuantizationType.Q8_0
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_0:
-                #         data_qtype = gguf.GGMLQuantizationType.Q4_0
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_1:
-                #         data_qtype = gguf.GGMLQuantizationType.Q4_1
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_0:
-                #         data_qtype = gguf.GGMLQuantizationType.Q5_0
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_1:
-                #         data_qtype = gguf.GGMLQuantizationType.Q5_1
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K_S:
-                #         data_qtype = gguf.GGMLQuantizationType.Q2_K
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_S:
-                #         data_qtype = gguf.GGMLQuantizationType.Q3_K
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S:
-                #         data_qtype = gguf.GGMLQuantizationType.Q4_K
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_M:
-                #         data_qtype = gguf.GGMLQuantizationType.Q4_K
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_S:
-                #         data_qtype = gguf.GGMLQuantizationType.Q5_K
-                #     elif self.ftype == gguf.LlamaFileType.MOSTLY_Q6_K:
-                #         data_qtype = gguf.GGMLQuantizationType.Q6_K
-                #     else:
-                #         raise ValueError(f"Unknown file type: {self.ftype.name}")
+                if isinstance(data_qtype, bool):
+                    if self.ftype == gguf.LlamaFileType.ALL_F32:
+                        data_qtype = gguf.GGMLQuantizationType.F32
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_F16:
+                        data_qtype = gguf.GGMLQuantizationType.F16
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_BF16:
+                        data_qtype = gguf.GGMLQuantizationType.BF16
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q8_0:
+                        data_qtype = gguf.GGMLQuantizationType.Q8_0
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_0:
+                        data_qtype = gguf.GGMLQuantizationType.Q4_0
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_1:
+                        data_qtype = gguf.GGMLQuantizationType.Q4_1
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_0:
+                        data_qtype = gguf.GGMLQuantizationType.Q5_0
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_1:
+                        data_qtype = gguf.GGMLQuantizationType.Q5_1
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K_S or \
+                        self.ftype == gguf.LlamaFileType.MOSTLY_Q2_K:
+                        data_qtype = gguf.GGMLQuantizationType.Q2_K
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_S or \
+                        self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_M or \
+                        self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_L:
+                        data_qtype = gguf.GGMLQuantizationType.Q3_K
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S or \
+                        self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_M:
+                        data_qtype = gguf.GGMLQuantizationType.Q4_K
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_S \
+                        or self.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_M:
+                        data_qtype = gguf.GGMLQuantizationType.Q5_K
+                    elif self.ftype == gguf.LlamaFileType.MOSTLY_Q6_K:
+                        data_qtype = gguf.GGMLQuantizationType.Q6_K
+                    else:
+                        raise ValueError(f"Unknown file type: {self.ftype.name}")
+
+                if data_qtype.name.endswith("_K") and data_torch.shape[-1] % 256 != 0:
+                    if data_qtype in [gguf.GGMLQuantizationType.Q2_K, gguf.GGMLQuantizationType.Q3_K,
+                                      gguf.GGMLQuantizationType.Q4_K]:
+                        data_qtype = gguf.GGMLQuantizationType.Q5_0
+                    elif data_qtype == gguf.GGMLQuantizationType.Q5_K:
+                        data_qtype = gguf.GGMLQuantizationType.Q5_0
+                    elif data_qtype == gguf.GGMLQuantizationType.Q6_K:
+                        data_qtype = gguf.GGMLQuantizationType.Q8_0
 
                 if isinstance(data_qtype, bool) or data_qtype in [
                         gguf.GGMLQuantizationType.F16, gguf.GGMLQuantizationType.BF16, gguf.GGMLQuantizationType.F32
@@ -873,19 +937,22 @@ class ModelBase(OriModel):
                                     attr_tensor = getattr(module, attr)
                                 else:
                                     attr_tensor = getattr(module, "w_" + attr)
+                                if attr_tensor is None:
+                                    continue
                                 kv_b = attr_tensor.view(n_head_kv, v_head_dim + qk_nope_head_dim, -1)
                                 k_b, v_b = torch.split(kv_b, [qk_nope_head_dim, v_head_dim], dim=1)
                                 k_b = k_b.transpose(1, 2)
 
-                                name_kb = name.replace("kv_b_proj", "k_b_proj")
+                                name_kb = modify_name.replace("kv_b_proj", "k_b_proj")
                                 if new_name == self.map_tensor_name(name_kb):
                                     attr_list[attr] = k_b
                                 else:
                                     attr_list[attr] = v_b
+                        attr_list["imatrix"] = module.imatrix if hasattr(module, "imatrix") else None
                         data = self._quant_data_with_args(data_torch, data_qtype, **attr_list)
 
                     # for MOE model
-                    elif len(data_torch.shape) == 3:
+                    elif len(data_torch.shape) == 3 and len(re.findall("\d+", name)) == 2:
                         new_data = []
                         for idx, arr in enumerate(data_torch):
                             arr_name = name.split('.')
@@ -893,12 +960,12 @@ class ModelBase(OriModel):
                                 if arr_name[i].isdecimal() and int(arr_name[i]) == (data_torch.shape[0] - 1):
                                     arr_name[i] = str(idx)
                             arr_name = ".".join(arr_name)
-                            arr, data_qtype = self._quant_data(arr, data_qtype, arr_name, bid)
+                            arr, data_qtype = self._quant_data(arr, data_qtype, arr_name, modify_name, bid)
                             new_data.append(arr)
                         data = np.array(new_data)
                         del new_data
                     else:
-                        data, data_qtype = self._quant_data(data_torch, data_qtype, name, bid)
+                        data, data_qtype = self._quant_data(data_torch, data_qtype, name, modify_name, bid)
 
                 shape = gguf.quant_shape_from_byte_shape(
                     data.shape, data_qtype) if data.dtype == np.uint8 else data.shape
@@ -917,6 +984,13 @@ class ModelBase(OriModel):
             if self.low_cpu_mem_usage:
                 for weight_name in clean_weight_list:
                     module = get_module(self.model, ".".join(weight_name.split(".")[:-1]))
+                    for key in ["scale", "zp", "d_scale", "wmin", "d_wmin", "imatrix"]:
+                        if hasattr(module, key):
+                            setattr(module, key, None)
+                        if hasattr(module, "w_" + key):
+                            setattr(module, "w_" + key, None)
+                    if self.model_arch == gguf.MODEL_ARCH.LLAMA and "embed_tokens.weight" in weight_name:
+                        continue
                     clean_module_parameter(module, weight_name.split(".")[-1])
 
 
@@ -1062,10 +1136,10 @@ class TextModel(ModelBase):
         )
 
         seems_special = seems_special or (token_text.startswith("<|") and token_text.endswith("|>"))
-        seems_special = seems_special or (token_text.startswith("<｜") and token_text.endswith("｜>"))  
+        seems_special = seems_special or (token_text.startswith("<｜") and token_text.endswith("｜>"))
 
         # TODO: should these be marked as UNUSED instead? (maybe not)
-        seems_special = seems_special or (token_text.startswith("<unused") and token_text.endswith(">"))  
+        seems_special = seems_special or (token_text.startswith("<unused") and token_text.endswith(">"))
 
         return seems_special
 
@@ -1075,7 +1149,7 @@ class TextModel(ModelBase):
         toktypes: list[int] = []
 
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(self.dir_model)
+        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=True)
         vocab_size = self.hparams.get("vocab_size", len(tokenizer.vocab))
         assert max(tokenizer.vocab.values()) < vocab_size
 
@@ -1109,7 +1183,7 @@ class TextModel(ModelBase):
                     else:
                         # NOTE: this was added for Gemma.
                         # Encoding and decoding the tokens above isn't sufficient for this case.
-                        token = token.replace(b"\xe2\x96\x81".decode("utf-8"), " ")  
+                        token = token.replace(b"\xe2\x96\x81".decode("utf-8"), " ")
                         toktypes.append(gguf.TokenType.USER_DEFINED)
                 else:
                     toktypes.append(gguf.TokenType.NORMAL)
@@ -3283,6 +3357,7 @@ class Qwen2VLModel(TextModel):
         del bid  # unused
         if name.startswith("thinker."):
             name = name.replace("thinker.", "")
+
         if name.startswith("visual") or name.startswith("audio") or \
                 name.startswith("talker") or name.startswith("token2wav"):
             # skip multimodal tensors
@@ -6630,7 +6705,8 @@ class ChatGLMModel(TextModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
 
-        if name.endswith(".rotary_pos_emb.inv_freq") or name.startswith("model.vision."):
+        if name.endswith(".rotary_pos_emb.inv_freq") or name.startswith("model.vision.") \
+            or name.startswith("transformers.vision."):
             return []
 
         name = name.removeprefix("transformer.")
