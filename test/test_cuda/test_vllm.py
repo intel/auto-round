@@ -4,7 +4,7 @@
 
  Validating the configuration and printing results for manual checking.
 
- Run `pytest tests/quantization/test_auto_round.py`.
+ Run `pytest test/test_cuda/test_vllm.py`.
 """
 
 import pytest
