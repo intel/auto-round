@@ -123,7 +123,7 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
     for _is in range(-9, 10):
         if _is == 0:
             continue
-        iscales = -(nmax + -0.1 * _is) * get_reciprocal(nmax)
+        iscales = -(nmax + -0.1 * _is) * get_reciprocal(group_max)
         tmp_L = torch.round(iscales * data).clip(-nmax, nmax - 1)
         sumlx = torch.sum(w * data * L, dim=-1)
         suml2 = torch.sum(w * L * L, dim=-1)

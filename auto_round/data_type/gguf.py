@@ -141,7 +141,7 @@ def double_quant_tensor(tensor, bits):
     scale = wmax / maxq
     scale = scale.view(-1, 1)
     # inverse_scale = torch.where(scale == 0, 0, 1 / scale)
-    inverse_scale = (maxq * get_reciprocal(wmax)).view(-1, 1)
+    inverse_scale = (maxq * get_reciprocal(wmax)).clamp(min=0).view(-1, 1)
     qdq_tensor = torch.clamp(round_ste(tensor * inverse_scale), max=maxq) * scale
     return qdq_tensor, scale
 
