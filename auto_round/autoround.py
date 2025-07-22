@@ -876,6 +876,8 @@ class AutoRound(object):
             pbar = tqdm(all_to_quantized_module_names)
             block_names_cnt = len(flatten_list(get_block_names(self.model,True)))
             clear_mem_freq = len(all_to_quantized_module_names)//block_names_cnt
+            if clear_mem_freq == 0:
+                clear_mem_freq = 1
             cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
@@ -1119,6 +1121,8 @@ class AutoRound(object):
         else:
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+            if clear_mem_freq == 0:
+                clear_mem_freq = 1
             pbar = tqdm(all_to_quantized_module_names)
             cnt = 1
             for name in pbar:
@@ -1223,6 +1227,8 @@ class AutoRound(object):
         cnt = 1
         block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
         clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+        if clear_mem_freq == 0:
+            clear_mem_freq = 1
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
             self.quantize_layer_via_rtn(name)
