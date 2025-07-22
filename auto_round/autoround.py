@@ -828,10 +828,10 @@ class AutoRound(object):
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
-                    module.imatrix_cnt = 1
+                    module.imatrix_cnt = input.shape[0]
                 else:
                     module.imatrix += squared
-                    module.imatrix_cnt += 1
+                    module.imatrix_cnt += input.shape[0]
 
             hook_handles = []
             for name, module in model.named_modules():
@@ -885,33 +885,36 @@ class AutoRound(object):
                     cnt = 1
                 cnt += 1
         except RuntimeError as e:
-            try:
-                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                    import accelerate
-                    accelerate.hooks.remove_hook_from_submodules(model)
-                # Fallback: out-of-memory → try CPU blockwise quantization
-                logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
-                model = model.to("cpu")
-                clear_memory()
-                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-            except Exception:
-                # Final fallback: warn and use CPU-only quantization
-                logger.warning("Fallback to CPU. "
-                               "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`.")
-                model = model.to("cpu")
-                clear_memory()
-                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                    import accelerate
-                    accelerate.hooks.remove_hook_from_submodules(model)
+            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                try:
+                    if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                        import accelerate
+                        accelerate.hooks.remove_hook_from_submodules(model)
+                    # Fallback: out-of-memory → try CPU blockwise quantization
+                    logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
+                    model = model.to("cpu")
+                    clear_memory()
+                    self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                except Exception:
+                    # Final fallback: warn and use CPU-only quantization
+                    logger.warning("Fallback to CPU. "
+                                "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`.")
+                    model = model.to("cpu")
+                    clear_memory()
+                    if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                        import accelerate
+                        accelerate.hooks.remove_hook_from_submodules(model)
 
-                orig_device = self.device
-                self.device = "cpu"
-                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                self.device = orig_device
-            finally:
-                # Always remove hooks
-                for hook in hooks:
-                    hook.remove()
+                    orig_device = self.device
+                    self.device = "cpu"
+                    self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                    self.device = orig_device
+                finally:
+                    # Always remove hooks
+                    for hook in hooks:
+                        hook.remove()
+            else:
+                raise
 
         # Move back to CPU and free memory
         model.to("cpu")
@@ -1029,7 +1032,7 @@ class AutoRound(object):
 
         # Step 2: Try quantization on GPU first, fall back to CPU if OOM
         # if only export gguf, using gguf-packing instead of rtn
-        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and self.disable_opt_rtn:
+        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
             m.scale = None
             m.zp = None
         else:
