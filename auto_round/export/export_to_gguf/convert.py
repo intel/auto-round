@@ -649,8 +649,7 @@ class ModelBase(OriModel):
                         if hasattr(module, attr) and getattr(module, attr) is not None:
                             attr_tensor = getattr(module, attr)
                             ori_shape = attr_tensor.shape
-                            # attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid)[0][1]
-                            attr_tensor = self.modify_tensors(attr_tensor, modify_name, bid)[0][1]
+                            attr_tensor = self.modify_tensors(attr_tensor.reshape(bs, -1), modify_name, bid)[0][1]
                             attr_tensor = attr_tensor.reshape(ori_shape)
                             setattr(module, attr, attr_tensor)
                 scale = module.scale if hasattr(module, "scale") else None

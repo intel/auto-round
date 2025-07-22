@@ -15,6 +15,7 @@
 import torch
 from auto_round.data_type.utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, logger
 from auto_round.data_type.register import register_dtype
+from auto_round.utils import get_reciprocal
 
 
 @register_dtype("int_sym_dq")
@@ -69,7 +70,7 @@ def quant_tensor_sym_dq(
 
     scale = scale.view(-1, 1)
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
-    int_w = torch.where(scale != 0, round_ste(tensor / scale + v), 0)
+    int_w = torch.where(scale != 0, round_ste(tensor / scale + v), torch.zeros_like(scale))
     q = torch.clamp(int_w + zp, 0, 2 ** bits - 1)
     qdq_result = (scale * (q - zp)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
@@ -140,7 +141,7 @@ def double_quant_tensor(tensor, bits):
     scale = wmax / maxq
     scale = scale.view(-1, 1)
     # inverse_scale = torch.where(scale == 0, 0, 1 / scale)
-    inverse_scale = torch.where(wmax > 0, maxq / wmax, 0).view(-1, 1)
+    inverse_scale = torch.where(wmax > 0, maxq / wmax, torch.zeros_like(wmax)).view(-1, 1)
     qdq_tensor = torch.clamp(round_ste(tensor * inverse_scale), max=maxq) * scale
     return qdq_tensor, scale
 
@@ -151,7 +152,7 @@ def double_quant_tensor_sym(tensor, bits):
     imax = abs(tensor).argmax(axis=-1, keepdims=True)
     wmax = torch.take_along_dim(tensor, imax, dim=-1)
     scale = wmax / -maxq
-    inverse_scale = torch.where(scale == 0, 0, 1 / scale)  ##1e-40
+    inverse_scale = get_reciprocal(scale)
     qdq_tensor = torch.clip((round_ste(tensor * inverse_scale)), -maxq, maxq - 1) * scale
     return qdq_tensor, scale
 
@@ -161,7 +162,7 @@ def make_qp_quants(nmax, data, quant_weights):
     quant_weights = quant_weights.to(torch.float32)
     group_max = torch.max(data, dim=-1, keepdim=True)[0]
     scale = group_max / nmax
-    iscale = torch.where(scale == 0, 0, 1 / scale)
+    iscale = get_reciprocal(scale)
 
     L = torch.round(iscale * data)
     diffs = data - scale * L
@@ -171,7 +172,7 @@ def make_qp_quants(nmax, data, quant_weights):
         if _is == 0:
             continue
         scale_is = group_max / (0.1 * _is + nmax)
-        iscale_is = torch.where(scale_is == 0, 0, 1 / scale_is)
+        iscale_is = get_reciprocal(scale_is)
 
         tmp_L = torch.round(iscale_is * data).clip(max=nmax)
         diffs = data - scale_is * tmp_L
@@ -328,11 +329,11 @@ def quant_tensor_gguf_asym_dq(
             use_mad=params["use_mad"], weights=quant_weights
         )
         scale = scale.to(scale_dtype)
-        scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
+        scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
         scale = scale.reshape(-1, super_group_size)
         wmin = wmin.reshape(-1, super_group_size)
         scale, d_scale = double_quant_tensor(scale, super_bits)
-        wmin = torch.where(torch.abs(wmin) < 1e-30, 0, wmin)
+        wmin = torch.where(torch.abs(wmin) < 1e-30, torch.zeros_like(wmin), wmin)
         wmin, d_wmin = double_quant_tensor(wmin, super_bits)
         wmin = wmin.view(-1, 1)
         scale = scale.view(-1, 1)
@@ -386,7 +387,7 @@ def quant_tensor_gguf_asym_dq(
             use_mad=params["use_mad"], weights=quant_weights
         )
         scale = scale.to(scale_dtype)
-        scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
+        scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
         nmax = 2 ** super_bits - 1
         scale = scale.reshape(-1, super_group_size)
         wmin = wmin_0.reshape(-1, super_group_size)
@@ -399,7 +400,7 @@ def quant_tensor_gguf_asym_dq(
         d_wmin = d_wmin.unsqueeze(-1)
         scale = (d_scale * q_scale).view(-1, 1)
         wmin = (d_wmin * q_wmin).view(-1, 1)
-    inverse_scale = torch.where(scale == 0, 0, 1 / scale)
+    inverse_scale = get_reciprocal(scale)
 
     int_w = torch.clamp(round_ste((tensor + wmin) * inverse_scale + v), 0, maxq)
     qdq_result = (scale * int_w - wmin).to(orig_dtype)
@@ -436,7 +437,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
 
     # scale = 1 / ((maxq - minq) / (rmax - rmin + 1e-8))
     scale = (rmax - rmin) / (maxq - minq)
-    iscale = torch.where(scale == 0, 0, 1 / scale)
+    iscale = get_reciprocal(scale)
     # quant_data = torch.clamp(torch.round((maxq - minq) / (rmax - rmin + 1e-8) * (data - rmin)), minq, maxq)
     quant_data = torch.clamp(torch.round(iscale * (data - rmin)), minq, maxq)
     diff = scale * quant_data + rmin - data
@@ -447,7 +448,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
         factor = rrmin + rdelta * is_ + maxq - minq
         # iscale_new = factor / (rmax - rmin + 1e-8)
         scale_new = (rmax - rmin) / factor
-        iscale_new = torch.where(scale_new == 0, 0, 1 / scale_new)
+        iscale_new = get_reciprocal(scale_new)
         quant_data_new = torch.clamp(torch.round(iscale_new * (data - rmin)), minq, maxq)
 
         mul_weights_quant_data = weights * quant_data_new
@@ -460,7 +461,7 @@ def iterative_wls_quant_search(data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, u
         this_min = (sum_l2 * sum_x - sum_l * sum_xl) / D
         this_min[this_min > 0] = 0
         this_scale[this_min > 0] = (sum_xl / sum_l2)[this_min > 0]
-        reverse_this_scale = torch.where(this_scale == 0, 0, 1 / this_scale)
+        reverse_this_scale = get_reciprocal(this_scale)
 
         quant_data = torch.clamp(torch.round(reverse_this_scale * (data - this_min)), minq, maxq)
         diff = this_scale * quant_data + this_min - data
@@ -569,13 +570,13 @@ def quant_tensor_gguf_sym_dq(
                 quant_weights[mean_replace_index, :] = tmp_quant_weights[mean_replace_index, :]
 
         scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=quant_weights)
-    scale = torch.where(torch.abs(scale) < 1e-30, 0, scale)
+    scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
     # conduct double quant
     scale, d_scale = double_quant_tensor_sym(scale, super_bits)
 
     scale = scale.unsqueeze(-1)
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
-    inverse_scale = torch.where(scale == 0, 0, 1.0 / scale)
+    inverse_scale = get_reciprocal(scale)
     int_w = torch.round(tensor * inverse_scale).clip(-maxq, maxq - 1) + maxq
     qdq_result = (scale * (int_w - zp)).to(orig_dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
