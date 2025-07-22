@@ -2113,7 +2113,7 @@ class AutoRound(object):
         current_output = torch.cat(current_output, dim=self.batch_dim)
         # current_output = to_device(current_output, device)
         current_input_ids = [input_ids[i] for i in whole_indices]
-        default_config = GGUF_CONFIG[target_gguf_format]
+        # default_config = GGUF_CONFIG[target_gguf_format]
         split_list = re.split(':|_',target_gguf_format)
         mix_configs = {}
         
@@ -2121,25 +2121,18 @@ class AutoRound(object):
             mix_configs[k] = GGUF_CONFIG[f"gguf:q{k}_{split_list[2]}"]
         
         d_format = [f"gguf:q{min(bits)}_{split_list[2]}"]
-        low_config = GGUF_CONFIG[f"gguf:q{min(bits)}_{split_list[2]}"]
-
-        default_layer_config = low_config
         
-        for k in self.layer_config.keys():
-            s = re.split('\.',k)
-            if len(s) <2:
-                continue
-            ss = s[-2]+'.'+s[-1]
-            if ss in layer_names:
-                self.layer_config[k] = low_config
-
+        # aa = copy.deepcopy(self.layer_config)
+        default_config, _ = get_layer_config_by_gguf_format(self.layer_config, d_format, self.model)
+        # b = default_config == self.layer_config
+        # c = self.layer_config == aa
         if len(bits) == 2:
-            self.choose_one_bit(block,mix_configs,quant_bits,default_config,default_layer_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device)
+            self.choose_one_bit(block,mix_configs,quant_bits,default_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device)
         else:
-            self.choose_various_bit(block,mix_configs,quant_bits,default_config,default_layer_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device)
+            self.choose_various_bit(block,mix_configs,quant_bits,default_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device)
 
 
-    def choose_one_bit(self,block,mix_configs,quant_bits,default_config,default_layer_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device):
+    def choose_one_bit(self,block,mix_configs,quant_bits,default_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device):
         each_loss = {}
         # bit = mix_configs.keys()[0]
         [(_,cur_config)] = mix_configs.items()
@@ -2154,25 +2147,26 @@ class AutoRound(object):
             q_output = self.get_block_outputs(block, current_input_ids, input_others, self.batch_size * self.infer_bs_coeff,
                                     device,
                                     cache_device)
+            # wrapper_layer = wrapper_layer.unwrapper({})
             for key in default_config:  
                 setattr(module,key,default_config[key])
             set_module(block,layer_name,wrapper_layer.orig_layer)
             
             cur_loss=mse_loss(torch.stack(q_output).squeeze(1),current_output)
             each_loss[layer_name] = cur_loss #把每一层的loss记录下来
+        tmp_list = []
         
-        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=False)[:num_bit]
-        
-        # breakpoint()
+        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=True)[:num_bit]
         # tmp_list.append(max_loss[1])
-        flag = {}
         for kk in top_n_loss:
+            module = get_module(block, kk)
+            for key in cur_config:
+                setattr(module,key,cur_config[key])
             for n in self.layer_config.keys():
                 if n.endswith(kk[0]):
                     self.layer_config[n] = cur_config
-                    continue
     
-    def choose_various_bit(self,block,mix_configs,quant_bits,cur_config,default_config,default_layer_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device):
+    def choose_various_bit(self,block,mix_configs,quant_bits,cur_config,default_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device):
         each_loss = {}
         for layer_name in layer_names:
             module = get_module(block, layer_name)

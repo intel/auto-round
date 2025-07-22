@@ -1017,6 +1017,8 @@ class AutoRound(object):
         ]
 
         has_gguf_k = any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", []))
+        self.check_needs_auto_gguf_mix_mse(
+            block, self.layer_config, self.formats, input_ids, input_others, output, device, self.cache_device)
 
         self.quantize_embedding_layer()
 
@@ -2161,9 +2163,7 @@ class AutoRound(object):
             cur_loss=mse_loss(torch.stack(q_output).squeeze(1),current_output)
             each_loss[layer_name] = cur_loss #把每一层的loss记录下来
         
-        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=False)[:num_bit]
-        
-        # breakpoint()
+        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=True)[:num_bit]
         # tmp_list.append(max_loss[1])
         flag = {}
         for kk in top_n_loss:

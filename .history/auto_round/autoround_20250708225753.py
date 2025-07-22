@@ -2154,16 +2154,16 @@ class AutoRound(object):
             q_output = self.get_block_outputs(block, current_input_ids, input_others, self.batch_size * self.infer_bs_coeff,
                                     device,
                                     cache_device)
+            # wrapper_layer = wrapper_layer.unwrapper({})
             for key in default_config:  
                 setattr(module,key,default_config[key])
             set_module(block,layer_name,wrapper_layer.orig_layer)
             
             cur_loss=mse_loss(torch.stack(q_output).squeeze(1),current_output)
             each_loss[layer_name] = cur_loss #把每一层的loss记录下来
+        tmp_list = []
         
-        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=False)[:num_bit]
-        
-        # breakpoint()
+        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=True)[:num_bit]
         # tmp_list.append(max_loss[1])
         flag = {}
         for kk in top_n_loss:

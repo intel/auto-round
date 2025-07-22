@@ -1153,6 +1153,7 @@ class AutoRound(object):
                      "auto_round" in formats[0] or "gguf" in formats[0]) and self.inplace):
                 self.is_packing_immediate = True
         if self.iters == 0:
+            
             return self.quantize_rtn()
 
         if bool(self.quant_block_list):
@@ -2161,9 +2162,7 @@ class AutoRound(object):
             cur_loss=mse_loss(torch.stack(q_output).squeeze(1),current_output)
             each_loss[layer_name] = cur_loss #把每一层的loss记录下来
         
-        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=False)[:num_bit]
-        
-        # breakpoint()
+        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=True)[:num_bit]
         # tmp_list.append(max_loss[1])
         flag = {}
         for kk in top_n_loss:

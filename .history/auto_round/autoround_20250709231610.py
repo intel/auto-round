@@ -2162,8 +2162,6 @@ class AutoRound(object):
             each_loss[layer_name] = cur_loss #把每一层的loss记录下来
         
         top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=False)[:num_bit]
-        
-        # breakpoint()
         # tmp_list.append(max_loss[1])
         flag = {}
         for kk in top_n_loss:
