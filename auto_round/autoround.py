@@ -828,10 +828,10 @@ class AutoRound(object):
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
-                    module.imatrix_cnt = 1
+                    module.imatrix_cnt = input.shape[0]
                 else:
                     module.imatrix += squared
-                    module.imatrix_cnt += 1
+                    module.imatrix_cnt += input.shape[0]
 
             hook_handles = []
             for name, module in model.named_modules():
