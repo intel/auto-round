@@ -767,9 +767,9 @@ class ModelBase(OriModel):
             if "visual." in name and not name.startswith("visual."):
                 name = ".".join(name.split(".")[1:])
 
-        # for gemma3
+        # # for gemma3
         if self.model_arch == gguf.MODEL_ARCH.GEMMA3 or isinstance(self, Gemma3VisionModel):
-            visual_keys =  ["multi_modal_projector", "vision_tower", "multimodal_projector", "vision_model"]
+            visual_keys =  ["multi_modal_projector", "vision_tower", "multimodal_projector"]
             name = remove_prefix(name, visual_keys)
 
         # for LlavaForConditionalGeneration
