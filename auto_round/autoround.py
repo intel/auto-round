@@ -828,10 +828,10 @@ class AutoRound(object):
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
-                    module.imatrix_cnt = 1
+                    module.imatrix_cnt = input.shape[0]
                 else:
                     module.imatrix += squared
-                    module.imatrix_cnt += 1
+                    module.imatrix_cnt += input.shape[0]
 
             hook_handles = []
             for name, module in model.named_modules():
@@ -874,42 +874,50 @@ class AutoRound(object):
             # Perform quantization using RTN
             from tqdm import tqdm
             pbar = tqdm(all_to_quantized_module_names)
+            block_names_cnt = len(flatten_list(get_block_names(self.model,True)))
+            clear_mem_freq = len(all_to_quantized_module_names)//block_names_cnt
+            if clear_mem_freq == 0:
+                clear_mem_freq = 1
             cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
-                if self.low_gpu_mem_usage and cnt % 10 == 0:
+                if  cnt % clear_mem_freq == 0:
                     clear_memory()
                     cnt = 1
                 cnt += 1
         except RuntimeError as e:
-            try:
-                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                    import accelerate
-                    accelerate.hooks.remove_hook_from_submodules(model)
-                # Fallback: out-of-memory → try CPU blockwise quantization
-                logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
-                model = model.to("cpu")
-                clear_memory()
-                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-            except Exception:
-                # Final fallback: warn and use CPU-only quantization
-                logger.warning("Fallback to CPU. "
-                               "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`.")
-                model = model.to("cpu")
-                clear_memory()
-                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                    import accelerate
-                    accelerate.hooks.remove_hook_from_submodules(model)
+            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                try:
+                    if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                        import accelerate
+                        accelerate.hooks.remove_hook_from_submodules(model)
+                    # Fallback: out-of-memory → try CPU blockwise quantization
+                    logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
+                    model = model.to("cpu")
+                    clear_memory()
+                    self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                except RuntimeError as e:
+                    if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                        # Final fallback: warn and use CPU-only quantization
+                        logger.warning("Fallback to CPU. "
+                                    "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`.")
+                        model = model.to("cpu")
+                        clear_memory()
+                        if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                            import accelerate
+                            accelerate.hooks.remove_hook_from_submodules(model)
 
-                orig_device = self.device
-                self.device = "cpu"
-                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                self.device = orig_device
-            finally:
-                # Always remove hooks
-                for hook in hooks:
-                    hook.remove()
+                        orig_device = self.device
+                        self.device = "cpu"
+                        self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                        self.device = orig_device
+                    else:
+                        raise
+        finally:
+            # Always remove hooks
+            for hook in hooks:
+                hook.remove()
 
         # Move back to CPU and free memory
         model.to("cpu")
@@ -1027,7 +1035,7 @@ class AutoRound(object):
 
         # Step 2: Try quantization on GPU first, fall back to CPU if OOM
         # if only export gguf, using gguf-packing instead of rtn
-        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and self.disable_opt_rtn:
+        if self.is_packing_immediate and self.iters == 0 and "gguf" in self.formats[0] and not self.disable_opt_rtn:
             m.scale = None
             m.zp = None
         else:
@@ -1112,12 +1120,16 @@ class AutoRound(object):
         if has_gguf_k and not self.disable_opt_rtn:
             self.quant_rtn_with_imatrix(all_to_quantized_module_names)
         else:
+            block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+            clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+            if clear_mem_freq == 0:
+                clear_mem_freq = 1
             pbar = tqdm(all_to_quantized_module_names)
             cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
-                if self.low_gpu_mem_usage and cnt % 10 == 0:
+                if  cnt % clear_mem_freq == 0:
                     clear_memory()
                     cnt = 1
                 cnt += 1
@@ -1214,11 +1226,14 @@ class AutoRound(object):
 
         pbar.close()
         cnt = 1
-
+        block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+        clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+        if clear_mem_freq == 0:
+            clear_mem_freq = 1
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
             self.quantize_layer_via_rtn(name)
-            if self.low_gpu_mem_usage and cnt % 10 == 0:
+            if  cnt % clear_mem_freq == 0:
                 clear_memory()
                 cnt = 1
             cnt += 1

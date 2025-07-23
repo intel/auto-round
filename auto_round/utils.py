@@ -1306,14 +1306,14 @@ def llm_load_model(
     else:
         if _use_hpu_compile_mode():
             model = model_cls.from_pretrained(
-                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                pretrained_model_name_or_path, torch_dtype=torch_dtype,
                 attn_implementation="eager",
                 trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
             )
         else:
             try:
                 model = model_cls.from_pretrained(
-                    pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                    pretrained_model_name_or_path, torch_dtype=torch_dtype,
                     trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
                 )
             except OSError as e:
@@ -1321,7 +1321,6 @@ def llm_load_model(
                     f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
                 model = model_cls.from_pretrained(
                     pretrained_model_name_or_path,
-                    low_cpu_mem_usage=True,
                     torch_dtype=torch_dtype,
                     trust_remote_code=False,
                     device_map="auto" if use_auto_mapping else None)
@@ -1930,3 +1929,10 @@ def clean_module_parameter(submodule, parameter):
             submodule._buffers[parameter] = None
         else:
             submodule._parameters[parameter] = None
+
+def get_reciprocal(tensor):
+    if torch.dtype is torch.float16:
+        tensor =  torch.sign(tensor) * torch.clamp(torch.abs(tensor), min=1e-5)
+    else:
+        tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
+    return  torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
