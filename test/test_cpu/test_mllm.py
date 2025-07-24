@@ -3,11 +3,11 @@ import unittest
 
 sys.path.insert(0, "../..")
 
-from auto_round import AutoRoundMLLM
+import shutil
 
 from transformers import AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
 
-import shutil
+from auto_round import AutoRoundMLLM
 
 
 class FakeDataLoader:
@@ -73,7 +73,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
         autoround.save_quantized("./saved/", format="auto_round", inplace=True)
 
     def test_quant_block_names(self):
-        from auto_round.utils import get_block_names,find_matching_blocks
+        from auto_round.utils import find_matching_blocks, get_block_names
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
         model = Qwen2VLForConditionalGeneration.from_pretrained(
@@ -109,6 +109,7 @@ class TestAutoRoundMLLM(unittest.TestCase):
     
     def test_pure_text_model_check(self):
         from transformers import AutoModelForCausalLM
+
         from auto_round.utils import is_pure_text_model
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             self.model_name, trust_remote_code=True, device_map="auto")

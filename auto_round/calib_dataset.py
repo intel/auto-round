@@ -14,12 +14,12 @@
 
 import json
 import random
+import sys
 
 import torch
-from datasets import Dataset, IterableDataset, load_dataset, concatenate_datasets
-from datasets import Features, Sequence, Value
+from datasets import Dataset, Features, IterableDataset, Sequence, Value, concatenate_datasets, load_dataset
 from torch.utils.data import DataLoader
-import sys
+
 from .utils import is_local_path, logger
 
 CALIB_DATASETS = {}
@@ -136,7 +136,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
         error_message = str(e)
         # Check for proxy or SSL error
         if "proxy" in error_message.lower() or isinstance(e, ssl.SSLError) or "SSL" in error_message.upper():
-            logger.error(f"Network error detected, please checking proxy settings." \
+            logger.error("Network error detected, please checking proxy settings." \
                          "Error: {error_message}. Or consider using a backup dataset by `pip install modelscope`" \
                          " and set '--dataset swift/pile-val-backup' in AutoRound API.")
         else:
@@ -710,6 +710,11 @@ def get_dataloader(
                         calib_name = key
                         break
             get_dataset = CALIB_DATASETS.get(calib_name)
+        if get_dataset is None:
+            filtered_keys = [k for k in CALIB_DATASETS.keys() if '/' not in k]
+            raise ValueError(
+                f"Dataset '{name}' is not found. Please choose from the supported datasets: {filtered_keys}."
+            )
         dataset = get_dataset(
             tokenizer,
             seqlen,

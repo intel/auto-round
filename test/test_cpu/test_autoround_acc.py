@@ -3,13 +3,17 @@ import copy
 import shutil
 import sys
 import unittest
+
 sys.path.insert(0, "../..")
+from math import isclose
+
 import torch
 import transformers
-from math import isclose
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from auto_round import AutoRound  # pylint: disable=E0401
 from auto_round.export.export_to_itrex.export import pack_model  # pylint: disable=E0401
+
 
 class LLMDataLoader:
     def __init__(self):

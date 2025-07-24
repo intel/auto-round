@@ -3,13 +3,23 @@ ci:
   autoupdate_schedule: quarterly
 
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-json
+      - id: check-yaml
+      - id: debug-statements
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
   - repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.5
     hooks:
       - id: insert-license
         files: |
           (?x)^(
-            auto_round/.*(py|yaml|yml|sh)
+            auto_round/.*(py|yaml|yml|sh)|
+            auto_round_extension/.*(py|yaml|yml|sh)
           )$
         args:
           [
@@ -26,7 +36,14 @@ repos:
         args: [-w]
         additional_dependencies:
           - tomli
-        exclude: |
-          (?x)^(
-              examples/.*(txt|patch)
-          )$
+
+  - repo: https://github.com/pycqa/isort
+    rev: 6.0.1
+    hooks:
+      - id: isort
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix, --no-cache]

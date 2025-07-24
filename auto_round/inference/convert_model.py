@@ -15,19 +15,31 @@ import os
 import re
 from logging import getLogger
 from typing import Union
-from tqdm import tqdm
+
 import torch
 import torch.nn as nn
-
+from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.utils import (
-    get_module, set_module, is_hpu_supported, get_block_names, find_matching_blocks,
-    get_layer_names_in_block, check_to_quantized, check_start_with_block_name, SUPPORTED_LAYER_TYPES)
-
 from auto_round.inference.backend import (
-    get_layer_backend, dynamic_import_inference_linear, find_backend, BackendInfos, get_highest_priority_backend,
-    process_requirement)
+    BackendInfos,
+    dynamic_import_inference_linear,
+    find_backend,
+    get_highest_priority_backend,
+    get_layer_backend,
+    process_requirement,
+)
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_start_with_block_name,
+    check_to_quantized,
+    find_matching_blocks,
+    get_block_names,
+    get_layer_names_in_block,
+    get_module,
+    is_hpu_supported,
+    set_module,
+)
 
 logger = getLogger(__name__)
 
@@ -69,7 +81,9 @@ def get_keys_to_not_convert(model):
         Input model
     """
     from copy import deepcopy
+
     from accelerate.utils import find_tied_parameters
+
     # Create a copy of the model and tie the weights, then
     # check if it contains tied weights
     tied_model = deepcopy(model)  # this has 0 cost since it is done inside `init_empty_weights` context manager`
@@ -508,7 +522,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
 
     quantization_config = model.config.quantization_config
 
-    if hasattr(quantization_config, "desc_act") and quantization_config.desc_act == True:
+    if hasattr(quantization_config, "desc_act") and quantization_config.desc_act:
         ##check static_group
         if (hasattr(quantization_config, "static_groups") and not quantization_config.static_groups) or (
                 not hasattr(quantization_config, "static_groups")):

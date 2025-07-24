@@ -1,16 +1,18 @@
 import re
+import shutil
 import sys
 import unittest
-import shutil
+
 sys.path.insert(0, "../..")
 
 
 import torch
 from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
-from auto_round.testing_utils import multi_card, require_greater_than_050, require_gptqmodel
+from auto_round.testing_utils import multi_card, require_gptqmodel, require_greater_than_050
 
 
 def get_accuracy(data):
@@ -105,7 +107,6 @@ class TestAutoRound(unittest.TestCase):
         autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7,seqlen=32)
         autoround.quantize()
 
-        from transformers import AutoModelForCausalLM, AutoTokenizer
         model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
 
         device_map = {}

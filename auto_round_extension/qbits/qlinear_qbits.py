@@ -18,7 +18,9 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+
 from auto_round.utils import convert_dtype_torch2str, logger
+
 QBITS_AVAILABLE = True
 
 BITS_DTYPE_MAPPING = {

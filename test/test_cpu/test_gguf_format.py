@@ -1,7 +1,8 @@
 import os
+import shutil
 import sys
 import unittest
-import shutil
+
 sys.path.insert(0, "../..")
 
 import torch

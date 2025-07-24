@@ -1,12 +1,13 @@
 import os
 import re
-import sys
 import shutil
+import sys
 import unittest
 
 sys.path.insert(0, "../..")
 
 from auto_round.testing_utils import multi_card
+
 
 def get_accuracy(data):
     match = re.search(r'\|acc\s+\|[↑↓]\s+\|\s+([\d.]+)\|', data)

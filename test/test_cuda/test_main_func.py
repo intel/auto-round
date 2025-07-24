@@ -1,18 +1,18 @@
 import copy
+import re
 import shutil
 import sys
 import unittest
-import re
 
 sys.path.insert(0, "../..")
 import torch
 import transformers
+from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoRoundAdam
 from auto_round.eval.evaluation import simple_evaluate
-from auto_round.testing_utils import require_gptqmodel, require_optimum, require_awq
-from lm_eval.utils import make_table  # pylint: disable=E0401
+from auto_round.testing_utils import require_awq, require_gptqmodel, require_optimum
 
 
 def get_accuracy(data):

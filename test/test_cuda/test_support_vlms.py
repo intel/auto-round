@@ -1,14 +1,15 @@
 import os
-import sys
 import shutil
+import sys
 import unittest
 
 sys.path.insert(0, '../..')
 
-from auto_round import AutoRoundConfig ## must import for auto-round format
-from auto_round.testing_utils import require_gptqmodel, require_vlm_env
 import requests
 from PIL import Image
+
+from auto_round import AutoRoundConfig  # # must import for auto-round format
+from auto_round.testing_utils import require_gptqmodel, require_vlm_env
 
 
 class TestSupportVLMS(unittest.TestCase):
@@ -352,7 +353,7 @@ class TestSupportVLMS(unittest.TestCase):
         self.assertFalse(res > 0 or res == -1, msg="deepseek vl2 tuning fail")
 
         quantized_model_path = os.path.join(self.save_dir, "deepseek-vl2-tiny-w4g32")
-        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM
+        from deepseek_vl2.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor
         from transformers import AutoModelForCausalLM
         vl_chat_processor: DeepseekVLV2Processor = DeepseekVLV2Processor.from_pretrained(quantized_model_path)
         tokenizer = vl_chat_processor.tokenizer
