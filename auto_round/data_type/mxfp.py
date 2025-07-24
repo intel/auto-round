@@ -15,7 +15,13 @@
 import torch
 
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE, register_dtype
-from auto_round.data_type.utils import ceil_ste, floor_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
+from auto_round.data_type.utils import (
+    ceil_ste,
+    floor_ste,
+    reshape_pad_tensor_by_group_size,
+    revert_tensor_by_pad,
+    round_ste,
+)
 
 MXFP_FORMAT_CACHE = {
     # data type: ebits, mbits, emax, max_norm, min_norm
