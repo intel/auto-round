@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, "../..")
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
+from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
@@ -206,6 +206,7 @@ class TestAutoRound(unittest.TestCase):
     
     def test_static_afp8_export(self):
         import os
+
         from safetensors import safe_open
 
         model_name = "facebook/opt-125m"

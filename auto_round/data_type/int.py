@@ -13,8 +13,9 @@
 # limitations under the License.
 
 import torch
-from auto_round.data_type.utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+
 from auto_round.data_type.register import register_dtype
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 
 
 @register_dtype("int_sym")

@@ -13,15 +13,12 @@
 # limitations under the License.
 
 import torch
-from torch.functional import F
 import transformers
+from torch.functional import F
+
 from auto_round.data_type import get_quant_func
-from .utils import (
-    check_to_quantized,
-    get_scale_shape,
-    set_module,
-    logger, SUPPORTED_LAYER_TYPES
-)
+
+from .utils import SUPPORTED_LAYER_TYPES, check_to_quantized, get_scale_shape, logger, set_module
 
 
 def reshape_and_pad_tensor(v, group_size=-1):

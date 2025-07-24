@@ -1,20 +1,21 @@
+import os
 import shutil
 import sys
-import os
 import unittest
+
 sys.path.insert(0, "../..")
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from auto_round import AutoRound
 from auto_round.low_cpu_mem.utils import (
-    load_model_with_hooks,
-    load_empty_model,
     get_layers_before_block,
     layer_wise_load,
     layer_wise_save,
-    )
-
-from auto_round import AutoRound
+    load_empty_model,
+    load_model_with_hooks,
+)
 
 
 class LLMDataLoader:

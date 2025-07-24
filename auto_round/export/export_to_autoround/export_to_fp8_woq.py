@@ -13,15 +13,24 @@
 # limitations under the License.
 
 import copy
-import os
-import torch
 import json
-from auto_round.utils import logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
-    filter_quantization_config, get_module, check_start_with_block_name
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import threadpoolctl as tctl
+import torch
 import transformers
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
+
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_start_with_block_name,
+    check_to_quantized,
+    filter_quantization_config,
+    get_module,
+    logger,
+    set_module,
+)
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -169,8 +178,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
     processor = kwargs.get("processor", None)
     extra_config = {}
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
-    if isinstance(block_name_to_quantize, str): \
-            block_name_to_quantize = block_name_to_quantize.split(",")
+    if isinstance(block_name_to_quantize, str):
+        block_name_to_quantize = block_name_to_quantize.split(",")
     elif isinstance(block_name_to_quantize, list):
         for i in range(len(block_name_to_quantize)):
             block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip('.')

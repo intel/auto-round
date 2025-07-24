@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import json
+import os
 from dataclasses import dataclass
-from typing import Dict, Optional, List
 from enum import Enum, unique
+from typing import Dict, List, Optional
 
 from ..utils import logger
-from .processor import BasicProcessor, PROCESSORS
+from .processor import PROCESSORS, BasicProcessor
 
 TEMPLATES: Dict[str, "Template"] = {}
 

@@ -29,8 +29,9 @@
 import importlib.util
 import warnings
 from dataclasses import dataclass
+from enum import Enum
 from logging import getLogger
-from typing import Any, Dict, Optional, Tuple, Union, List
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -39,9 +40,9 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
-from auto_round.utils import (is_hpu_supported)
+
 from auto_round.inference.convert_model import convert_hf_model, infer_target_device, post_init
-from enum import Enum
+from auto_round.utils import is_hpu_supported
 
 logger = getLogger(__name__)
 import sys
