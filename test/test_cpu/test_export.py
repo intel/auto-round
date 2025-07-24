@@ -206,6 +206,7 @@ class TestAutoRound(unittest.TestCase):
     
     def test_static_afp8_export(self):
         import os
+
         from safetensors import safe_open
 
         model_name = "facebook/opt-125m"
