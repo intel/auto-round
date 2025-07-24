@@ -13,6 +13,7 @@
 # limitations under the License.
 import sys
 
+
 def run_eval():
     from auto_round.script.llm import setup_eval_parser
     args = setup_eval_parser()
@@ -58,7 +59,7 @@ def run_fast():
 
 def run_mllm():
     if "--eval" in sys.argv:
-        from auto_round.script.llm import setup_eval_parser, eval
+        from auto_round.script.llm import eval, setup_eval_parser
         sys.argv.remove("--eval")
         args = setup_eval_parser()
         args.mllm = True
@@ -76,7 +77,7 @@ def run_mllm():
 
 def run_lmms():
     # from auto_round.script.lmms_eval import setup_lmms_args, eval
-    from auto_round.script.mllm import setup_lmms_parser, lmms_eval
+    from auto_round.script.mllm import lmms_eval, setup_lmms_parser
     args = setup_lmms_parser()
     lmms_eval(args)
 

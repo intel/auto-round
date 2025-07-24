@@ -11,6 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.testing_utils import require_gguf
 
+
 class LLMDataLoader:
     def __init__(self):
         self.batch_size = 1

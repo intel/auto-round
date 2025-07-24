@@ -12,19 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import os
 import sys
-import argparse
 
 from auto_round.utils import (
-    get_fp_layer_names,
     clear_memory,
-    is_debug_mode,
     get_device_and_parallelism,
-    set_cuda_visible_devices,
+    get_fp_layer_names,
+    is_debug_mode,
     logger,
-    )
-
+    set_cuda_visible_devices,
+)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -285,8 +284,7 @@ def setup_lmeval_parser():
 
 def tune(args):
     import transformers
-
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoProcessor
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
     if args.format is None:
         args.format = "auto_round"
@@ -300,7 +298,6 @@ def tune(args):
     ##must set this before import torch
     set_cuda_visible_devices(args.device)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
-
 
     import torch
     if not args.disable_deterministic_algorithms:
@@ -379,8 +376,8 @@ def tune(args):
                 if lm_head_layer_name in item:  ##TODO extend to encoder-decoder layer, seq classification model
                     args.quant_lm_head = False
                     print(
-                        f"warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
-                        f"supported currently")
+                        "warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
+                        "supported currently")
                     break
     if args.quant_lm_head:
         layer_config[lm_head_layer_name] = {"bits": args.bits}
@@ -392,8 +389,8 @@ def tune(args):
 
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(
-            f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
-            f"gpu")
+            "warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
+            "gpu")
 
     if "--truncation" not in sys.argv:
         args.truncation = None
@@ -449,8 +446,8 @@ def tune(args):
         model_kwargs=model_kwargs,
         data_type=args.data_type,
         disable_opt_rtn=args.disable_opt_rtn,
-        )
-    
+    )
+
     model_name = args.model.rstrip("/")
 
     if model_name.split('/')[-1].strip('.') == "" and "gguf" not in args.format:
@@ -569,6 +566,3 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-
-
-

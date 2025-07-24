@@ -34,29 +34,29 @@
 
 from __future__ import annotations
 
-import ast
-import gc
-import logging
 import argparse
+import ast
 import contextlib
+import gc
 import json
+import logging
+import math
 import os
 import re
 import sys
-import psutil
 from enum import IntEnum
-from pathlib import Path
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any, Callable, ContextManager, Iterable, Iterator, Literal, Sequence, TypeVar, cast
 from itertools import chain
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, ContextManager, Iterable, Iterator, Literal, Sequence, TypeVar, cast
 
-import math
 import numpy as np
+import psutil
 import torch
 from transformers import AutoConfig
 
-from auto_round.utils import logger, LazyImport, get_module, clean_module_parameter
 from auto_round.export.export_to_gguf.packing import ggml_quant
+from auto_round.utils import LazyImport, clean_module_parameter, get_module, logger
 
 gguf = LazyImport("gguf")
 
@@ -767,9 +767,9 @@ class ModelBase(OriModel):
             if "visual." in name and not name.startswith("visual."):
                 name = ".".join(name.split(".")[1:])
 
-        # for gemma3
+        # # for gemma3
         if self.model_arch == gguf.MODEL_ARCH.GEMMA3 or isinstance(self, Gemma3VisionModel):
-            visual_keys =  ["multi_modal_projector", "vision_tower", "multimodal_projector", "vision_model"]
+            visual_keys =  ["multi_modal_projector", "vision_tower", "multimodal_projector"]
             name = remove_prefix(name, visual_keys)
 
         # for LlavaForConditionalGeneration
@@ -4741,8 +4741,7 @@ class BertModel(TextModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
 
-        if name.startswith("bert."):
-            name = name[5:]
+        name = name.removeprefix("bert.")
 
         if name.endswith(".gamma"):
             name = name[:-6] + ".weight"
@@ -4798,6 +4797,7 @@ class BertModel(TextModel):
                 raise FileNotFoundError(f"File not found: {tokenizer_path}")
 
             from base64 import b64decode
+
             from transformers import AutoTokenizer
             tokenizer = AutoTokenizer.from_pretrained(self.dir_model)
 
@@ -4918,8 +4918,7 @@ class DistilBertModel(BertModel):
         super().set_gguf_parameters()
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        if name.startswith("distilbert."):
-            name = name[11:]
+        name = name.removeprefix("distilbert.")
 
         # These layers act as MLM head, so we don't need them
         if name.startswith("vocab_"):
@@ -4960,8 +4959,7 @@ class RobertaModel(BertModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         # if name starts with "roberta.", remove the prefix
         # e.g. https://huggingface.co/BAAI/bge-reranker-v2-m3/tree/main
-        if name.startswith("roberta."):
-            name = name[8:]
+        name = name.removeprefix("roberta.")
 
         # position embeddings start at pad_token_id + 1, so just chop down the weight tensor
         if name == "embeddings.position_embeddings.weight":
@@ -5076,8 +5074,7 @@ class NeoBert(BertModel):
         if name.startswith("decoder."):
             return []
 
-        if name.startswith("model."):
-            name = name[6:]
+        name = name.removeprefix("model.")
 
         return super().modify_tensors(data_torch, name, bid)
 
@@ -5096,8 +5093,7 @@ class XLMRobertaModel(BertModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         # if name starts with "roberta.", remove the prefix
         # e.g. https://huggingface.co/BAAI/bge-reranker-v2-m3/tree/main
-        if name.startswith("roberta."):
-            name = name[8:]
+        name = name.removeprefix("roberta.")
 
         # position embeddings start at pad_token_id + 1, so just chop down the weight tensor
         if name == "embeddings.position_embeddings.weight":

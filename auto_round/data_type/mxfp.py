@@ -13,8 +13,9 @@
 # limitations under the License.
 
 import torch
-from auto_round.data_type.utils import floor_ste, round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
-from auto_round.data_type.register import register_dtype, QUANT_FUNC_WITH_DTYPE
+
+from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE, register_dtype
+from auto_round.data_type.utils import floor_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 
 MXFP_FORMAT_CACHE = {
     # data type: ebits, mbits, emax, max_norm, min_norm

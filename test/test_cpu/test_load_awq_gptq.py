@@ -4,9 +4,7 @@ import unittest
 
 sys.path.insert(0, "../..")
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-from transformers import AutoRoundConfig
+from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 
 class TestAutoRound(unittest.TestCase):

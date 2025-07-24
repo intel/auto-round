@@ -13,13 +13,23 @@
 # limitations under the License.
 
 import os
-import sys
 import shutil
-import torch
-from pathlib import Path
+import sys
 import time
+from pathlib import Path
+
+import torch
+
 from auto_round.export.export_to_gguf.convert import ModelBase, ModelType, get_model_architecture
-from auto_round.utils import logger, LazyImport, get_block_names, flatten_list, check_to_quantized, get_module
+from auto_round.utils import (
+    LazyImport,
+    check_to_quantized,
+    clear_memory,
+    flatten_list,
+    get_block_names,
+    get_module,
+    logger,
+)
 
 TMP_DIR_NAME = "tmp_dir"
 
@@ -159,8 +169,7 @@ def pack_gguf_layer(
                 m.weight = None
             if hasattr(m, "bias"):
                 m.bias = None
-        import gc
-        gc.collect()
+        clear_memory()
         model.last_layer_name_to_block_name.pop(name)
         if len(model.last_layer_name_to_block_name) == 0:
             for gguf_model in gguf_model_instance_global:

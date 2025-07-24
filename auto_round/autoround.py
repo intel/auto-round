@@ -12,54 +12,62 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import os
 import re
 import sys
-
-import torch
-import copy
 import time
-from typing import Union, Any
-from transformers import set_seed
+from typing import Any, Union
+
+import accelerate
+import torch
 from torch import autocast
 from tqdm import tqdm
-import accelerate
+from transformers import set_seed
 
+from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
-from auto_round.wrapper import WrapperMultiblock, wrapper_block, unwrapper_block, WrapperLinear, unwrapper_layer
+from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.utils import (
+    SUPPORTED_DTYPES,
+    SUPPORTED_LAYER_TYPES,
+    TORCH_VERSION_AT_LEAST_2_6,
     CpuInfo,
+    _gguf_args_check,
     block_forward,
     check_is_cpu,
+    check_seqlen_compatible,
+    check_skippable_keywords,
     check_to_quantized,
+    clear_memory,
     collect_best_params,
+    compile_func,
     convert_dtype_str2torch,
     detect_device,
+    find_matching_blocks,
+    flatten_list,
     get_block_names,
+    get_layer_config_by_gguf_format,
+    get_layer_features,
+    get_layer_names_in_block,
+    get_lm_head_name,
     get_module,
+    get_shared_keys,
     htcore,
+    infer_bits_by_data_type,
+    init_cache,
+    is_debug_mode,
     is_optimum_habana_available,
+    llm_load_model,
     logger,
+    mv_module_from_gpu,
+    reset_params,
+    set_module,
     to_device,
     to_dtype,
-    get_layer_names_in_block,
-    mv_module_from_gpu,
-    unsupport_meta_device, clear_memory,
-    compile_func,
-    find_matching_blocks, is_debug_mode,
-    TORCH_VERSION_AT_LEAST_2_6,
-    SUPPORTED_LAYER_TYPES,
-    get_layer_features,
-    set_module,
-    llm_load_model,
-    reset_params,
-    init_cache, check_skippable_keywords, get_shared_keys, SUPPORTED_DTYPES, infer_bits_by_data_type,
-    _gguf_args_check,
-    check_seqlen_compatible,
-    get_layer_config_by_gguf_format, get_lm_head_name, flatten_list
+    unsupport_meta_device,
 )
-from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-from auto_round.low_cpu_mem.utils import get_layers_before_block
+from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
 
 class AutoRound(object):
@@ -232,9 +240,9 @@ class AutoRound(object):
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
 
         ##activation
-        self.act_group_size = act_group_size if not (act_group_size is None) else self.group_size
-        self.act_bits = act_bits if not (act_bits is None) else self.bits
-        self.act_sym = act_sym if not (act_sym is None) else self.sym
+        self.act_group_size = act_group_size if act_group_size is not None else self.group_size
+        self.act_bits = act_bits if act_bits is not None else self.bits
+        self.act_sym = act_sym if act_sym is not None else self.sym
         self.act_dynamic = act_dynamic
         self.act_data_type = act_data_type
         if self.act_data_type is None:
@@ -272,7 +280,7 @@ class AutoRound(object):
 
         self.enable_torch_compile = enable_torch_compile
         if not self.enable_torch_compile and TORCH_VERSION_AT_LEAST_2_6 and self.act_bits > 8 and not is_debug_mode() \
-                and self.low_cpu_mem_usage != True and "fp8" not in self.data_type and "fp8" not in self.act_data_type:
+                and not self.low_cpu_mem_usage and "fp8" not in self.data_type and "fp8" not in self.act_data_type:
             logger.info("'enable_torch_compile' is set to `False` by default. " \
                         "Enabling it can reduce tuning cost by 20%, but it might throw an exception.")
 
@@ -280,7 +288,7 @@ class AutoRound(object):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
 
-        if self.low_cpu_mem_usage == True and self.enable_torch_compile:
+        if self.low_cpu_mem_usage and self.enable_torch_compile:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
 
@@ -535,25 +543,7 @@ class AutoRound(object):
                 only_gguf = False
             if only_gguf:
                 self.scale_dtype = torch.float32
-                logger.info(f"change `scale_dtype` to `torch.float32`")
-
-        # only support to export afp8
-        if self.act_bits <= 8:
-            if "fp8" not in self.act_data_type:
-                if len(formats) > 1 or "fake" not in formats:
-                    logger.warning(
-                        f"Currently only support to export auto_round format quantized model"
-                        " with fp8 dtype activation for activation quantization."
-                        " Change format to fake and save."
-                    )
-                    formats = ["fake"]
-            else:
-                if len(formats) > 1 or "auto_round" not in formats:
-                    logger.warning(
-                        f"Currently only support to export auto_round format for W{self.bits}AFP8 model,"
-                        " change format to auto_round"
-                    )
-                    formats = ["auto_round"]
+                logger.info("change `scale_dtype` to `torch.float32`")
 
         # Adjust format settings based on compatibility
         for index in range(len(formats)):
@@ -579,8 +569,9 @@ class AutoRound(object):
             return [x for x in lst if not (x in seen or seen.add(x))]
 
         formats = remove_duplicates(formats)
-        for format in formats:
-            self._check_supported_format(format)
+        for i in range(len(formats)):
+            formats[i] = self._check_supported_format(formats[i])
+        formats = remove_duplicates(formats)
         return formats
 
     def _check_supported_format(self, format: str) -> bool:
@@ -609,13 +600,13 @@ class AutoRound(object):
                         f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
                 elif format != "fake":
                     logger.warning(
-                        f"Currently only support to export auto_round format quantized model"
+                        "Currently only support to export auto_round format quantized model"
                         " with fp8 dtype activation for activation quantization."
                         " Change format to fake and save."
                     )
                     format = "fake"
             else:
-                if format != "auto_round":
+                if not (format == "auto_round" or format == "auto_round:fp8"):
                     logger.warning(
                         f"Currently only support to export auto_round format for static W{self.bits}AFP8 model,"
                         " change format to auto_round"
@@ -629,6 +620,7 @@ class AutoRound(object):
             )
             sys.exit(-1)
 
+        return format
     def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
 
@@ -876,6 +868,8 @@ class AutoRound(object):
             pbar = tqdm(all_to_quantized_module_names)
             block_names_cnt = len(flatten_list(get_block_names(self.model,True)))
             clear_mem_freq = len(all_to_quantized_module_names)//block_names_cnt
+            if clear_mem_freq == 0:
+                clear_mem_freq = 1
             cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
@@ -895,26 +889,27 @@ class AutoRound(object):
                     model = model.to("cpu")
                     clear_memory()
                     self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                except Exception:
-                    # Final fallback: warn and use CPU-only quantization
-                    logger.warning("Fallback to CPU. "
-                                "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`.")
-                    model = model.to("cpu")
-                    clear_memory()
-                    if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                        import accelerate
-                        accelerate.hooks.remove_hook_from_submodules(model)
+                except RuntimeError as e:
+                    if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                        # Final fallback: warn and use CPU-only quantization
+                        logger.warning("Fallback to CPU. "
+                                    "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`.")
+                        model = model.to("cpu")
+                        clear_memory()
+                        if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                            import accelerate
+                            accelerate.hooks.remove_hook_from_submodules(model)
 
-                    orig_device = self.device
-                    self.device = "cpu"
-                    self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                    self.device = orig_device
-                finally:
-                    # Always remove hooks
-                    for hook in hooks:
-                        hook.remove()
-            else:
-                raise
+                        orig_device = self.device
+                        self.device = "cpu"
+                        self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                        self.device = orig_device
+                    else:
+                        raise
+        finally:
+            # Always remove hooks
+            for hook in hooks:
+                hook.remove()
 
         # Move back to CPU and free memory
         model.to("cpu")
@@ -1104,7 +1099,6 @@ class AutoRound(object):
         """
         if self.amp:
             self.model.to(self.amp_dtype)
-        self.model.to("cpu")
 
         all_to_quantized_module_names: list[str] = [
             n for n, m in self.model.named_modules() if check_to_quantized(m)
@@ -1114,11 +1108,31 @@ class AutoRound(object):
 
         self.quantize_embedding_layer()
 
+        self.model.to("cpu")
         if has_gguf_k and not self.disable_opt_rtn:
             self.quant_rtn_with_imatrix(all_to_quantized_module_names)
+        elif self.act_bits <=8 and self.act_dynamic is False:
+            hook_handles = self.register_act_max_hook(self.model)
+            try:
+                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+            except RuntimeError as e:
+                logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
+                self.model = self.model.to("cpu")
+                clear_memory()
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    import accelerate
+                    accelerate.hooks.remove_hook_from_submodules(self.model)
+                orig_device = self.device
+                self.device = "cpu"
+                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                self.device = orig_device
+            for handle in hook_handles:
+                handle.remove()
         else:
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+            if clear_mem_freq == 0:
+                clear_mem_freq = 1
             pbar = tqdm(all_to_quantized_module_names)
             cnt = 1
             for name in pbar:
@@ -1195,6 +1209,8 @@ class AutoRound(object):
                             continue
                         hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                         add_hook_to_module(m, hook, True)
+                else:
+                    block = block.to(self.device)
 
                 input_ids = self.get_block_outputs(
                     block,
@@ -1204,7 +1220,6 @@ class AutoRound(object):
                     self.device,
                     self.cache_device,
                 )
-
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
@@ -1223,6 +1238,8 @@ class AutoRound(object):
         cnt = 1
         block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
         clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
+        if clear_mem_freq == 0:
+            clear_mem_freq = 1
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
             self.quantize_layer_via_rtn(name)
@@ -1311,7 +1328,7 @@ class AutoRound(object):
             keys = inputs.keys()
             input_id_str = [key for key in keys if key.startswith('hidden_state')]
             if len(input_id_str) != 1:
-                raise RuntimeError(f"hidden_states arg mismatch error,"
+                raise RuntimeError("hidden_states arg mismatch error,"
                                    "please raise an issue in https://github.com/intel/auto-round/issues")
             inputs["input_ids"] = inputs.pop(input_id_str[0], None)
             if q_inputs is not None:
@@ -1844,10 +1861,10 @@ class AutoRound(object):
                         self.batch_dim = 1
                         if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.batch_size:
                             logger.error(
-                                f"this model has not been supported, "
-                                f"please raise an issue in https://github.com/intel/auto-round/issues"
-                                f" or try to set the `batch_size` to 1 and "
-                                f"`gradient_accumulate_steps` to your current batch size.")
+                                "this model has not been supported, "
+                                "please raise an issue in https://github.com/intel/auto-round/issues"
+                                " or try to set the `batch_size` to 1 and "
+                                "`gradient_accumulate_steps` to your current batch size.")
                             exit(-1)
 
             if hidden_states is not None:
@@ -2085,9 +2102,19 @@ class AutoRound(object):
         hook_handles = []
 
         for n, m in model.named_modules():
-            if hasattr(m, "act_dynamic") and m.act_dynamic == False and check_to_quantized(m):
+            if hasattr(m, "act_dynamic") and not m.act_dynamic and check_to_quantized(m):
                 hook = m.register_forward_hook(get_act_max_hook)
                 hook_handles.append(hook)
+                continue
+
+            # for whole model, RTN
+            if n in self.layer_config:
+                config = self.layer_config[n]
+                if config["bits"] <= 8 and "act_dynamic" in config and config[
+                        "act_dynamic"] is False and check_to_quantized(config):
+                    hook = m.register_forward_hook(get_act_max_hook)
+                    hook_handles.append(hook)
+                    continue
         return hook_handles
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
@@ -2385,7 +2412,7 @@ class AutoRound(object):
                                 model_type=model_type)
                         else:
                             PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
-        pbar.set_description(f"Quantizing done")
+        pbar.set_description("Quantizing done")
         pbar.update(1)
         pbar.close()
 
@@ -2413,7 +2440,7 @@ class AutoRound(object):
         Returns:
             object: The compressed model object.
         """
-        self._check_supported_format(format)
+        format = self._check_supported_format(format)
 
         if self.low_cpu_mem_usage:
             self.model = self.model.to('cpu')

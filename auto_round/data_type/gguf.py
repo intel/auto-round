@@ -13,8 +13,9 @@
 # limitations under the License.
 
 import torch
-from auto_round.data_type.utils import round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, logger
+
 from auto_round.data_type.register import register_dtype
+from auto_round.data_type.utils import logger, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 from auto_round.utils import get_reciprocal
 
 
@@ -506,7 +507,7 @@ def quant_tensor_gguf_sym_dq(
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
-    from auto_round.export.export_to_gguf.config import QK_K, K_SCALE_SIZE, GGML_QUANT_SIZES
+    from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, K_SCALE_SIZE, QK_K
     from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants
 
     if bits not in [3, 6]:

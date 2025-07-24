@@ -4,15 +4,13 @@ import sys
 import unittest
 
 sys.path.insert(0, "../..")
-from auto_round.eval.evaluation import simple_evaluate_user_model
-from auto_round.testing_utils import require_greater_than_050, require_autogptq, require_awq, require_ipex
-
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRound
-from auto_round import AutoRoundConfig
+from auto_round import AutoRound, AutoRoundConfig
+from auto_round.eval.evaluation import simple_evaluate_user_model
+from auto_round.testing_utils import require_autogptq, require_awq, require_greater_than_050, require_ipex
 
 
 class LLMDataLoader:

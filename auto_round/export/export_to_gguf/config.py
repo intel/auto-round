@@ -13,6 +13,7 @@
 # limitations under the License.
 from enum import IntEnum
 
+
 class ModelType(IntEnum):
     TEXT = 1
     MMPROJ = 2

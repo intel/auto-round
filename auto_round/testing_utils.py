@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import unittest
 import importlib.util
+import unittest
 
 import torch
-
 from transformers.utils.versions import require_version
+
 
 def is_gguf_available():
     return importlib.util.find_spec("gguf") is not None

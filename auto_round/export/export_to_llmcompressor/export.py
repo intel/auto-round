@@ -13,10 +13,12 @@
 # limitations under the License.
 
 import os
+
 import torch
-from auto_round.utils import get_module, logger, set_module, detect_device
-from auto_round.wrapper import WrapperWALayer
+
 from auto_round.export.export_to_llmcompressor.config import quantization_config
+from auto_round.utils import detect_device, get_module, logger, set_module
+from auto_round.wrapper import WrapperWALayer
 
 
 @torch.no_grad()
