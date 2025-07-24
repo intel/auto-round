@@ -68,7 +68,7 @@ def is_cpu_env():
 def fetch_requirements(path):
     requirements = []
     with open(path, "r") as fd:
-        requirements = [r.strip() for r in fd.readlines()]
+        requirements = [r.strip() for r in fd]
     return requirements
 
 

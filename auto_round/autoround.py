@@ -280,7 +280,7 @@ class AutoRound(object):
 
         self.enable_torch_compile = enable_torch_compile
         if not self.enable_torch_compile and TORCH_VERSION_AT_LEAST_2_6 and self.act_bits > 8 and not is_debug_mode() \
-                and self.low_cpu_mem_usage != True and "fp8" not in self.data_type and "fp8" not in self.act_data_type:
+                and not self.low_cpu_mem_usage and "fp8" not in self.data_type and "fp8" not in self.act_data_type:
             logger.info("'enable_torch_compile' is set to `False` by default. " \
                         "Enabling it can reduce tuning cost by 20%, but it might throw an exception.")
 
@@ -288,7 +288,7 @@ class AutoRound(object):
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as activation quantization is enabled")
 
-        if self.low_cpu_mem_usage == True and self.enable_torch_compile:
+        if self.low_cpu_mem_usage and self.enable_torch_compile:
             self.enable_torch_compile = False
             logger.warning("reset enable_torch_compile to `False` as low_cpu_mem_usage is enabled")
 
@@ -2100,7 +2100,7 @@ class AutoRound(object):
         hook_handles = []
 
         for n, m in model.named_modules():
-            if hasattr(m, "act_dynamic") and m.act_dynamic == False and check_to_quantized(m):
+            if hasattr(m, "act_dynamic") and not m.act_dynamic and check_to_quantized(m):
                 hook = m.register_forward_hook(get_act_max_hook)
                 hook_handles.append(hook)
         return hook_handles

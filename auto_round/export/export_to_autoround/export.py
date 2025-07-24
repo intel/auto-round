@@ -269,7 +269,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
         return save_quantized_as_autoround(output_dir, inplace=inplace, backend="auto_round", **kwargs)
 
     ##if using sym, we change to gptq sym kernel to avoid compiling from auto_round source
-    if (kwargs.get("sym") is None or kwargs.get("sym") == True) and ("gptq" not in backend and "awq" not in backend):
+    if (kwargs.get("sym") is None or kwargs.get("sym")) and ("gptq" not in backend and "awq" not in backend):
         backend = backend.replace('auto_round', 'auto_round:auto_gptq')
 
     model = kwargs["model"]
@@ -287,8 +287,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     processor = kwargs.get("processor", None)
     extra_config = {}
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
-    if isinstance(block_name_to_quantize, str): \
-            block_name_to_quantize = block_name_to_quantize.split(",")
+    if isinstance(block_name_to_quantize, str):
+        block_name_to_quantize = block_name_to_quantize.split(",")
     elif isinstance(block_name_to_quantize, list):
         for i in range(len(block_name_to_quantize)):
             block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip('.')

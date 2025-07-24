@@ -107,7 +107,6 @@ class TestAutoRound(unittest.TestCase):
         autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7,seqlen=32)
         autoround.quantize()
 
-        from transformers import AutoModelForCausalLM, AutoTokenizer
         model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
 
         device_map = {}

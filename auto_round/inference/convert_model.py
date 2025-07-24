@@ -522,7 +522,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
 
     quantization_config = model.config.quantization_config
 
-    if hasattr(quantization_config, "desc_act") and quantization_config.desc_act == True:
+    if hasattr(quantization_config, "desc_act") and quantization_config.desc_act:
         ##check static_group
         if (hasattr(quantization_config, "static_groups") and not quantization_config.static_groups) or (
                 not hasattr(quantization_config, "static_groups")):
