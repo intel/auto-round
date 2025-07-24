@@ -40,7 +40,7 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         block_names = get_block_names(model)
         self.check_block_names(block_names, ["transformer.encoder.layers"], [40])
-        assert is_pure_text_model(model)
+        assert is_pure_text_model(model), "Expected model to be pure text model"
 
     def test_opt_125m(self):
         model_name = "/models/opt-125m"
