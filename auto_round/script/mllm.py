@@ -12,19 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import os
 import sys
-import argparse
 
 from auto_round.utils import (
-    get_fp_layer_names,
     clear_memory,
-    is_debug_mode,
     get_device_and_parallelism,
-    set_cuda_visible_devices,
+    get_fp_layer_names,
+    is_debug_mode,
     logger,
-    )
-
+    set_cuda_visible_devices,
+)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -195,6 +194,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
 
+        self.add_argument("--disable_opt_rtn", action='store_true',
+                          help="whether to disable optimization of the RTN mode(iters=0) (default is False).")
+
 
 def setup_parser():
     parser = BasicArgumentParser()
@@ -282,26 +284,20 @@ def setup_lmeval_parser():
 
 def tune(args):
     import transformers
-
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoProcessor
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = [
-        "auto_round", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_awq", "gguf:q4_0", "gguf:q4_1", "fake"
-    ]
-    if not args.quant_nontext_module:
-        supported_formats.extend(["auto_gptq"])
 
     formats = args.format.replace(' ', '').split(",")
+    from auto_round.utils import SUPPORTED_FORMATS
     for format in formats:
-        if format not in supported_formats:
-            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+        if format not in SUPPORTED_FORMATS:
+            raise ValueError(f"{format} is not supported, we only support {SUPPORTED_FORMATS}")
 
     ##must set this before import torch
     set_cuda_visible_devices(args.device)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
-
 
     import torch
     if not args.disable_deterministic_algorithms:
@@ -380,21 +376,21 @@ def tune(args):
                 if lm_head_layer_name in item:  ##TODO extend to encoder-decoder layer, seq classification model
                     args.quant_lm_head = False
                     print(
-                        f"warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
-                        f"supported currently")
+                        "warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
+                        "supported currently")
                     break
     if args.quant_lm_head:
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
-                auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
+                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
 
     if args.quant_lm_head and args.low_gpu_mem_usage:
         print(
-            f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
-            f"gpu")
+            "warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
+            "gpu")
 
     if "--truncation" not in sys.argv:
         args.truncation = None
@@ -449,30 +445,33 @@ def tune(args):
         device_map=args.device_map,
         model_kwargs=model_kwargs,
         data_type=args.data_type,
-        )
-    model, _ = autoround.quantize()
+        disable_opt_rtn=args.disable_opt_rtn,
+    )
+
+    model_name = args.model.rstrip("/")
+
+    if model_name.split('/')[-1].strip('.') == "" and "gguf" not in args.format:
+        export_dir = os.path.join(args.output_dir, f"w{autoround.bits}g{autoround.group_size}")
+    elif model_name.split('/')[-1].strip('.') == "" and "gguf" in args.format:
+        export_dir = args.output_dir
+    elif model_name.split('./')[-1].strip('./') != "" and "gguf" in args.format:
+        export_dir = os.path.join(args.output_dir,
+                                  model_name.split('/')[-1] + "-gguf")
+    else:
+        export_dir = os.path.join(args.output_dir,
+                                  model_name.split('/')[-1] + f"-w{autoround.bits}g{autoround.group_size}")
+
+    model, folders = autoround.quantize_and_save(export_dir, format=args.format)
+
+    if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
+        import shutil
+        shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
 
     model.eval()
     clear_memory()
 
-    if model_name.split('/')[-1].strip('.') == "":
-        export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
-    else:
-        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
 
-    format_list = args.format.replace(' ', '').split(',')
-    inplace = False if len(format_list) > 1 else True
-    for format_ in format_list:
-        save_format_ = format_.replace(":", "-").replace("_", "-")
-        eval_folder = os.path.join(export_dir, save_format_) if len(formats) > 1 else export_dir
-        safe_serialization = True
-        if hasattr(autoround.model, "config") and hasattr(autoround.model.config, "model_type"):
-            if "phi3_v" in autoround.model.config.model_type:
-                safe_serialization = False
-        autoround.save_quantized(eval_folder, format=format_, inplace=inplace, safe_serialization=safe_serialization)
-
-
-def eval(args):
+def vlmeval(args):
     set_cuda_visible_devices(args.device)
     device_str, parallelism = get_device_and_parallelism(args.device)
     if parallelism:
@@ -567,6 +566,3 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-
-
-

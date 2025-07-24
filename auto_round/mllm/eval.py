@@ -46,14 +46,15 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import json
 import os
 import time
-import json
 from functools import partial
 
-import pandas as pd
-from ..utils import logger, LazyImport
 import numpy as np
+import pandas as pd
+
+from ..utils import LazyImport, logger
 
 vlmeval = LazyImport("vlmeval")
 

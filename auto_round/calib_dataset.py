@@ -14,12 +14,12 @@
 
 import json
 import random
+import sys
 
 import torch
-from datasets import Dataset, IterableDataset, load_dataset, concatenate_datasets
-from datasets import Features, Sequence, Value
+from datasets import Dataset, Features, IterableDataset, Sequence, Value, concatenate_datasets, load_dataset
 from torch.utils.data import DataLoader
-import sys
+
 from .utils import is_local_path, logger
 
 CALIB_DATASETS = {}
@@ -136,7 +136,7 @@ def get_pile_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", split
         error_message = str(e)
         # Check for proxy or SSL error
         if "proxy" in error_message.lower() or isinstance(e, ssl.SSLError) or "SSL" in error_message.upper():
-            logger.error(f"Network error detected, please checking proxy settings." \
+            logger.error("Network error detected, please checking proxy settings." \
                          "Error: {error_message}. Or consider using a backup dataset by `pip install modelscope`" \
                          " and set '--dataset swift/pile-val-backup' in AutoRound API.")
         else:
@@ -249,11 +249,19 @@ def get_github_code_clean_dataset(tokenizer, seqlen, dataset_name="codeparrot/gi
         return default_tokenizer_function
 
     tokenizer_function = get_default_tokenizer_function()
-
-    dataset_mit = load_dataset("codeparrot/github-code-clean", "all-mit", split='train',
-                               streaming=True, trust_remote_code=True).shuffle(seed=seed)
-    dataset_apache = load_dataset("codeparrot/github-code-clean", "all-apache-2.0", split='train',
-                                  streaming=True, trust_remote_code=True).shuffle(seed=seed)
+    try:
+        dataset_mit = load_dataset("codeparrot/github-code-clean", "all-mit", split='train',
+                                 trust_remote_code=True, streaming=True).shuffle(seed=seed)
+        dataset_apache = load_dataset("codeparrot/github-code-clean", "all-apache-2.0", split='train',
+                                     trust_remote_code=True, streaming=True).shuffle(seed=seed)
+    except RuntimeError as error:
+        if "Dataset scripts are no longer supported" in str(error):
+            raise RuntimeError(
+                f"Failed to load dataset `{dataset_name}`\n"
+                "💡 This dataset uses an old script-based format. To load it, please install `datasets<=3.6.0`:\n\n"
+            )
+        else:
+            raise error
     calib_dataset = concatenate_datasets([dataset_mit, dataset_apache])
     calib_dataset = calib_dataset.shuffle(seed=seed).take(10000) ##TODO concat data'shuffle may have bugs
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
@@ -798,3 +806,4 @@ def get_dataloader(
 
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
+

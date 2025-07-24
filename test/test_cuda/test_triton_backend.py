@@ -4,12 +4,11 @@ import sys
 import unittest
 
 sys.path.insert(0, "../..")
-from auto_round.eval.evaluation import simple_evaluate_user_model
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoRoundConfig
+from auto_round.eval.evaluation import simple_evaluate_user_model
 from auto_round.testing_utils import require_greater_than_050
 
 

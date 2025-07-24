@@ -11,7 +11,7 @@ pr:
       - auto_round
       - test/test*hpu*'
       - setup.py
-      - requirements-hpu.txt
+      - requirements-lib.txt
       - .azure-pipelines/scripts/ut
       - .azure-pipelines/template/docker-template.yml
       - .azure-pipelines/template/ut-template.yml

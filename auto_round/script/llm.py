@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
+import logging
+
 # Copyright (c) 2024 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,16 +30,16 @@
 # limitations under the License.
 import os
 import re
-import argparse
 import sys
-import logging
+
 from auto_round.utils import (
-    get_fp_layer_names,
     clear_memory,
     get_device_and_parallelism,
+    get_fp_layer_names,
     get_model_dtype,
+    set_cuda_visible_devices,
     str2bool,
-    set_cuda_visible_devices)
+)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -211,6 +214,9 @@ class EvalArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path")
         self.add_argument(
+            "--mllm", default=False, help="whether to eval multi-modal model."
+        )
+        self.add_argument(
             "--device",
             "--devices",
             default="0",
@@ -338,11 +344,9 @@ def tune(args):
         args.eval_bs = "auto"
 
     import transformers
+    from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig
-
-    from auto_round.utils import detect_device, get_library_version
-    from auto_round.utils import logger
+    from auto_round.utils import detect_device, get_library_version, logger
 
     if args.format is None:
         args.format = "auto_round"
@@ -424,8 +428,8 @@ def tune(args):
                 if lm_head_layer_name in item:  ##TODO extend to encoder-decoder layer, seq classification model
                     args.quant_lm_head = False
                     logger.warning(
-                        f"reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
-                        f"supported currently")
+                        "reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
+                        "supported currently")
                     break
 
     if args.quant_lm_head:
@@ -486,15 +490,30 @@ def tune(args):
     model_name = args.model.rstrip("/")
 
     if model_name.split('/')[-1].strip('.') == "" and "gguf" not in args.format:
-        export_dir = os.path.join(args.output_dir, f"w{autoround.bits}g{autoround.group_size}")
+        if autoround.group_size <= 0:
+            if "fp" in autoround.act_data_type:
+                suffix = f"afp{autoround.act_bits}"
+            else:
+                suffix = f"a{autoround.act_bits}"
+        else:
+            suffix = f"g{autoround.group_size}"
+        export_dir = os.path.join(args.output_dir, f"w{autoround.bits}{suffix}")
     elif model_name.split('/')[-1].strip('.') == "" and "gguf" in args.format:
         export_dir = args.output_dir
     elif model_name.split('./')[-1].strip('./') != "" and "gguf" in args.format:
         export_dir = os.path.join(args.output_dir,
                                   model_name.split('/')[-1] + "-gguf")
     else:
-        export_dir = os.path.join(args.output_dir,
-                                  model_name.split('/')[-1] + f"-w{autoround.bits}g{autoround.group_size}")
+        if autoround.group_size <= 0:
+            if "fp" in autoround.act_data_type:
+                suffix = f"afp{autoround.act_bits}"
+            else:
+                suffix = f"a{autoround.act_bits}"
+        else:
+            suffix = f"g{autoround.group_size}"
+        export_dir = os.path.join(
+            args.output_dir,
+            model_name.split('/')[-1] + f"-w{autoround.bits}{suffix}")
 
     model, folders = autoround.quantize_and_save(export_dir, format=args.format)
 
@@ -543,7 +562,7 @@ def tune(args):
                 if gguf_format in file:
                     gguf_file = file
 
-            logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
+            logger.warning("evaluating gguf model is an experimental feature, the accuracy may be not correct.")
             if eval_model_dtype == "float32" or eval_model_dtype == "auto":
                 logger.warning(
                     "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -633,7 +652,7 @@ def eval(args):
     tasks, model_args, device_str = _eval_init(
         args.tasks, args.model, args.device, args.disable_trust_remote_code, args.eval_model_dtype)
 
-    # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
+    # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
     from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
     from auto_round.utils import logger
 
@@ -652,11 +671,11 @@ def eval(args):
     eval_model_dtype = get_model_dtype(args.eval_model_dtype)
     if is_gguf_file:
         import torch
-        from transformers import AutoTokenizer, AutoModelForCausalLM
         from lm_eval.utils import make_table  # pylint: disable=E0401
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
 
-        logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
+        logger.warning("evaluating gguf model is an experimental feature, the accuracy may be not correct.")
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -672,8 +691,15 @@ def eval(args):
         print("evaluation running time=%ds" % (time.time() - st))
     else:
         st = time.time()
+        if "auto" in str(batch_size) and args.mllm:
+            logger.warning("Batch size 'auto' is not yet supported for hf-multimodal models, reset to 16")
+            batch_size = 16
         res = simple_evaluate(
-            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=batch_size)
+            model="hf" if not args.mllm else "hf-multimodal",
+            model_args=model_args,
+            tasks=tasks,
+            device=device_str,
+            batch_size=batch_size)
         from lm_eval.utils import make_table  # pylint: disable=E0401
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
@@ -694,12 +720,13 @@ def eval_task_by_task(
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
     import traceback
-    from auto_round.utils import logger
+
     from lm_eval import simple_evaluate as lm_simple_evaluate
     from lm_eval.models.huggingface import HFLM
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     from auto_round import AutoRoundConfig  # pylint: disable=E0611
+    from auto_round.utils import logger
     if batch_size is None:
         batch_size = "auto:8"
     is_gguf_file = False
@@ -718,7 +745,7 @@ def eval_task_by_task(
     eval_model_dtype = get_model_dtype(eval_model_dtype)
     if is_gguf_file:
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
+        logger.warning("evaluating gguf model is an experimental feature, the accuracy may be not correct.")
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"

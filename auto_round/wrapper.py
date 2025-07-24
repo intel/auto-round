@@ -13,15 +13,12 @@
 # limitations under the License.
 
 import torch
-from torch.functional import F
 import transformers
+from torch.functional import F
+
 from auto_round.data_type import get_quant_func
-from .utils import (
-    check_to_quantized,
-    get_scale_shape,
-    set_module,
-    logger, SUPPORTED_LAYER_TYPES
-)
+
+from .utils import SUPPORTED_LAYER_TYPES, check_to_quantized, get_scale_shape, logger, set_module
 
 
 def reshape_and_pad_tensor(v, group_size=-1):
@@ -301,9 +298,12 @@ class WrapperLinear(torch.nn.Module):
                 tmp_shape = (1)
                 if self.orig_layer.act_group_size > 1:
                     tmp_shape = (1, self.orig_layer.act_group_size)
-                _, act_scale, _ = self._qdq_act(torch.zeros(tmp_shape).to(self.device),
+                if act_max is not None:
+                    _, act_scale, _ = self._qdq_act(torch.zeros(tmp_shape).to(self.device),
                                                 act_max_scale=self.act_max_scale, act_max=act_max)
-                self.orig_layer.act_max = torch.tensor(self.orig_layer.act_max * act_max_scale.item()).to("cpu")
+                    self.orig_layer.act_max = torch.tensor(self.orig_layer.act_max * act_max_scale.item()).to("cpu")
+                else:
+                    act_scale = torch.ones_like(act_max_scale, dtype=self.act_data_type)
                 self.orig_layer.act_scale = act_scale.to("cpu")
 
             self.orig_layer.q_scale_thresh = self.q_scale_thresh

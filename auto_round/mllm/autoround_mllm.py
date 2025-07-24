@@ -12,28 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union
-from tqdm import tqdm
 from copy import deepcopy
+from typing import Union
 
 import torch
+from tqdm import tqdm
 
+from auto_round.special_model_handler import SUPPORT_ONLY_TEXT_MODELS, _handle_special_model
+
+from ..autoround import AutoRound
+from ..low_cpu_mem.utils import get_layers_before_block
 from ..utils import (
-    logger,
+    clear_memory,
     detect_device,
+    extract_block_names_to_str,
+    find_matching_blocks,
+    get_block_names,
+    logger,
+    mllm_load_model,
     to_device,
     to_dtype,
-    get_block_names,
-    find_matching_blocks,
-    extract_block_names_to_str,
-    clear_memory,
-    mllm_load_model
 )
-from ..autoround import AutoRound
-from .template import get_template, Template
-from auto_round.special_model_handler import  SUPPORT_ONLY_TEXT_MODELS, _handle_special_model
 from .mllm_dataset import get_mllm_dataloader
-from ..low_cpu_mem.utils import get_layers_before_block
+from .template import Template, get_template
 
 
 def _only_text_test(model, tokenizer, device, model_type):
@@ -197,7 +198,7 @@ class AutoRoundMLLM(AutoRound):
                 (dataset in CALIB_DATASETS.keys() and not \
                  _only_text_test(model, tokenizer, device, self.template.model_type)):
                 if quant_nontext_module:
-                    logger.warning(f"Text only dataset cannot be used for calibrating non-text modules,"
+                    logger.warning("Text only dataset cannot be used for calibrating non-text modules,"
                                 "switching to liuhaotian/llava_conv_58k")
                 else:
                     logger.warning(f"{model.config.model_type} not support for {dataset},"
@@ -267,6 +268,7 @@ class AutoRoundMLLM(AutoRound):
             to_quant_block_names=self.to_quant_block_names,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
             enable_torch_compile=enable_torch_compile,
+            vlm=True,
             **kwargs,
         )
 

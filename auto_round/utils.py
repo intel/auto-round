@@ -13,23 +13,24 @@
 # limitations under the License.
 
 import copy
+import gc
 import logging
 import os
-import sys
-import subprocess
-from collections import UserDict
 import re
+import subprocess
+import sys
+from collections import UserDict
+from functools import lru_cache
+
 import cpuinfo
 import psutil
 import torch
+import transformers
+from packaging import version
 from torch.amp import autocast
 
-from functools import lru_cache
-from packaging import version
-import gc
+from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
-import transformers
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES, GGUF_INNER_CONFIG, QK_K
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
 
@@ -108,6 +109,7 @@ fh.setFormatter(AutoRoundFormatter())
 logger.addHandler(fh)
 
 import importlib
+
 import transformers
 
 
@@ -479,6 +481,9 @@ def check_to_quantized(config):
     if isinstance(config, dict):
         bits = int(config.get("bits", 16))
         act_bits = int(config.get("act_bits", 16))
+    elif hasattr(config, "orig_layer"):
+        bits = int(config.orig_layer.bits) if hasattr(config.orig_layer, "bits") else 16
+        act_bits = int(config.orig_layer.act_bits) if hasattr(config.orig_layer, "act_bits") else 16
     else:
         bits = int(config.bits) if hasattr(config, "bits") else 16
         act_bits = int(config.act_bits) if hasattr(config, "act_bits") else 16
@@ -1091,7 +1096,7 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
             - str: An error message describing why the model is incompatible, or an empty string if compatible.
     """
     if bits != 4:
-        return False, f"AutoAWQ GEMM kernel only supports 4 bits"
+        return False, "AutoAWQ GEMM kernel only supports 4 bits"
     for n, m in model.named_modules():
         if isinstance(m, transformers.pytorch_utils.Conv1D):
             return False, "AutoAWQ GEMM kernel does not support conv1d"
@@ -1170,10 +1175,10 @@ def get_layer_features(layer):
     return None, None  # Unsupported layer type
 
 
-def _gguf_args_check(args_or_ar, format_str=None):
-    from auto_round.utils import logger
-    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     import argparse
+
+    from auto_round.utils import logger
 
     if format_str is None:
         args_or_ar.format = args_or_ar.format.replace("q*_", f"q{args_or_ar.bits}_")
@@ -1191,7 +1196,7 @@ def _gguf_args_check(args_or_ar, format_str=None):
     for format in GGUF_CONFIG:
         if format in formats:
             if format == "q6_k_s":
-                logger.warning("Please not that q6_k_s is q6_k.")
+                logger.warning("Please note that q6_k_s is q6_k.")
             try:
                 from auto_round.export.export_to_gguf.convert import ModelBase
             except:
@@ -1207,11 +1212,12 @@ def _gguf_args_check(args_or_ar, format_str=None):
 
             if isinstance(args_or_ar.model, str) and os.path.isdir(args_or_ar.model):
                 from pathlib import Path
+
                 from auto_round.export.export_to_gguf.convert import ModelBase
                 hparams = ModelBase.load_hparams(Path(args_or_ar.model))
                 model_architecture = hparams["architectures"][0]
                 try:
-                    model_class = ModelBase.from_model_architecture(model_architecture)
+                    model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
                 except NotImplementedError:
                     logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                     sys.exit(1)
@@ -1273,7 +1279,7 @@ def llm_load_model(
         low_cpu_mem_mode=0,
         low_cpu_mem_tmp_dir=None,
         **kwargs):
-    from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
+    from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
     low_cpu_mem_usage = False
@@ -1307,15 +1313,24 @@ def llm_load_model(
     else:
         if _use_hpu_compile_mode():
             model = model_cls.from_pretrained(
-                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                pretrained_model_name_or_path, torch_dtype=torch_dtype,
                 attn_implementation="eager",
                 trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
             )
         else:
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-                trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
-            )
+            try:
+                model = model_cls.from_pretrained(
+                    pretrained_model_name_or_path, torch_dtype=torch_dtype,
+                    trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
+                )
+            except OSError as e:
+                logger.warning(
+                    f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
+                model = model_cls.from_pretrained(
+                    pretrained_model_name_or_path,
+                    torch_dtype=torch_dtype,
+                    trust_remote_code=False,
+                    device_map="auto" if use_auto_mapping else None)
 
     model = model.eval()
     model = _to_model_dtype(model, model_dtype)
@@ -1331,9 +1346,10 @@ def mllm_load_model(
         model_dtype=None,
         **kwargs):
     import json
+
     import transformers
-    from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
-    from huggingface_hub import HfApi, hf_hub_download, HfFileSystem
+    from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
+    from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
     if os.path.isdir(pretrained_model_name_or_path):
         config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
@@ -1361,7 +1377,7 @@ def mllm_load_model(
 
     processor, image_processor = None, None
     if "deepseek_vl_v2" == model_type:
-        from deepseek_vl2.models import DeepseekVLV2Processor, DeepseekVLV2ForCausalLM  # pylint: disable=E0401
+        from deepseek_vl2.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor  # pylint: disable=E0401
         processor = DeepseekVLV2Processor.from_pretrained(pretrained_model_name_or_path)
         tokenizer = processor.tokenizer
         model: DeepseekVLV2ForCausalLM = AutoModelForCausalLM.from_pretrained(
@@ -1395,6 +1411,12 @@ def mllm_load_model(
                 pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
             processor = AutoProcessor.from_pretrained(
                 pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            try:
+                from transformers import AutoImageProcessor
+                image_processor = AutoImageProcessor.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            except Exception as e:
+                pass
 
     model = model.eval()
     model = _to_model_dtype(model, model_dtype)
@@ -1606,30 +1628,29 @@ def _gguf_type_fallback(gguf_type):
     return gguf_type
 
 ##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
-def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
+def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type=ModelType.TEXT):
     # TODO: support for other format later
     target_gguf_format = next((fmt for fmt in gguf_format if fmt != "fake"), None)
 
     import gguf  # pylint: disable=E0401
-    from auto_round.export.export_to_gguf.convert import ModelBase
-    if model.config.architectures is not None:
-        model_architecture = model.config.architectures[0]
-    else:
-        model_architecture = type(model).__name__
-        if model_architecture not in ModelBase._model_classes:
-            if model_architecture.replace("CausalLM", "ConditionalGeneration") in ModelBase._model_classes:
-                model_architecture = model_architecture.replace("CausalLM", "ConditionalGeneration")
-            elif model_architecture.replace("ConditionalGeneration", "CausalLM") in ModelBase._model_classes:
-                model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
+
+    from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
+    model_architecture = get_model_architecture(hparams=model.config.to_dict(), model_type=model_type)
     try:
-        model_class = ModelBase.from_model_architecture(model_architecture)
+        model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
     except NotImplementedError:
         return layer_config, {}
 
     n_layer = None
     for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers"]:
+        sub_attr = "text_config" if model_type == ModelType.TEXT else "vision_config"
         if hasattr(model.config, name):
             n_layer = getattr(model.config, name)
+            break
+        if hasattr(model.config, sub_attr):
+            if hasattr(getattr(model.config, sub_attr), name):
+                n_layer = getattr(getattr(model.config, sub_attr), name)
+                break
     if n_layer is None:
         return layer_config, {}
 
@@ -1830,10 +1851,10 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model):
             and 'Deepseek' in model.config.architectures[0]:
             fallback = False
 
-            # calc if need fallback 
+            # calc if need fallback
             qk_nope_head_dim = model.config.qk_nope_head_dim
             kv_b_shape = get_module(model, layer_name).weight.shape
-            
+
             if qk_nope_head_dim < QK_K or qk_nope_head_dim % QK_K != 0 \
                 or kv_b_shape[-1] < QK_K or kv_b_shape[-1] % QK_K != 0:
                 fallback = True
@@ -1897,7 +1918,7 @@ def get_gguf_qtype_by_layer_config(layer_config):
         return gguf.GGMLQuantizationType.Q6_K
     if bits == 8 and sym and group_size == 32:
         return gguf.GGMLQuantizationType.Q8_0
-    raise ValueError(f"Unknown layer config")
+    raise ValueError("Unknown layer config")
 
 def flatten_list(nested_list):
     flattened = []
@@ -1909,9 +1930,18 @@ def flatten_list(nested_list):
     return flattened
 
 def clean_module_parameter(submodule, parameter):
+    if submodule is None:
+        return
     is_buffer = parameter in submodule._buffers
     with torch.no_grad():
         if is_buffer:
             submodule._buffers[parameter] = None
         else:
             submodule._parameters[parameter] = None
+
+def get_reciprocal(tensor):
+    if torch.dtype is torch.float16:
+        tensor =  torch.sign(tensor) * torch.clamp(torch.abs(tensor), min=1e-5)
+    else:
+        tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
+    return  torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))

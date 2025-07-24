@@ -13,15 +13,24 @@
 # limitations under the License.
 
 import copy
-import os
-import torch
 import json
-from auto_round.utils import logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
-    filter_quantization_config, get_module, check_start_with_block_name
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import threadpoolctl as tctl
+import torch
 import transformers
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
+
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_start_with_block_name,
+    check_to_quantized,
+    filter_quantization_config,
+    get_module,
+    logger,
+    set_module,
+)
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -47,7 +56,17 @@ def check_neq_config(config, data_type, bits, group_size, sym):
 
 
 class FP8WOQLinear(torch.nn.Module):
-    def __init__(self, in_features, out_features, weight, weight_scale, bias=None, weight_zp=None):
+
+    def __init__(
+            self,
+            in_features,
+            out_features,
+            weight,
+            weight_scale,
+            bias=None,
+            weight_zp=None,
+            act_scale=None,
+            dtype=torch.bfloat16):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -58,10 +77,13 @@ class FP8WOQLinear(torch.nn.Module):
         else:
             self.register_parameter("bias", None)
 
-        self.register_buffer('weight_scale', weight_scale.to(torch.bfloat16))
+        self.register_buffer('weight_scale', weight_scale.to(dtype))
 
         if weight_zp:
-            self.register_buffer('weight_zp', weight_zp.to(torch.bfloat16))
+            self.register_buffer('weight_zp', weight_zp.to(dtype))
+
+        if act_scale:
+            self.register_buffer('act_scale', act_scale.to(dtype))
 
 
 def pack_layer(layer_name, model, data_type, packing_device=None):
@@ -101,6 +123,7 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
     scale = layer.scale
     zp = layer.zp
     weight = layer.weight
+    act_scale = layer.act_scale if hasattr(layer, "act_scale") else None
     torch_dtype = torch.float8_e4m3fn
     if "fp8_e5m2" in data_type:
         torch_dtype = torch.float8_e5m2
@@ -121,7 +144,15 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
     bias = layer.bias
-    my_linear = FP8WOQLinear(in_features, out_features, q_weight, scale, bias, zp)
+    my_linear = FP8WOQLinear(
+        in_features,
+        out_features,
+        weight=q_weight,
+        weight_scale=scale,
+        bias=bias,
+        weight_zp=zp,
+        act_scale=act_scale,
+        dtype=model.dtype)
 
     my_linear.to(device)
     set_module(model, layer_name, my_linear)
@@ -141,14 +172,14 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
         quantization_config["fmt"] = "e5m2"
     else:
         quantization_config["fmt"] = "e4m3"
-    quantization_config["activation_scheme"] = "dynamic"
+    quantization_config["activation_scheme"] = "dynamic" if quantization_config['act_dynamic'] else "static"
 
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     extra_config = {}
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
-    if isinstance(block_name_to_quantize, str): \
-            block_name_to_quantize = block_name_to_quantize.split(",")
+    if isinstance(block_name_to_quantize, str):
+        block_name_to_quantize = block_name_to_quantize.split(",")
     elif isinstance(block_name_to_quantize, list):
         for i in range(len(block_name_to_quantize)):
             block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip('.')
@@ -179,7 +210,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
     max_workers = 1
-    if not torch.cuda.is_available() or not torch.xpu.is_available():
+    if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     packing_device = "cpu"
     if torch.cuda.is_available():
@@ -257,3 +288,4 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

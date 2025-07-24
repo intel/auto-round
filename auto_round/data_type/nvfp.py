@@ -16,7 +16,7 @@ import torch
 
 from auto_round.data_type.fp8 import float8_e4m3fn_ste
 from auto_round.data_type.register import register_dtype
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, logger
+from auto_round.data_type.utils import logger, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 
 
 # taken from
@@ -51,8 +51,8 @@ def get_reciprocal(x):
 
 
 FLOAT4_E2M1_MAX = 6.0
-FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max
-FLOAT8_E4M3_MIN = torch.finfo(torch.float8_e4m3fn).min
+FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max if hasattr(torch, "float8_e4m3fn") else 448
+FLOAT8_E4M3_MIN = torch.finfo(torch.float8_e4m3fn).min if hasattr(torch, "float8_e4m3fn") else -448
 
 
 def ref_nvfp4_quant(x, global_scale, block_size=16, v=0):

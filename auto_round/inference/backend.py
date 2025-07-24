@@ -14,7 +14,7 @@
 
 import functools
 from dataclasses import dataclass, field
-from typing import List, Any, Optional
+from typing import Any, List, Optional
 
 from transformers.utils.versions import require_version
 
@@ -308,7 +308,7 @@ def check_compatible(backend_name, device, bits, group_size, sym, packing_format
     backend = BackendInfos[backend_name]
 
     # Check if device is supported by the backend
-    if not device in backend.device:
+    if device not in backend.device:
         return False
 
     # Check if bit-width is supported

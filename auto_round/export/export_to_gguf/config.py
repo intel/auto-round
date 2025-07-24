@@ -11,6 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from enum import IntEnum
+
+
+class ModelType(IntEnum):
+    TEXT = 1
+    MMPROJ = 2
 
 GGUF_INNER_CONFIG = {}
 

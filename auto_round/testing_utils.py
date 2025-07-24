@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import unittest
 import importlib.util
+import unittest
 
 import torch
-
 from transformers.utils.versions import require_version
+
 
 def is_gguf_available():
     return importlib.util.find_spec("gguf") is not None
@@ -53,7 +53,15 @@ def is_gptqmodel_available():
 
 def greater_than_050():
     try:
-        require_version("auto-round>=0.5.0")
+        require_version("auto-round>=0.5.0")    
+        return True
+    except ImportError:
+        return False
+
+
+def greater_than_051():
+    try:
+        require_version("auto-round>0.5.1")
         return True
     except ImportError:
         return False
@@ -138,6 +146,16 @@ def require_greater_than_050(test_case):
     return unittest.skipUnless(greater_than_050(), "test requires auto-round>=0.5.0")(test_case)
 
 
+def require_greater_than_051(test_case):
+    """
+    Decorator marking a test that requires auto-round>0.5.1
+
+    These tests are skipped when auto-round<=0.5.1.
+
+    """
+    return unittest.skipUnless(greater_than_051(), "test requires auto-round>0.5.1")(test_case)
+
+
 def multi_card(test_case):
     """
     Decorator marking a test that requires multi cards.
@@ -179,9 +197,6 @@ def require_vlm_env(test_case):
 
     # pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2
     env_check &= importlib.util.find_spec("llava") is not None
-
-    # pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git
-    env_check &= importlib.util.find_spec("deepseek_vl2") is not None
 
     env_check &= importlib.util.find_spec("xformers") is not None
 

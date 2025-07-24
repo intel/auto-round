@@ -13,9 +13,9 @@
 # limitations under the License.
 
 import torch
-from auto_round.data_type.utils import floor_ste, round_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, \
-    ceil_ste
-from auto_round.data_type.register import register_dtype, QUANT_FUNC_WITH_DTYPE
+
+from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE, register_dtype
+from auto_round.data_type.utils import ceil_ste, floor_ste, reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 
 MXFP_FORMAT_CACHE = {
     # data type: ebits, mbits, emax, max_norm, min_norm
@@ -186,4 +186,3 @@ if __name__ == "__main__":
     data_neg = data * -1
     data2 = quant_element(data_neg, 2, 3, 6.0)
     assert (torch.sum(torch.abs(data2 - gt * -1)) < 1e-6)
-

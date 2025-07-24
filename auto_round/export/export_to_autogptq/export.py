@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+import inspect
+import json
+import os
+from concurrent.futures import ThreadPoolExecutor
+
+import threadpoolctl as tctl
+
 # MIT License
 #
 # Copyright (c) 2023 潘其威(William)
@@ -34,22 +42,21 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
-
-import auto_round.export.export_to_autogptq.qlinear_triton
-from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module, SUPPORTED_LAYER_TYPES, filter_quantization_config
-import copy
-import json
-import os
-
 import torch.nn as nn
 import transformers
-
-import threadpoolctl as tctl
-import inspect
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
-from auto_round.utils import get_autogptq_packing_qlinear
+
+import auto_round.export.export_to_autogptq.qlinear_triton
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_to_quantized,
+    filter_quantization_config,
+    get_autogptq_packing_qlinear,
+    get_block_names,
+    get_module,
+    logger,
+    set_module,
+)
 
 BLOCK_PATTERNS = [  ## copy from transformers optimum
     "transformer.h",
@@ -114,6 +121,11 @@ def pack_layer(name, model, backend):
     else:
         qlayer.pack(layer, scale, zero, None)
     qlayer.to(device)
+    if hasattr(layer,"weight"):
+        layer.weight = None
+    if hasattr(layer,"bias"):
+        layer.bias = None
+
 
 
 def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
@@ -137,7 +149,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     flattened_list = [item for sublist in all_blocks for item in sublist]
     common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
     if common_prefix not in BLOCK_PATTERNS:
-        logger.error(f"auto-gptq format may not support loading this quantized model")
+        logger.error("auto-gptq format may not support loading this quantized model")
         quantization_config['block_name_to_quantize'] = common_prefix
     quantization_config.pop("to_quant_block_names", None)
 
@@ -170,7 +182,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     layer_config = kwargs["layer_config"]
     names = list(layer_config.keys())
     max_workers = 1
-    if not torch.cuda.is_available() or not torch.xpu.is_available():
+    if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -238,5 +250,6 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
 
 

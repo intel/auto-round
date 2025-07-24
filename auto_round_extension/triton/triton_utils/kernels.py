@@ -43,7 +43,6 @@ from torch.cuda.amp import custom_bwd, custom_fwd
 
 from . import custom_autotune
 
-
 logger = getLogger(__name__)
 
 

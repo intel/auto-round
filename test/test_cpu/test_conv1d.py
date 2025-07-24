@@ -5,10 +5,12 @@ import unittest
 
 sys.path.insert(0, "../..")
 import torch
+from _test_helpers import model_infer
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from _test_helpers import model_infer
+
+
 class LLMDataLoader:
     def __init__(self):
         self.batch_size = 1
