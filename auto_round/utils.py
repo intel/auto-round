@@ -27,38 +27,41 @@ from torch.amp import autocast
 from functools import lru_cache
 from packaging import version
 import gc
-from .special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
+from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 import transformers
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGML_QUANT_SIZES, GGUF_INNER_CONFIG, QK_K, ModelType
 
-shared_cache_keys = ("position_ids", "cache_position", "position_embeddings")
+SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings")
+
 
 class SupportedFormats:
     def __init__(self):
         self._support_format = (
             "auto_round", "auto_gptq", "auto_awq", "auto_round:auto_gptq", "auto_round:gptqmodel",
             "auto_round:auto_awq", "itrex", "itrex_xpu", "fake")
-        self._gguf_format = tuple(GGUF_CONFIG.keys())
+        self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
 
     def __contains__(self, key):
         return True if key in self._support_list else False
 
     def __str__(self):
-        return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
-    
+        ##return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
+        return "(%s)" % ', '.join(self._support_list)
+
     def __getitem__(self, key):
         return self._support_list[key]
 
-supported_formats = SupportedFormats()
 
-supported_layer_types = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
+SUPPORTED_FORMATS = SupportedFormats()
 
-supported_dtypes = ("int", "mx_fp", "fp", "nv_fp")
+SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
+
+SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 
 
 def infer_bits_by_data_type(data_type: str):
-    for supported_dtype in supported_dtypes:
+    for supported_dtype in SUPPORTED_DTYPES:
         if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
             ##first check the following two bits
             suc_2str = data_type[len(supported_dtype):len(supported_dtype) + 2]
@@ -189,7 +192,9 @@ def get_scale_shape(weight, group_size):
     Returns:
       The shape of the scale tensor to be used for quantization.
     """
-    if group_size == -1 or weight.shape[1] < group_size:
+    if group_size == 0:
+        return (1)
+    elif group_size == -1 or weight.shape[1] < group_size:
         shape = weight.shape[0]
     else:
         shape = weight.shape[0] * ((weight.shape[1] + group_size - 1) // group_size)
@@ -777,9 +782,6 @@ def get_layer_names_in_block(model, supported_types=(torch.nn.Linear,
             for n, m in block.named_modules():
                 if hasattr(m, "tmp_name"):
                     layers_in_block.append(m.tmp_name)
-    for n, m in model.named_modules():
-        if hasattr(m, "tmp_name"):
-            delattr(m, "tmp_name")
     return layers_in_block
 
 
@@ -909,7 +911,10 @@ def _clear_memory_for_cpu_and_cuda(tensor=None):
     if tensor is not None:
         del tensor
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if torch.xpu.is_available():
+        torch.xpu.empty_cache()
 
 
 def clear_memory(tensor=None):
@@ -1160,12 +1165,13 @@ def get_layer_features(layer):
         return layer.in_features, layer.out_features
     elif isinstance(layer, transformers.pytorch_utils.Conv1D):  # TODO: Verify correctness
         return layer.weight.shape[0], layer.weight.shape[1]
+    elif isinstance(layer, torch.nn.Embedding):
+        return layer.num_embeddings, layer.embedding_dim
     return None, None  # Unsupported layer type
 
 
-def _gguf_args_check(args_or_ar, format_str=None):
+def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     from auto_round.utils import logger
-    from auto_round.export.export_to_gguf.config import GGUF_CONFIG
     import argparse
 
     if format_str is None:
@@ -1184,33 +1190,32 @@ def _gguf_args_check(args_or_ar, format_str=None):
     for format in GGUF_CONFIG:
         if format in formats:
             if format == "q6_k_s":
-                logger.warning("Please not that q6_k_s is q6_k.")
+                logger.warning("Please note that q6_k_s is q6_k.")
             try:
-                from auto_round.export.export_to_gguf.convert import Model
+                from auto_round.export.export_to_gguf.convert import ModelBase
             except:
                 raise ImportError(
                     f"Please use the latest gguf-py for {format}, you can use the following command to install it:\n"
                     "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .")
-                sys.exit(-1)
             if re.search(pattern, format):
                 if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
-                    logger.error(f"Cannot eport {pre_dq_format} and {format} at the same time.")
+                    logger.error(f"Cannot export {pre_dq_format} and {format} at the same time.")
                     sys.exit(-1)
                 else:
                     pre_dq_format = format
 
             if isinstance(args_or_ar.model, str) and os.path.isdir(args_or_ar.model):
                 from pathlib import Path
-                from auto_round.export.export_to_gguf.convert import Model
-                hparams = Model.load_hparams(Path(args_or_ar.model))
+                from auto_round.export.export_to_gguf.convert import ModelBase
+                hparams = ModelBase.load_hparams(Path(args_or_ar.model))
                 model_architecture = hparams["architectures"][0]
                 try:
-                    model_class = Model.from_model_architecture(model_architecture)
+                    model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
                 except NotImplementedError:
                     logger.error(f"Model {model_architecture} is not supported to export GGUF format")
                     sys.exit(1)
 
-                if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % 256 != 0):
+                if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % QK_K != 0):
                     model_name = args_or_ar.model.split('/')
                     model_name = model_name[-1] if model_name[-1] else model_name[-2]
                     hidden_size = hparams["hidden_size"]
@@ -1227,24 +1232,18 @@ def _gguf_args_check(args_or_ar, format_str=None):
                 if k == "data_type":
                     if re.search("q\d_1", format) and len(formats) > 1:
                         v = "int"
-                    if re.search("q\d_k", format) and args_or_ar.iters == 0:
-                        v = f"gguf_{v}"
+                if k == "sym" and isinstance(args_or_ar, argparse.Namespace):
+                    k = "asym"
+                    v = not v
                 if getattr(args_or_ar, k) != v:
                     unsupport_list.append(f"{k}={getattr(args_or_ar, k)}")
                     reset_list.append(f"{k}={v}")
                     setattr(args_or_ar, k, v)
             if len(unsupport_list) > 0:
-                logger.error(
+                logger.info(
                     f"format {format} does not support for {', '.join(unsupport_list)},"
                     f" reset to {', '.join(reset_list)}.")
-    if not isinstance(args_or_ar, argparse.Namespace) and len(unsupport_list) > 0:
-        for layer_name in args_or_ar.layer_config:
-            if args_or_ar.layer_config[layer_name]['bits'] >= 16:
-                continue
-            for k in args_or_ar.layer_config[layer_name]:
-                if hasattr(args_or_ar, k):
-                    args_or_ar.layer_config[layer_name][k] = getattr(args_or_ar, k)
-        args_or_ar.has_qlayer_outside_block = args_or_ar.set_layerwise_config(args_or_ar.layer_config)
+# Removed obsolete commented-out block for improved readability and maintainability.
     return args_or_ar
 
 
@@ -1307,15 +1306,24 @@ def llm_load_model(
     else:
         if _use_hpu_compile_mode():
             model = model_cls.from_pretrained(
-                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                pretrained_model_name_or_path, torch_dtype=torch_dtype,
                 attn_implementation="eager",
                 trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
             )
         else:
-            model = model_cls.from_pretrained(
-                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
-                trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
-            )
+            try:
+                model = model_cls.from_pretrained(
+                    pretrained_model_name_or_path, torch_dtype=torch_dtype,
+                    trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
+                )
+            except OSError as e:
+                logger.warning(
+                    f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
+                model = model_cls.from_pretrained(
+                    pretrained_model_name_or_path,
+                    torch_dtype=torch_dtype,
+                    trust_remote_code=False,
+                    device_map="auto" if use_auto_mapping else None)
 
     model = model.eval()
     model = _to_model_dtype(model, model_dtype)
@@ -1332,14 +1340,27 @@ def mllm_load_model(
         **kwargs):
     import json
     import transformers
-    from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM
-    from huggingface_hub import HfApi, HfFileSystem
+    from transformers import AutoProcessor, AutoTokenizer, AutoModelForCausalLM, AutoModel
+    from huggingface_hub import HfApi, hf_hub_download, HfFileSystem
 
     if os.path.isdir(pretrained_model_name_or_path):
         config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
     else:
-        hf_file = HfFileSystem()
-        config = json.load(hf_file.open(pretrained_model_name_or_path + "/config.json"))
+        from huggingface_hub import hf_hub_download, list_repo_files
+        file_list = list_repo_files(pretrained_model_name_or_path)
+        if "config.json" in file_list:
+            # Load plain JSON
+            config_path = hf_hub_download(pretrained_model_name_or_path, "config.json")
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        elif "config.json.gz" in file_list:
+            # Load gzipped JSON
+            import gzip
+            config_path = hf_hub_download(pretrained_model_name_or_path, "config.json.gz")
+            with gzip.open(config_path, "rt", encoding="utf-8") as f:
+                config = json.load(f)
+        else:
+            raise FileNotFoundError(f"No config.json or config.json.gz found for {pretrained_model_name_or_path}")
 
     if "model_type" in config:
         model_type = config["model_type"]
@@ -1367,7 +1388,7 @@ def mllm_load_model(
                 torch_dtype=torch_dtype)
         else:
             if architectures.endswith("Model") \
-                and hasattr(transformers, n := architectures.replace("Model", "ForConditionalGeneration")):
+                    and hasattr(transformers, n := architectures.replace("Model", "ForConditionalGeneration")):
                 cls = getattr(transformers, n)
             elif hasattr(transformers, architectures):
                 cls = getattr(transformers, architectures)
@@ -1382,6 +1403,12 @@ def mllm_load_model(
                 pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
             processor = AutoProcessor.from_pretrained(
                 pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            try:
+                from transformers import AutoImageProcessor
+                image_processor = AutoImageProcessor.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+            except Exception as e:
+                pass
 
     model = model.eval()
     model = _to_model_dtype(model, model_dtype)
@@ -1459,7 +1486,7 @@ def get_shared_keys(model):
     Returns:
         tuple: tuple of shared keys.
     """
-    shared_keys = shared_cache_keys
+    shared_keys = SHARED_CACHE_KEYS
     shared_keys += SPECIAL_SHARED_CACHE_KEYS.get(model.__class__.__name__, ())
     return shared_keys
 
@@ -1478,6 +1505,7 @@ def get_model_dtype(model_dtype, default="auto"):
         model_dtype = default
     return model_dtype
 
+
 def str2bool(v):
     import argparse
     if isinstance(v, bool):
@@ -1488,6 +1516,7 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
 
 def filter_quantization_config(quantization_config):
     default_dict = {"amp": True, "batch_size": 8, "data_type": int, "dataset": "NeelNanda/pile-10k",
@@ -1513,3 +1542,397 @@ def filter_quantization_config(quantization_config):
         quantization_config.pop("act_sym", None)
         quantization_config.pop("act_group_size", None)
 
+
+def check_start_with_block_name(name: str, block_name_to_quantize: list):
+    """
+    Checks if the given layer name starts with any of the block names to be quantized.
+
+    Args:
+        name (str): The name of the layer.
+        block_name_to_quantize (list): A list of block names to check against.
+
+    Returns:
+        bool: True if the layer name starts with any of the block names, False otherwise.
+    """
+    for block_name in block_name_to_quantize:
+        if name.startswith(block_name):
+            return True
+    return False
+
+
+def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
+    """
+    Check whether the input sequence length is within the limits defined
+    by the tokenizer and the model configuration.
+
+    Args:
+        input_seqlen (int): The length of the input sequence.
+        tokenizer: Optional, a HuggingFace tokenizer object.
+        model: Optional, a HuggingFace model object.
+
+    Returns:
+        ValueError: if the input length is not valid, riase Error.
+    """
+    if model is not None and hasattr(model, 'config'):
+        model_config = model.config
+        if hasattr(model_config, 'max_position_embeddings') and input_seqlen > model_config.max_position_embeddings:
+            raise ValueError(f"seqlen({input_seqlen}) exceeds model.config.max_position_embeddings(" \
+                             f"{model_config.max_position_embeddings}). Please lowering '--seqlen'")
+    if tokenizer is not None and hasattr(tokenizer, 'model_max_length') and input_seqlen > tokenizer.model_max_length:
+        raise ValueError(f"seqlen({input_seqlen}) exceeds tokenizer.model_max_length({tokenizer.model_max_length}). " \
+                         "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length.")
+
+
+def _use_more_bits(i_layer: int, n_layer: int):
+    return (i_layer < n_layer // 8) or (i_layer >= 7 * n_layer // 8) or ((i_layer - n_layer // 8) % 3 == 2)
+
+
+def _get_digital_in_layer_name(layer_name):
+    pattern = re.compile("([a-zA-Z]+\.){1,}(\d+)")
+    res = re.search(pattern, layer_name)
+    if res:
+        return int(res[2])
+    else:
+        return None
+
+def _search_gguf_type(gguf_type):
+    if gguf_type in GGUF_INNER_CONFIG:
+        return gguf_type
+    pattern = re.compile("gguf:q([0-9]{1,})_[01k]")
+    bits = re.search(pattern, gguf_type)
+    if not bits:
+        raise KeyError(f"{gguf_type} is not a correct gguf type, please check")
+
+    for suffix in ["_k", "_0", "_1"]:
+        if gguf_type.endswith(suffix):
+            continue
+        if (tmp_type := re.sub("_[01k]", suffix, gguf_type)) in GGUF_INNER_CONFIG:
+            return tmp_type
+    return None
+
+def _gguf_type_fallback(gguf_type):
+    if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
+        gguf_type = "gguf:q5_0"
+    elif gguf_type == "gguf:q5_k":
+        gguf_type = "gguf:q5_0"
+    elif gguf_type == "gguf:q6_k":
+        gguf_type = "gguf:q8_0"
+    return gguf_type
+
+##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
+def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type=ModelType.TEXT):
+    # TODO: support for other format later
+    target_gguf_format = next((fmt for fmt in gguf_format if fmt != "fake"), None)
+
+    import gguf  # pylint: disable=E0401
+    from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
+    model_architecture = get_model_architecture(hparams=model.config.to_dict(), model_type=model_type)
+    try:
+        model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
+    except NotImplementedError:
+        return layer_config, {}
+
+    n_layer = None
+    for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers"]:
+        sub_attr = "text_config" if model_type == ModelType.TEXT else "vision_config"
+        if hasattr(model.config, name):
+            n_layer = getattr(model.config, name)
+            break
+        if hasattr(model.config, sub_attr):
+            if hasattr(getattr(model.config, sub_attr), name):
+                n_layer = getattr(getattr(model.config, sub_attr), name)
+                break
+    if n_layer is None:
+        return layer_config, {}
+
+    tensor_map = gguf.get_tensor_name_map(model_class.model_arch, n_layer)
+
+    def _set_config(config, target_config):
+        for k, v in target_config.items():
+            if isinstance(config, dict):
+                config[k] = v
+            else:
+                setattr(config, k, v)
+        return config
+
+    gguf_format_config = {}
+    lm_head_name = get_lm_head_name(model)
+    inner_gguf_format = GGUF_CONFIG[target_gguf_format]["mostly"]
+    # ggml_type =  getattr(gguf.GGMLQuantizationType,inner_gguf_format.split(":")[-1].upper())
+    block_size = GGML_QUANT_SIZES[inner_gguf_format.split(":")[-1].lower()][0]
+    tie_word_embeddings = True
+    if hasattr(model, "config") and hasattr(model.config, "tie_word_embeddings"):
+        tie_word_embeddings = model.config.tie_word_embeddings
+
+    n_gqa = 1
+    if hasattr(model, "config") and hasattr(model.config, "num_attention_heads") and hasattr(model.config,
+                                                                                             "num_key_value_heads"):
+        n_gqa = model.config.num_attention_heads // model.config.num_key_value_heads
+    n_expert = 0
+    for name in ["num_experts", "num_local_experts", "n_routed_experts"]:
+        if hasattr(model.config, name):
+            n_expert = getattr(model.config, name)
+
+    i_attention_wv = 0
+    i_ffn_down = 0
+    layer_config_copy = copy.deepcopy(layer_config)
+    target_bits = None
+    if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 7 and (inner_gguf_format[6]).isdigit():
+        target_bits = int(inner_gguf_format[6])
+
+    for layer_name, config in layer_config_copy.items():
+        if not check_to_quantized(config):
+            continue
+        new_type = GGUF_CONFIG[target_gguf_format]["mostly"]
+        layer = get_module(model, layer_name)
+        if isinstance(layer, transformers.pytorch_utils.Conv1D):
+            input_features = layer.weight.shape[0]
+        else:
+            input_features = layer.weight.shape[-1]
+        i_layer = _get_digital_in_layer_name(layer_name)
+
+        if lm_head_name is not None and layer_name == lm_head_name:
+            target_bits = int(re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]['lm_head']).group(1))
+        if isinstance(layer, torch.nn.Embedding):
+            target_bits = int(
+                re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]['embedding']).group(1))
+
+        gguf_name = tensor_map.get_name(layer_name)
+        bits_index = 6
+        if config.get("fixed_by_user", False):
+            if "bits" not in config:
+                logger.warning(
+                    f"Setting layer_config requires providing bits, {layer_name} has not bits,"
+                    f" using bits={target_bits} instead.")
+                new_type = new_type[:bits_index] + target_bits + new_type[bits_index + 1:]
+            else:
+                new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
+            new_type = _search_gguf_type(new_type)
+            if new_type is None:
+                raise ValueError(f"invalid bit setting for {layer_name}")
+        elif (target_bits is not None and
+                "bits" in config and config["bits"] != target_bits):
+            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
+            new_type = _search_gguf_type(new_type)
+            if new_type is None:
+                raise ValueError(f"invalid bit setting for {layer_name}")
+        elif lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
+            if gguf.MODEL_ARCH.FALCON == model_class.model_arch or input_features % block_size != 0:
+                new_type = "gguf:q8_0"
+            elif "lm_head" in GGUF_CONFIG[target_gguf_format]:
+                new_type = GGUF_CONFIG[target_gguf_format]["lm_head"]
+            elif new_type != "gguf:q8_0":
+                new_type = "gguf:q6_k"
+        elif lm_head_name is not None and layer_name == lm_head_name and tie_word_embeddings:
+            pass
+        elif isinstance(layer, torch.nn.Embedding):
+            if "embedding" in GGUF_CONFIG[target_gguf_format]:
+                new_type = GGUF_CONFIG[target_gguf_format]["embedding"]
+        elif gguf_name is None:
+            pass
+        # attn_v
+        elif "attn_v" in gguf_name:
+            if target_gguf_format == "gguf:q2_k":
+                new_type = "gguf:q4_k" if n_gqa >= 4 else "gguf:q3_k"
+            elif target_gguf_format == "gguf:q2_k_s" and n_gqa >= 4:
+                new_type = "gguf:q4_k"
+            elif target_gguf_format == "gguf:q3_k_m":
+                new_type = "gguf:q5_k" if i_attention_wv < 2 else "gguf:q4_k"
+            elif target_gguf_format == "gguf:q3_k_l":
+                new_type = "gguf:q5_k"
+            elif (target_gguf_format == "gguf:q4_k_m" or target_gguf_format == "gguf:q5_k_m") and _use_more_bits(
+                    i_layer, n_layer):
+                new_type = "gguf:q6_k"
+            elif target_gguf_format == "gguf:q4_k_s" and i_attention_wv < 4:
+                new_type = "gguf:q5_k"
+            ##TODO check which models are be grouped into to LLM_TYPE_70B
+            # if (qs.model.type == LLM_TYPE_70B) {
+            # // In the 70B model we have 8 heads sharing the same attn_v weights.
+            # As a result, the attn_v.weight tensor is
+            # // 8x smaller compared to attn_q.weight.Hence, we can get a nice boost in quantization accuracy with
+            # // nearly negligible increase in model size by quantizing this tensor with more bits:
+            #     if
+            # (new_type == GGML_TYPE_Q3_K | | new_type == GGML_TYPE_Q4_K)
+            # new_type = GGML_TYPE_Q5_K;
+            # }
+            if n_expert == 8:
+                new_type = "gguf:q8_k"
+            i_attention_wv += 1
+
+        elif "attn_k" in gguf_name:
+            if n_expert == 8:
+                new_type = "gguf:q8_0"
+        # ffn_down
+        elif "ffn_down" in gguf_name:
+            if target_gguf_format == "gguf:q2_k":
+                new_type = "gguf:q3_k"
+            elif target_gguf_format == "gguf:q2_k_s":
+                if i_layer < n_layer / 8:
+                    new_type = "gguf:q4_k"
+            elif target_gguf_format == "gguf:q3_k_m":
+                if i_layer < n_layer / 16:
+                    new_type = "gguf:q5_k"
+                elif gguf.MODEL_ARCH.FALCON == model_class.model_arch or _use_more_bits(i_layer, n_layer):
+                    new_type = "gguf:q4_k"
+                else:
+                    new_type = "gguf:q3_k"
+            elif target_gguf_format == "gguf:q3_k_l":
+                if gguf.MODEL_ARCH.FALCON == model_class.model_arch:
+                    new_type = "gguf:q4_k"
+                else:
+                    new_type = "gguf:q5_k"
+            elif target_gguf_format == "gguf:q4_k_m":
+                if gguf.MODEL_ARCH.FALCON == model_class.model_arch:
+                    if i_layer < n_layer // 16:
+                        new_type = "gguf:q6_k"
+                    elif _use_more_bits(i_layer, n_layer):
+                        new_type = "gguf:q5_k"
+                    else:
+                        new_type = "gguf:q4_k"
+                else:
+                    if _use_more_bits(i_layer, n_layer):
+                        new_type = "gguf:q6_k"
+            elif target_gguf_format == "gguf:q5_k_m" and _use_more_bits(i_layer, n_layer):
+                new_type = "gguf:q6_k"
+            elif (target_gguf_format == "gguf:q4_k_s" and
+                  model_class.model_arch != gguf.MODEL_ARCH.FALCON and i_layer < n_layer / 8):
+                new_type = "gguf:q5_k"
+            elif (target_gguf_format == "gguf:q4_0" or target_gguf_format == "gguf:q5_0") and i_layer < n_layer / 8:
+                if target_gguf_format == "gguf:q4_0":
+                    new_type = "gguf:q4_1"
+                else:
+                    new_type = "gguf:q5_1"
+            i_ffn_down += 1
+
+        # attn_output
+        elif "attn_output" in gguf_name:
+            if gguf.MODEL_ARCH.FALCON != model_class.model_arch:
+                if n_expert == 8:
+                    if target_gguf_format in ("gguf:q2_k", "gguf:q3_k_s", "gguf:q3_k_m", "gguf:q4_k_s", "gguf:q4_k_m",
+                                              "gguf:q5_k"):
+                        new_type = "gguf:q5_k"
+                    elif target_gguf_format == "gguf:q2_k":
+                        new_type = "gguf:q3_k"
+                    elif target_gguf_format == "gguf:q3_k_m":
+                        new_type = "gguf:q4_k"
+                    elif target_gguf_format == "gguf:q3_k_l":
+                        new_type = "gguf:q5_k"
+            else:
+                if target_gguf_format == "gguf:q3_k_l":
+                    new_type = "gguf:q4_k"
+        # attn_qkv
+        elif "attn_qkv" in gguf_name:
+            if target_gguf_format in ("gguf:q3_k_m", "gguf:q3_k_l"):
+                new_type = "gguf:q4_k"
+            elif target_gguf_format == "gguf:q4_k_m":
+                new_type = "gguf:q5_k"
+            elif target_gguf_format == "gguf:q5_k_m":
+                new_type = "gguf:q5_k"
+        new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
+        if input_features % new_block_size != 0:
+            new_type = _gguf_type_fallback(new_type)
+            new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
+            if input_features % new_block_size != 0:
+                new_type = "gguf:bf16"
+            logger.warning(
+                f"fallback {layer_name} to {new_type}, "
+                f"because input_features({input_features}) % block_size({block_size}) != 0")
+        # for deepseek v2
+        if layer_name.endswith("kv_b_proj") and new_type.endswith("_k") \
+            and 'Deepseek' in model.config.architectures[0]:
+            fallback = False
+
+            # calc if need fallback
+            qk_nope_head_dim = model.config.qk_nope_head_dim
+            kv_b_shape = get_module(model, layer_name).weight.shape
+
+            if qk_nope_head_dim < QK_K or qk_nope_head_dim % QK_K != 0 \
+                or kv_b_shape[-1] < QK_K or kv_b_shape[-1] % QK_K != 0:
+                fallback = True
+            if fallback:
+                tmp_type = _gguf_type_fallback(new_type)
+                logger.warning_once(
+                    f"self_attn.kv_b_proj does not support the use of {new_type}, replace it with {tmp_type}")
+                new_type = tmp_type
+
+        target_config = GGUF_INNER_CONFIG[new_type]
+
+        _set_config(layer_config[layer_name], target_config)
+        _set_config(layer, target_config)
+        gguf_format_config[layer_name] = new_type
+
+    return layer_config, gguf_format_config
+
+
+def get_lm_head_name(model):
+    block_names = get_block_names(model, True)
+    last_name = None
+    for n, m in model.named_modules():
+        if any(m.children()):
+            continue
+        last_name = n
+    for l in block_names:
+        if last_name in l:
+            last_name = None
+            break
+    return last_name
+
+
+def get_gguf_qtype_by_layer_config(layer_config):
+    import gguf  # pylint: disable=E0401
+    if layer_config['bits'] >= 16:
+        return None
+    bits = layer_config['bits']
+    super_bits = layer_config.get("super_bits", None)
+    sym = layer_config["sym"]
+    group_size = layer_config.get("group_size", None)
+    super_group_size = layer_config.get("super_group_size", None)
+    if bits == 2 and super_bits == 4 and not sym and group_size == 16 and super_group_size == 16:
+        return gguf.GGMLQuantizationType.Q2_K
+    if bits == 3 and super_bits == 6 and sym and group_size == 16 and super_group_size == 16:
+        return gguf.GGMLQuantizationType.Q3_K
+    if bits == 4:
+        if super_bits is not None and super_bits == 6 and not sym and group_size == 32 and super_group_size == 8:
+            return gguf.GGMLQuantizationType.Q4_K
+        if super_bits is None and sym and group_size == 32:
+            return gguf.GGMLQuantizationType.Q4_0
+        if super_bits is None and not sym and group_size == 32:
+            return gguf.GGMLQuantizationType.Q4_1
+    if bits == 5:
+        if super_bits == 6 and not sym and group_size == 32 and super_group_size == 8:
+            return gguf.GGMLQuantizationType.Q5_K
+        if super_bits is None and sym and group_size == 32:
+            return gguf.GGMLQuantizationType.Q5_0
+        if super_bits is None and not sym and group_size == 32:
+            return gguf.GGMLQuantizationType.Q5_1
+    if bits == 6 and super_bits == 8 and group_size == 16 and super_group_size == 16:
+        return gguf.GGMLQuantizationType.Q6_K
+    if bits == 8 and sym and group_size == 32:
+        return gguf.GGMLQuantizationType.Q8_0
+    raise ValueError(f"Unknown layer config")
+
+def flatten_list(nested_list):
+    flattened = []
+    for item in nested_list:
+        if isinstance(item, (list, tuple)):
+            flattened.extend(flatten_list(item))
+        else:
+            flattened.append(item)
+    return flattened
+
+def clean_module_parameter(submodule, parameter):
+    if submodule is None:
+        return
+    is_buffer = parameter in submodule._buffers
+    with torch.no_grad():
+        if is_buffer:
+            submodule._buffers[parameter] = None
+        else:
+            submodule._parameters[parameter] = None
+
+def get_reciprocal(tensor):
+    if torch.dtype is torch.float16:
+        tensor =  torch.sign(tensor) * torch.clamp(torch.abs(tensor), min=1e-5)
+    else:
+        tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
+    return  torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))

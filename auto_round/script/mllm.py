@@ -23,8 +23,7 @@ from auto_round.utils import (
     get_device_and_parallelism,
     set_cuda_visible_devices,
     logger,
-    )
-
+)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -195,6 +194,9 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
 
+        self.add_argument("--disable_opt_rtn", action='store_true',
+                          help="whether to disable optimization of the RTN mode(iters=0) (default is False).")
+
 
 def setup_parser():
     parser = BasicArgumentParser()
@@ -287,21 +289,16 @@ def tune(args):
 
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = [
-        "auto_round", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_awq", "gguf:q4_0", "gguf:q4_1", "fake"
-    ]
-    if not args.quant_nontext_module:
-        supported_formats.extend(["auto_gptq"])
 
     formats = args.format.replace(' ', '').split(",")
+    from auto_round.utils import SUPPORTED_FORMATS
     for format in formats:
-        if format not in supported_formats:
-            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+        if format not in SUPPORTED_FORMATS:
+            raise ValueError(f"{format} is not supported, we only support {SUPPORTED_FORMATS}")
 
     ##must set this before import torch
     set_cuda_visible_devices(args.device)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
-
 
     import torch
     if not args.disable_deterministic_algorithms:
@@ -327,6 +324,17 @@ def tune(args):
         model_dtype=args.model_dtype)
 
     from auto_round import AutoRoundMLLM
+
+    seqlen = args.seqlen
+    if seqlen is not None and hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
+        seqlen = min(seqlen, model.config.max_position_embeddings)
+
+    if seqlen is not None and hasattr(tokenizer, "model_max_length"):
+        if tokenizer.model_max_length < seqlen:
+            logger.info(
+                f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length")
+            seqlen = min(seqlen, tokenizer.model_max_length)
+            args.seqlen = seqlen
 
     model = model.eval()
 
@@ -358,13 +366,6 @@ def tune(args):
                     ##TODO gptq, awq could support some mixed precision config
                     logger.warning(f"mixed precision exporting does not support {format} currently")
 
-    for n, m in model.named_modules():
-        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.pytorch_utils.Conv1D):
-            if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                layer_config[n] = {"bits": 32}
-                logger.info(
-                    f"{n} will not be quantized due to its shape not being divisible by 32,"
-                    " resulting in an exporting issue to autogptq")
     lm_head_layer_name = "lm_head"
     for n, _ in model.named_modules():
         lm_head_layer_name = n
@@ -383,7 +384,7 @@ def tune(args):
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
-                auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
+                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
 
@@ -420,7 +421,7 @@ def tune(args):
         group_size=args.group_size,
         sym=not args.asym,
         batch_size=args.batch_size,
-        seqlen=args.seqlen,
+        seqlen=seqlen,
         nblocks=args.nblocks,
         iters=args.iters,
         lr=args.lr,
@@ -443,31 +444,35 @@ def tune(args):
         to_quant_block_names=args.to_quant_block_names,
         enable_torch_compile=enable_torch_compile,
         device_map=args.device_map,
-        model_kwargs=model_kwargs
-        )
-    model, _ = autoround.quantize()
+        model_kwargs=model_kwargs,
+        data_type=args.data_type,
+        disable_opt_rtn=args.disable_opt_rtn,
+    )
+
+    model_name = args.model.rstrip("/")
+
+    if model_name.split('/')[-1].strip('.') == "" and "gguf" not in args.format:
+        export_dir = os.path.join(args.output_dir, f"w{autoround.bits}g{autoround.group_size}")
+    elif model_name.split('/')[-1].strip('.') == "" and "gguf" in args.format:
+        export_dir = args.output_dir
+    elif model_name.split('./')[-1].strip('./') != "" and "gguf" in args.format:
+        export_dir = os.path.join(args.output_dir,
+                                  model_name.split('/')[-1] + "-gguf")
+    else:
+        export_dir = os.path.join(args.output_dir,
+                                  model_name.split('/')[-1] + f"-w{autoround.bits}g{autoround.group_size}")
+
+    model, folders = autoround.quantize_and_save(export_dir, format=args.format)
+
+    if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
+        import shutil
+        shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
 
     model.eval()
     clear_memory()
 
-    if model_name.split('/')[-1].strip('.') == "":
-        export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
-    else:
-        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
 
-    format_list = args.format.replace(' ', '').split(',')
-    inplace = False if len(format_list) > 1 else True
-    for format_ in format_list:
-        save_format_ = format_.replace(":", "-").replace("_", "-")
-        eval_folder = os.path.join(export_dir, save_format_) if len(formats) > 1 else export_dir
-        safe_serialization = True
-        if hasattr(autoround.model, "config") and hasattr(autoround.model.config, "model_type"):
-            if "phi3_v" in autoround.model.config.model_type:
-                safe_serialization = False
-        autoround.save_quantized(eval_folder, format=format_, inplace=inplace, safe_serialization=safe_serialization)
-
-
-def eval(args):
+def vlmeval(args):
     set_cuda_visible_devices(args.device)
     device_str, parallelism = get_device_and_parallelism(args.device)
     if parallelism:
@@ -562,5 +567,3 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-
-

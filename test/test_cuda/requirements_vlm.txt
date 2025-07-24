@@ -1,0 +1,23 @@
+# git+https://github.com/haotian-liu/LLaVA.git@v1.2.2
+# pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git
+# pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
+accelerate
+# autoawq
+bitsandbytes
+datasets
+einops
+flash-attn
+intel-extension-for-transformers
+lm-eval>=0.4.2,<0.5
+numpy < 2.0
+optimum
+pandas
+protobuf
+pillow
+py-cpuinfo
+torch
+torchvision
+triton
+tqdm
+transformers
+xformers

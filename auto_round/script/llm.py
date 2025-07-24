@@ -200,12 +200,19 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=str,
             help="the torch_dytpe to load the model for evaluation.")
 
+        self.add_argument("--disable_opt_rtn", action='store_true',
+                          help="whether to disable optimization of the RTN mode(iters=0) (default is False).")
+
+
 class EvalArgumentParser(argparse.ArgumentParser):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument(
             "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path")
+        self.add_argument(
+            "--mllm", default=False, help="whether to eval multi-modal model."
+        )
         self.add_argument(
             "--device",
             "--devices",
@@ -343,12 +350,11 @@ def tune(args):
     if args.format is None:
         args.format = "auto_round"
 
-
     formats = args.format.lower().replace(' ', '').split(",")
-    from auto_round.utils import supported_formats
+    from auto_round.utils import SUPPORTED_FORMATS
     for format in formats:
-        if format not in supported_formats:
-            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+        if format not in SUPPORTED_FORMATS:
+            raise ValueError(f"{format} is not supported, we only support {SUPPORTED_FORMATS}")
 
     if "auto_gptq" in args.format and args.asym is True:
         logger.warning("the auto_gptq kernel has issues with asymmetric quantization. "
@@ -369,7 +375,7 @@ def tune(args):
 
     if args.enable_torch_compile:
         logger.info("`torch.compile` is enabled to reduce tuning costs. "
-                    "If it causes issues, you can disable it by remove `--enable_torch_compile` argument.")
+                    "If it causes issues, you can disable it by removing `--enable_torch_compile` argument.")
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -392,15 +398,6 @@ def tune(args):
 
     from auto_round import AutoRound, AutoRoundAdam
 
-    seqlen = args.seqlen
-
-    if hasattr(tokenizer, "model_max_length"):
-        if tokenizer.model_max_length < seqlen:
-            logger.info(
-                f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length")
-            seqlen = min(seqlen, tokenizer.model_max_length)
-            args.seqlen = seqlen
-
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
 
@@ -409,14 +406,6 @@ def tune(args):
         round = AutoRoundAdam
 
     layer_config = {}
-    for n, m in model.named_modules():
-        if isinstance(m, torch.nn.Linear) or isinstance(m, transformers.pytorch_utils.Conv1D):
-            if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
-                layer_config[n] = {"bits": 16}
-                logger.info(
-                    f"{n} will not be quantized due to its shape not being divisible by 32,"
-                    " resulting in an exporting issue to autogptq")
-
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
         layer_config[name] = {"bits": 16}
@@ -446,7 +435,7 @@ def tune(args):
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
-                auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
+                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
                 raise ValueError(
                     f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
 
@@ -467,7 +456,7 @@ def tune(args):
         sym=not args.asym,
         batch_size=args.batch_size,
         dataset=args.dataset,
-        seqlen=seqlen,
+        seqlen=args.seqlen,
         nblocks=args.nblocks,
         iters=args.iters,
         lr=args.lr,
@@ -494,13 +483,21 @@ def tune(args):
         device_map=args.device_map,
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
+        disable_opt_rtn=args.disable_opt_rtn,
     )
 
     model_name = args.model.rstrip("/")
-    if model_name.split('/')[-1].strip('.') == "":
-        export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
+
+    if model_name.split('/')[-1].strip('.') == "" and "gguf" not in args.format:
+        export_dir = os.path.join(args.output_dir, f"w{autoround.bits}g{autoround.group_size}")
+    elif model_name.split('/')[-1].strip('.') == "" and "gguf" in args.format:
+        export_dir = args.output_dir
+    elif model_name.split('./')[-1].strip('./') != "" and "gguf" in args.format:
+        export_dir = os.path.join(args.output_dir,
+                                  model_name.split('/')[-1] + "-gguf")
     else:
-        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
+        export_dir = os.path.join(args.output_dir,
+                                  model_name.split('/')[-1] + f"-w{autoround.bits}g{autoround.group_size}")
 
     model, folders = autoround.quantize_and_save(export_dir, format=args.format)
 
@@ -534,16 +531,30 @@ def tune(args):
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
     if args.act_bits <= 8 or eval_gguf_model:
         if eval_gguf_model:
-            # gguf floder only contains one file
+            # for file in os.listdir(eval_folder):
+            #     gguf_file = file
+            gguf_file = None
+            gguf_format = None  # Initialize gguf_format to None
+            # gguf folder only contains one file
+            for format in formats:
+                if format.startswith("gguf"):
+                    gguf_format = format.split(":")[-1].upper()
+            if gguf_format is None:  # Validate gguf_format after the loop
+                logger.error("No valid gguf format found in formats. Please check the input.")
+                sys.exit(-1)
             for file in os.listdir(eval_folder):
-                gguf_file = file
+                if gguf_format in file:
+                    gguf_file = file
 
-            logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
+            logger.warning("evaluating gguf model is an experimental feature, the accuracy may be not correct.")
             if eval_model_dtype == "float32" or eval_model_dtype == "auto":
                 logger.warning(
                     "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
                     " but may affect accuracy."
                 )
+            if gguf_file is None:
+                logger.error("Cannot find correct gguf file for evaluation, please check.")
+                sys.exit(-1)
             model = AutoModelForCausalLM.from_pretrained(
                 eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
             model.eval()
@@ -573,15 +584,20 @@ def tune(args):
                 args.eval_bs = 16
             from auto_round.eval.evaluation import simple_evaluate_user_model
             st = time.time()
+            add_bos_token=False
+            if "llama" in args.model.lower():
+                add_bos_token=True
             res = simple_evaluate_user_model(
                 model,
                 tokenizer,
                 tasks=tasks,
                 batch_size=args.eval_bs,
                 device=device_str,
-                eval_model_dtype=eval_model_dtype)
+                eval_model_dtype=eval_model_dtype,
+                add_bos_token=add_bos_token
+                )
             print(make_table(res))
-            print("evaluation running time=", time.time() - st)
+            print("evaluation running time=%ds" % (time.time() - st))
     else:
         if args.eval_task_by_task:
             eval_task_by_task(
@@ -598,7 +614,7 @@ def tune(args):
             res = simple_evaluate(
                 model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
             print(make_table(res))
-            print("evaluation running time=", time.time() - st)
+            print("evaluation running time=%ds" % (time.time() - st))
 
 
 def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype="auto"):
@@ -620,10 +636,12 @@ def eval(args):
     tasks, model_args, device_str = _eval_init(
         args.tasks, args.model, args.device, args.disable_trust_remote_code, args.eval_model_dtype)
 
-    # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
+    # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
     from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
     from auto_round.utils import logger
 
+    if (batch_size := args.eval_bs) is None:
+        batch_size = "auto:8"
     is_gguf_file = False
     if os.path.isfile(args.model) and args.model.endswith(".gguf"):
         is_gguf_file = True
@@ -641,7 +659,7 @@ def eval(args):
         from lm_eval.utils import make_table  # pylint: disable=E0401
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
 
-        logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
+        logger.warning("evaluating gguf model is an experimental feature, the accuracy may be not correct.")
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -650,20 +668,25 @@ def eval(args):
         model = AutoModelForCausalLM.from_pretrained(
             model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
         model.eval()
-        if (batch_size := args.eval_bs) is None:
-            batch_size = "auto:8"
         st = time.time()
         res = simple_evaluate_user_model(
-                model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
+            model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
         print(make_table(res))
-        print("evaluation running time=", time.time() - st)
+        print("evaluation running time=%ds" % (time.time() - st))
     else:
         st = time.time()
+        if "auto" in str(batch_size) and args.mllm:
+            logger.warning("Batch size 'auto' is not yet supported for hf-multimodal models, reset to 16")
+            batch_size = 16
         res = simple_evaluate(
-            model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+            model="hf" if not args.mllm else "hf-multimodal",
+            model_args=model_args,
+            tasks=tasks,
+            device=device_str,
+            batch_size=batch_size)
         from lm_eval.utils import make_table  # pylint: disable=E0401
         print(make_table(res))
-        print("evaluation running time=", time.time() - st)
+        print("evaluation running time=%ds" % (time.time() - st))
 
 
 def eval_task_by_task(
@@ -705,7 +728,7 @@ def eval_task_by_task(
     eval_model_dtype = get_model_dtype(eval_model_dtype)
     if is_gguf_file:
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
-        logger.warning("evaluate gguf model is an experimental feature, the accuracy may be not correct.")
+        logger.warning("evaluating gguf model is an experimental feature, the accuracy may be not correct.")
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
@@ -715,7 +738,7 @@ def eval_task_by_task(
         model = AutoModelForCausalLM.from_pretrained(
             model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
         model.eval()
-        parallelism=False
+        parallelism = False
     hflm = HFLM(
         pretrained=model,
         tokenizer=tokenizer,
@@ -725,7 +748,7 @@ def eval_task_by_task(
         parallelize=parallelism,
         trust_remote_code=trust_remote_code,
         dtype=eval_model_dtype
-        )
+    )
 
     if isinstance(tasks, str):
         tasks = tasks.replace(" ", "").split(",")
@@ -746,7 +769,7 @@ def eval_task_by_task(
                     ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
                     try:
                         for k, v in hflm.batch_sizes.items():
-                            hflm.batch_sizes[k] =  max(v // 2, 1)
+                            hflm.batch_sizes[k] = max(v // 2, 1)
                         logger.warning(
                             f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
                         res = lm_simple_evaluate(
@@ -768,4 +791,3 @@ def eval_task_by_task(
         print(make_table(res_all))
 
     print("total eval time:", time.time() - st)
-

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os
 import re
 from logging import getLogger
 from typing import Union
@@ -23,7 +23,7 @@ from transformers.pytorch_utils import Conv1D
 
 from auto_round.utils import (
     get_module, set_module, is_hpu_supported, get_block_names, find_matching_blocks,
-    get_layer_names_in_block, check_to_quantized)
+    get_layer_names_in_block, check_to_quantized, check_start_with_block_name, SUPPORTED_LAYER_TYPES)
 
 from auto_round.inference.backend import (
     get_layer_backend, dynamic_import_inference_linear, find_backend, BackendInfos, get_highest_priority_backend,
@@ -37,7 +37,7 @@ supported_devices = ("cpu", "hpu", "xpu", "cuda")
 def flatten_list(nested_list):
     flattened = []
     for item in nested_list:
-        if isinstance(item, list):
+        if isinstance(item, (list, tuple)):
             flattened.extend(flatten_list(item))
         else:
             flattened.append(item)
@@ -48,7 +48,7 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
     modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
     try:  # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
-    except Exception:
+    except:
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert)
     if modules_to_not_convert:
         for layer_name in layer_names:
@@ -231,20 +231,25 @@ def get_layer_config(model, quantization_config):
         if to_quant_block_names is None:
             to_quant_block_names = getattr(quantization_config, "to_quant_block_names", None)
         if isinstance(to_quant_block_names, (list, tuple)):
-            quant_block_list = to_quant_block_names
+            quant_block_list = flatten_list(to_quant_block_names)
         elif isinstance(to_quant_block_names, str):
             # Generate quant block names based on the given layer names
-            quant_block_list = [
-                [f'{block}.{i}' for i in range(len(get_module(model, block)))]
-                for block in to_quant_block_names.split(',')
-            ]
+            quant_block_list = to_quant_block_names.split(",")
         else:
             # Find matching blocks if no explicit names are provided
             all_blocks = get_block_names(model, quant_vision=True)
             quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
+            ##speed up the matching
+            for i in range(len(quant_block_list)):
+                quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip('.')
 
     # Get layer names that will be quantized
-    layer_names = get_layer_names_in_block(model, quant_block_list=quant_block_list)
+    layer_names = []
+    for n, m in model.named_modules():
+        if not isinstance(m, SUPPORTED_LAYER_TYPES):
+            continue
+        if check_start_with_block_name(n, quant_block_list):
+            layer_names.append(n)
 
     # Load extra configuration if available
     extra_config = getattr(quantization_config, "extra_config", {})
@@ -547,6 +552,6 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
                                                     BackendInfos[orig_backend].packing_format)
         if best_backend is not None and best_backend not in used_backends:
             requirements = BackendInfos[best_backend].requirements
-            process_requirement(requirements, target_device,"warning")
+            process_requirement(requirements, target_device, "warning")
 
     return model, used_backends
