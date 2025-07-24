@@ -1,3 +1,17 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import math
 from logging import getLogger
 
@@ -6,9 +20,7 @@ import torch
 import torch.nn as nn
 import transformers
 
-
 from auto_round_extension.triton.triton_utils.mixin import TritonModuleMixin
-
 
 logger = getLogger(__name__)
 
@@ -16,7 +28,7 @@ try:
     from auto_round_extension.triton.triton_utils.dequant import QuantLinearFunction, quant_matmul_248
 except ImportError as e:
     if torch.xpu.is_available():
-        logger.error(f"please make sure your triton version is same with `pytorch-triton-xpu` library ")
+        logger.error("please make sure your triton version is same with `pytorch-triton-xpu` library ")
         exit(-1)
     triton_import_exception = e
 

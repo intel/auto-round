@@ -24,13 +24,13 @@ import torch
 
 
 def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
-    from gptqmodel.models._const import DEVICE, PLATFORM # pylint: disable=E0401
-    from gptqmodel.nn_modules.qlinear import BaseQuantLinear # pylint: disable=E0401
-    from gptqmodel.utils.backend import BACKEND # pylint: disable=E0401
+    from gptqmodel.models._const import DEVICE, PLATFORM  # pylint: disable=E0401
+    from gptqmodel.nn_modules.qlinear import BaseQuantLinear  # pylint: disable=E0401
+    from gptqmodel.utils.backend import BACKEND  # pylint: disable=E0401
 
     marlin_import_exception = None
     try:
-        import gptqmodel_marlin_kernels # pylint: disable=E0401
+        import gptqmodel_marlin_kernels  # pylint: disable=E0401
     except ImportError as e:
         marlin_import_exception = e
 

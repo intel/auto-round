@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from functools import lru_cache
+
+import torch
+
+from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import logger
+
 
 def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
     """Reshapes and pads the tensor to ensure that it can be quantized in groups of `group_size`.

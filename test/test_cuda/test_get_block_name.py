@@ -6,10 +6,17 @@ import unittest
 sys.path.insert(0, "../..")
 import torch
 import transformers
-from transformers import AutoModelForCausalLM, AutoTokenizer, Qwen2VLForConditionalGeneration, AutoModelForVision2Seq, \
-    Gemma3ForConditionalGeneration, Mistral3ForConditionalGeneration
-from auto_round.utils import get_block_names, is_pure_text_model
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForVision2Seq,
+    AutoTokenizer,
+    Gemma3ForConditionalGeneration,
+    Mistral3ForConditionalGeneration,
+    Qwen2VLForConditionalGeneration,
+)
+
 from auto_round import AutoRound
+from auto_round.utils import get_block_names, is_pure_text_model
 
 
 class TestAutoRound(unittest.TestCase):

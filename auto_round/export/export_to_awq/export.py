@@ -20,21 +20,27 @@
 # SOFTWARE.
 
 
-import os
-import torch
-import torch.nn as nn
-
-from auto_round.utils import (logger, get_module,
-                              set_module,
-                              check_to_quantized,
-                              get_block_names,
-                              extract_block_names_to_str, SUPPORTED_LAYER_TYPES, filter_quantization_config)
 import copy
 import json
-from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+import os
 from concurrent.futures import ThreadPoolExecutor
+
 import threadpoolctl as tctl
+import torch
+import torch.nn as nn
 from tqdm import tqdm
+
+from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_to_quantized,
+    extract_block_names_to_str,
+    filter_quantization_config,
+    get_block_names,
+    get_module,
+    logger,
+    set_module,
+)
 
 
 def pack_layer(name, model, backend):

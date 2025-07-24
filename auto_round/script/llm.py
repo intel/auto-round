@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
+import logging
+
 # Copyright (c) 2024 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,16 +30,16 @@
 # limitations under the License.
 import os
 import re
-import argparse
 import sys
-import logging
+
 from auto_round.utils import (
-    get_fp_layer_names,
     clear_memory,
     get_device_and_parallelism,
+    get_fp_layer_names,
     get_model_dtype,
+    set_cuda_visible_devices,
     str2bool,
-    set_cuda_visible_devices)
+)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -341,11 +344,9 @@ def tune(args):
         args.eval_bs = "auto"
 
     import transformers
+    from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoTokenizer
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel, AutoConfig
-
-    from auto_round.utils import detect_device, get_library_version
-    from auto_round.utils import logger
+    from auto_round.utils import detect_device, get_library_version, logger
 
     if args.format is None:
         args.format = "auto_round"
@@ -427,8 +428,8 @@ def tune(args):
                 if lm_head_layer_name in item:  ##TODO extend to encoder-decoder layer, seq classification model
                     args.quant_lm_head = False
                     logger.warning(
-                        f"reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
-                        f"supported currently")
+                        "reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
+                        "supported currently")
                     break
 
     if args.quant_lm_head:
@@ -655,8 +656,8 @@ def eval(args):
     eval_model_dtype = get_model_dtype(args.eval_model_dtype)
     if is_gguf_file:
         import torch
-        from transformers import AutoTokenizer, AutoModelForCausalLM
         from lm_eval.utils import make_table  # pylint: disable=E0401
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(model, gguf_file=gguf_file)
 
         logger.warning("evaluating gguf model is an experimental feature, the accuracy may be not correct.")
@@ -704,12 +705,13 @@ def eval_task_by_task(
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
     import traceback
-    from auto_round.utils import logger
+
     from lm_eval import simple_evaluate as lm_simple_evaluate
     from lm_eval.models.huggingface import HFLM
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     from auto_round import AutoRoundConfig  # pylint: disable=E0611
+    from auto_round.utils import logger
     if batch_size is None:
         batch_size = "auto:8"
     is_gguf_file = False

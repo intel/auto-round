@@ -14,20 +14,28 @@
 
 
 import copy
+import inspect
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 
+import threadpoolctl as tctl
 import torch
 import torch.nn as nn
 import transformers
-
-from auto_round.utils import get_module, logger, set_module, SUPPORTED_LAYER_TYPES, check_to_quantized, \
-    filter_quantization_config, SUPPORTED_FORMATS
-import threadpoolctl as tctl
-import inspect
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
-from auto_round.utils import get_autogptq_packing_qlinear, check_start_with_block_name
+
+from auto_round.utils import (
+    SUPPORTED_FORMATS,
+    SUPPORTED_LAYER_TYPES,
+    check_start_with_block_name,
+    check_to_quantized,
+    filter_quantization_config,
+    get_autogptq_packing_qlinear,
+    get_module,
+    logger,
+    set_module,
+)
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -83,7 +91,7 @@ def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_
     elif "awq" in backend:
         from ..export_to_awq.utils import WQLinear_GEMM
         return WQLinear_GEMM
-    elif "gptq" in backend and not "gptqmodel" in backend:  ## have g_idx
+    elif "gptq" in backend and "gptqmodel" not in backend:  ## have g_idx
         return get_autogptq_packing_qlinear(backend, bits, group_size, sym)
     else:
         raise ValueError(

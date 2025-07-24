@@ -2,12 +2,15 @@ import os
 import shutil
 import sys
 import unittest
+
 sys.path.insert(0, ".")
 sys.path.insert(0, "../..")
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+
 from auto_round import AutoRound
+
 
 class LLMDataLoader:
     def __init__(self, input_size=10):
@@ -175,8 +178,9 @@ class TestQuantizationBlocks(unittest.TestCase):
         
 
     def test_mm_block_name(self):
-        from auto_round.utils import get_block_names
         from transformers import Qwen2VLForConditionalGeneration
+
+        from auto_round.utils import get_block_names
         model_name = "Qwen/Qwen2-VL-2B-Instruct"
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_name, trust_remote_code=True, device_map="auto")

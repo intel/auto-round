@@ -1,9 +1,10 @@
-import re
-from io import open
 import os
-from setuptools import find_packages, setup
+import re
 import sys
 from functools import lru_cache
+from io import open
+
+from setuptools import find_packages, setup
 
 os.environ["CC"] = "g++"
 os.environ["CXX"] = "g++"
