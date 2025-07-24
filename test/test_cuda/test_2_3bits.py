@@ -12,7 +12,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
-from auto_round.testing_utils import require_autogptq, require_greater_than_050
+from auto_round.testing_utils import require_autogptq, require_greater_than_050, require_greater_than_051
 
 
 def get_accuracy(data):
@@ -124,5 +124,6 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
