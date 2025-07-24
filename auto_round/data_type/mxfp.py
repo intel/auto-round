@@ -46,7 +46,7 @@ FP32_EXPONENT_BIAS = 127
 FP32_MIN_NORMAL = 2 ** (-FP32_EXPONENT_BIAS + 1)
 
 
-def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even", v=0):
+def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
     if ebits != 0:
         private_exp = floor_ste(torch.log2(torch.abs(tensor) + (tensor == 0).type(tensor.dtype)))
         # The minimum representable exponent for 8 exp bits is -126
