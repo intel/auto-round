@@ -18,46 +18,6 @@ from auto_round.data_type.utils import get_gaudi_fp8_ste_func, float8_e4m3fn_ste
 from auto_round.data_type.register import register_dtype
 
 
-@register_dtype("fp8_dynamic_per_token_sym")
-def fp8_dynamic_per_token_sym(tensor, max_scale=1.0, **kwargs):
-    """Dynamic per-token symmetric quantization using float8.
-
-    This function dynamically calculates a per-token scaling factor for each group of tokens
-    and applies symmetric quantization using float8 format.
-
-    Args:
-        tensor (torch.Tensor): Input tensor to quantize.
-        max_scale (float, optional): Maximum scaling factor. Defaults to 1.0.
-        **kwargs: Additional arguments for compatibility.
-
-    Returns:
-        tuple:
-            - Quantized and dequantized tensor (torch.Tensor).
-            - Scale tensor used for quantization (torch.Tensor).
-            - Placeholder for zp (None).
-    """
-    orig_shape = tensor.shape
-    info = torch.finfo(torch.float8_e4m3fn)
-    orig_dtype = tensor.dtype
-
-    tensor = tensor.reshape(-1, orig_shape[-1])
-    max_tensor = torch.max(torch.abs(tensor), dim=-1)[
-                     0] * max_scale
-
-    scale = max_tensor.to(torch.float32) / info.max
-    min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
-    scale = torch.clip(scale, min=min_scaling_factor)
-    if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
-        tensor = tensor.to(torch.bfloat16)
-    scale = scale.unsqueeze(dim=-1)
-    fp8_res = (tensor / scale)
-    fp8_res = torch.clip(fp8_res, info.min, info.max)
-    fp8_res = float8_e4m3fn_ste(fp8_res)
-    qdq_res = fp8_res * scale
-    qdq_res = qdq_res.to(orig_dtype).reshape(orig_shape)
-    return qdq_res, scale, None
-
-
 @register_dtype(("fp8_sym","fp8","fp8_e4m3"))
 def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0,**kwargs):
     """Symmetric quantization using float8 format.
@@ -79,6 +39,10 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0,**k
     info = torch.finfo(torch.float8_e4m3fn)
     orig_dtype = tensor.dtype
     tensor,orig_shape,pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if isinstance(max_scale, torch.Tensor):
+        max_scale = max_scale.to(tensor.device)
+    if isinstance(v, torch.Tensor):
+        v = v.to(tensor.device)
     if tensor_max is None:  ##dynamic per-token
         max_tensor = torch.max(torch.abs(tensor), dim=-1)[
                          0] * max_scale

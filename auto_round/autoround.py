@@ -537,24 +537,6 @@ class AutoRound(object):
                 self.scale_dtype = torch.float32
                 logger.info(f"change `scale_dtype` to `torch.float32`")
 
-        # only support to export afp8
-        if self.act_bits <= 8:
-            if "fp8" not in self.act_data_type:
-                if len(formats) > 1 or "fake" not in formats:
-                    logger.warning(
-                        f"Currently only support to export auto_round format quantized model"
-                        " with fp8 dtype activation for activation quantization."
-                        " Change format to fake and save."
-                    )
-                    formats = ["fake"]
-            else:
-                if len(formats) > 1 or "auto_round" not in formats:
-                    logger.warning(
-                        f"Currently only support to export auto_round format for W{self.bits}AFP8 model,"
-                        " change format to auto_round"
-                    )
-                    formats = ["auto_round"]
-
         # Adjust format settings based on compatibility
         for index in range(len(formats)):
             format = formats[index]
@@ -579,8 +561,9 @@ class AutoRound(object):
             return [x for x in lst if not (x in seen or seen.add(x))]
 
         formats = remove_duplicates(formats)
-        for format in formats:
-            self._check_supported_format(format)
+        for i in range(len(formats)):
+            formats[i] = self._check_supported_format(formats[i])
+        formats = remove_duplicates(formats)
         return formats
 
     def _check_supported_format(self, format: str) -> bool:
@@ -615,7 +598,7 @@ class AutoRound(object):
                     )
                     format = "fake"
             else:
-                if format != "auto_round":
+                if not (format == "auto_round" or format == "auto_round:fp8"):
                     logger.warning(
                         f"Currently only support to export auto_round format for static W{self.bits}AFP8 model,"
                         " change format to auto_round"
@@ -629,6 +612,7 @@ class AutoRound(object):
             )
             sys.exit(-1)
 
+        return format
     def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
 
@@ -1107,7 +1091,6 @@ class AutoRound(object):
         """
         if self.amp:
             self.model.to(self.amp_dtype)
-        self.model.to("cpu")
 
         all_to_quantized_module_names: list[str] = [
             n for n, m in self.model.named_modules() if check_to_quantized(m)
@@ -1117,8 +1100,26 @@ class AutoRound(object):
 
         self.quantize_embedding_layer()
 
+        self.model.to("cpu")
         if has_gguf_k and not self.disable_opt_rtn:
             self.quant_rtn_with_imatrix(all_to_quantized_module_names)
+        elif self.act_bits <=8 and self.act_dynamic is False:
+            hook_handles = self.register_act_max_hook(self.model)
+            try:
+                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+            except RuntimeError as e:
+                logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
+                self.model = self.model.to("cpu")
+                clear_memory()
+                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                    import accelerate
+                    accelerate.hooks.remove_hook_from_submodules(self.model)
+                orig_device = self.device
+                self.device = "cpu"
+                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+                self.device = orig_device
+            for handle in hook_handles:
+                handle.remove()
         else:
             block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
             clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
@@ -1200,6 +1201,8 @@ class AutoRound(object):
                             continue
                         hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                         add_hook_to_module(m, hook, True)
+                else:
+                    block = block.to(self.device)
 
                 input_ids = self.get_block_outputs(
                     block,
@@ -1209,7 +1212,6 @@ class AutoRound(object):
                     self.device,
                     self.cache_device,
                 )
-
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
@@ -2092,9 +2094,20 @@ class AutoRound(object):
         hook_handles = []
 
         for n, m in model.named_modules():
+            # for block
             if hasattr(m, "act_dynamic") and m.act_dynamic == False and check_to_quantized(m):
                 hook = m.register_forward_hook(get_act_max_hook)
                 hook_handles.append(hook)
+                continue
+
+            # for whole model, RTN
+            if n in self.layer_config:
+                config = self.layer_config[n]
+                if config["bits"] <= 8 and "act_dynamic" in config and config[
+                        "act_dynamic"] is False and check_to_quantized(config):
+                    hook = m.register_forward_hook(get_act_max_hook)
+                    hook_handles.append(hook)
+                    continue
         return hook_handles
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
@@ -2420,7 +2433,7 @@ class AutoRound(object):
         Returns:
             object: The compressed model object.
         """
-        self._check_supported_format(format)
+        format = self._check_supported_format(format)
 
         if self.low_cpu_mem_usage:
             self.model = self.model.to('cpu')
