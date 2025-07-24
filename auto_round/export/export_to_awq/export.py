@@ -67,6 +67,11 @@ def pack_layer(name, model, backend):
         zeros=zp,
     )
     set_module(model, name, q_linear)
+    if hasattr(layer,"weight"):
+        layer.weight = None
+    if hasattr(layer,"bias"):
+        layer.bias = None
+
 
 
 def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):

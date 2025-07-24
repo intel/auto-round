@@ -1310,14 +1310,14 @@ def llm_load_model(
     else:
         if _use_hpu_compile_mode():
             model = model_cls.from_pretrained(
-                pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                pretrained_model_name_or_path, torch_dtype=torch_dtype,
                 attn_implementation="eager",
                 trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
             )
         else:
             try:
                 model = model_cls.from_pretrained(
-                    pretrained_model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch_dtype,
+                    pretrained_model_name_or_path, torch_dtype=torch_dtype,
                     trust_remote_code=trust_remote_code, device_map="auto" if use_auto_mapping else None
                 )
             except OSError as e:
@@ -1325,7 +1325,6 @@ def llm_load_model(
                     f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
                 model = model_cls.from_pretrained(
                     pretrained_model_name_or_path,
-                    low_cpu_mem_usage=True,
                     torch_dtype=torch_dtype,
                     trust_remote_code=False,
                     device_map="auto" if use_auto_mapping else None)
@@ -1935,29 +1934,9 @@ def clean_module_parameter(submodule, parameter):
         else:
             submodule._parameters[parameter] = None
 
-def get_named_children(model, pre=[]):
-    """Get all the name and children of given model."""
-    module_list = []
-    if len(list(model.children())) == 0:
-        return [(".".join(pre), model)]
-    for name, module in model.named_children():
-        module_list += get_named_children(module, pre=pre + [name])
-    return module_list
-
-def register_per_layer_to_device(model, device):
-    def forward_pre_hook(module, input):
-        module = module.to(device)
-    
-    def forward_hook(module, input, output):
-        module = mv_module_from_gpu(module)
-        clear_memory()
-    
-    hook_handels = []
-    for n, m in get_named_children(model):
-        hook = m.register_forward_pre_hook(forward_pre_hook)
-        hook_handels.append(hook)
-        hook = m.register_forward_hook(forward_hook)
-        hook_handels.append(hook)
-
-    return hook_handels    
-        
+def get_reciprocal(tensor):
+    if torch.dtype is torch.float16:
+        tensor =  torch.sign(tensor) * torch.clamp(torch.abs(tensor), min=1e-5)
+    else:
+        tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
+    return  torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))

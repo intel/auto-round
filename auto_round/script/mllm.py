@@ -23,8 +23,7 @@ from auto_round.utils import (
     get_device_and_parallelism,
     set_cuda_visible_devices,
     logger,
-    )
-
+)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -301,7 +300,6 @@ def tune(args):
     set_cuda_visible_devices(args.device)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
 
-
     import torch
     if not args.disable_deterministic_algorithms:
         torch.use_deterministic_algorithms(True, warn_only=True)
@@ -449,8 +447,8 @@ def tune(args):
         model_kwargs=model_kwargs,
         data_type=args.data_type,
         disable_opt_rtn=args.disable_opt_rtn,
-        )
-    
+    )
+
     model_name = args.model.rstrip("/")
 
     if model_name.split('/')[-1].strip('.') == "" and "gguf" not in args.format:
@@ -474,7 +472,7 @@ def tune(args):
     clear_memory()
 
 
-def eval(args):
+def vlmeval(args):
     set_cuda_visible_devices(args.device)
     device_str, parallelism = get_device_and_parallelism(args.device)
     if parallelism:
@@ -569,6 +567,3 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-
-
-

@@ -228,6 +228,10 @@ def pack_layer(layer_name, model, backend):
         )
         qlayer.to(device)
         set_module(model, layer_name, qlayer)
+    if hasattr(layer,"weight"):
+        layer.weight = None
+    if hasattr(layer,"bias"):
+        layer.bias = None
 
 
 def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:exllamav2", **kwargs):
