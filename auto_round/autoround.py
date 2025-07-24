@@ -253,8 +253,10 @@ class AutoRound(object):
                 self.act_data_type = "float"
 
         tmp_act_bits = infer_bits_by_data_type(self.act_data_type)
-        if tmp_act_bits < 16:
+        if tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
             self.act_bits = tmp_act_bits
+            logger.warning(
+                f"act_bits set in 'act_data_type' do not match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}.")
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
