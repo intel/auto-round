@@ -710,6 +710,11 @@ def get_dataloader(
                         calib_name = key
                         break
             get_dataset = CALIB_DATASETS.get(calib_name)
+        if get_dataset is None:
+            filtered_keys = [k for k in CALIB_DATASETS.keys() if '/' not in k]
+            raise ValueError(
+                f"Dataset '{name}' is not found. Please choose from the supported datasets: {filtered_keys}."
+            )
         dataset = get_dataset(
             tokenizer,
             seqlen,
