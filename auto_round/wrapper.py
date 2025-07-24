@@ -298,9 +298,12 @@ class WrapperLinear(torch.nn.Module):
                 tmp_shape = (1)
                 if self.orig_layer.act_group_size > 1:
                     tmp_shape = (1, self.orig_layer.act_group_size)
-                _, act_scale, _ = self._qdq_act(torch.zeros(tmp_shape).to(self.device),
+                if act_max is not None:
+                    _, act_scale, _ = self._qdq_act(torch.zeros(tmp_shape).to(self.device),
                                                 act_max_scale=self.act_max_scale, act_max=act_max)
-                self.orig_layer.act_max = torch.tensor(self.orig_layer.act_max * act_max_scale.item()).to("cpu")
+                    self.orig_layer.act_max = torch.tensor(self.orig_layer.act_max * act_max_scale.item()).to("cpu")
+                else:
+                    act_scale = torch.ones_like(act_max_scale, dtype=self.act_data_type)
                 self.orig_layer.act_scale = act_scale.to("cpu")
 
             self.orig_layer.q_scale_thresh = self.q_scale_thresh
