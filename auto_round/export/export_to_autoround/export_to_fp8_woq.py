@@ -163,7 +163,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
         quantization_config["fmt"] = "e5m2"
     else:
         quantization_config["fmt"] = "e4m3"
-    quantization_config["activation_scheme"] = "dynamic"
+    quantization_config["activation_scheme"] = "dynamic" if quantization_config['act_dynamic'] else "static"
 
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
@@ -201,7 +201,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
     max_workers = 1
-    if not torch.cuda.is_available() or not torch.xpu.is_available():
+    if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     packing_device = "cpu"
     if torch.cuda.is_available():

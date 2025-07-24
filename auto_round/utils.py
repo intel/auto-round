@@ -476,9 +476,13 @@ def check_to_quantized(config):
         bool: True if the configuration is valid for quantization (bits <= 8),
             False otherwise.
     """
+    from auto_round.wrapper import WrapperWALayer
     if isinstance(config, dict):
         bits = int(config.get("bits", 16))
         act_bits = int(config.get("act_bits", 16))
+    if isinstance(config, WrapperWALayer):
+        bits = int(config.orig_layer.bits) if hasattr(config.orig_layer, "bits") else 16
+        act_bits = int(config.orig_layer.act_bits) if hasattr(config.orig_layer, "act_bits") else 16
     else:
         bits = int(config.bits) if hasattr(config, "bits") else 16
         act_bits = int(config.act_bits) if hasattr(config, "act_bits") else 16

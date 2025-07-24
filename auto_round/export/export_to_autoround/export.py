@@ -158,12 +158,12 @@ def pack_layer(layer_name, model, backend):
     if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
 
-    if int(layer.act_bits) <= 8:
-        return pack_qact_layer(layer_name, model)
-
     if "fp8" in backend:
         from auto_round.export.export_to_autoround.export_to_fp8_woq import pack_layer
         return pack_layer(layer_name,model,backend)
+
+    if int(layer.act_bits) <= 8:
+        return pack_qact_layer(layer_name, model)
 
     if not check_to_quantized(layer):
         return
