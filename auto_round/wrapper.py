@@ -78,10 +78,11 @@ class WrapperLinear(torch.nn.Module):
         self.enable_round_tuning = enable_round_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
-        self.weight_global_scale = None
+        self.weight_global_scale = getattr(self.orig_layer, "weight_global_scale", None)
         if "nv_fp" in self.orig_layer.data_type and self.weight_global_scale is None:
             from auto_round.data_type.nvfp import calculate_gparam
             self.weight_global_scale = calculate_gparam(self.orig_layer.weight, self.orig_layer.group_size)
+        self.weight_global_scale = self.weight_global_scale.to(self.orig_layer.weight.device)
         if (hasattr(self.orig_layer, "scale_dtype") and self.orig_layer.scale_dtype == torch.float32):
             self.q_scale_thresh = 1e-8
         else:
