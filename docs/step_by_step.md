@@ -136,7 +136,7 @@ autoround = AutoRound(
 
 output_dir = "./tmp_autoround"
 # format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
-autoround.quantize_and_save(output_dir, format='auto_gptq,auto_awq,auto_round') 
+autoround.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 ```
 
 #### Mixed bits Usage
@@ -152,10 +152,10 @@ model_name = "facebook/opt-125m"
 model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 bits, group_size, sym = 4, 128, True
-layer_config = {#  Supports both full layer names and fuzzy (partial) matching
-  "model.decoder.layers.6.self_attn.out_proj": {"bits": 8, "group_size": 32}, 
-  "model.decoder.layers.*k_proj": {"bits": 2, "group_size": 32}
-  }
+layer_config = {  #  Supports both full layer names and fuzzy (partial) matching
+    "model.decoder.layers.6.self_attn.out_proj": {"bits": 8, "group_size": 32},
+    "model.decoder.layers.*k_proj": {"bits": 2, "group_size": 32},
+}
 autoround = AutoRound(
     model,
     tokenizer,
@@ -166,7 +166,7 @@ autoround = AutoRound(
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='auto_round') 
+autoround.quantize_and_save(output_dir, format="auto_round")
 ```
 
 #### AutoRoundBest recipe
@@ -180,18 +180,11 @@ model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 bits, group_size, sym = 4, 128, True
 autoround = AutoRound(
-    model,
-    tokenizer,
-    bits=bits,
-    group_size=group_size,
-    sym=sym,
-    nsamples=512,
-    iters=1000,
-    low_gpu_mem_usage=True
+    model, tokenizer, bits=bits, group_size=group_size, sym=sym, nsamples=512, iters=1000, low_gpu_mem_usage=True
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='auto_round') 
+autoround.quantize_and_save(output_dir, format="auto_round")
 ```
 #### AutoRoundLight recipe
 This setting offers the best speed (2 - 3X faster than AutoRound), but it may cause a significant accuracy drop for small models and 2-bit quantization. It is recommended for 4-bit settings and models larger than 3B.
@@ -215,7 +208,7 @@ autoround = AutoRound(
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='auto_round') 
+autoround.quantize_and_save(output_dir, format="auto_round")
 ```
 
 ### RTN mode
@@ -239,7 +232,7 @@ autoround = AutoRound(
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='auto_round') 
+autoround.quantize_and_save(output_dir, format="auto_round")
 ```
 
 ### GGUF format
@@ -264,7 +257,7 @@ autoround = AutoRound(
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='gguf:q4_0') # gguf:q4_1, gguf:q*_k_s
+autoround.quantize_and_save(output_dir, format="gguf:q4_0")  # gguf:q4_1, gguf:q*_k_s
 ```
 
 ### Device/Multi-GPU setting in Quantization
@@ -446,12 +439,12 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 ```python
 import habana_frameworks.torch.core as htcore
 import habana_frameworks.torch.hpu as hthpu
-from transformers import AutoModelForCausalLM,AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
 model_name = "Intel/Qwen2-7B-int4-inc"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name).to('hpu').to(torch.bfloat16)
+model = AutoModelForCausalLM.from_pretrained(model_name).to("hpu").to(torch.bfloat16)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
@@ -471,7 +464,9 @@ from auto_round import AutoRoundConfig
 
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 quantization_config = AutoRoundConfig(backend="ipex")
-model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto")
+model = AutoModelForCausalLM.from_pretrained(
+    model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto"
+)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -501,7 +496,9 @@ from auto_round import AutoRoundConfig
 
 model_name = "ybelkada/opt-125m-gptq-4bit"
 quantization_config = AutoRoundConfig()
-model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto")
+model = AutoModelForCausalLM.from_pretrained(
+    model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto"
+)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)

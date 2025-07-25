@@ -73,11 +73,10 @@ def pack_layer(name, model, backend):
         zeros=zp,
     )
     set_module(model, name, q_linear)
-    if hasattr(layer,"weight"):
+    if hasattr(layer, "weight"):
         layer.weight = None
-    if hasattr(layer,"bias"):
+    if hasattr(layer, "bias"):
         layer.bias = None
-
 
 
 def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
@@ -100,8 +99,8 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
         # mllm models
         all_blocks = get_block_names(model, quant_vision=True)
         all_block_names = extract_block_names_to_str(all_blocks)
-        all_block_names = all_block_names.split(',')
-        to_quant_block_names = to_quant_block_names.split(',')
+        all_block_names = all_block_names.split(",")
+        to_quant_block_names = to_quant_block_names.split(",")
         modules_to_not_convert = list(set(all_block_names) - set(to_quant_block_names))
 
     if inplace:
@@ -113,10 +112,11 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
 
     backend = None
     max_workers = 1
-    if not torch.cuda.is_available() and  not torch.xpu.is_available():
+    if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
+
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
@@ -133,11 +133,9 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     if output_dir is None:
         return compressed_model
 
-
     layer_config = kwargs["layer_config"]
     for key in layer_config.keys():
-        if not check_to_quantized(layer_config[key]) and \
-                not any(name in key for name in modules_to_not_convert):
+        if not check_to_quantized(layer_config[key]) and not any(name in key for name in modules_to_not_convert):
             modules_to_not_convert.append(key)
 
     quantization_config["quant_method"] = "awq"
@@ -149,7 +147,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     filter_quantization_config(quantization_config)
     if hasattr(compressed_model, "config"):
         compressed_model.config.quantization_config = quantization_config
-    safe_serialization = kwargs.get('safe_serialization', True)
+    safe_serialization = kwargs.get("safe_serialization", True)
     dtype = torch.float16  ##force dtype to fp16
     save(compressed_model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
 
@@ -180,13 +178,12 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
-        with open(config_path, 'r') as file:
+        with open(config_path, "r") as file:
             data = json.load(file)
         data["torch_dtype"] = str(dtype).split(".")[-1]
-        with open(config_path, 'w') as file:
+        with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-

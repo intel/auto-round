@@ -30,7 +30,7 @@ def register_dtype(names):
     """
 
     def register(dtype):
-        if isinstance(names,(tuple,list)):
+        if isinstance(names, (tuple, list)):
             for name in names:
                 QUANT_FUNC_WITH_DTYPE[name] = dtype
         else:
