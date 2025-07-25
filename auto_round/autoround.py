@@ -240,7 +240,7 @@ class AutoRound(object):
             self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
 
-        ##activation, default using per-tensor
+        ##activation
         self.act_group_size = act_group_size if act_group_size is not None else group_size
         self.act_bits = act_bits if act_bits is not None else self.bits
         self.act_sym = act_sym if act_sym is not None else self.sym
