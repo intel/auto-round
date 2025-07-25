@@ -242,10 +242,6 @@ class AutoRound(object):
 
         ##activation, default using per-tensor
         self.act_group_size = act_group_size if act_group_size is not None else group_size
-        if self.act_bits <= 8 and self.act_group_size != 0 and not self.act_dynamic:
-            logger.warning(
-                f"Please note that quantize activation with act_group_size={self.act_group_size}"
-                " may result in failure to export or import normally.")
         self.act_bits = act_bits if act_bits is not None else self.bits
         self.act_sym = act_sym if act_sym is not None else self.sym
         self.act_dynamic = act_dynamic
@@ -617,7 +613,10 @@ class AutoRound(object):
                         " change format to auto_round"
                     )
                     format = "auto_round"
-
+            if self.act_group_size != 0 and not self.act_dynamic and format == "auto_round:fp8":
+                logger.warning(
+                    f"Please note that quantize activation with act_group_size={self.act_group_size}"
+                    " may result in failure to export or import normally.")
         if re.search(r"q\d_k", format) and not self.data_type.endswith("_dq"):
             logger.error(
                 f"datatype<{self.data_type}> not support to export {format} format."
@@ -2974,5 +2973,3 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
-
-
