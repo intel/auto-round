@@ -2103,7 +2103,7 @@ class AutoRound(object):
             if not hasattr(module, "act_max"):
                 module.act_max = act_max
             else:
-                module.act_max = torch.max(act_max, module.act_max)
+                module.act_max = torch.max(act_max.to(module.act_max.device), module.act_max)
         hook_handles = []
 
         for n, m in model.named_modules():
