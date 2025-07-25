@@ -129,8 +129,8 @@ class TestAutoRoundAct(unittest.TestCase):
         autoround.quantize()
         self.assertTrue(isinstance(autoround.model.model.decoder.layers[2].self_attn.k_proj, WrapperWALayer))
         
-        self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_scale.shape[0], 3 * 10 * 768 / 128)
-        self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_max.shape[0], 3 * 10 * 768 / 128)
+        self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_scale.shape[0], int(3 * 10 * 768 / 128))
+        self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_max.shape[0], int(3 * 10 * 768 / 128))
 
 if __name__ == "__main__":
     unittest.main()
