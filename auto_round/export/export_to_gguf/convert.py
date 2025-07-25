@@ -819,8 +819,9 @@ class ModelBase(OriModel):
             if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
                 continue
             if (
-                hasattr(self, "current_packing_block") and self.current_packing_block is not None
-            ):  # pylint: disable=E1101
+                hasattr(self, "current_packing_block")
+                and self.current_packing_block is not None  # pylint: disable=E1101
+            ):
                 current_packing_block_split = self.current_packing_block.split(".")  # pylint: disable=E1101
                 name_split = name.split(".")
                 if (
