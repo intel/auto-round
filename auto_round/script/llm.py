@@ -165,6 +165,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--act_bits", default=16, type=int, help="activation bits")
 
+        self.add_argument("--act_group_size", default=0, type=int, help="activation group size")
+
         self.add_argument(
             "--fp_layers", default="", type=str, help="list of Layer names to maintain original data type")
 
@@ -473,6 +475,7 @@ def tune(args):
         layer_config=layer_config,
         enable_minmax_tuning=not args.disable_minmax_tuning,
         act_bits=args.act_bits,
+        act_group_size=args.act_group_size,
         low_cpu_mem_usage=low_cpu_mem_usage,
         data_type=args.data_type,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning,
