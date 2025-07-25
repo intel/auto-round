@@ -186,7 +186,9 @@ class AutoRoundMLLM(AutoRound):
                 tokenizer=tokenizer,
                 processor=processor,
                 image_processor=image_processor,
-                use_rtn=iters == 0)
+                use_rtn=iters == 0,
+                quiet=not self.quant_nontext_module
+                )
             dataset = self.template.default_dataset if dataset is None else dataset
 
         model = _handle_special_model(model)
