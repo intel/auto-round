@@ -242,7 +242,7 @@ class AutoRound(object):
 
         ##activation, default using per-tensor
         self.act_group_size = act_group_size if act_group_size is not None else group_size
-        if self.act_group_size != 0:
+        if self.act_bits <= 8 and self.act_group_size != 0 and not self.act_dynamic:
             logger.warning(
                 f"Please note that quantize activation with act_group_size={self.act_group_size}"
                 " may result in failure to export or import normally.")
