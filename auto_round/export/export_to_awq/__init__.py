@@ -13,5 +13,3 @@
 # limitations under the License.
 
 from .export import save_quantized_as_autoawq
-
-

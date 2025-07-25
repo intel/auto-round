@@ -32,7 +32,6 @@ class TestQuantizationConv1d(unittest.TestCase):
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
-
     def test_quant(self):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
@@ -45,7 +44,6 @@ class TestQuantizationConv1d(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
-
         )
 
         autoround.quantize()
@@ -53,7 +51,6 @@ class TestQuantizationConv1d(unittest.TestCase):
 
         model = AutoModelForCausalLM.from_pretrained("./saved", device_map="cpu", trust_remote_code=True)
         model_infer(model, self.tokenizer)
-
 
 
 if __name__ == "__main__":

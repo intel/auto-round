@@ -59,16 +59,12 @@ class QuantLinear(nn.Module, TritonModuleMixin):
 
     QUANT_TYPE = "tritonv2"
 
-    def __init__(
-        self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs
-    ):
+    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs):
         super().__init__()
         if bits not in [2, 4, 8]:
             raise NotImplementedError("Only 2,4,8 bits are supported.")
         if infeatures % 32 != 0 or outfeatures % 32 != 0:
-            raise NotImplementedError(
-                "in_feature and out_feature must be divisible by 32."
-            )
+            raise NotImplementedError("in_feature and out_feature must be divisible by 32.")
         self.infeatures = infeatures
         self.outfeatures = outfeatures
         self.bits = bits
@@ -97,9 +93,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
             ),
         )
         if bias:
-            self.register_buffer(
-                "bias", torch.zeros((outfeatures), dtype=torch.float16)
-            )
+            self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
         else:
             self.bias = None
 
@@ -128,12 +122,12 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).repeat_interleave(self.group_size, 1)
-            intweight = torch.round(W.to(device) / repeat_scales[:, :W.shape[1]] + repeat_zeros[:, :W.shape[1]]).to(
-                torch.int32)
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]]).to(
+                torch.int32
+            )
         else:
             repeat_zeros = zeros
-            intweight = torch.round(W.to(device) / repeat_scales[:, :W.shape[1]] + repeat_zeros).to(
-                torch.int32)
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros).to(torch.int32)
 
         del repeat_scales
         intweight = intweight.reshape(-1, intweight.shape[1] // 32 * self.bits, 32 // self.bits)
@@ -171,10 +165,10 @@ class QuantLinear(nn.Module, TritonModuleMixin):
     def forward(self, x):
         out_shape = x.shape[:-1] + (self.outfeatures,)
         quant_linear_fn = QuantLinearFunction
-        if not hasattr(self,"g_idx"):
-            self.g_idx =  torch.tensor(
-                [i // self.group_size for i in range(self.infeatures)], dtype=torch.int32
-            ).to(self.qweight.device)
+        if not hasattr(self, "g_idx"):
+            self.g_idx = torch.tensor([i // self.group_size for i in range(self.infeatures)], dtype=torch.int32).to(
+                self.qweight.device
+            )
 
         out = quant_linear_fn.apply(
             x.reshape(-1, x.shape[-1]),

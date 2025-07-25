@@ -29,8 +29,8 @@ def _extract_data_dir(dir_path: str):
         result = {}
         dir_path = dir_path.split(",")
         for _path in dir_path:
-            k, v = _path.split('=')
-            if k in ['image', 'video', 'audio']:
+            k, v = _path.split("=")
+            if k in ["image", "video", "audio"]:
                 result[k] = v
         return result
     else:

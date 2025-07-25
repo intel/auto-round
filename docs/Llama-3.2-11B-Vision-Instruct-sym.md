@@ -11,13 +11,13 @@ AutoRound version >= 0.4.1
 
 ### INT4 Inference
 ```python
-from auto_round import AutoRoundConfig ## must import for auto-round format
+from auto_round import AutoRoundConfig  ## must import for auto-round format
 import requests
 import torch
 from PIL import Image
 from transformers import MllamaForConditionalGeneration, AutoProcessor
 
-quantized_model_path="Intel/Llama-3.2-11B-Vision-Instruct-inc-private"
+quantized_model_path = "Intel/Llama-3.2-11B-Vision-Instruct-inc-private"
 
 model = MllamaForConditionalGeneration.from_pretrained(
     quantized_model_path,
@@ -28,26 +28,21 @@ model = MllamaForConditionalGeneration.from_pretrained(
 processor = AutoProcessor.from_pretrained(quantized_model_path)
 image_url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/0052a70beed5bf71b92610a43a52df6d286cd5f3/diffusers/rabbit.jpg"
 messages = [
-    {"role": "user", "content": [
-        {"type": "image"},
-        {"type": "text", "text": "Please write a haiku for this one, it would be: "}
-    ]}
+    {
+        "role": "user",
+        "content": [{"type": "image"}, {"type": "text", "text": "Please write a haiku for this one, it would be: "}],
+    }
 ]
 
 # Preparation for inference
 image = Image.open(requests.get(image_url, stream=True).raw)
 input_text = processor.apply_chat_template(messages, add_generation_prompt=True)
-inputs = processor(
-    image,
-    input_text,
-    add_special_tokens=False,
-    return_tensors="pt"
-).to(model.device)
+inputs = processor(image, input_text, add_special_tokens=False, return_tensors="pt").to(model.device)
 
 output = model.generate(**inputs, max_new_tokens=50)
 print(processor.decode(output[0]))
 
-##INT4: 
+##INT4:
 ##  Here is a haiku for the rabbit:
 
 ##  Whiskers twitching bright
@@ -55,7 +50,7 @@ print(processor.decode(output[0]))
 ##  Spring's gentle delight<|eot_id|>
 
 
-##BF16: 
+##BF16:
 ## Here is a haiku for the rabbit:
 
 ## Whiskers twitching fast
@@ -64,30 +59,32 @@ print(processor.decode(output[0]))
 
 image_url = "http://images.cocodataset.org/train2017/000000411975.jpg"
 messages = [
-    {"role": "user", "content": [
-        {"type": "image"},
-        {"type": "text", "text": "How many people are on the baseball field in the picture?"}
-    ]}
+    {
+        "role": "user",
+        "content": [
+            {"type": "image"},
+            {"type": "text", "text": "How many people are on the baseball field in the picture?"},
+        ],
+    }
 ]
 ##INT4: There are five people on the baseball field in the picture.
-## 
+##
 
 ##BF16: There are five people on the baseball field in the picture.
-## 
+##
 
 image_url = "https://intelcorp.scene7.com/is/image/intelcorp/processor-overview-framed-badge:1920-1080?wid=480&hei=270"
 messages = [
-    {"role": "user", "content": [
-        {"type": "image"},
-        {"type": "text", "text": "Which company does this picture represent?"}
-    ]}
+    {
+        "role": "user",
+        "content": [{"type": "image"}, {"type": "text", "text": "Which company does this picture represent?"}],
+    }
 ]
 ##INT4: This picture represents Intel.
-## 
+##
 
 ##BF16: This image represents Intel, a multinational semiconductor corporation headquartered in Santa Clara, California.
-## 
-
+##
 ```
 
 ## Evaluation the model
