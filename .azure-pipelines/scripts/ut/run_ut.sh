@@ -8,7 +8,7 @@ pip install pytest-cov pytest-html
 pip install -r /auto-round/test/test_cpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 pip list
 # install latest gguf for ut test
-pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
+git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .
 echo "##[endgroup]"
 pip list
 
