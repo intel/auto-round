@@ -241,7 +241,7 @@ class AutoRound(object):
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
 
         ##activation, default using per-tensor
-        self.act_group_size = act_group_size if act_group_size is not None else 0
+        self.act_group_size = act_group_size if act_group_size is not None else group_size
         if self.act_group_size != 0:
             logger.warning(
                 f"Please note that quantize activation with act_group_size={self.act_group_size}"
