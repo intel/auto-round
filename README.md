@@ -104,10 +104,10 @@ pip install auto-round-lib
 
 </details>
 
-## Model Quantization
+## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
 Please check out [User guide](./docs/step_by_step.md) for more details
-### Command Line Usage (CPU/Intel GPU/Gaudi/CUDA)
+### Command Line Usage
 Please change to `auto-round-mllm` for visual-language models (VLMs) quantization. The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 ```bash
@@ -154,7 +154,7 @@ auto-round-fast \
 In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
 
-### API Usage (CPU/Intel GPU/Gaudi/CUDA)
+### API Usage
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -271,7 +271,7 @@ autoround.save_quantized(output_dir, format="auto_round", inplace=True)
 
 ## Model Inference
 
-### vLLM
+### vLLM (CPU/Intel GPU/CUDA)
 Please note that support for the MoE models and visual language models is currently limited.
 ```python
 from vllm import LLM, SamplingParams
@@ -291,14 +291,16 @@ for output in outputs:
     print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
 ```
 
-### Transformers
+### Transformers (CPU/Intel GPU/Gaudi/CUDA)
+
 
 AutoRound support 10+ backends an automatically selects the best available backend based on the installed libraries and prompts the user to
 install additional libraries when a better backend is found.
 
-
 **Please avoid manually moving the quantized model to a different device** (e.g., model.to('cpu')) during inference, as
 this may cause unexpected exceptions.
+
+The support for Gaudi device is limited.
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
