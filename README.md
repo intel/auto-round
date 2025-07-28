@@ -16,47 +16,44 @@ AutoRound
 
 ## 🚀 What is AutoRound?
 
-**AutoRound** is an advanced  quantization library mainly for large language models (LLMs) and Visual language models (Vlms).It achieves **high accuracy at ultra-low bitwidths (2–4 bits)** with minimal tuning by leveraging sign
-gradient decent, and broad hardware support. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more details and quantized models in several
+AutoRound is an advanced quantization library designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). It delivers high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and offering broad hardware compatibility. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more details and quantized models in several
 Hugging Face Spaces,
 e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
 and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
-<div align="center">
-
-![](docs/imgs/autoround_overview.png)
-
-<div align="left">
+<p align="center">
+  <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
+</p>
 
 ## ✨ Key Features
 
 
-✅ **Top-Tier Accuracy**
+✅ **Superior Accuracy**
 Delivers strong performance even at 2–3 bits [example models](https://huggingface.co/collections/OPEA/2-3-bits-67a5f0bc6b49d73c01b4753b), with leading results at 4 bits [benchmark](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard).
 
 ✅ **Ecosystem Integration**
 Seamlessly works with Transformers, vLLM, TorchAO, sglang(on going,[pr](https://github.com/sgl-project/sglang/pull/6226)) and more.
 
-✅ **Multi-format Export**
-Supports **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility.
+✅ **Multiple Formats Export**
+Support **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility. Details are shown in [export formats](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
 
-✅ **Affordable Quantization cost**
-Quantize 7B models in about 10 minutes on a single GPU.
+✅ **Affordable Quantization Cost**
+Quantize 7B models in about 10 minutes on a single GPU. Details are shown in [quantization costs](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)
 
-✅ **10+ VLM Support**
-Out-of-the-box quantization for 10+ vision-language models [example models](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa),[support matrix](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
+✅ **10+ VLMs Support**
+Out-of-the-box quantization for 10+ vision-language models [example models](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa), [support matrix](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
 
-✅ **Per-layer Mixed-bit Quantization**
-Assign different bit-widths per layer for fine-grained accuracy/performance trade-offs.
+✅ **Layerwise Mixed Bits Quantization**
+Assign different bits per layer for fine-grained accuracy/performance trade-offs. Details are shown in [mixed bits quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#mixed-bits-usage)
 
 ✅ **Round-to-Nearest Mode**
-Use `--iters 0` for fast, calibration-free quantization with some accuracy drop.
+Use `--iters 0` for fast, calibration-free quantization with some accuracy drop. Details are shown in [rtn mode](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#rtn-mode)
 
-✅ **Multiple Quantization Recipes**
-Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your needs.
+✅ **Multiple Recipes**
+Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your needs. Details are shown in [quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
 
 ✅ Advanced Utilities
-Includes immediate weight packing, multiple gpu quantization and support for 10+ runtime backends.
+Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization), [multiple calibration datasets](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset) and support for [10+ runtime backends](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend).
 
 🟨 Beyond weight only quantization. We are actively expanding support for additional datatypes such as **MXFP**, NVFP, W8A8, and more.
 
@@ -107,10 +104,10 @@ pip install auto-round-lib
 
 </details>
 
-## Model Quantization
+## Model Quantization (CPU/Intel GPU/Gaudi/CUDA)
 
 Please check out [User guide](./docs/step_by_step.md) for more details
-### Command Line Usage (Gaudi/CPU/Intel GPU/CUDA)
+### Command Line Usage
 Please change to `auto-round-mllm` for visual-language models (VLMs) quantization. The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 ```bash
@@ -157,7 +154,7 @@ auto-round-fast \
 In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
 
-### API Usage (CPU/Intel GPU/HPU/CUDA)
+### API Usage
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -274,8 +271,8 @@ autoround.save_quantized(output_dir, format="auto_round", inplace=True)
 
 ## Model Inference
 
-### vLLM
-Please note that support for the MoE model and visual language model is currently limited.
+### vLLM (CPU/Intel GPU/CUDA)
+Please note that support for the MoE models and visual language models is currently limited.
 ```python
 from vllm import LLM, SamplingParams
 
@@ -294,14 +291,16 @@ for output in outputs:
     print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
 ```
 
-### Transformers
+### Transformers (CPU/Intel GPU/Gaudi/CUDA)
+
 
 AutoRound support 10+ backends an automatically selects the best available backend based on the installed libraries and prompts the user to
 install additional libraries when a better backend is found.
 
-
 **Please avoid manually moving the quantized model to a different device** (e.g., model.to('cpu')) during inference, as
 this may cause unexpected exceptions.
+
+The support for Gaudi device is limited.
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 

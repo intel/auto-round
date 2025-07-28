@@ -1,8 +1,7 @@
 Step-by-Step
 ============
 
-This document presents step-by-step instructions for auto-round llm quantization. For vlms quantizaition, please refer to [vlms user guide](../auto_round/mllm/README.md)
-
+This document presents step-by-step instructions for auto-round llm quantization. For vlms quantization, please refer to [vlms user guide](../auto_round/mllm/README.md)
 
 * [1 Prerequisite](#1-prerequisite)
 * [2 Prepare Calibration Dataset](#2-prepare-calibration-dataset)
@@ -117,6 +116,25 @@ AutoRound supports several quantization configurations:
 - **Int3 Weight Only**
 - **Int2 Weight Only**
 - **Mixed bits Weight only**
+
+### Supported export Formats
+
+**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
+inference. **[2,3,4,8] bits are supported**.
+
+**GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
+community. `q*_k`,`q*_0`,`q*_1` are supported.
+
+**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
+community, **[2,3,4,8] bits are supported**. However, **the
+asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
+models. Besides, recently 3 bits may have some accuracy issues in Transformers.
+
+**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
+adopted within the community, **only 4-bits quantization is supported**.
+
+**llmcompressor Format**: This format is for reusing llmcompressor format,  **only INT8 W8A8 dynamic quantization is
+supported**.
 
 ### Hardware Compatibility
 
@@ -275,8 +293,9 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 </details>
 
 ### RTN mode
-AutoRound also supports RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. try setting iters=0 and use group_size=32 for better results.
+AutoRound also supports RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. try setting `iters=0` and use `group_size=32` for better results.
 
+For the GGUF format, we have optimized the RTN algorithm inspired by llamacpp. To use the original (pure) RTN algorithm instead, enable the `--disable_opt_rtn` option.
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
@@ -322,25 +341,6 @@ autoround = AutoRound(
 output_dir = "./tmp_autoround"
 autoround.quantize_and_save(output_dir, format="gguf:q4_k_m")  #  gguf:q*_k_s,gguf:q*_k_0,gguf:q*_k_1,
 ```
-
-### Supported export Formats
-
-**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
-inference. **[2,3,4,8] bits are supported**.
-
-**GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
-community. `q*_k`,`q*_0`,`q*_1` are supported.
-
-**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
-community, **[2,3,4,8] bits are supported**. However, **the
-asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
-models. Besides, recently 3 bits may have some accuracy issues in Transformers.
-
-**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
-adopted within the community, **only 4-bits quantization is supported**.
-
-**llmcompressor Format**: This format is for reusing llmcompressor format,  **only INT8 W8A8 dynamic quantization is
-supported**.
 
 
 ### Quantization Costs
