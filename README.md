@@ -16,7 +16,7 @@ AutoRound
 
 ## 🚀 What is AutoRound?
 
-AutoRound is an advanced quantization library designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). It delivers high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and offering broad hardware compatibility.Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more details and quantized models in several
+AutoRound is an advanced quantization library designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). It delivers high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging sign-gradient descent and offering broad hardware compatibility. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more details and quantized models in several
 Hugging Face Spaces,
 e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
 and [fbaldassarri](https://huggingface.co/fbaldassarri).
