@@ -54,27 +54,34 @@ auto-round-mllm \
     --output_dir ./tmp_autoround
 ```
 
-### Support Matrix
-For most VLMs, we typically support the default quantization method, which involves quantizing only the language component while excluding the visual component. Besides, we also support quantizing non-text modules of models that follow the Hugging Face standard, i.e., those with a typical processor.
+### VLM Support Matrix
 
-| Model                               | calibration dataset | quant nontext module |
-|-------------------------------------|---------------------|----------------------|
-| Qwen/Qwen2-VL                       | pile/llava          | -                    |
-| meta-llama/Llama-3.2-Vision         | llava               | ✔                    |
-| microsoft/Phi3-Vision               | pile/llava          | ✔                    |
-| liuhaotian/Llava-v1.5               | pile/llava          | X                    |
-| THUDM/CogVLM2                       | pile/llava          | ✔                    |
-| google/gemma-3                      | pile/llava          | √                    |
-| ibm-granite/granite-vision-3.2      | pile/llava          | -                    |
-| mistralai/Mistral-Small-3.1         | pile/llava          | X                    |
-| rhymes-ai/Aria                      | pile/llava          | ✔                    |
-| deepseek-ai/deepseek-vl2            | pile/llava          | ✔                    |
-| THUDM/glm-4v                        | pile                | X                    |
-| allenai/Molmo                       | pile                | X                    |
-| HuggingFaceTB/SmolVLM               | pile/llava          | ✔                    |
-| moonshotai/Kimi-VL                  | pile/llava          | √                    |
+For most VLMs, we typically support the default quantization configuration, which involves quantizing only the language
+component while excluding the visual component. Besides, we also support quantizing non-text modules of models that
+follow the Hugging Face standard, i.e., those with a typical processor, though inference may have some issues due to
+model architecture or kernel limitations.
 
-✔ means support, - means support to export but cannot infer, X means not support.
+| Model                                         | calibration dataset | quant nontext module | Quantized Model Link                                                                                                                                                                                                                                                                                                                                                                                                                                             | 
+|-----------------------------------------------|---------------------|----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| allenai/Molmo                                 | pile                | X                    | [Molmo-7B-D-0924-int4-sym](https://huggingface.co/OPEA/Molmo-7B-D-0924-int4-sym-inc), [Molmo-72B-0924-int4-sym-gptq](https://huggingface.co/OPEA/Molmo-72B-0924-int4-sym-gptq-inc), [Molmo-72B-0924-int4-sym](https://huggingface.co/OPEA/Molmo-72B-0924-int4-sym-inc)                                                                                                                                                                                           |
+| deepseek-ai/deepseek-vl2                      | pile/llava          | √                    | [deepseek-vl2-int4-sym-gptq](https://huggingface.co/OPEA/deepseek-vl2-int4-sym-gptq-inc)                                                                                                                                                                                                                                                                                                                                                                         |
+| fancyfeast/llama-joycaption-beta-one-hf-llava | pile                | X                    | [NeoChen1024-int4-gptq](https://huggingface.co/NeoChen1024/llama-joycaption-beta-one-hf-llava-GPTQ-4bit-sym-autoround)                                                                                                                                                                                                                                                                                                                                           
+| google/gemma-3                                | pile/llava          | √                    | [gemma-3-12b-it-AutoRound-gguf-q4-0](https://huggingface.co/OPEA/gemma-3-12b-it-AutoRound-gguf-q4-0), [gemma-3-27b-it-AutoRound-gguf-q4-0](https://huggingface.co/OPEA/gemma-3-27b-it-AutoRound-gguf-q4-0), [gemma-3-12b-it-int4-AutoRound](https://huggingface.co/OPEA/gemma-3-12b-it-int4-AutoRound), [gemma-3-27b-it-int4-AutoRound](https://huggingface.co/OPEA/gemma-3-27b-it-int4-AutoRound)                                                               |
+| HuggingFaceTB/SmolVLM                         | pile/llava          | √                    | [SmolVLM-Instruct-int4-sym](https://huggingface.co/OPEA/SmolVLM-Instruct-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                                           |
+| ibm-granite/granite-vision-3.2                | pile/llava          | -                    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| liuhaotian/Llava-v1.5                         | pile/llava          | X                    | [llava-v1.5-7b-int4-sym](https://huggingface.co/OPEA/llava-v1.5-7b-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                                                 |
+| meta-llama/Llama-3.2-Vision                   | llava               | √                    | [Llama-3.2V-11B-cot-int4-sym](https://huggingface.co/OPEA/Llama-3.2V-11B-cot-int4-sym-inc), [Llama-3.2-11B-Vision-Instruct-qvision-int4-sym](https://huggingface.co/OPEA/Llama-3.2-11B-Vision-Instruct-qvision-int4-sym-inc), [Llama-3.2-90B-Vision-Instruct-int4-sym](https://huggingface.co/OPEA/Llama-3.2-90B-Vision-Instruct-int4-sym-inc), [Llama-3.2-11B-Vision-Instruct-int4-sym](https://huggingface.co/OPEA/Llama-3.2-11B-Vision-Instruct-int4-sym-inc) |
+| microsoft/Phi3.5-Vision                       | pile/llava          | √                    | [Phi-3.5-vision-instruct-int4-sym](https://huggingface.co/OPEA/Phi-3.5-vision-instruct-int4-sym-inc), [Phi-3.5-vision-instruct-qvision-int4-sym](https://huggingface.co/OPEA/Phi-3.5-vision-instruct-qvision-int4-sym-inc)                                                                                                                                                                                                                                       |
+| mistralai/Mistral-Small-3.1                   | pile/llava          | X                    | [Mistral-Small-3.1-24B-Instruct-2503-int4-AutoRound-gptq-sym](https://huggingface.co/OPEA/Mistral-Small-3.1-24B-Instruct-2503-int4-AutoRound-gptq-sym), [Mistral-Small-3.1-24B-Instruct-2503-int4-AutoRound-awq-sym](https://huggingface.co/OPEA/Mistral-Small-3.1-24B-Instruct-2503-int4-AutoRound-awq-sym)                                                                                                                                                     |
+| moonshotai/Kimi-VL                            | pile/llava          | √                    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Qwen/Qwen2-VL                                 | pile/llava          | -                    | [Qwen2-VL-7B-Instruct-int4-sym](https://huggingface.co/OPEA/Qwen2-VL-7B-Instruct-int4-sym-inc), [Qwen2-VL-72B-Instruct-int4-sym](https://huggingface.co/OPEA/Qwen2-VL-72B-Instruct-int4-sym-inc), [Qwen2-VL-72B-Instruct-int2-sym](https://huggingface.co/OPEA/Qwen2-VL-72B-Instruct-int2-sym-inc)                                                                                                                                                               |
+| rhymes-ai/Aria                                | pile/llava          | √                    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| THUDM/CogVLM2                                 | pile/llava          | √                    | [cogvlm2-llama3-chat-19B-int4-sym](https://huggingface.co/OPEA/cogvlm2-llama3-chat-19B-int4-sym-inc), [cogvlm2-llama3-chat-19B-qvision-int4-sym](https://huggingface.co/OPEA/cogvlm2-llama3-chat-19B-qvision-int4-sym-inc)                                                                                                                                                                                                                                       |
+| THUDM/glm-4v                                  | pile                | X                    | [glm-4v-9b-int4-sym](https://huggingface.co/OPEA/glm-4v-9b-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                                                         |
+
+√ means support, - means support to export but cannot infer, X means not support.
+
+
 
 <details>
 <summary style="font-size:17px;">Calibration Dataset</summary>
@@ -164,21 +171,7 @@ code in ```auto_round/mllm/processor.py```.
 
 </details>
 
-## Inference
 
-For the AutoRound format, please add the following code at the beginning of the original model's inference code.
-
-```python
-from auto_round import AutoRoundConfig  ## must import for auto-round format
-```
-
-For more details on quantization, inference, evaluation, and environment, see the following recipe:
-
-- [Qwen2-VL-7B-Instruct](../../docs/Qwen2-VL-7B-Instruct-sym.md)
-- [Llama-3.2-11B-Vision](../../docs/Llama-3.2-11B-Vision-Instruct-sym.md)
-- [Phi-3.5-vision-instruct](../../docs/Phi-3.5-vision-instruct-sym.md)
-- [llava-v1.5-7b](../../docs/llava-v1.5-7b-sym.md)
-- [cogvlm2-llama3-chat-19B](../../docs/cogvlm2-llama3-chat-19B-sym.md)
 
 
 

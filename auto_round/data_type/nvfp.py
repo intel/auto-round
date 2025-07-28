@@ -81,7 +81,7 @@ def nv_fp4(tensor, bits=4, group_size=16, v=0, **kwargs):
 
 
 @register_dtype("nv_fp4_with_static_gs")
-def nv_fp4(tensor, bits=4, group_size=16, v=0, tensor_max=None, **kwargs):
+def nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, **kwargs):
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if tensor_max is None:
