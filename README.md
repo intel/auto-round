@@ -16,7 +16,7 @@ AutoRound
 
 ## 🚀 What is AutoRound?
 
-**AutoRound** is an advanced  quantization library mainly for large language models (LLMs) and Visual language models (Vlms).It achieves **high accuracy at ultra-low bitwidths (2–4 bits)** with minimal tuning by leveraging sign
+**AutoRound** is an advanced  quantization library mainly for large language models (LLMs) and Visual language models (Vlms). It achieves high accuracy at ultra-low bitwidths (2–4 bits) with minimal tuning by leveraging sign
 gradient decent, and broad hardware support. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more details and quantized models in several
 Hugging Face Spaces,
 e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
@@ -40,23 +40,23 @@ Seamlessly works with Transformers, vLLM, TorchAO, sglang(on going,[pr](https://
 ✅ **Multi-format Export**
 Supports **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility.
 
-✅ **Affordable Quantization cost**
-Quantize 7B models in about 10 minutes on a single GPU.
+✅ **Affordable Quantization Cost**
+Quantize 7B models in about 10 minutes on a single GPU. Detailed data in [Quantization cost](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)
 
 ✅ **10+ VLM Support**
-Out-of-the-box quantization for 10+ vision-language models [example models](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa),[support matrix](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
+Out-of-the-box quantization for 10+ vision-language models [example models](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa), [support matrix](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
 
 ✅ **Per-layer Mixed-bit Quantization**
-Assign different bit-widths per layer for fine-grained accuracy/performance trade-offs.
+Assign different bit-widths per layer for fine-grained accuracy/performance trade-offs. Details in [Mixed-bit quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#mixed-bits-usage)
 
 ✅ **Round-to-Nearest Mode**
-Use `--iters 0` for fast, calibration-free quantization with some accuracy drop.
+Use `--iters 0` for fast, calibration-free quantization with some accuracy drop. Details in [RTN mode](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#rtn-mode)
 
 ✅ **Multiple Quantization Recipes**
-Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your needs.
+Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your needs. Details in [Quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
 
 ✅ Advanced Utilities
-Includes immediate weight packing, multiple gpu quantization and support for 10+ runtime backends.
+Includes [multiple gpu quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization), [multiple calibration datasets](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset) and support for [10+ runtime backends](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend).
 
 🟨 Beyond weight only quantization. We are actively expanding support for additional datatypes such as **MXFP**, NVFP, W8A8, and more.
 
