@@ -17,9 +17,7 @@ AutoRound
 ## 🚀 What is AutoRound?
 
 **AutoRound** is an advanced y quantization library designed for large language models (LLMs).It achieves **high accuracy at ultra-low bitwidths (2–4 bits)** with minimal tuning by leveraging sign
-gradient decent, and broad hardware support.
-
-Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more details and quantized models in several
+gradient decent, and broad hardware support. Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more details and quantized models in several
 Hugging Face Spaces,
 e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
 and [fbaldassarri](https://huggingface.co/fbaldassarri).
@@ -90,9 +88,7 @@ pip install auto-round-lib
 
 Please check out [User guide](./docs/step_by_step.md) for more details
 ### Command Line Usage (Gaudi/CPU/Intel GPU/CUDA)
-Please change to 'auto-round-mllm' for visual-laguage models (VLMs) quantization.
-
-A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the terminal.
+Please change to `auto-round-mllm` for visual-language models (VLMs) quantization. A user guide detailing the full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 ```bash
 auto-round \
@@ -138,7 +134,7 @@ auto-round-fast \
 In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
 
-### API Usage (HPU/CPU/XPU/CUDA)
+### API Usage (CPU/Intel GPU/HPU/CUDA)
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
