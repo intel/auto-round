@@ -22,11 +22,9 @@ Hugging Face Spaces,
 e.g. [Intel](https://huggingface.co/Intel), [OPEA](https://huggingface.co/OPEA),  [Kaitchup](https://huggingface.co/kaitchup)
 and [fbaldassarri](https://huggingface.co/fbaldassarri).
 
-<div align="center">
-
-![](docs/imgs/autoround_overview.png)
-
-<div align="left">
+<p align="center">
+  <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
+</p>
 
 ## ✨ Key Features
 
@@ -110,7 +108,7 @@ pip install auto-round-lib
 ## Model Quantization
 
 Please check out [User guide](./docs/step_by_step.md) for more details
-### Command Line Usage (Gaudi/CPU/Intel GPU/CUDA)
+### Command Line Usage (CPU/Intel GPU/Gaudi/CUDA)
 Please change to `auto-round-mllm` for visual-language models (VLMs) quantization. The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 ```bash
@@ -157,7 +155,7 @@ auto-round-fast \
 In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
 
-### API Usage (CPU/Intel GPU/HPU/CUDA)
+### API Usage (CPU/Intel GPU/Gaudi/CUDA)
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
