@@ -181,7 +181,7 @@ def ref_fp4_quant(x, global_scale, block_size=16, v=0, max_scale=1.0):
 @register_dtype("fp4_v2_with_global_scale")
 @torch.compile()
 def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=None, max_scale=1.0, **kwargs):
-    assert (group_size == 32 or group_size == 16)
+    assert group_size == 32 or group_size == 16
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
@@ -189,7 +189,7 @@ def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=None
         tensor_max = tensor.abs().max().to(torch.float32)
     elif tensor_max is not None:
         if not isinstance(tensor_max, torch.Tensor):
-            tensor_max = torch.tensor(tensor_max, device=tensor.device,dtype=torch.float32)
+            tensor_max = torch.tensor(tensor_max, device=tensor.device, dtype=torch.float32)
         if tensor_max.numel() != 1:
             tensor_max = tensor.abs().max().to(torch.float32)
     global_scale = FLOAT8_UE5M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
