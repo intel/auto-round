@@ -137,49 +137,49 @@ class AutoRound(object):
     """
 
     def __init__(
-            self,
-            model: torch.nn.Module,
-            tokenizer,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = True,
-            layer_config: dict = None,
-            batch_size: int = 8,
-            amp: bool = True,
-            device: str = None,
-            lr_scheduler=None,
-            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-            enable_quanted_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = False,
-            low_cpu_mem_usage: bool = False,
-            iters: int = 200,
-            seqlen: int = 2048,
-            nsamples: int = 128,
-            sampler: str = "rand",
-            seed: int = 42,
-            nblocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            scale_dtype: Union[str, torch.dtype] = "fp16",
-            act_bits: int = 16,
-            act_group_size: int = None,
-            act_sym: bool = None,
-            act_data_type: str = None,
-            act_dynamic: bool = True,
-            to_quant_block_names: Union[str, list] = None,
-            enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = False,
-            device_map: Union[str, dict] = None,
-            super_bits: int = None,
-            super_group_size: int = None,
-            disable_opt_rtn: bool = False,
-            model_kwargs: dict = None,
-            **kwargs,
+        self,
+        model: torch.nn.Module,
+        tokenizer,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = True,
+        layer_config: dict = None,
+        batch_size: int = 8,
+        amp: bool = True,
+        device: str = None,
+        lr_scheduler=None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        enable_quanted_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = False,
+        low_cpu_mem_usage: bool = False,
+        iters: int = 200,
+        seqlen: int = 2048,
+        nsamples: int = 128,
+        sampler: str = "rand",
+        seed: int = 42,
+        nblocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        scale_dtype: Union[str, torch.dtype] = "fp16",
+        act_bits: int = 16,
+        act_group_size: int = None,
+        act_sym: bool = None,
+        act_data_type: str = None,
+        act_dynamic: bool = True,
+        to_quant_block_names: Union[str, list] = None,
+        enable_norm_bias_tuning: bool = False,
+        enable_torch_compile: bool = False,
+        device_map: Union[str, dict] = None,
+        super_bits: int = None,
+        super_group_size: int = None,
+        disable_opt_rtn: bool = False,
+        model_kwargs: dict = None,
+        **kwargs,
     ):
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
         if kwargs:
@@ -225,7 +225,8 @@ class AutoRound(object):
         tmp_bits = infer_bits_by_data_type(self.data_type)
         if tmp_bits < 16 and tmp_bits != bits:
             logger.warning(
-                f"bits set in 'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}.")
+                f"bits set in 'data_type' do not match the specified 'bits' setting. Resetting 'bits' to {tmp_bits}."
+            )
             self.bits = tmp_bits
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.model = model.eval()
@@ -234,7 +235,7 @@ class AutoRound(object):
         self.scale_dtype = convert_dtype_str2torch(scale_dtype)
         self.set_amp_dtype()
         self.to_quant_block_names = to_quant_block_names
-        if not hasattr(self, 'quant_block_list'):
+        if not hasattr(self, "quant_block_list"):
             all_blocks = get_block_names(model)
             self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
@@ -281,10 +282,19 @@ class AutoRound(object):
             logger.info(f"using {self.model.dtype} for quantization tuning")
 
         self.enable_torch_compile = enable_torch_compile
-        if not self.enable_torch_compile and TORCH_VERSION_AT_LEAST_2_6 and self.act_bits > 8 and not is_debug_mode() \
-                and not self.low_cpu_mem_usage and "fp8" not in self.data_type and "fp8" not in self.act_data_type:
-            logger.info("'enable_torch_compile' is set to `False` by default. " \
-                        "Enabling it can reduce tuning cost by 20%, but it might throw an exception.")
+        if (
+            not self.enable_torch_compile
+            and TORCH_VERSION_AT_LEAST_2_6
+            and self.act_bits > 8
+            and not is_debug_mode()
+            and not self.low_cpu_mem_usage
+            and "fp8" not in self.data_type
+            and "fp8" not in self.act_data_type
+        ):
+            logger.info(
+                "'enable_torch_compile' is set to `False` by default. "
+                "Enabling it can reduce tuning cost by 20%, but it might throw an exception."
+            )
 
         if self.act_bits <= 8 and self.enable_torch_compile:
             self.enable_torch_compile = False
@@ -337,7 +347,7 @@ class AutoRound(object):
             "act_dynamic",
             "act_data_type",
             "super_bits",
-            "super_group_size"
+            "super_group_size",
         ]
 
         self.shared_cache_keys = get_shared_keys(self.model)
@@ -360,9 +370,9 @@ class AutoRound(object):
             infos = device_map.split(",")
             device_map_dict = {}
             for info in infos:
-                index = info.find(':')
+                index = info.find(":")
                 key = info[:index]
-                value = info[index + 1:]
+                value = info[index + 1 :]
                 device_map_dict[key] = value
             device_map = device_map_dict
 
@@ -389,7 +399,8 @@ class AutoRound(object):
         module = get_module(self.model, name)
         if hasattr(module, "tuning_device") and module.tuning_device != device:
             logger.warning(
-                f"Multiple devices have been set for layer {name}, keeping original device {module.tuning_device}")
+                f"Multiple devices have been set for layer {name}, keeping original device {module.tuning_device}"
+            )
         else:
             module.tuning_device = device
 
@@ -398,11 +409,11 @@ class AutoRound(object):
         if self.data_type.endswith("_dq"):
             gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
             self.super_bits = gguf_config["super_bits"] if self.super_bits is None else self.super_bits
-            self.super_group_size = gguf_config["super_group_size"] \
-                if self.super_group_size is None else self.super_group_size
+            self.super_group_size = (
+                gguf_config["super_group_size"] if self.super_group_size is None else self.super_group_size
+            )
 
     def check_configs(self):
-
         """Checks if the configurations are valid.
 
         Raises:
@@ -432,12 +443,14 @@ class AutoRound(object):
         if self.act_bits <= 8:
             logger.warning(
                 "activation quantization is an experimental feature with limited support and a complex API. "
-                "And please save the quantized model to fake format as real deployment is not supported currently")
+                "And please save the quantized model to fake format as real deployment is not supported currently"
+            )
 
         if "mx_fp" in self.data_type or "nv_fp" in self.data_type:
             logger.warning(
                 "please save the quantized model to fake format "
-                "as real deployment is not supported for mx_fp/nv_fp datatype currently")
+                "as real deployment is not supported for mx_fp/nv_fp datatype currently"
+            )
 
         if "mx_fp" in self.data_type and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
@@ -447,15 +460,18 @@ class AutoRound(object):
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
             if self.batch_size > self.nsamples:
-                logger.warning(f"reset batch_size to {self.nsamples} as nsamples({self.nsamples})"
-                               f" is smaller than batch_size({self.batch_size})")
+                logger.warning(
+                    f"reset batch_size to {self.nsamples} as nsamples({self.nsamples})"
+                    f" is smaller than batch_size({self.batch_size})"
+                )
                 self.batch_size = self.nsamples
             if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
                 self.gradient_accumulate_steps = self.nsamples // self.batch_size
                 logger.warning(
                     f"reset gradient_accumulate_steps to {self.gradient_accumulate_steps}"
                     f" as nsamples must equal or greater"
-                    f" than gradient_accumulate_steps * batch_size")
+                    f" than gradient_accumulate_steps * batch_size"
+                )
 
         if self.enable_norm_bias_tuning:
             logger.warning("the `enable_norm_bias_tuning` feature is experimental and currently has limited support.")
@@ -482,30 +498,39 @@ class AutoRound(object):
                 )
 
         ##check group_size 32 for auto_round
-        if self.data_type == "int" and hasattr(self, "formats") and any(
-        key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq")):
+        if (
+            self.data_type == "int"
+            and hasattr(self, "formats")
+            and any(key in fmt for fmt in self.formats for key in ("auto_round", "auto_gptq", "auto_awq"))
+        ):
             for n, m in self.model.named_modules():
                 if isinstance(m, self.supported_types):
                     if m.weight.shape[0] % 32 != 0 or m.weight.shape[1] % 32 != 0:
                         self.layer_config[n] = {"bits": 16}
                         logger.info(
                             f"{n} will not be quantized due to its shape not being divisible by 32,"
-                            " resulting in an exporting issue to autogptq")
+                            " resulting in an exporting issue to autogptq"
+                        )
 
-        if self.seqlen is not None and hasattr(self.model, "config") and \
-                hasattr(self.model.config, "max_position_embeddings"):
+        if (
+            self.seqlen is not None
+            and hasattr(self.model, "config")
+            and hasattr(self.model.config, "max_position_embeddings")
+        ):
             if self.model.config.max_position_embeddings < self.seqlen:
                 logger.warning(
-                    f"change sequence length to {self.model.config.max_position_embeddings} " \
-                    "due to the limitation of max_position_embeddings")
+                    f"change sequence length to {self.model.config.max_position_embeddings} "
+                    "due to the limitation of max_position_embeddings"
+                )
                 self.seqlen = min(self.seqlen, self.model.config.max_position_embeddings)
 
         if self.seqlen is not None and hasattr(self.tokenizer, "model_max_length"):
             if self.tokenizer.model_max_length < self.seqlen:
                 logger.warning(
-                    f"change sequence length to {self.tokenizer.model_max_length} " \
-                    "due to the limitation of model_max_length. " \
-                    "You can also try to increase the model_max_length to avoid this issue.")
+                    f"change sequence length to {self.tokenizer.model_max_length} "
+                    "due to the limitation of model_max_length. "
+                    "You can also try to increase the model_max_length to avoid this issue."
+                )
                 self.seqlen = min(self.seqlen, self.tokenizer.model_max_length)
 
         if self.group_size == 0 and "fp8" not in self.data_type:
@@ -529,8 +554,9 @@ class AutoRound(object):
         if self.vlm:
             _gguf_args_check(self, format, model_type=ModelType.MMPROJ)
 
-        formats = format.replace("q*_", f"q{self.bits}_").replace(' ', '').split(',')
+        formats = format.replace("q*_", f"q{self.bits}_").replace(" ", "").split(",")
         from auto_round.utils import SUPPORTED_FORMATS
+
         for format_ in formats:
             if format_ not in SUPPORTED_FORMATS:
                 logger.error(f"Unsupported format {format_}, please choose from {SUPPORTED_FORMATS}")
@@ -552,12 +578,11 @@ class AutoRound(object):
             format = formats[index]
             if format == "auto_round":
                 if self.sym and "int" in self.data_type:
-                    format = format.replace('auto_round', 'auto_round:auto_gptq')
+                    format = format.replace("auto_round", "auto_round:auto_gptq")
                     formats[index] = format
                 if self.bits == 4 and not self.sym and "int" in self.data_type:
                     enable_awq = all(
-                        config["bits"] == self.bits or config["bits"] >= 16
-                        for config in self.layer_config.values()
+                        config["bits"] == self.bits or config["bits"] >= 16 for config in self.layer_config.values()
                     )
                     if enable_awq:
                         formats[index] = format.replace("auto_round", "auto_round:auto_awq")
@@ -595,11 +620,17 @@ class AutoRound(object):
             if "fp8" not in self.act_data_type or self.act_dynamic:
                 if format == "llmcompressor":
                     bits, group_size, sym, act_bits = 8, -1, True, 8
-                    assert self.bits == bits and self.group_size == group_size and self.sym == sym \
-                           and self.act_bits == act_bits and self.act_dynamic, \
-                        f"Currently only support to export llmcompressor format for dynamic quantized" \
-                        f" W{self.bits}A{self.act_bits} model, but got bits={self.bits}," \
+                    assert (
+                        self.bits == bits
+                        and self.group_size == group_size
+                        and self.sym == sym
+                        and self.act_bits == act_bits
+                        and self.act_dynamic
+                    ), (
+                        f"Currently only support to export llmcompressor format for dynamic quantized"
+                        f" W{self.bits}A{self.act_bits} model, but got bits={self.bits},"
                         f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
+                    )
                 elif format != "fake":
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
@@ -623,6 +654,7 @@ class AutoRound(object):
             sys.exit(-1)
 
         return format
+
     def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
 
@@ -741,20 +773,17 @@ class AutoRound(object):
             try:
                 weight, scale, zp = quant_func(
                     module.weight.to(self.device),
-                    **{k: config[k] for k in [
-                        "bits", "group_size", "super_bits",
-                        "super_group_size", "scale_dtype"
-                    ]}
+                    **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
                 )
             except RuntimeError as e:
                 if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
                     logger.info("out of VRAM, falling back to CPU.")
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
-                        **{k: config[k] for k in [
-                            "bits", "group_size", "super_bits",
-                            "super_group_size", "scale_dtype"
-                        ]}
+                        **{
+                            k: config[k]
+                            for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
+                        },
                     )
                 else:
                     raise
@@ -796,11 +825,11 @@ class AutoRound(object):
 
         # Load dataset
         from .calib_dataset import get_dataloader
+
         if isinstance(self.dataset, str):
             dataset_name = self.dataset.replace(" ", "")
             self.dataloader = get_dataloader(
-                self.tokenizer, self.seqlen, dataset_name,
-                self.seed, self.batch_size, self.nsamples
+                self.tokenizer, self.seqlen, dataset_name, self.seed, self.batch_size, self.nsamples
             )
         else:
             self.dataloader = self.dataset
@@ -810,6 +839,7 @@ class AutoRound(object):
         # Dispatch multi-GPU model if necessary
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
             from accelerate.big_modeling import dispatch_model
+
             dispatch_model(model, model.hf_device_map)
 
         def register_act_hook(model):
@@ -818,7 +848,7 @@ class AutoRound(object):
             def get_act_max_hook(module, input, output):
                 input = input[0] if isinstance(input, (tuple, list)) else input
                 flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
-                squared = torch.sum(flattened ** 2, dim=0).to(torch.float32)
+                squared = torch.sum(flattened**2, dim=0).to(torch.float32)
 
                 if not hasattr(module, "imatrix"):
                     module.imatrix = squared
@@ -864,19 +894,21 @@ class AutoRound(object):
                     module.imatrix /= module.imatrix_cnt
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 import accelerate
+
                 accelerate.hooks.remove_hook_from_submodules(model)
             # Perform quantization using RTN
             from tqdm import tqdm
+
             pbar = tqdm(all_to_quantized_module_names)
-            block_names_cnt = len(flatten_list(get_block_names(self.model,True)))
-            clear_mem_freq = len(all_to_quantized_module_names)//block_names_cnt
+            block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
+            clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
             if clear_mem_freq == 0:
                 clear_mem_freq = 1
             cnt = 1
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
-                if  cnt % clear_mem_freq == 0:
+                if cnt % clear_mem_freq == 0:
                     clear_memory()
                     cnt = 1
                 cnt += 1
@@ -885,6 +917,7 @@ class AutoRound(object):
                 try:
                     if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                         import accelerate
+
                         accelerate.hooks.remove_hook_from_submodules(model)
                     # Fallback: out-of-memory → try CPU blockwise quantization
                     logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
@@ -894,12 +927,15 @@ class AutoRound(object):
                 except RuntimeError as e:
                     if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
                         # Final fallback: warn and use CPU-only quantization
-                        logger.warning("Fallback to CPU. "
-                                    "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`.")
+                        logger.warning(
+                            "Fallback to CPU. "
+                            "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
+                        )
                         model = model.to("cpu")
                         clear_memory()
                         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                             import accelerate
+
                             accelerate.hooks.remove_hook_from_submodules(model)
 
                         orig_device = self.device
@@ -942,11 +978,7 @@ class AutoRound(object):
             raise NotImplementedError("Only one GGUF format can be set at a time.")
 
         target_format: str = formats[0]
-        tie_word_embeddings: bool = getattr(
-            getattr(self.model, "config", None),
-            "tie_word_embeddings",
-            True
-        )
+        tie_word_embeddings: bool = getattr(getattr(self.model, "config", None), "tie_word_embeddings", True)
 
         for name, module in self.model.named_modules():
             if isinstance(module, torch.nn.Embedding):
@@ -957,18 +989,21 @@ class AutoRound(object):
         if not tie_word_embeddings:
             lm_head_name: str = get_lm_head_name(self.model)
             config: dict[str, Any] = GGUF_CONFIG[GGUF_CONFIG[target_format]["lm_head"]]
-            check_fixed_by_user = self.layer_config[lm_head_name].get(
-                "fixed_by_user", False) if lm_head_name in self.layer_config else None
+            check_fixed_by_user = (
+                self.layer_config[lm_head_name].get("fixed_by_user", False)
+                if lm_head_name in self.layer_config
+                else None
+            )
             self._apply_config_to_layer(lm_head_name, config, check_fixed_by_user=check_fixed_by_user)
             return True
 
         return False
 
     def _apply_config_to_layer(
-            self,
-            layer_name: str,
-            config: dict[str, Any],
-            check_fixed_by_user: bool = False,
+        self,
+        layer_name: str,
+        config: dict[str, Any],
+        check_fixed_by_user: bool = False,
     ) -> None:
         """Applies GGUF quantization configuration to a given layer.
 
@@ -979,18 +1014,15 @@ class AutoRound(object):
         """
         act_bits: int = 16
         scale_dtype: Any = self.scale_dtype
-        keys: list[str] = [
-            "bits", "group_size", "super_bits",
-            "super_group_size", "data_type", "sym"
-        ]
+        keys: list[str] = ["bits", "group_size", "super_bits", "super_group_size", "data_type", "sym"]
 
         self.layer_config[layer_name] = self.layer_config.get(layer_name, {})
 
         for key in keys:
             if (
-                    key in self.layer_config[layer_name]
-                    and check_fixed_by_user
-                    # and self.layer_config[layer_name].get("fixed_by_user", False)
+                key in self.layer_config[layer_name]
+                and check_fixed_by_user
+                # and self.layer_config[layer_name].get("fixed_by_user", False)
             ):
                 continue
             self.layer_config[layer_name][key] = config.get(key)
@@ -1022,6 +1054,7 @@ class AutoRound(object):
         # Step 1: Use optimized RTN data type if available
         if not self.disable_opt_rtn and not m.data_type.startswith("rtn_"):
             from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+
             rtn_dtype = "rtn_" + m.data_type
             if rtn_dtype in QUANT_FUNC_WITH_DTYPE:
                 m.data_type = rtn_dtype
@@ -1067,6 +1100,7 @@ class AutoRound(object):
 
                 if has_gguf:
                     from auto_round.export.export_to_gguf.export import pack_gguf_layer
+
                     output_dir = self.get_save_folder_name(self.formats[0])
                     model_type = ModelType.MMPROJ if self.vlm else ModelType.TEXT
                     pack_gguf_layer(
@@ -1078,11 +1112,10 @@ class AutoRound(object):
                         self.tokenizer,
                         processor=self.processor if hasattr(self, "processor") else None,
                         image_processor=self.image_processor if hasattr(self, "image_processor") else None,
-                        model_type=model_type)
-                else:
-                    PACKING_LAYER_WITH_FORMAT[target_backend](
-                        name, self.model, self.formats[0]
+                        model_type=model_type,
                     )
+                else:
+                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
 
                 # if self.low_gpu_mem_usage:
                 #     clear_memory()
@@ -1102,9 +1135,7 @@ class AutoRound(object):
         if self.amp:
             self.model.to(self.amp_dtype)
 
-        all_to_quantized_module_names: list[str] = [
-            n for n, m in self.model.named_modules() if check_to_quantized(m)
-        ]
+        all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
 
         has_gguf_k = any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", []))
 
@@ -1113,7 +1144,7 @@ class AutoRound(object):
         self.model.to("cpu")
         if has_gguf_k and not self.disable_opt_rtn:
             self.quant_rtn_with_imatrix(all_to_quantized_module_names)
-        elif self.act_bits <=8 and self.act_dynamic is False:
+        elif self.act_bits <= 8 and self.act_dynamic is False:
             hook_handles = self.register_act_max_hook(self.model)
             try:
                 self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
@@ -1123,6 +1154,7 @@ class AutoRound(object):
                 clear_memory()
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                     import accelerate
+
                     accelerate.hooks.remove_hook_from_submodules(self.model)
                 orig_device = self.device
                 self.device = "cpu"
@@ -1140,7 +1172,7 @@ class AutoRound(object):
             for name in pbar:
                 pbar.set_description(f"Quantizing {name}")
                 self.quantize_layer_via_rtn(name)
-                if  cnt % clear_mem_freq == 0:
+                if cnt % clear_mem_freq == 0:
                     clear_memory()
                     cnt = 1
                 cnt += 1
@@ -1206,6 +1238,7 @@ class AutoRound(object):
                 if self.device_map is not None:
                     from accelerate import dispatch_model
                     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
                     for _, m in block.named_modules():
                         if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                             continue
@@ -1245,7 +1278,7 @@ class AutoRound(object):
         # Process remaining layers not in blocks
         for name in all_to_quantized_module_names:
             self.quantize_layer_via_rtn(name)
-            if  cnt % clear_mem_freq == 0:
+            if cnt % clear_mem_freq == 0:
                 clear_memory()
                 cnt = 1
             cnt += 1
@@ -1271,15 +1304,19 @@ class AutoRound(object):
                 only_gguf = False
             if only_gguf:
                 self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
-                    self.layer_config, self.formats, self.model, model_type=ModelType.TEXT)
+                    self.layer_config, self.formats, self.model, model_type=ModelType.TEXT
+                )
                 if self.vlm:
                     self.layer_config, gguf_format_config = get_layer_config_by_gguf_format(
-                        self.layer_config, self.formats, self.model, model_type=ModelType.MMPROJ)
+                        self.layer_config, self.formats, self.model, model_type=ModelType.MMPROJ
+                    )
             # Determine if immediate packing is required
             formats = self.formats
-            if (len(formats) == 1 and
-                    ("awq" in formats[0] or "gptq" in formats[0] or
-                     "auto_round" in formats[0] or "gguf" in formats[0]) and self.inplace):
+            if (
+                len(formats) == 1
+                and ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[0] or "gguf" in formats[0])
+                and self.inplace
+            ):
                 self.is_packing_immediate = True
         if self.iters == 0:
             return self.quantize_rtn()
@@ -1300,8 +1337,9 @@ class AutoRound(object):
         self.start_time = time.time()
         all_first_block_names = [block[0] for block in all_blocks]
         if len(layer_names) > 0:
-            logger.info("Starting to cache block inputs. This may be slow due to external block layers: %s",
-                        layer_names)
+            logger.info(
+                "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
+            )
         else:
             logger.info("start to cache block inputs")
         all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
@@ -1310,8 +1348,9 @@ class AutoRound(object):
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs)
-            all_q_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples,
-                                                            layer_names=layer_names)
+            all_q_inputs = self.try_cache_inter_data_gpucpu(
+                all_first_block_names, self.nsamples, layer_names=layer_names
+            )
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
         if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
@@ -1328,10 +1367,12 @@ class AutoRound(object):
                 q_inputs = all_q_inputs[block_names[0]]
                 all_q_inputs.pop(block_names[0])
             keys = inputs.keys()
-            input_id_str = [key for key in keys if key.startswith('hidden_state')]
+            input_id_str = [key for key in keys if key.startswith("hidden_state")]
             if len(input_id_str) != 1:
-                raise RuntimeError("hidden_states arg mismatch error,"
-                                   "please raise an issue in https://github.com/intel/auto-round/issues")
+                raise RuntimeError(
+                    "hidden_states arg mismatch error,"
+                    "please raise an issue in https://github.com/intel/auto-round/issues"
+                )
             inputs["input_ids"] = inputs.pop(input_id_str[0], None)
             if q_inputs is not None:
                 q_inputs["input_ids"] = q_inputs.pop(input_id_str[0], None)
@@ -1351,7 +1392,7 @@ class AutoRound(object):
                 q_input=q_inputs["input_ids"] if q_inputs is not None else None,
                 nblocks=self.nblocks,
                 device=self.device,
-                pbar=pbar
+                pbar=pbar,
             )
             if self.is_packing_immediate and len(self.formats) != 1:
                 raise ValueError(
@@ -1409,8 +1450,13 @@ class AutoRound(object):
                     logger.info("using optimized rtn method for quantizing %s", layer_name)
                     self.layer_config[layer_name]["data_type"] = layer.data_type
                 layer.to(self.device)
-                wrapper_layer = WrapperLinear(layer, enable_round_tuning=False, enable_minmax_tuning=False,
-                                              enable_norm_bias_tuning=False, device=self.device)
+                wrapper_layer = WrapperLinear(
+                    layer,
+                    enable_round_tuning=False,
+                    enable_minmax_tuning=False,
+                    enable_norm_bias_tuning=False,
+                    device=self.device,
+                )
                 new_layer = wrapper_layer.unwrapper({})
                 set_module(self.model, layer_name, new_layer)
                 layer.cpu()
@@ -1431,13 +1477,12 @@ class AutoRound(object):
             dispatch_model(self.model, self.model.hf_device_map)
 
         if enable_quanted_input:
-            logger.info(
-                "starting to cache layer inputs for %s, this may be quite slow ",
-                layer_names)
+            logger.info("starting to cache layer inputs for %s, this may be quite slow ", layer_names)
             q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 accelerate.hooks.remove_hook_from_submodules(
-                    self.model)  ##self.model.hf_device_map has not been changed
+                    self.model
+                )  ##self.model.hf_device_map has not been changed
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         clear_memory()
@@ -1483,7 +1528,7 @@ class AutoRound(object):
             "act_dynamic",
             "act_data_type",
             "super_bits",
-            "super_group_size"
+            "super_group_size",
         ]
 
         for n, m in self.model.named_modules():
@@ -1552,8 +1597,11 @@ class AutoRound(object):
                 layer_config[n]["in_blocks"] = False
 
             # If the layer is outside a block and requires quantization, mark it as a quantized layer outside the block
-            if (n not in layers_in_blocks and check_to_quantized(layer_config[n])
-                    and not isinstance(m, torch.nn.Embedding)):
+            if (
+                n not in layers_in_blocks
+                and check_to_quantized(layer_config[n])
+                and not isinstance(m, torch.nn.Embedding)
+            ):
                 has_qlayer_outside_block = True
 
             in_features, out_features = get_layer_features(m)
@@ -1593,12 +1641,7 @@ class AutoRound(object):
             end_index = min(nsamples, i + bs)
             indices = torch.arange(i, end_index).to(torch.long)
             tmp_input_ids, tmp_input_others = AutoRound.sampling_inputs(
-                input_ids,
-                input_others,
-                indices,
-                self.seqlen,
-                self.batch_dim,
-                share_cache_keys=self.shared_cache_keys
+                input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
             )
             tmp_output = block_forward(block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device).to(
                 cache_device
@@ -1627,6 +1670,7 @@ class AutoRound(object):
             bs (int): The number of samples to use for calibration
         """
         from .calib_dataset import get_dataloader
+
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
 
@@ -1671,7 +1715,7 @@ class AutoRound(object):
                 data_new = {}
                 for key in data.keys():
                     data_new[key] = to_device(data[key], self.model.device)
-                    if key == 'images':
+                    if key == "images":
                         data_new[key] = to_dtype(data_new[key], self.model.dtype)
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
@@ -1690,8 +1734,10 @@ class AutoRound(object):
                 error_msg = str(error)
                 if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
                     check_seqlen_compatible(self.seqlen, self.tokenizer, self.model)
-                logger.warning("When quantization encounters tensor shape mismatch error, " \
-                               "you can try to avoid it with batch_size=1")
+                logger.warning(
+                    "When quantization encounters tensor shape mismatch error, "
+                    "you can try to avoid it with batch_size=1"
+                )
                 raise error
             except Exception as error:
                 raise error
@@ -1745,13 +1791,15 @@ class AutoRound(object):
         except RuntimeError as e:
             if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
                 logger.info("switch to cpu to cache block inputs")
-                if (self.has_qlayer_outside_block or
-                        self.__class__.__name__ == "AutoRoundMLLM"):
-                    logger.warning("we strongly recommend using more GPUs in calibration."
-                                   " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy.")
+                if self.has_qlayer_outside_block or self.__class__.__name__ == "AutoRoundMLLM":
+                    logger.warning(
+                        "we strongly recommend using more GPUs in calibration."
+                        " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy."
+                    )
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                     accelerate.hooks.remove_hook_from_submodules(
-                        self.model)  ##self.model.hf_device_map has not been changed
+                        self.model
+                    )  ##self.model.hf_device_map has not been changed
                 self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
                 clear_memory()
                 ## Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
@@ -1866,15 +1914,19 @@ class AutoRound(object):
                                 "this model has not been supported, "
                                 "please raise an issue in https://github.com/intel/auto-round/issues"
                                 " or try to set the `batch_size` to 1 and "
-                                "`gradient_accumulate_steps` to your current batch size.")
+                                "`gradient_accumulate_steps` to your current batch size."
+                            )
                             exit(-1)
 
             if hidden_states is not None:
-                kwargs['hidden_states'] = hidden_states
+                kwargs["hidden_states"] = hidden_states
 
             for key in kwargs.keys():
-                if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) \
-                        or isinstance(kwargs[key], tuple):
+                if (
+                    isinstance(kwargs[key], torch.Tensor)
+                    or isinstance(kwargs[key], list)
+                    or isinstance(kwargs[key], tuple)
+                ):
                     if key not in self.inputs[name].keys():  # initialization
                         data = to_device(kwargs[key], device=torch.device("cpu"))
                         if data is None or (self.batch_size > 1 and key in self.shared_cache_keys):
@@ -1900,14 +1952,15 @@ class AutoRound(object):
                 else:
                     # Parameters not to be cached
                     if check_skippable_keywords(key):
-                        logger.warning_once(f"Please note that '{key}' key" \
-                                            " is not currently used in quantization fine-tuning.")
+                        logger.warning_once(
+                            f"Please note that '{key}' key" " is not currently used in quantization fine-tuning."
+                        )
             reset_params(self.inputs[name])
             if name == self.last_cache_name:
                 raise NotImplementedError
             else:
                 if hidden_states is not None:
-                    kwargs.pop('hidden_states')
+                    kwargs.pop("hidden_states")
                     return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
                 else:
                     # Currently only for Llama-3.2-Vision-Instruct Series
@@ -1978,8 +2031,7 @@ class AutoRound(object):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        wrapper_linear = WrapperLinear(
-            layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device).to(device)
+        wrapper_linear = WrapperLinear(layer, enable_minmax_tuning=self.enable_minmax_tuning, device=device).to(device)
         round_params = []
         minmax_params = []
         for key in wrapper_linear.params.keys():
@@ -1988,9 +2040,7 @@ class AutoRound(object):
             else:
                 round_params.append(wrapper_linear.value)
         if len(round_params) + len(minmax_params) <= 0:
-            dump_info = (
-                f"quantized {layer_name}"
-            )
+            dump_info = f"quantized {layer_name}"
             logger.info(dump_info)
             with torch.no_grad():
                 unwrapper_layer(self.model, wrapper_linear, layer_name, {})
@@ -2040,7 +2090,7 @@ class AutoRound(object):
                         current_input = [inputs[i] for i in whole_indices]
                     num_elm = sum(id.numel() for id in current_input)
             for tmp_step in range(gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * batch_size: (tmp_step + 1) * batch_size]
+                indices = whole_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
                 if q_inputs is not None:
                     current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
@@ -2112,8 +2162,12 @@ class AutoRound(object):
             # for whole model, RTN
             if n in self.layer_config:
                 config = self.layer_config[n]
-                if config["bits"] <= 8 and "act_dynamic" in config and config[
-                        "act_dynamic"] is False and check_to_quantized(config):
+                if (
+                    config["bits"] <= 8
+                    and "act_dynamic" in config
+                    and config["act_dynamic"] is False
+                    and check_to_quantized(config)
+                ):
                     hook = m.register_forward_hook(get_act_max_hook)
                     hook_handles.append(hook)
                     continue
@@ -2134,30 +2188,39 @@ class AutoRound(object):
         """
         if self.device_map is not None:
             from accelerate import dispatch_model
+
             for n, m in block.named_modules():
                 if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
                     continue
                 from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
                 hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
                 add_hook_to_module(m, hook, True)
 
         if q_input is None:
             hook_handles = self.register_act_max_hook(block)
 
-            output = self.get_block_outputs(block, input_ids, input_others, self.batch_size * self.infer_bs_coeff,
-                                            device,
-                                            self.cache_device)
+            output = self.get_block_outputs(
+                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
+            )
 
             for handle in hook_handles:
                 handle.remove()
         else:
-            output = self.get_block_outputs(block, input_ids, input_others, self.batch_size * self.infer_bs_coeff,
-                                            device,
-                                            self.cache_device)
+            output = self.get_block_outputs(
+                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
+            )
             hook_handles = self.register_act_max_hook(block)
             if hook_handles:
-                self.get_block_outputs(block, q_input, input_others, self.batch_size * self.infer_bs_coeff,
-                                       device, self.cache_device, save_output=False)
+                self.get_block_outputs(
+                    block,
+                    q_input,
+                    input_others,
+                    self.batch_size * self.infer_bs_coeff,
+                    device,
+                    self.cache_device,
+                    save_output=False,
+                )
 
             for handle in hook_handles:
                 handle.remove()
@@ -2170,7 +2233,8 @@ class AutoRound(object):
             input_ids = q_input
 
         quantized_layer_names, unquantized_layer_names = wrapper_block(
-            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device)
+            block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device
+        )
 
         round_params = []
         minmax_params = []
@@ -2232,14 +2296,14 @@ class AutoRound(object):
                     current_input_ids = [input_ids[i] for i in whole_indices]
                     num_elm = sum(id.numel() for id in current_input_ids)
             for tmp_step in range(self.gradient_accumulate_steps):
-                indices = whole_indices[tmp_step * self.batch_size: (tmp_step + 1) * self.batch_size]
+                indices = whole_indices[tmp_step * self.batch_size : (tmp_step + 1) * self.batch_size]
                 current_input_ids, current_input_others = AutoRound.sampling_inputs(
                     input_ids,
                     input_others,
                     indices,
                     seqlen=self.seqlen,
                     batch_dim=self.batch_dim,
-                    share_cache_keys=self.shared_cache_keys
+                    share_cache_keys=self.shared_cache_keys,
                 )
 
                 current_output = [output[x] for x in indices]
@@ -2298,12 +2362,15 @@ class AutoRound(object):
                 block = block.to(device)
             clear_memory()
             q_outputs = self.get_block_outputs(
-                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device,
-                cache_device=self.cache_device
+                block,
+                input_ids,
+                input_others,
+                self.batch_size * self.infer_bs_coeff,
+                device,
+                cache_device=self.cache_device,
             )
             if self.device_map is not None:
-                accelerate.hooks.remove_hook_from_submodules(
-                    block)
+                accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             clear_memory(input_ids)
 
@@ -2311,21 +2378,13 @@ class AutoRound(object):
 
         else:
             if self.device_map is not None:
-                accelerate.hooks.remove_hook_from_submodules(
-                    block)
+                accelerate.hooks.remove_hook_from_submodules(block)
             mv_module_from_gpu(block, self.low_cpu_mem_usage)
             clear_memory(input_ids)
             return None, output
 
     def quant_blocks(
-            self,
-            model: torch.nn.Module,
-            inputs,
-            block_names,
-            q_input=None,
-            nblocks=1,
-            device="cpu",
-            pbar=None
+        self, model: torch.nn.Module, inputs, block_names, q_input=None, nblocks=1, device="cpu", pbar=None
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -2355,7 +2414,7 @@ class AutoRound(object):
 
         for key in input_others.keys():
             if isinstance(input_others[key], torch.Tensor) and (
-                    input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
             ):
                 input_others[key] = input_others[key].to(tmp_dtype)
             elif isinstance(input_others[key], list):
@@ -2377,7 +2436,7 @@ class AutoRound(object):
                 pbar.set_description(f"Quantizing {n}")
                 m = get_module(model, n)
             else:
-                names = block_names[i: min(i + nblocks, len(block_names))]
+                names = block_names[i : min(i + nblocks, len(block_names))]
                 pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
@@ -2394,12 +2453,14 @@ class AutoRound(object):
             )
             if self.is_packing_immediate:
                 from auto_round.export import PACKING_LAYER_WITH_FORMAT
+
                 for _, tmp_m in m.named_modules():
                     if hasattr(tmp_m, "bits") and check_to_quantized(tmp_m):
                         target_backend = self.formats[0].split(":")[0] if ":" in self.formats[0] else self.formats[0]
                         has_gguf = any("gguf" in format_ for format_ in self.formats)
                         if has_gguf:
                             from auto_round.export.export_to_gguf.export import pack_gguf_layer
+
                             output_dir = self.get_save_folder_name(self.formats[0])
                             model_type = ModelType.MMPROJ if self.vlm else ModelType.TEXT
                             pack_gguf_layer(
@@ -2411,7 +2472,8 @@ class AutoRound(object):
                                 self.tokenizer,
                                 processor=self.processor if hasattr(self, "processor") else None,
                                 image_processor=self.image_processor if hasattr(self, "image_processor") else None,
-                                model_type=model_type)
+                                model_type=model_type,
+                            )
                         else:
                             PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
         pbar.set_description("Quantizing done")
@@ -2445,7 +2507,7 @@ class AutoRound(object):
         format = self._check_supported_format(format)
 
         if self.low_cpu_mem_usage:
-            self.model = self.model.to('cpu')
+            self.model = self.model.to("cpu")
 
         if not self.quantized:
             logger.warning("please run autoround.quantize first")
@@ -2462,9 +2524,11 @@ class AutoRound(object):
         if self.act_bits <= 8 and format == "qdq":
             logger.warning(
                 "Support for exporting activation quantization is limited. "
-                "Please ensure that your configuration is supported.")
+                "Please ensure that your configuration is supported."
+            )
 
         from auto_round.export import EXPORT_FORMAT
+
         backend = format
         format = format.split(":")[0]
         if format not in EXPORT_FORMAT:
@@ -2513,7 +2577,7 @@ class AutoRound(object):
             backend=backend,
             to_quant_block_names=self.to_quant_block_names,
             quant_block_list=self.quant_block_list,
-            **kwargs
+            **kwargs,
         )
         return compressed_model
 
@@ -2614,8 +2678,7 @@ class AutoRound(object):
 
     @classmethod
     @torch.no_grad()
-    def sampling_inputs(cls, input_ids, input_others, indices, seqlen,
-                        batch_dim=0, share_cache_keys=()):
+    def sampling_inputs(cls, input_ids, input_others, indices, seqlen, batch_dim=0, share_cache_keys=()):
         """Samples inputs based on the given indices and sequence length.
 
         Args:
@@ -2636,8 +2699,9 @@ class AutoRound(object):
         for key in input_others.keys():
             if "positional_inputs" in key:
                 continue
-            if (key not in share_cache_keys or len(indices) == 1) \
-                    and not isinstance(input_others[key], (str, bool, type(None))):
+            if (key not in share_cache_keys or len(indices) == 1) and not isinstance(
+                input_others[key], (str, bool, type(None))
+            ):
                 current_input_others[key] = None
                 if input_others[key] is not None:
                     current_input_others[key] = [input_others[key][i] for i in indices]
@@ -2704,49 +2768,49 @@ class AutoRoundOPT(AutoRound):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = True,
-            layer_config=None,
-            batch_size: int = 8,
-            amp: bool = True,
-            device=None,
-            lr_scheduler=None,
-            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-            enable_quanted_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = False,
-            low_cpu_mem_usage: bool = False,
-            iters: int = 200,
-            seqlen: int = 2048,
-            nsamples: int = 128,
-            sampler: str = "rand",
-            seed: int = 42,
-            nblocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            scale_dtype: str = "fp16",
-            act_bits: int = 16,
-            act_group_size: int = None,
-            act_sym: bool = None,
-            act_data_type: str = None,
-            act_dynamic: bool = True,
-            to_quant_block_names: Union[str, list] = None,
-            enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = False,
-            device_map: Union[str, dict] = None,
-            optimizer="AdamW",
-            super_bits: int = None,
-            super_group_size: int = None,
-            disable_opt_rtn: bool = False,
-            **kwargs,
+        self,
+        model,
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = True,
+        layer_config=None,
+        batch_size: int = 8,
+        amp: bool = True,
+        device=None,
+        lr_scheduler=None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        enable_quanted_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = False,
+        low_cpu_mem_usage: bool = False,
+        iters: int = 200,
+        seqlen: int = 2048,
+        nsamples: int = 128,
+        sampler: str = "rand",
+        seed: int = 42,
+        nblocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        scale_dtype: str = "fp16",
+        act_bits: int = 16,
+        act_group_size: int = None,
+        act_sym: bool = None,
+        act_data_type: str = None,
+        act_dynamic: bool = True,
+        to_quant_block_names: Union[str, list] = None,
+        enable_norm_bias_tuning: bool = False,
+        enable_torch_compile: bool = False,
+        device_map: Union[str, dict] = None,
+        optimizer="AdamW",
+        super_bits: int = None,
+        super_group_size: int = None,
+        disable_opt_rtn: bool = False,
+        **kwargs,
     ):
         super(AutoRoundOPT, self).__init__(
             model=model,
@@ -2883,49 +2947,49 @@ class AutoRoundAdam(AutoRoundOPT):
     """
 
     def __init__(
-            self,
-            model,
-            tokenizer=None,
-            bits: int = 4,
-            group_size: int = 128,
-            sym: bool = True,
-            layer_config=None,
-            batch_size: int = 8,
-            amp: bool = True,
-            device=None,
-            lr_scheduler=None,
-            dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-            enable_quanted_input: bool = True,
-            enable_minmax_tuning: bool = True,
-            lr: float = None,
-            minmax_lr: float = None,
-            low_gpu_mem_usage: bool = False,
-            low_cpu_mem_usage: bool = False,
-            iters: int = 200,
-            seqlen: int = 2048,
-            nsamples: int = 128,
-            sampler: str = "rand",
-            seed: int = 42,
-            nblocks: int = 1,
-            gradient_accumulate_steps: int = 1,
-            not_use_best_mse: bool = False,
-            dynamic_max_gap: int = -1,
-            data_type: str = "int",
-            scale_dtype: str = "fp16",
-            act_bits: int = 16,
-            act_group_size: int = None,
-            act_sym: bool = None,
-            act_data_type: str = None,
-            act_dynamic: bool = True,
-            to_quant_block_names: Union[str, list] = None,
-            enable_norm_bias_tuning: bool = False,
-            enable_torch_compile: bool = False,
-            device_map: Union[str, dict] = None,
-            optimizer="AdamW",
-            super_bits: int = None,
-            super_group_size: int = None,
-            disable_opt_rtn: bool = False,
-            **kwargs,
+        self,
+        model,
+        tokenizer=None,
+        bits: int = 4,
+        group_size: int = 128,
+        sym: bool = True,
+        layer_config=None,
+        batch_size: int = 8,
+        amp: bool = True,
+        device=None,
+        lr_scheduler=None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        enable_quanted_input: bool = True,
+        enable_minmax_tuning: bool = True,
+        lr: float = None,
+        minmax_lr: float = None,
+        low_gpu_mem_usage: bool = False,
+        low_cpu_mem_usage: bool = False,
+        iters: int = 200,
+        seqlen: int = 2048,
+        nsamples: int = 128,
+        sampler: str = "rand",
+        seed: int = 42,
+        nblocks: int = 1,
+        gradient_accumulate_steps: int = 1,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        data_type: str = "int",
+        scale_dtype: str = "fp16",
+        act_bits: int = 16,
+        act_group_size: int = None,
+        act_sym: bool = None,
+        act_data_type: str = None,
+        act_dynamic: bool = True,
+        to_quant_block_names: Union[str, list] = None,
+        enable_norm_bias_tuning: bool = False,
+        enable_torch_compile: bool = False,
+        device_map: Union[str, dict] = None,
+        optimizer="AdamW",
+        super_bits: int = None,
+        super_group_size: int = None,
+        disable_opt_rtn: bool = False,
+        **kwargs,
     ):
         super(AutoRoundAdam, self).__init__(
             model=model,
@@ -2970,5 +3034,3 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
-
-

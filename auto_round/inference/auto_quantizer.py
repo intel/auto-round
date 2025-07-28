@@ -59,6 +59,7 @@ def _is_package_available(pkg_name: str, return_version: bool = False) -> Union[
     # Check we're not importing a "pkg_name" directory somewhere but the actual library by trying to grab the version
     try:  ##TODO remove it later
         import auto_round
+
         return True, auto_round.__version__
     except:
         pass
@@ -83,6 +84,7 @@ _auto_round_available = _is_package_available("auto_round")
 def is_auto_round_available():
     try:
         import auto_round
+
         return True
     except:
         pass
@@ -138,9 +140,9 @@ class AutoHfQuantizer:
 
     @classmethod
     def merge_quantization_configs(
-            cls,
-            quantization_config: Union[dict, QuantizationConfigMixin],
-            quantization_config_from_args: Optional[QuantizationConfigMixin],
+        cls,
+        quantization_config: Union[dict, QuantizationConfigMixin],
+        quantization_config_from_args: Optional[QuantizationConfigMixin],
     ):
         """Handles situations where both quantization_config
         from args and quantization_config from model config are present."""
@@ -152,8 +154,9 @@ class AutoHfQuantizer:
             )
         else:
             warning_msg = ""
-        if (quantization_config_from_args is None or
-                not hasattr(quantization_config_from_args, "get_loading_attributes")):
+        if quantization_config_from_args is None or not hasattr(
+            quantization_config_from_args, "get_loading_attributes"
+        ):
             # If the quantization_config_from_args is None or does not have get_loading_attributes method,
             # we will not use it to load the model.
             quantization_config_from_args = None
@@ -161,14 +164,18 @@ class AutoHfQuantizer:
             loading_attr_dict = quantization_config_from_args.get_loading_attributes()
 
         if isinstance(quantization_config, dict):
-            if "auto-round" in quantization_config[
-                "quant_method"] or quantization_config_from_args.__class__.__name__ == "AutoRoundConfig":
+            if (
+                "auto-round" in quantization_config["quant_method"]
+                or quantization_config_from_args.__class__.__name__ == "AutoRoundConfig"
+            ):
                 quantization_config = AutoRoundConfig.from_dict(quantization_config)
             else:
                 quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
 
-        if isinstance(quantization_config,
-                      (GPTQConfig, AwqConfig, AutoRoundConfig)) and quantization_config_from_args is not None:
+        if (
+            isinstance(quantization_config, (GPTQConfig, AwqConfig, AutoRoundConfig))
+            and quantization_config_from_args is not None
+        ):
             # special case for GPTQ / AWQ config collision
 
             for attr, val in loading_attr_dict.items():
@@ -186,15 +193,16 @@ class AutoHfQuantizer:
     @staticmethod
     def supports_quant_method(quantization_config_dict):
         from transformers.quantizers.auto import AUTO_QUANTIZATION_CONFIG_MAPPING
-        AUTO_QUANTIZATION_CONFIG_MAPPING['auto-round'] = AutoRoundConfig
-        AUTO_QUANTIZATION_CONFIG_MAPPING['auto_round'] = AutoRoundConfig
+
+        AUTO_QUANTIZATION_CONFIG_MAPPING["auto-round"] = AutoRoundConfig
+        AUTO_QUANTIZATION_CONFIG_MAPPING["auto_round"] = AutoRoundConfig
         quant_method = quantization_config_dict.get("quant_method", None)
         if quantization_config_dict.get("load_in_8bit", False) or quantization_config_dict.get("load_in_4bit", False):
             suffix = "_4bit" if quantization_config_dict.get("load_in_4bit", False) else "_8bit"
             quant_method = QuantizationMethod.BITS_AND_BYTES + suffix
         elif quant_method is None:
             raise ValueError(
-                "The model's quantization config from the arguments has no `quant_method` attribute." \
+                "The model's quantization config from the arguments has no `quant_method` attribute."
                 "Make sure that the model has been correctly quantized"
             )
 
@@ -229,15 +237,15 @@ class AutoRoundConfig(QuantizationConfigMixin):
     """
 
     def __init__(
-            self,
-            bits: int = 4,
-            tokenizer: Any = None,
-            dataset: str = None,
-            group_size: int = 128,
-            sym: bool = False,
-            backend="auto",
-            layer_config: dict = None,
-            **kwargs,
+        self,
+        bits: int = 4,
+        tokenizer: Any = None,
+        dataset: str = None,
+        group_size: int = 128,
+        sym: bool = False,
+        backend="auto",
+        layer_config: dict = None,
+        **kwargs,
     ):
 
         self.bits = bits
@@ -278,16 +286,15 @@ class AutoRoundConfig(QuantizationConfigMixin):
             )
 
         if "gptq" in quant_method and "meta" in config_dict:
-            raise NotImplementedError(
-                "Failed to convert gptq format to auto_round format. Only supports `gptqv1`")
+            raise NotImplementedError("Failed to convert gptq format to auto_round format. Only supports `gptqv1`")
 
         if "awq" in quant_method and config_dict.get("version", "gemm") != "gemm":
             raise NotImplementedError(
-                "Failed to convert awq format to auto_round format. Only supports  awq format with gemm version")
+                "Failed to convert awq format to auto_round format. Only supports  awq format with gemm version"
+            )
 
         if "auto-round" not in quant_method:
             config_dict["packing_format"] = f"auto_round:{quant_method}"
-
 
         return super().from_dict(config_dict, return_unused_kwargs=return_unused_kwargs, **kwargs)
 
@@ -306,17 +313,21 @@ class AutoRoundQuantizer(HfQuantizer):
     def validate_environment(self, *args, **kwargs):
         self.device_map = kwargs.get("device_map", None)
         if not is_auto_round_available():
-            raise ImportError("Loading a AutoRound quantized model requires auto-round library (`pip install "
-                              "auto-round`)")
+            raise ImportError(
+                "Loading a AutoRound quantized model requires auto-round library (`pip install " "auto-round`)"
+            )
         else:
             try:
                 import auto_round
+
                 autoround_version = version.parse(auto_round.__version__)
             except:
                 autoround_version = version.parse(importlib.metadata.version("auto_round"))
             if autoround_version < version.parse("0.2.0"):
-                raise ImportError("You need a version of auto_round > 0.2.0 to use AutoRound: `pip install --upgrade "
-                                  "auto-round` or install from source")
+                raise ImportError(
+                    "You need a version of auto_round > 0.2.0 to use AutoRound: `pip install --upgrade "
+                    "auto-round` or install from source"
+                )
 
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:

@@ -40,8 +40,8 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
     """
     orig_shape = data.shape
     pad_len = 0
-    if group_size==0:
-        data = data.reshape(1,-1)
+    if group_size == 0:
+        data = data.reshape(1, -1)
         return data, orig_shape, pad_len
     if len(data.shape) > 2:
         data = data.reshape(-1, orig_shape[-1])
@@ -87,17 +87,17 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: int):
 def get_quant_func(dtype, bits, sym):
     """Retrieve the quantization function based on data type, bit width, and symmetry.
 
-       This function returns the appropriate quantization function from the QUANT_FUNC_WITH_DTYPE
-       dictionary based on the provided data type (`dtype`), bit width (`bits`), and whether
-       the quantization is symmetric (`sym`). If the function does not exist, raise ValueError.
+    This function returns the appropriate quantization function from the QUANT_FUNC_WITH_DTYPE
+    dictionary based on the provided data type (`dtype`), bit width (`bits`), and whether
+    the quantization is symmetric (`sym`). If the function does not exist, raise ValueError.
 
-       Args:
-           dtype (str): The data type for the quantization (e.g., 'int', 'mxfp4').
-           bits (int): The bit width for the quantization (e.g., 2,4,8).
-           sym (bool): A flag indicating whether the quantization is symmetric (True) or asymmetric (False).
+    Args:
+        dtype (str): The data type for the quantization (e.g., 'int', 'mxfp4').
+        bits (int): The bit width for the quantization (e.g., 2,4,8).
+        sym (bool): A flag indicating whether the quantization is symmetric (True) or asymmetric (False).
 
-       Returns:
-           function: The quantization function corresponding to the specified parameters.
+    Returns:
+        function: The quantization function corresponding to the specified parameters.
     """
     key = dtype
     if key in QUANT_FUNC_WITH_DTYPE.keys():
@@ -121,9 +121,9 @@ def get_quant_func(dtype, bits, sym):
         return QUANT_FUNC_WITH_DTYPE[key], key
 
     if sym:
-        key = dtype  + "_sym"
+        key = dtype + "_sym"
     else:
-        key = dtype  + "_asym"
+        key = dtype + "_asym"
 
     if key in QUANT_FUNC_WITH_DTYPE.keys():
         return QUANT_FUNC_WITH_DTYPE[key], key
@@ -237,8 +237,3 @@ def get_gaudi_fp8_ste_func():
         fn = float8_e4m3fn_ste
         logger.warning_once("Using CUDA/CPU STE for FP8")
     return fn
-
-
-
-
-

@@ -18,6 +18,7 @@ class ModelType(IntEnum):
     TEXT = 1
     MMPROJ = 2
 
+
 GGUF_INNER_CONFIG = {}
 
 GGUF_INNER_CONFIG["gguf:q4_0"] = {
@@ -89,7 +90,7 @@ GGUF_INNER_CONFIG["gguf:q2_k"] = {
     "sym": False,
     "data_type": "int_asym_dq",
     "embedding": "gguf:q2_k",
-    "lm_head": "gguf:q6_k"
+    "lm_head": "gguf:q6_k",
 }
 
 GGUF_INNER_CONFIG["gguf:q3_k"] = {
@@ -101,10 +102,10 @@ GGUF_INNER_CONFIG["gguf:q3_k"] = {
     "sym": True,
     "data_type": "int_sym_dq",
     "embedding": "gguf:q3_k",
-    "lm_head": "gguf:q6_k"
+    "lm_head": "gguf:q6_k",
 }
 
-GGUF_INNER_CONFIG["gguf:q4_k"]  = {
+GGUF_INNER_CONFIG["gguf:q4_k"] = {
     "bits": 4,
     "act_bits": 16,
     "super_group_size": 8,
@@ -113,7 +114,7 @@ GGUF_INNER_CONFIG["gguf:q4_k"]  = {
     "sym": False,
     "data_type": "int_asym_dq",
     "embedding": "gguf:q4_k",
-    "lm_head": "gguf:q6_k"
+    "lm_head": "gguf:q6_k",
 }
 
 GGUF_INNER_CONFIG["gguf:q5_k"] = {
@@ -125,10 +126,10 @@ GGUF_INNER_CONFIG["gguf:q5_k"] = {
     "sym": False,
     "data_type": "int_asym_dq",
     "embedding": "gguf:q5_k",
-    "lm_head": "gguf:q6_k"
+    "lm_head": "gguf:q6_k",
 }
 
-GGUF_INNER_CONFIG["gguf:q6_k"]  = {
+GGUF_INNER_CONFIG["gguf:q6_k"] = {
     "bits": 6,
     "act_bits": 16,
     "super_group_size": 16,
@@ -137,10 +138,10 @@ GGUF_INNER_CONFIG["gguf:q6_k"]  = {
     "sym": True,
     "data_type": "int_sym_dq",
     "embedding": "gguf:q6_k",
-    "lm_head": "gguf:q6_k"
+    "lm_head": "gguf:q6_k",
 }
 
-GGUF_INNER_CONFIG["gguf:bf16"]=GGUF_INNER_CONFIG["gguf:fp16"]  = {
+GGUF_INNER_CONFIG["gguf:bf16"] = GGUF_INNER_CONFIG["gguf:fp16"] = {
     "bits": 16,
     "act_bits": 16,
     "super_group_size": None,
@@ -153,18 +154,17 @@ GGUF_INNER_CONFIG["gguf:bf16"]=GGUF_INNER_CONFIG["gguf:fp16"]  = {
 }
 
 
-
 GGUF_CONFIG = {}
 GGUF_CONFIG["gguf:q4_0"] = GGUF_INNER_CONFIG["gguf:q4_0"]
 GGUF_CONFIG["gguf:q4_0"]["mostly"] = "gguf:q4_0"
 GGUF_CONFIG["gguf:q4_1"] = GGUF_INNER_CONFIG["gguf:q4_1"]
-GGUF_CONFIG["gguf:q4_1"]["mostly"]= "gguf:q4_1"
+GGUF_CONFIG["gguf:q4_1"]["mostly"] = "gguf:q4_1"
 GGUF_CONFIG["gguf:q5_0"] = GGUF_INNER_CONFIG["gguf:q5_0"]
-GGUF_CONFIG["gguf:q5_0"]["mostly"]= "gguf:q5_0"
+GGUF_CONFIG["gguf:q5_0"]["mostly"] = "gguf:q5_0"
 GGUF_CONFIG["gguf:q5_1"] = GGUF_INNER_CONFIG["gguf:q5_1"]
 GGUF_CONFIG["gguf:q5_1"]["mostly"] = "gguf:q5_1"
 GGUF_CONFIG["gguf:q2_k_s"] = GGUF_INNER_CONFIG["gguf:q2_k"]
-GGUF_CONFIG["gguf:q2_k_s"]["mostly"]= "gguf:q2_k"
+GGUF_CONFIG["gguf:q2_k_s"]["mostly"] = "gguf:q2_k"
 # GGUF_CONFIG["gguf:q3_k"] = GGUF_INNER_CONFIG["gguf:q3_k"]
 # GGUF_CONFIG["gguf:q3_k"]["mostly"] = "gguf:q3_k"
 GGUF_CONFIG["gguf:q3_k_s"] = GGUF_INNER_CONFIG["gguf:q3_k"]
@@ -172,11 +172,11 @@ GGUF_CONFIG["gguf:q3_k_s"]["mostly"] = "gguf:q3_k"
 GGUF_CONFIG["gguf:q3_k_m"] = GGUF_INNER_CONFIG["gguf:q3_k"]
 GGUF_CONFIG["gguf:q3_k_m"]["mostly"] = "gguf:q3_k"
 GGUF_CONFIG["gguf:q3_k_l"] = GGUF_INNER_CONFIG["gguf:q3_k"]
-GGUF_CONFIG["gguf:q3_k_l"]["mostly"]= "gguf:q3_k"
+GGUF_CONFIG["gguf:q3_k_l"]["mostly"] = "gguf:q3_k"
 # GGUF_CONFIG["gguf:q4_k"] = GGUF_INNER_CONFIG["gguf:q4_k"]
 # GGUF_CONFIG["gguf:q4_k"]["mostly"]= "gguf:q4_k"
 GGUF_CONFIG["gguf:q4_k_s"] = GGUF_INNER_CONFIG["gguf:q4_k"]
-GGUF_CONFIG["gguf:q4_k_s"]["mostly"]= "gguf:q4_k"
+GGUF_CONFIG["gguf:q4_k_s"]["mostly"] = "gguf:q4_k"
 GGUF_CONFIG["gguf:q4_k_m"] = GGUF_INNER_CONFIG["gguf:q4_k"]
 GGUF_CONFIG["gguf:q4_k_m"]["mostly"] = "gguf:q4_k"
 # GGUF_CONFIG["gguf:q5_k"] = GGUF_INNER_CONFIG["gguf:q5_k"]
@@ -186,14 +186,13 @@ GGUF_CONFIG["gguf:q5_k_s"]["mostly"] = "gguf:q5_k"
 GGUF_CONFIG["gguf:q5_k_m"] = GGUF_INNER_CONFIG["gguf:q5_k"]
 GGUF_CONFIG["gguf:q5_k_m"]["mostly"] = "gguf:q5_k"
 GGUF_CONFIG["gguf:q6_k"] = GGUF_INNER_CONFIG["gguf:q6_k"]
-GGUF_CONFIG["gguf:q6_k"]["mostly"]= "gguf:q6_k"
+GGUF_CONFIG["gguf:q6_k"]["mostly"] = "gguf:q6_k"
 GGUF_CONFIG["gguf:q8_0"] = GGUF_INNER_CONFIG["gguf:q8_0"]
-GGUF_CONFIG["gguf:q8_0"]["mostly"]= "gguf:q8_0"
+GGUF_CONFIG["gguf:q8_0"]["mostly"] = "gguf:q8_0"
 # GGUF_CONFIG["gguf:fp16"] = GGUF_INNER_CONFIG["gguf:fp16"]
 # GGUF_CONFIG["gguf:fp16"]["mostly"]= "gguf:fp16"
 # GGUF_CONFIG["gguf:bf16"] = GGUF_INNER_CONFIG["gguf:fp16"]
 # GGUF_CONFIG["gguf:bf16"]["mostly"]= "gguf:bf16"
-
 
 
 QK_K = 256
@@ -205,10 +204,10 @@ GGML_QUANT_SIZES = {
     "q5_0": (32, 2 + 4 + 16),
     "q5_1": (32, 2 + 2 + 4 + 16),
     "q8_0": (32, 2 + 32),
-    "q2_k": (256, 2 + 2 + QK_K//16 + QK_K//4),
+    "q2_k": (256, 2 + 2 + QK_K // 16 + QK_K // 4),
     "q3_k": (256, 2 + QK_K // 4 + QK_K // 8 + 12),
-    "q4_k": (256, 2 + 2 + QK_K//2 + 12),
+    "q4_k": (256, 2 + 2 + QK_K // 2 + 12),
     "q5_k": (256, 2 + 2 + QK_K // 2 + QK_K // 8 + 12),
     "q6_k": (256, 2 + QK_K // 2 + QK_K // 4 + QK_K // 16),
-    "q8_k": (256, 4 + QK_K + QK_K // 8)
+    "q8_k": (256, 4 + QK_K + QK_K // 8),
 }
