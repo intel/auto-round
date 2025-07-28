@@ -1,7 +1,7 @@
 Step-by-Step
 ============
 
-This document presents step-by-step instructions for auto-round llm quantization.
+This document presents step-by-step instructions for auto-round llm quantization. For vlms quantizaition, please refer to [vlms user guide](../auto_round/mllm/README.md)
 
 - [Step-by-Step](#step-by-step)
   * [1 Prerequisite](#1-prerequisite)
