@@ -59,16 +59,12 @@ class QuantLinear(nn.Module, TritonModuleMixin):
 
     QUANT_TYPE = "tritonv2"
 
-    def __init__(
-        self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs
-    ):
+    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs):
         super().__init__()
         if bits not in [2, 4, 8]:
             raise NotImplementedError("Only 2,4,8 bits are supported.")
         if infeatures % 32 != 0 or outfeatures % 32 != 0:
-            raise NotImplementedError(
-                "in_feature and out_feature must be divisible by 32."
-            )
+            raise NotImplementedError("in_feature and out_feature must be divisible by 32.")
         self.infeatures = infeatures
         self.outfeatures = outfeatures
         self.bits = bits
@@ -103,9 +99,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         #     ),
         # )
         if bias:
-            self.register_buffer(
-                "bias", torch.zeros((outfeatures), dtype=torch.float16)
-            )
+            self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
         else:
             self.bias = None
 
@@ -113,6 +107,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
 
     def post_init(self):
         pass
+
     #
     # def pack(self, linear, scales, zeros, g_idx=None):
     #     W = linear.weight.data.clone()
@@ -182,9 +177,9 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         out_shape = x.shape[:-1] + (self.outfeatures,)
         quant_linear_fn = QuantLinearFunction
         if not hasattr(self, "g_idx"):
-            self.g_idx = torch.tensor(
-                [i // self.group_size for i in range(self.infeatures)], dtype=torch.int32
-            ).to(self.qweight.device)
+            self.g_idx = torch.tensor([i // self.group_size for i in range(self.infeatures)], dtype=torch.int32).to(
+                self.qweight.device
+            )
 
         out = quant_linear_fn.apply(
             x.reshape(-1, x.shape[-1]),

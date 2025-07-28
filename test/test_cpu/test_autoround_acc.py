@@ -1,4 +1,3 @@
-
 import copy
 import shutil
 import sys
@@ -22,13 +21,15 @@ class LLMDataLoader:
     def __iter__(self):
         for i in range(2):
             yield torch.ones([1, 10], dtype=torch.long)
-            
+
 
 class TestAutoRound(unittest.TestCase):
     @classmethod
     def setUpClass(self):
         self.model_name = "hf-internal-testing/tiny-random-GPTJForCausalLM"
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype=torch.float32, trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name, torch_dtype=torch.float32, trust_remote_code=True
+        )
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         self.llm_dataloader = LLMDataLoader()
 
@@ -49,13 +50,15 @@ class TestAutoRound(unittest.TestCase):
             sym=sym,
             iters=2,
             seqlen=10,
-            dataset=self.llm_dataloader
+            dataset=self.llm_dataloader,
         )
         autoround.quantize()
         out0 = self.model(inp)
         print(f"out0 = {float(out0[0][0][0][0])}")
-        
-        model_tmp = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype=torch.float32, trust_remote_code=True)
+
+        model_tmp = AutoModelForCausalLM.from_pretrained(
+            self.model_name, torch_dtype=torch.float32, trust_remote_code=True
+        )
         autoround_1 = AutoRound(
             model_tmp,
             self.tokenizer,
@@ -65,15 +68,14 @@ class TestAutoRound(unittest.TestCase):
             device="cpu",
             iters=2,
             seqlen=10,
-            dataset=self.llm_dataloader
+            dataset=self.llm_dataloader,
         )
         autoround_1.quantize()
         out1 = model_tmp(inp)
-        
+
         assert out0[0].equal(out1[0])
         self.assertTrue(isclose(float(out0[0][0][0][0]), -0.021002087742090225, rel_tol=5e-04))
 
 
 if __name__ == "__main__":
     unittest.main()
-

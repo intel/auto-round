@@ -4,8 +4,11 @@ ignore-words = ".azure-pipelines/scripts/codeScan/codespell/autoround_dict.txt"
 [tool.isort]
 profile = "black"
 line_length = 120
-known_first_party = ["auto_round"]
+known_first_party = ["auto_round", "auto_round_extension"]
 extend_skip_glob = ["**/__init__.py"]
+
+[tool.black]
+line-length = 120
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

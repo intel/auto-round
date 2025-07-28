@@ -53,17 +53,17 @@ DEFAULT_DEQUANT_CONFIGS = make_dequant_configs([128, 256, 512, 1024], [4, 8])
 @triton.autotune(DEFAULT_DEQUANT_CONFIGS, key=["numels"])
 @triton.jit
 def dequant_kernel_248(
-        g_idx_ptr,
-        scales_ptr,
-        qweight_ptr,
-        qzeros_ptr,
-        out_ptr,
-        numels,
-        maxq: tl.constexpr,
-        bits: tl.constexpr,
-        outfeatures: tl.constexpr,
-        num_groups: tl.constexpr,
-        X_BLOCK: tl.constexpr,
+    g_idx_ptr,
+    scales_ptr,
+    qweight_ptr,
+    qzeros_ptr,
+    out_ptr,
+    numels,
+    maxq: tl.constexpr,
+    bits: tl.constexpr,
+    outfeatures: tl.constexpr,
+    num_groups: tl.constexpr,
+    X_BLOCK: tl.constexpr,
 ):
     # Block indexing
     xoffset = tl.program_id(0) * X_BLOCK
@@ -90,9 +90,7 @@ def dequant_kernel_248(
     tl.device_assert(g_idx >= 0, "index out of bounds: 0 <= tmp0 < 0")
     groups = tl.where(tmp2, tmp1, g_idx)  # tmp3 are g_idx
 
-    scales = tl.load(scales_ptr + (col_idx + (outfeatures * groups)), None).to(
-        tl.float32
-    )
+    scales = tl.load(scales_ptr + (col_idx + (outfeatures * groups)), None).to(tl.float32)
 
     # Unpack weights
     weights = qweights >> wf_weights  # bit shift qweight
@@ -128,7 +126,7 @@ def dequant248_core(qweight, scales, qzeros, g_idx, bits, maxq=None, input_dtype
 
     out = torch.empty((infeatures, outfeatures), device=qweight.device, dtype=input_dtype)
     numels = out.numel()
-    maxq = 2 ** bits - 1 if maxq is None else maxq
+    maxq = 2**bits - 1 if maxq is None else maxq
     grid = lambda meta: (triton.cdiv(numels, meta["X_BLOCK"]),)  # noqa: E731
 
     dequant_kernel_248[grid](
@@ -158,9 +156,7 @@ def dequant248(qweight, scales, qzeros, g_idx, bits, maxq=None, input_dtype=torc
         raise ValueError(f"Unsupported device type: {device_type}")
 
 
-def quant_matmul_248(
-        input, qweight, scales, qzeros, g_idx, bits, maxq=None, transpose=False
-):
+def quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq=None, transpose=False):
     input_dtype = input.dtype
     W = dequant248(qweight, scales, qzeros, g_idx, bits, maxq=maxq, input_dtype=input_dtype)
     orig_device = input.device
@@ -185,7 +181,5 @@ class QuantLinearFunction(torch.autograd.Function):
         grad_input = None
 
         if ctx.needs_input_grad[0]:
-            grad_input = quant_matmul_248(
-                grad_output, qweight, scales, qzeros, g_idx, bits, maxq, transpose=True
-            )
+            grad_input = quant_matmul_248(grad_output, qweight, scales, qzeros, g_idx, bits, maxq, transpose=True)
         return grad_input, None, None, None, None, None, None

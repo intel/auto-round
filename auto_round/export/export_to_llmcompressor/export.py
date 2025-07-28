@@ -25,7 +25,7 @@ from auto_round.wrapper import WrapperWALayer
 def recover_qweight(qdq_weight, scale):
     """
     Recover the quantized weight to its original floating-point representation.
-    
+
     Args:
         qdq_weight (torch.Tensor): The quantized weight tensor.
         scale (float): The scale factor used for quantization.
@@ -34,7 +34,6 @@ def recover_qweight(qdq_weight, scale):
         torch.Tensor: The recovered floating-point weight tensor.
     """
     return (qdq_weight / scale).to(torch.int8)
-
 
 
 @torch.no_grad()
@@ -57,8 +56,8 @@ def save_quantized_as_llmcompressor(output_dir, model=None, **kwargs):
         if isinstance(m, WrapperWALayer):
             m = m.orig_layer
             q_weight = recover_qweight(m.weight.to(device), m.scale.to(device)).to("cpu")
-            delattr(m, 'weight')
-            setattr(m, 'weight', torch.nn.Buffer(q_weight))
+            delattr(m, "weight")
+            setattr(m, "weight", torch.nn.Buffer(q_weight))
             setattr(m, "weight_scale", torch.nn.Buffer(m.scale))
 
     # replace WrapperWALayer with orig_layer

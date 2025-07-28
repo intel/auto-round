@@ -91,7 +91,7 @@ def float_to_e5m3_frexp(x: torch.Tensor) -> torch.Tensor:
     x_masked = x[mask]
 
     # 正常数：x >= 2^-14
-    normal_mask = x_masked >= 2 ** -14
+    normal_mask = x_masked >= 2**-14
     x_normal = x_masked[normal_mask]
     mantissa, exponent = torch.frexp(x_normal)
 
@@ -103,7 +103,7 @@ def float_to_e5m3_frexp(x: torch.Tensor) -> torch.Tensor:
     # sumnorm：0 < x < 2^-14
     subnormal_mask = ~normal_mask
     x_subnormal = x_masked[subnormal_mask]
-    m_sub = torch.clamp(torch.round(x_subnormal / (2 ** -14) * 8), 1, 7).to(torch.uint8)  # exponent = 0
+    m_sub = torch.clamp(torch.round(x_subnormal / (2**-14) * 8), 1, 7).to(torch.uint8)  # exponent = 0
     e5m3_sub = m_sub  # top 5 bits = 0
 
     out_vals = torch.zeros_like(x_masked, dtype=torch.uint8)
@@ -123,20 +123,20 @@ def e5m3_to_float_tensor(e5m3: torch.Tensor) -> torch.Tensor:
     m = (e5m3[mask_nonzero] & 0x07).to(torch.int32)
 
     is_nan = (e == 31) & (m == 7)
-    is_subnormal = (e == 0)
+    is_subnormal = e == 0
     is_normal = (e > 0) & (~is_nan)
 
     out = torch.zeros_like(e, dtype=torch.float32)
 
     # subnormal: exponent = -14, no implicit leading 1
-    out[is_subnormal] = (m[is_subnormal].float() / 8.0) * (2 ** -14)
+    out[is_subnormal] = (m[is_subnormal].float() / 8.0) * (2**-14)
 
     # normal: exponent = e - 15, implicit leading 1
     mant = 1.0 + m[is_normal].float() / 8.0
     exp = e[is_normal] - 15
     out[is_normal] = torch.ldexp(mant, exp)
 
-    out[is_nan] = float('nan')
+    out[is_nan] = float("nan")
     x[mask_nonzero] = out
     return x
 
@@ -175,7 +175,7 @@ def ref_fp4_quant(x, global_scale, block_size=16, v=0, max_scale=1.0):
 @register_dtype("fp4_v2_with_global_scale")
 @torch.compile()
 def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, max_scale=1.0, **kwargs):
-    assert (group_size == 32 or group_size == 16)
+    assert group_size == 32 or group_size == 16
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     tensor_amax = tensor.abs().max().to(torch.float32)
@@ -188,7 +188,7 @@ def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, max_scale=1.0, 
 @register_dtype("fp4_v2")
 @torch.compile()
 def fp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
-    assert (group_size == 32 or group_size == 16)
+    assert group_size == 32 or group_size == 16
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     global_scale = 1.0
@@ -200,11 +200,25 @@ def fp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
 if __name__ == "__main__":
 
     test = torch.tensor(
-        [0.0, 1e-38, 2 ** (-17), (2 ** -14) * 0.875, 2 ** -14, 2 ** -13, 2 ** -6,
-         1e-6, 2.7657e-05, 0.1, 1.0, 3.14, 1000.0,
-         114688,
-         1e10],
-        dtype=torch.float32)
+        [
+            0.0,
+            1e-38,
+            2 ** (-17),
+            (2**-14) * 0.875,
+            2**-14,
+            2**-13,
+            2**-6,
+            1e-6,
+            2.7657e-05,
+            0.1,
+            1.0,
+            3.14,
+            1000.0,
+            114688,
+            1e10,
+        ],
+        dtype=torch.float32,
+    )
     encoded = float_to_e5m3_frexp(test)
     decoded = e5m3_to_float_tensor(encoded)
     decoded_bf16 = decoded.to(torch.bfloat16)
@@ -213,4 +227,5 @@ if __name__ == "__main__":
     for i in range(len(test)):
         print(
             f"{test[i].item():.6g} -> {encoded[i].item():3d} -> {decoded[i].item():.6g} "
-            f"(error={abs(test[i] - decoded[i]).item():.3g})")
+            f"(error={abs(test[i] - decoded[i]).item():.3g})"
+        )

@@ -47,7 +47,7 @@ class TestAutoRoundAct(unittest.TestCase):
             seqlen=2,
             dataset=self.llm_dataloader,
             act_bits=4,
-            data_type="mx_fp"
+            data_type="mx_fp",
         )
         autoround.quantize()
 
@@ -84,9 +84,10 @@ class TestAutoRoundAct(unittest.TestCase):
             act_bits=8,
             data_type="fp8_to_int_sym",
             act_dynamic=False,
-            act_data_type="fp8"
+            act_data_type="fp8",
         )
         autoround.quantize()
+
 
 if __name__ == "__main__":
     unittest.main()

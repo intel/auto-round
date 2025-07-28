@@ -26,17 +26,20 @@ pip install -e .
 
 ### INT4 Inference
 ```python
-from auto_round import AutoRoundConfig ## must import for auto-round format
+from auto_round import AutoRoundConfig  ## must import for auto-round format
 import requests
 import torch
 from PIL import Image
 from llava.model.builder import load_pretrained_model
 from llava.train.train import preprocess, preprocess_multimodal, DataCollatorForSupervisedDataset
+
+
 class DataArgs:
     is_multimodal = True
     mm_use_im_start_end = False
 
-quantized_model_path="Intel/llava-v1.5-7b-inc-private"
+
+quantized_model_path = "Intel/llava-v1.5-7b-inc-private"
 
 tokenizer, model, image_processor, _ = load_pretrained_model(
     quantized_model_path,
@@ -50,12 +53,12 @@ image_url = "http://images.cocodataset.org/train2017/000000116003.jpg"
 messages = [{"from": "human", "value": "What is the tennis player doing in the image?\n<image>"}]
 
 # Preparation for inference
-image = Image.open(requests.get(image_url, stream=True).raw).convert('RGB')
-image_input = image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0].to(model.device)
+image = Image.open(requests.get(image_url, stream=True).raw).convert("RGB")
+image_input = image_processor.preprocess(image, return_tensors="pt")["pixel_values"][0].to(model.device)
 input_data = preprocess_multimodal([messages], DataArgs())
 inputs = preprocess(input_data, tokenizer, has_image=(image_input is not None))
 
-output = model.generate(inputs['input_ids'].to(model.device), images=image_input.unsqueeze(0).half(), max_new_tokens=50)
+output = model.generate(inputs["input_ids"].to(model.device), images=image_input.unsqueeze(0).half(), max_new_tokens=50)
 print(tokenizer.batch_decode(output))
 
 ##INT4: The tennis player is celebrating a victory, raising his arms in the air, and holding his tennis racket.
@@ -76,7 +79,6 @@ messages = [{"from": "human", "value": "How many people and animals are there in
 ##INT4: There are two people and one animal in the image.
 
 ##BF16: There are two people and one animal in the image.
-
 ```
 
 ## Evaluation the model

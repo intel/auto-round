@@ -17,8 +17,7 @@ from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTok
 
 ## load the model
 model_name = "Qwen/Qwen2-VL-2B-Instruct"
-model = Qwen2VLForConditionalGeneration.from_pretrained(
-    model_name, trust_remote_code=True)
+model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 
@@ -29,7 +28,7 @@ autoround.quantize()
 
 # save the quantized model, set format='auto_gptq' to use AutoGPTQ format
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir, format='auto_round', inplace=True)
+autoround.save_quantized(output_dir, format="auto_round", inplace=True)
 ```
 
 - `dataset`: the dataset for quantization training. Currently only support NeelNanda/pile-10k, llava_conv_58k,
