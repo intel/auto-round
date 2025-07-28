@@ -256,7 +256,8 @@ class AutoRound(object):
         if tmp_act_bits < 16 and tmp_act_bits != self.act_bits:
             self.act_bits = tmp_act_bits
             logger.warning(
-                f"act_bits set in 'act_data_type' do not match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}.")
+                f"act_bits set in 'act_data_type' do not"
+                f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}.")
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
