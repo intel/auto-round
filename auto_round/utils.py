@@ -2043,3 +2043,12 @@ def get_reciprocal(tensor):
     else:
         tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
+
+
+def check_need_act_calibration(is_act_dynamic, act_data_type=None):
+    if not is_act_dynamic:
+        return  True
+    if act_data_type is not None and "static" in act_data_type:
+        return True
+    return False
+

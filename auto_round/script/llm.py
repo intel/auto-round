@@ -38,7 +38,7 @@ from auto_round.utils import (
     get_fp_layer_names,
     get_model_dtype,
     set_cuda_visible_devices,
-    str2bool,
+    str2bool, infer_bits_by_data_type,
 )
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -583,7 +583,7 @@ def tune(args):
     import time
 
     eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-    if args.act_bits <= 8 or eval_gguf_model:
+    if args.act_bits <= 8  or infer_bits_by_data_type(args.act_data_type) <= 8 or eval_gguf_model:
         if eval_gguf_model:
             # for file in os.listdir(eval_folder):
             #     gguf_file = file
