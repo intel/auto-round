@@ -16,8 +16,7 @@ AutoRound
 
 ## 🚀 What is AutoRound?
 
-**AutoRound** is an advanced y quantization library designed for large language models (LLMs).  
-It achieves **high accuracy at ultra-low bitwidths (2–4 bits)** with minimal tuning by leveraging sign
+**AutoRound** is an advanced y quantization library designed for large language models (LLMs).It achieves **high accuracy at ultra-low bitwidths (2–4 bits)** with minimal tuning by leveraging sign
 gradient decent, and broad hardware support.
 
 Check out our paper on [arxiv](https://arxiv.org/pdf/2309.05516) for more details and quantized models in several
