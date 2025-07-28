@@ -70,6 +70,8 @@ SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 
 
 def infer_bits_by_data_type(data_type: str):
+    if data_type is None:
+        return 16
     for supported_dtype in SUPPORTED_DTYPES:
         if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
             ##first check the following two bits
@@ -2043,3 +2045,11 @@ def get_reciprocal(tensor):
     else:
         tensor = torch.where(torch.abs(tensor) < 1e-30, 0, tensor)
     return torch.where(tensor != 0, 1 / tensor, torch.zeros_like(tensor))
+
+
+def check_need_act_calibration(is_act_dynamic, act_data_type=None):
+    if not is_act_dynamic:
+        return True
+    if act_data_type is not None and "static" in act_data_type:
+        return True
+    return False

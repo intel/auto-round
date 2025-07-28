@@ -581,12 +581,11 @@ def quant_tensor_gguf_sym_dq(
             logger.warning_once(
                 "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"
             )
-
             zero_cnt = torch.sum(quant_weights == 0, dim=-1)
             replace_index = zero_cnt > group_size // 2
             if torch.sum(replace_index) > 0:
                 if bits == 6:
-                    quant_weights[replace_index, :] = 1.0
+                    quant_weights[replace_index, :] = tensor * tensor
                 else:
                     sigma2 = 2 * torch.sum(tensor**2, dim=-1, keepdim=True) / QK_K
                     tmp_quant_weights = torch.sqrt(sigma2 + tensor * tensor)

@@ -62,9 +62,11 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
         mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
         tensor = torch.sign(tensor) * (floor_ste(abs_tensor + 0.5) - mask_tensor)
     elif mantissa_rounding == "nearest":
-        tensor = round_ste(tensor)
+        tensor = torch.sign(tensor) * round_ste(torch.abs(tensor))
     elif mantissa_rounding == "floor":
-        tensor = floor_ste(tensor)
+        tensor = torch.sign(tensor) * floor_ste(torch.abs(tensor))
+    elif mantissa_rounding == "stochastic":
+        tensor = torch.sign(tensor) * floor_ste(torch.abs(tensor) + torch.rand_like(tensor, requires_grad=False))
     else:
         raise ValueError("mantissa_rounding only supports even, nearest or floor.")
 
