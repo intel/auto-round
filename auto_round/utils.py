@@ -2047,8 +2047,7 @@ def get_reciprocal(tensor):
 
 def check_need_act_calibration(is_act_dynamic, act_data_type=None):
     if not is_act_dynamic:
-        return  True
+        return True
     if act_data_type is not None and "static" in act_data_type:
         return True
     return False
-

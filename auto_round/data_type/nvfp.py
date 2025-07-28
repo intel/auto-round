@@ -96,6 +96,7 @@ def nv_fp4(tensor, bits=4, group_size=16, v=0, tensor_max=None, **kwargs):
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), output_scale, None
 
+
 FLOAT8_UE5M3_MAX = 114688
 
 
