@@ -34,7 +34,7 @@ Delivers strong performance even at 2–3 bits [example models](https://huggingf
 ✅ **Ecosystem Integration**
 Seamlessly works with Transformers, vLLM, TorchAO, sglang(on going,[pr](https://github.com/sgl-project/sglang/pull/6226)) and more.
 
-✅ **Multiple formats Export**
+✅ **Multiple Formats Export**
 Support **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility. Details are shown in [export formats](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
 
 ✅ **Affordable Quantization Cost**

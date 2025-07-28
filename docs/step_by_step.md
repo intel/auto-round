@@ -293,8 +293,9 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 </details>
 
 ### RTN mode
-AutoRound also supports RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. try setting iters=0 and use group_size=32 for better results.
+AutoRound also supports RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. try setting `iters=0` and use `group_size=32` for better results.
 
+For the GGUF format, we have optimized the RTN algorithm inspired by llamacpp. To use the original (pure) RTN algorithm instead, enable the `--disable_opt_rtn` option.
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
