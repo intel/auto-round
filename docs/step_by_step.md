@@ -3,6 +3,41 @@ Step-by-Step
 
 This document presents step-by-step instructions for auto-round llm quantization.
 
+- [Step-by-Step](#step-by-step)
+  * [1 Prerequisite](#1-prerequisite)
+  * [2 Prepare Calibration Dataset](#2-prepare-calibration-dataset)
+    + [Default Dataset](#default-dataset)
+    + [Customized Dataset](#customized-dataset)
+    + [Dataset operations](#dataset-operations)
+  * [3 Quantization](#3-quantization)
+    + [Supported Quantization Configurations](#supported-quantization-configurations)
+    + [Hardware Compatibility](#hardware-compatibility)
+    + [Supported Export Formats](#supported-export-formats)
+    + [Command Line Usage](#command-line-usage)
+    + [API usage](#api-usage)
+      - [AutoRound API Usage](#autoround-api-usage)
+      - [Mixed bits Usage](#mixed-bits-usage)
+      - [AutoRoundBest recipe](#autoroundbest-recipe)
+      - [AutoRoundLight recipe](#autoroundlight-recipe)
+      - [Recipe recommendation](#recipe-recommendation)
+    + [RTN mode](#rtn-mode)
+    + [GGUF format](#gguf-format)
+    + [Quantization Costs](#quantization-costs)
+    + [Device/Multi-GPU setting in Quantization](#device-multi-gpu-setting-in-quantization)
+      - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm-head-quantization)
+      - [Enable multiple gpus tuning for extremely large model](#enable-multiple-gpus-tuning-for-extremely-large-model)
+    + [Adjust Hyperparameters](#adjust-hyperparameters)
+  * [4 Inference](#4-inference)
+    + [CPU](#cpu)
+    + [Intel GPU](#intel-gpu)
+    + [CUDA](#cuda)
+    + [HPU](#hpu)
+    + [Specify Inference Backend](#specify-inference-backend)
+    + [Convert GPTQ/AWQ to AutoRound](#convert-gptq-awq-to-autoround)
+  * [5 Evaluation](#5-evaluation)
+    + [Combine evaluation with tuning](#combine-evaluation-with-tuning)
+    + [Eval the Quantized model](#eval-the-quantized-model)
+  * [6 Known Issues](#6-known-issues)
 ## 1 Prerequisite
 
 Install auto-round or install from source
@@ -287,7 +322,7 @@ output_dir = "./tmp_autoround"
 autoround.quantize_and_save(output_dir, format="gguf:q4_k_m")  #  gguf:q*_k_s,gguf:q*_k_0,gguf:q*_k_1,
 ```
 
-### Export Formats
+### Supported export Formats
 
 **AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
 inference. **[2,3,4,8] bits are supported**.

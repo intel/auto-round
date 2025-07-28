@@ -70,6 +70,8 @@ SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 
 
 def infer_bits_by_data_type(data_type: str):
+    if data_type is None:
+        return 16
     for supported_dtype in SUPPORTED_DTYPES:
         if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
             ##first check the following two bits
