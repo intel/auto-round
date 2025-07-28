@@ -23,7 +23,7 @@ class TestSupportVLMS(unittest.TestCase):
     @classmethod
     def tearDownClass(self):
         shutil.rmtree(self.save_dir, ignore_errors=True)
-    
+
     # @require_gptqmodel
     # def test_qwen2(self):
     #     model_path = "/models/Qwen2-VL-2B-Instruct/"
@@ -216,7 +216,7 @@ class TestSupportVLMS(unittest.TestCase):
         )
         print(tokenizer.batch_decode(output))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-    
+
     # @require_gptqmodel
     # def test_llama(self):
     #     model_path = "/models/Llama-3.2-11B-Vision-Instruct/"
