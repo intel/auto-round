@@ -34,8 +34,8 @@ Delivers strong performance even at 2–3 bits [example models](https://huggingf
 ✅ **Ecosystem Integration**
 Seamlessly works with Transformers, vLLM, TorchAO, sglang(on going,[pr](https://github.com/sgl-project/sglang/pull/6226)) and more.
 
-✅ **Multi-format Export**
-Supports **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility. Details are shown in [export formats](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
+✅ **Multiple formats Export**
+Support **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility. Details are shown in [export formats](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
 
 ✅ **Affordable Quantization Cost**
 Quantize 7B models in about 10 minutes on a single GPU. Details are shown in [quantization costs](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)
@@ -43,8 +43,8 @@ Quantize 7B models in about 10 minutes on a single GPU. Details are shown in [qu
 ✅ **10+ VLMs Support**
 Out-of-the-box quantization for 10+ vision-language models [example models](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa), [support matrix](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
 
-✅ **Per-layer Mixed-bits Quantization**
-Assign different bit-widths per layer for fine-grained accuracy/performance trade-offs. Details are shown in [mixed bits quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#mixed-bits-usage)
+✅ **Layerwise Mixed Bits Quantization**
+Assign different bits per layer for fine-grained accuracy/performance trade-offs. Details are shown in [mixed bits quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#mixed-bits-usage)
 
 ✅ **Round-to-Nearest Mode**
 Use `--iters 0` for fast, calibration-free quantization with some accuracy drop. Details are shown in [rtn mode](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#rtn-mode)
@@ -272,7 +272,7 @@ autoround.save_quantized(output_dir, format="auto_round", inplace=True)
 ## Model Inference
 
 ### vLLM
-Please note that support for the MoE model and visual language model is currently limited.
+Please note that support for the MoE models and visual language models is currently limited.
 ```python
 from vllm import LLM, SamplingParams
 
