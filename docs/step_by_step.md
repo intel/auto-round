@@ -117,6 +117,25 @@ AutoRound supports several quantization configurations:
 - **Int2 Weight Only**
 - **Mixed bits Weight only**
 
+### Supported export Formats
+
+**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
+inference. **[2,3,4,8] bits are supported**.
+
+**GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
+community. `q*_k`,`q*_0`,`q*_1` are supported.
+
+**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
+community, **[2,3,4,8] bits are supported**. However, **the
+asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
+models. Besides, recently 3 bits may have some accuracy issues in Transformers.
+
+**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
+adopted within the community, **only 4-bits quantization is supported**.
+
+**llmcompressor Format**: This format is for reusing llmcompressor format,  **only INT8 W8A8 dynamic quantization is
+supported**.
+
 ### Hardware Compatibility
 
 CPU, Intel GPU, HPU and CUDA for both quantization and inference.
@@ -321,25 +340,6 @@ autoround = AutoRound(
 output_dir = "./tmp_autoround"
 autoround.quantize_and_save(output_dir, format="gguf:q4_k_m")  #  gguf:q*_k_s,gguf:q*_k_0,gguf:q*_k_1,
 ```
-
-### Supported export Formats
-
-**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
-inference. **[2,3,4,8] bits are supported**.
-
-**GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
-community. `q*_k`,`q*_0`,`q*_1` are supported.
-
-**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
-community, **[2,3,4,8] bits are supported**. However, **the
-asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
-models. Besides, recently 3 bits may have some accuracy issues in Transformers.
-
-**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
-adopted within the community, **only 4-bits quantization is supported**.
-
-**llmcompressor Format**: This format is for reusing llmcompressor format,  **only INT8 W8A8 dynamic quantization is
-supported**.
 
 
 ### Quantization Costs

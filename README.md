@@ -38,22 +38,22 @@ Delivers strong performance even at 2–3 bits [example models](https://huggingf
 Seamlessly works with Transformers, vLLM, TorchAO, sglang(on going,[pr](https://github.com/sgl-project/sglang/pull/6226)) and more.
 
 ✅ **Multi-format Export**
-Supports **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility.
+Supports **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility. Details are shown in [Export formats](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
 
 ✅ **Affordable Quantization Cost**
-Quantize 7B models in about 10 minutes on a single GPU. Detailed data in [Quantization cost](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)
+Quantize 7B models in about 10 minutes on a single GPU. Details are shown in [Quantization cost](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)
 
 ✅ **10+ VLM Support**
 Out-of-the-box quantization for 10+ vision-language models [example models](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa), [support matrix](https://github.com/intel/auto-round/tree/main/auto_round/mllm#support-matrix)
 
 ✅ **Per-layer Mixed-bit Quantization**
-Assign different bit-widths per layer for fine-grained accuracy/performance trade-offs. Details in [Mixed-bit quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#mixed-bits-usage)
+Assign different bit-widths per layer for fine-grained accuracy/performance trade-offs. Details are shown in  [Mixed-bit quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#mixed-bits-usage)
 
 ✅ **Round-to-Nearest Mode**
-Use `--iters 0` for fast, calibration-free quantization with some accuracy drop. Details in [RTN mode](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#rtn-mode)
+Use `--iters 0` for fast, calibration-free quantization with some accuracy drop. Details are shown in  [RTN mode](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#rtn-mode)
 
 ✅ **Multiple Quantization Recipes**
-Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your needs. Details in [Quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
+Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your needs. Details are shown in  [Quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
 
 ✅ Advanced Utilities
 Includes [multiple gpu quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization), [multiple calibration datasets](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset) and support for [10+ runtime backends](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend).
