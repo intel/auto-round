@@ -175,7 +175,7 @@ autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sy
 
 output_dir = "./tmp_autoround"
 ## format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
-autoround.quantize_and_save(output_dir, format='auto_round') 
+autoround.quantize_and_save(output_dir, format="auto_round")
 ```
 
 <details>
@@ -252,20 +252,18 @@ from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTok
 
 ## load the model
 model_name = "Qwen/Qwen2-VL-2B-Instruct"
-model = Qwen2VLForConditionalGeneration.from_pretrained(
-    model_name, trust_remote_code=True, torch_dtype="auto")
+model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 
 ## quantize the model
 bits, group_size, sym = 4, 128, True
-autoround = AutoRoundMLLM(model, tokenizer, processor,
-                          bits=bits, group_size=group_size, sym=sym)
+autoround = AutoRoundMLLM(model, tokenizer, processor, bits=bits, group_size=group_size, sym=sym)
 autoround.quantize()
 
 # save the quantized model, set format='auto_gptq' or 'auto_awq' to use other formats
 output_dir = "./tmp_autoround"
-autoround.save_quantized(output_dir, format='auto_round', inplace=True)
+autoround.save_quantized(output_dir, format="auto_round", inplace=True)
 ```
 
 </details>
@@ -335,8 +333,7 @@ this may cause unexpected exceptions.
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 quantized_model_path = "./tmp_autoround"
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                             device_map="auto", torch_dtype="auto")
+model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -370,9 +367,9 @@ from transformers import AutoRoundConfig
 
 quantized_model_path = "./tmp_autoround"
 quantization_config = AutoRoundConfig(backend="auto")
-model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
-                                             torch_dtype="auto",
-                                             quantization_config=quantization_config)
+model = AutoModelForCausalLM.from_pretrained(
+    quantized_model_path, device_map="auto", torch_dtype="auto", quantization_config=quantization_config
+)
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -390,8 +387,9 @@ from transformers import AutoRoundConfig
 
 model_name = "ybelkada/opt-125m-gptq-4bit"
 quantization_config = AutoRoundConfig()
-model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cpu", torch_dtype="auto",
-                                             quantization_config=quantization_config)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name, device_map="cpu", torch_dtype="auto", quantization_config=quantization_config
+)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)

@@ -46,16 +46,16 @@ class QuantLinear(nn.Module):
     QUANT_TYPE = "ipex_gptq"
 
     def __init__(
-            self,
-            bits,
-            group_size,
-            infeatures,
-            outfeatures,
-            bias,
-            kernel_switch_threshold=128,
-            training=False,
-            weight_dtype=torch.bfloat16,
-            **kwargs,
+        self,
+        bits,
+        group_size,
+        infeatures,
+        outfeatures,
+        bias,
+        kernel_switch_threshold=128,
+        training=False,
+        weight_dtype=torch.bfloat16,
+        **kwargs,
     ):
         super().__init__()
 
@@ -66,7 +66,7 @@ class QuantLinear(nn.Module):
         self.outfeatures = outfeatures
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
-        self.maxq = 2 ** self.bits - 1
+        self.maxq = 2**self.bits - 1
         self.weight_dtype = weight_dtype
         self.asym = True
 
@@ -121,20 +121,22 @@ class QuantLinear(nn.Module):
             from packaging import version
 
             from auto_round.utils import get_library_version
+
             ipex_version = get_library_version("intel_extension_for_pytorch")
             if version.parse(ipex_version) >= version.parse("2.5"):
-                self.ipex_linear = ipex.llm.quantization.IPEXWeightOnlyQuantizedLinear.from_weight(self.qweight,
-                                                                                                   self.scales,
-                                                                                                   self.qzeros, \
-                                                                                                   self.infeatures,
-                                                                                                   self.outfeatures,
-                                                                                                   None,
-                                                                                                   self.bias, \
-                                                                                                   self.group_size,
-                                                                                                   None,
-                                                                                                   ipex.llm.quantization.QuantMethod.GPTQ_GEMM,
-                                                                                                   ipex.llm.quantization.QuantDtype.INT4
-                                                                                                   )
+                self.ipex_linear = ipex.llm.quantization.IPEXWeightOnlyQuantizedLinear.from_weight(
+                    self.qweight,
+                    self.scales,
+                    self.qzeros,
+                    self.infeatures,
+                    self.outfeatures,
+                    None,
+                    self.bias,
+                    self.group_size,
+                    None,
+                    ipex.llm.quantization.QuantMethod.GPTQ_GEMM,
+                    ipex.llm.quantization.QuantDtype.INT4,
+                )
             else:
                 import intel_extension_for_pytorch as ipex
                 from intel_extension_for_pytorch.nn.modules import WeightOnlyQuantizedLinear as ipex_linear
@@ -179,7 +181,7 @@ class QuantLinear(nn.Module):
                     zero_points=qzeros,
                     bias=(self.bias.float() if hasattr(self, "bias") and self.bias is not None else None),
                     group_size=self.group_size,
-                    g_idx=(self.g_idx if hasattr(self, "g_idx") else None)
+                    g_idx=(self.g_idx if hasattr(self, "g_idx") else None),
                 )
 
     def pack(self, linear, scales, zeros, g_idx=None):
@@ -201,8 +203,10 @@ class QuantLinear(nn.Module):
         intweight = []
         for idx in range(self.infeatures):
             intweight.append(
-                torch.round(
-                    (W[:, idx] + scale_zeros[self.g_idx[idx]]) / self.scales[self.g_idx[idx]]).to(torch.int)[:, None])
+                torch.round((W[:, idx] + scale_zeros[self.g_idx[idx]]) / self.scales[self.g_idx[idx]]).to(torch.int)[
+                    :, None
+                ]
+            )
         intweight = torch.cat(intweight, dim=1)
         intweight = intweight.t().contiguous()
         intweight = intweight.numpy().astype(np.uint32)
@@ -288,7 +292,7 @@ class QuantLinear(nn.Module):
             torch.unsqueeze(self.qzeros, 2).expand(-1, -1, 32 // self.bits),
             self.wf.unsqueeze(0),
         ).to(torch.int16)
-        zeros = torch.bitwise_and(zeros, (2 ** self.bits) - 1)
+        zeros = torch.bitwise_and(zeros, (2**self.bits) - 1)
 
         zeros = zeros + 1
         zeros = zeros.reshape(self.scales.shape)
@@ -297,7 +301,7 @@ class QuantLinear(nn.Module):
             torch.unsqueeze(self.qweight, 1).expand(-1, 32 // self.bits, -1),
             self.wf.unsqueeze(-1),
         ).to(torch.int16)
-        weight = torch.bitwise_and(weight, (2 ** self.bits) - 1)
+        weight = torch.bitwise_and(weight, (2**self.bits) - 1)
 
         weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
         num_itr = self.g_idx.shape[0] // x.shape[-1]
@@ -307,10 +311,10 @@ class QuantLinear(nn.Module):
             num_dim = self.g_idx.shape[0] // num_itr
             weights = []
             for i in range(num_itr):
-                scale_i = self.scales[:, i * num_dim: (i + 1) * num_dim]
-                weight_i = weight[:, i * num_dim: (i + 1) * num_dim]
-                zeros_i = zeros[:, i * num_dim: (i + 1) * num_dim]
-                g_idx_i = self.g_idx[i * num_dim: (i + 1) * num_dim]
+                scale_i = self.scales[:, i * num_dim : (i + 1) * num_dim]
+                weight_i = weight[:, i * num_dim : (i + 1) * num_dim]
+                zeros_i = zeros[:, i * num_dim : (i + 1) * num_dim]
+                g_idx_i = self.g_idx[i * num_dim : (i + 1) * num_dim]
                 weights.append(scale_i[g_idx_i.long()] * (weight_i - zeros_i[g_idx_i.long()]))
             weights = torch.cat(weights, dim=1)
         out = torch.matmul(x, weights)
@@ -329,10 +333,10 @@ def unpack_to_8bit_signed(qweight, qzeros, bits, g_idx=None):
         zp_shape = list(qzeros.shape)
         zp_shape[1] = zp_shape[1] * (32 // bits)
 
-        zeros = torch.bitwise_right_shift(
-            torch.unsqueeze(qzeros, 2).expand(-1, -1, 32 // bits), wf.unsqueeze(0)
-        ).to(torch.int16 if bits == 8 else torch.int8)
-        torch.bitwise_and(zeros, (2 ** bits) - 1, out=zeros)
+        zeros = torch.bitwise_right_shift(torch.unsqueeze(qzeros, 2).expand(-1, -1, 32 // bits), wf.unsqueeze(0)).to(
+            torch.int16 if bits == 8 else torch.int8
+        )
+        torch.bitwise_and(zeros, (2**bits) - 1, out=zeros)
         if bits == 8:
             zeros = zeros.to(torch.uint8)
         zeros = zeros + 1
@@ -344,10 +348,10 @@ def unpack_to_8bit_signed(qweight, qzeros, bits, g_idx=None):
             zeros = zeros[zeros != 1]
             zeros = zeros.reshape(zp_shape)
 
-    weight = torch.bitwise_right_shift(
-        torch.unsqueeze(qweight, 1).expand(-1, 32 // bits, -1), wf.unsqueeze(-1)
-    ).to(torch.int16 if bits == 8 else torch.int8)
-    weight.bitwise_and_((2 ** bits) - 1)
+    weight = torch.bitwise_right_shift(torch.unsqueeze(qweight, 1).expand(-1, 32 // bits, -1), wf.unsqueeze(-1)).to(
+        torch.int16 if bits == 8 else torch.int8
+    )
+    weight.bitwise_and_((2**bits) - 1)
     weight = weight.view(-1, weight.shape[-1])
 
     if g_idx is not None:

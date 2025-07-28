@@ -116,9 +116,15 @@ class TestAutoRound(unittest.TestCase):
         self.check_block_names(block_names, ["language_model.model.layers"], [40])
 
         block_names = get_block_names(model, quant_vision=True)
-        self.check_block_names(block_names,
-                               ["vision_model.transformer.layers", "vision_model.global_transformer.layers",
-                                "language_model.model.layers"], [32, 8, 40])
+        self.check_block_names(
+            block_names,
+            [
+                "vision_model.transformer.layers",
+                "vision_model.global_transformer.layers",
+                "language_model.model.layers",
+            ],
+            [32, 8, 40],
+        )
 
         assert not is_pure_text_model(model)
 
@@ -139,8 +145,9 @@ class TestAutoRound(unittest.TestCase):
         self.check_block_names(block_names, ["transformer.encoder.layers"], [40])
 
         block_names = get_block_names(model, quant_vision=True)
-        self.check_block_names(block_names, ["transformer.encoder.layers", "transformer.vision.transformer.layers"],
-                               [40, 63])
+        self.check_block_names(
+            block_names, ["transformer.encoder.layers", "transformer.vision.transformer.layers"], [40, 63]
+        )
         assert not is_pure_text_model(model)
 
     def test_gemma3(self):
@@ -150,8 +157,9 @@ class TestAutoRound(unittest.TestCase):
         self.check_block_names(block_names, ["language_model.model.layers"], [48])
 
         block_names = get_block_names(model, quant_vision=True)
-        self.check_block_names(block_names, ["vision_tower.vision_model.encoder.layers", "language_model.model.layers"],
-                               [27, 48])
+        self.check_block_names(
+            block_names, ["vision_tower.vision_model.encoder.layers", "language_model.model.layers"], [27, 48]
+        )
         assert not is_pure_text_model(model)
 
     def test_Mistral3(self):
@@ -161,8 +169,9 @@ class TestAutoRound(unittest.TestCase):
         self.check_block_names(block_names, ["language_model.model.layers"], [40])
 
         block_names = get_block_names(model, quant_vision=True)
-        self.check_block_names(block_names, ["vision_tower.transformer.layers", "language_model.model.layers"],
-                               [24, 40])
+        self.check_block_names(
+            block_names, ["vision_tower.transformer.layers", "language_model.model.layers"], [24, 40]
+        )
         assert not is_pure_text_model(model)
 
     def test_Molmo(self):
@@ -172,9 +181,9 @@ class TestAutoRound(unittest.TestCase):
         self.check_block_names(block_names, ["model.transformer.blocks"], [28])
 
         block_names = get_block_names(model, quant_vision=True)
-        self.check_block_names(block_names,
-                               ["model.transformer.blocks", "model.vision_backbone.image_vit.transformer.resblocks"],
-                               [28, 23])
+        self.check_block_names(
+            block_names, ["model.transformer.blocks", "model.vision_backbone.image_vit.transformer.resblocks"], [28, 23]
+        )
         assert not is_pure_text_model(model)
 
 

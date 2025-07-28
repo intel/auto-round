@@ -8,14 +8,15 @@ This model is an int4 model with group_size 128 and and symmetric quantization o
 CPU requires auto-round version>0.3.1
 
 ```python
-from auto_round import AutoRoundConfig ##must import for auto-round format
-from transformers import AutoModelForCausalLM,AutoTokenizer
+from auto_round import AutoRoundConfig  ##must import for auto-round format
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 quantized_model_dir = "Intel/Qwen2.5-72B-Instruct-int4-inc"
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_dir)
 
 model = AutoModelForCausalLM.from_pretrained(
     quantized_model_dir,
-    torch_dtype='auto',
+    torch_dtype="auto",
     device_map="auto",
     ##revision="b7ea233" ##AutoGPTQ format
 )
@@ -25,26 +26,17 @@ model = AutoModelForCausalLM.from_pretrained(
 ##model = model.to(torch.bfloat16).to("hpu") ## uncommnet it for HPU
 
 prompt = "There is a girl who likes adventure,"
-messages = [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": prompt}
-]
+messages = [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": prompt}]
 
-text = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True
-)
+text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
 generated_ids = model.generate(
     model_inputs.input_ids,
     max_new_tokens=200,  ##change this to align with the official usage
-    do_sample=False  ##change this to align with the official usage
+    do_sample=False,  ##change this to align with the official usage
 )
-generated_ids = [
-output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-]
+generated_ids = [output_ids[len(input_ids) :] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)]
 
 response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
 print(response)
@@ -58,8 +50,8 @@ prompt = "There is a girl who likes adventure,"
 """That sounds like a great quality to have! A love for adventure can lead to exciting experiences and personal growth. What kind of adventures does she enjoy? Does she like exploring new places, trying new activities, or seeking out thrilling experiences? Knowing more about her interests can help suggest specific ideas or activities that might appeal to her adventurous spirit.
 """
 
-prompt = "9.11和9.8哪个数字大"  
-#INT4: 
+prompt = "9.11和9.8哪个数字大"
+# INT4:
 """要比较9.11和9.8的大小，可以按照以下步骤进行：
 
 1. **比较整数部分**：两个数字的整数部分都是9，所以需要进一步比较小数部分。
@@ -78,7 +70,7 @@ prompt = "9.11和9.8哪个数字大"
 
 结论：9.8比9.11大。"""
 
-##BF16: 
+##BF16:
 """比较两个数字 9.11 和 9.8，可以按照以下步骤进行：
 
 1. **整数部分**：两个数字的整数部分都是 9，所以需要比较小数部分。
@@ -93,7 +85,7 @@ prompt = "9.11和9.8哪个数字大"
 
 
 prompt = "Once upon a time,"
-##INT4: 
+##INT4:
 """Once upon a time, in a far-off land, there was a kingdom filled with wonder and magic. The kingdom was ruled by a wise and just king who loved his people dearly. In the heart of the kingdom stood a magnificent castle, surrounded by lush forests and rolling hills.
 
 The people of the kingdom lived happily, tending to their farms, crafting beautiful goods, and enjoying the simple pleasures of life. However, one day, a great darkness began to spread across the land. A wicked sorcerer had risen from the shadows, seeking to claim the throne for himself and plunge the kingdom into chaos.
