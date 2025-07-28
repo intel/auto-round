@@ -53,7 +53,7 @@ Assign different bit-widths per layer for fine-grained accuracy/performance trad
 Use `--iters 0` for fast, calibration-free quantization with some accuracy drop.
 
 ✅ **Multiple Quantization Recipes**
-Choose from auto-round-best, auto-round, and auto-round-light to suit your needs.
+Choose from `auto-round-best`, `auto-round`, and `auto-round-light` to suit your needs.
 
 ✅ Advanced Utilities
 Includes immediate weight packing, multiple gpu quantization and support for 10+ runtime backends.
@@ -62,15 +62,15 @@ Includes immediate weight packing, multiple gpu quantization and support for 10+
 
 ## 🆕 What's New
 
-[2025.07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
+[2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
   all bits other than 3 bits. **A more advanced algorithm** tailored for specific configurations may be available in
   v0.6.1. Example
-  models: [Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v1](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-mixed-AutoRound-inc-v1)
-  and [Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v1](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-AutoRound-inc-v1).
+  models: [Intel/Qwen3-235B-A22B-q2ks-mixed-ar](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-ar)
+  and [Intel/DeepSeek-R1-0528-q2ks-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-ar).
 
-[2025.05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer
-  to [DeepSeek-R1-0528-int2-mixed-sym-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int2-mixed-sym-inc), [DeepSeek-R1-0528-int4-sym-gptq-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-gptq-inc-auto-round)
-  and [DeepSeek-R1-0528-int4-asym-awq-inc](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-awq-inc-auto-round) for
+[2025/05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer
+  to [IntelDeepSeek-R1-0528-int2-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int2-mixed-ar), [Intel/DeepSeek-R1-0528-int4-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-ar)
+  and [Intel/DeepSeek-R1-0528-int4-asym-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-asym-ar) for
   more details.
 
 [2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
@@ -111,7 +111,7 @@ pip install auto-round-lib
 
 Please check out [User guide](./docs/step_by_step.md) for more details
 ### Command Line Usage (Gaudi/CPU/Intel GPU/CUDA)
-Please change to `auto-round-mllm` for visual-language models (VLMs) quantization. A user guide detailing the full list of supported arguments is provided by calling `auto-round -h` on the terminal.
+Please change to `auto-round-mllm` for visual-language models (VLMs) quantization. The full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 ```bash
 auto-round \
