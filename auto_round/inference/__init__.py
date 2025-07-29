@@ -12,4 +12,3 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from auto_round.inference.convert_model import convert_hf_model, infer_target_device, post_init
-

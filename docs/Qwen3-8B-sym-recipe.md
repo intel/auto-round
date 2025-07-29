@@ -10,28 +10,23 @@ This model is an int4 model with group_size 128 and symmetric quantization of [Q
 
 ### INT4 Inference(CPU/CUDA/INTEL GPU)
 ```python
-from auto_round import AutoRoundConfig ##must import for auto-round format if transformers <= 4.51.3
-from transformers import AutoModelForCausalLM,AutoTokenizer
+from auto_round import AutoRoundConfig  ##must import for auto-round format if transformers <= 4.51.3
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 quantized_model_dir = "Intel/Qwen3-8B-250424-int4-sym-AutoRound"
 
 # load the tokenizer and the model
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_dir)
-model = AutoModelForCausalLM.from_pretrained(
-    quantized_model_dir,
-    torch_dtype="auto",
-    device_map="auto"
-)
+model = AutoModelForCausalLM.from_pretrained(quantized_model_dir, torch_dtype="auto", device_map="auto")
 
 # prepare the model input
 prompt = "Give me a short introduction to large language model."
-messages = [
-    {"role": "user", "content": prompt}
-]
+messages = [{"role": "user", "content": prompt}]
 text = tokenizer.apply_chat_template(
     messages,
     tokenize=False,
     add_generation_prompt=True,
-    enable_thinking=True # Switches between thinking and non-thinking modes. Default is True.
+    enable_thinking=True,  # Switches between thinking and non-thinking modes. Default is True.
 )
 model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
@@ -41,7 +36,7 @@ generated_ids = model.generate(
     max_new_tokens=512,  ##change this to align with the official usage
     do_sample=False  ##change this to align with the official usage
 )
-output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist() 
+output_ids = generated_ids[0][len(model_inputs.input_ids[0]) :].tolist()
 
 # parsing thinking content
 try:
@@ -70,7 +65,7 @@ print("content:", content)
 
 prompt = "9.11和9.8哪个数字大"
 ##INT4:
-# thinking content: 
+# thinking content:
 # content: <think>
 # 好的，我现在需要比较9.11和9.8哪个数字更大。首先，我应该回忆一下小数比较的方法。通常，比较小数的时候，我们会从左到右逐位比较，先看整数部分，如果整数部分相同，再比较小数部分。
 # 首先，这两个数的整数部分都是9，所以整数部分相同。接下来比较小数部分。9.11的小数部分是0.11，而9.8的小数部分是0.8。这时候我需要比较0.11和0.8的大小。
@@ -83,7 +78,7 @@ prompt = "9.11和9.8哪个数字大"
 # 或者，有没有可能把9.8看成9.80，而9.11是9.11，所以
 
 ##BF16:
-# thinking content: 
+# thinking content:
 # content: <think>
 # 嗯，用户问的是9.11和9.8哪个数字大。首先，我需要确认这两个数字的结构。9.11是一个小数，而9.8也是一个小数。看起来都是以9开头，但后面的小数部分不同。
 # 首先，我应该比较整数部分。两个数的整数部分都是9，所以这时候需要比较小数部分。小数部分的话，9.11的小数部分是0.11，而9.8的小数部分是0.8。这时候可能需要将它们转换成相同的位数来比较，或者直接比较小数点后的数字。
@@ -96,7 +91,7 @@ prompt = "9.11和9.8哪个数字大"
 
 prompt = "How many r in word strawberry"
 ##INT4:
-# thinking content: 
+# thinking content:
 # content: <think>
 # Okay, let's see. The user is asking how many times the letter 'r' appears in the word "strawberry". Hmm, first I need to make sure I spell the word correctly. Let me write it out: S-T-R-A-W-B-E-R-R-Y. Wait, is that right? Let me check again. S-T-R-A-W-B-E-R-R-Y. Yes, that's strawberry. Now, I need to count the number of 'r's in there.
 # Starting from the beginning: S is the first letter, then T, then R. So that's one 'r'. Then the next letters are A, W, B, E, R, R, Y. Wait, after the first R, there's another R later. Let me break it down letter by letter.
@@ -138,7 +133,7 @@ prompt = "How many r in word strawberry"
 # Yes, three R's. So the answer is 3. I think that's correct. I don't see any other R's. Maybe the user is testing if I can count correctly, so I need to make sure. Let me check an online source or
 
 ##BF16:
-# thinking content: 
+# thinking content:
 # content: <think>
 # Okay, let's see. The user is asking how many times the letter 'r' appears in the word "strawberry". Hmm, first I need to make sure I have the correct spelling of the word. Let me write it out: S-T-R-A-W-B-E-R-R-Y. Wait, is that right? Let me check again. Strawberry... yes, that's correct. Now, I need to count the number of 'r's in that spelling.
 
@@ -183,8 +178,6 @@ prompt = "请简短介绍一下阿里巴巴公司"
 # 最后检查有没有遗漏的重要信息，比如是否提到支付宝和阿里云，这些是阿里巴巴的重要组成部分。同时，可能需要提到其对中国经济和全球电商的影响，但保持简洁。确保没有错误，比如成立年份、上市地点等。这样用户就能得到一个全面但简短的介绍。
 # </think>
 # content: 阿里巴巴集团（Alibaba Group）成立于1999年，总部位于中国杭州，由马云创立。它是全球领先的互联网科技公司，核心业务涵盖电子商务（淘宝、天猫）、云计算（阿里云）、金融科技（支付宝）、物流（菜鸟网络）及创新业务（如盒马鲜生、阿里健康等）。阿里巴巴致力于通过数字化技术赋能企业与消费者，推动全球商业变革，旗下拥有
-
-
 ```
 
 ### Evaluate the model

@@ -377,6 +377,7 @@ def transpose_quant_matmul_248_kernel(
 def silu(x):
     return x * tl.sigmoid(x)
 
+
 def quant_matmul_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq):
     output = torch.empty((input.shape[0], qweight.shape[1]), device=input.device, dtype=input.dtype)
     grid = lambda META: (  # noqa: E731

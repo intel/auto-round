@@ -38,6 +38,7 @@ class TestQuantizationConv1d(unittest.TestCase):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         bits, group_size, sym = 4, 128, True
         from auto_round import AutoRoundConfig
+
         autoround = AutoRound(
             self.model,
             self.tokenizer,
@@ -47,7 +48,6 @@ class TestQuantizationConv1d(unittest.TestCase):
             iters=2,
             seqlen=2,
             dataset=self.llm_dataloader,
-
         )
 
         autoround.quantize()
@@ -55,7 +55,6 @@ class TestQuantizationConv1d(unittest.TestCase):
 
         model = AutoModelForCausalLM.from_pretrained("./saved", device_map="cuda", trust_remote_code=True)
         model_infer(model, self.tokenizer)
-
 
 
 if __name__ == "__main__":

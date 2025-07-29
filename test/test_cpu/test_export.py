@@ -52,11 +52,10 @@ class TestAutoRound(unittest.TestCase):
             if group_size == -1:
                 shutil.rmtree("./saved", ignore_errors=True)
                 continue
-            quantization_config = AutoRoundConfig(
+            quantization_config = AutoRoundConfig()
+            model = AutoModelForCausalLM.from_pretrained(
+                quantized_model_path, device_map="cpu", trust_remote_code=True, quantization_config=quantization_config
             )
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu",
-                                                         trust_remote_code=True,
-                                                         quantization_config=quantization_config)
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -89,7 +88,6 @@ class TestAutoRound(unittest.TestCase):
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
             shutil.rmtree("./saved", ignore_errors=True)
-
 
     def test_autoround_awq_format(self):
         for group_size in [-1, 32, 128]:
@@ -138,21 +136,20 @@ class TestAutoRound(unittest.TestCase):
             autoround.quantize()
             quantized_model_path = "./saved"
 
-            autoround.save_quantized(output_dir=quantized_model_path, inplace=False, \
-                                     format="auto_awq")
+            autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_awq")
             if group_size == -1:
                 shutil.rmtree("./saved", ignore_errors=True)
                 continue
             quantization_config = AutoRoundConfig()
 
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu",
-                                                         quantization_config=quantization_config)
+            model = AutoModelForCausalLM.from_pretrained(
+                quantized_model_path, device_map="cpu", quantization_config=quantization_config
+            )
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
             shutil.rmtree("./saved", ignore_errors=True)
-        
 
     def test_autoround_3bit_asym_format(self):
         bits, group_size, sym = 3, 128, False
@@ -168,7 +165,7 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
         quantized_model_path = self.save_dir
-        
+
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
         device = "cpu"  ##cpu, hpu, cuda
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device)
@@ -178,7 +175,6 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    
     def test_autoround_3bit_sym_format(self):
         bits, group_size, sym = 3, 128, True
         autoround = AutoRound(
@@ -193,7 +189,7 @@ class TestAutoRound(unittest.TestCase):
         )
         autoround.quantize()
         quantized_model_path = self.save_dir
-        
+
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
         device = "cpu"  ##cpu, hpu, cuda
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device)
@@ -202,8 +198,7 @@ class TestAutoRound(unittest.TestCase):
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
-    
-    
+
     def test_static_afp8_export(self):
         import os
 
@@ -228,7 +223,7 @@ class TestAutoRound(unittest.TestCase):
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.act_scale", f.keys())
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
-        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.act_scale").shape, torch.Size([1,1]))
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.act_scale").shape, torch.Size([1, 1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
@@ -248,14 +243,13 @@ class TestAutoRound(unittest.TestCase):
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
-        
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.act_scale", f.keys())
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
-        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.act_scale").shape, torch.Size([1,1]))
+        self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.act_scale").shape, torch.Size([1, 1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+
 if __name__ == "__main__":
     unittest.main()
-

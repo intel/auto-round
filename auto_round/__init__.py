@@ -15,14 +15,18 @@ from auto_round.autoround import AutoRound, AutoRoundAdam, AutoRoundOPT
 from auto_round.mllm import AutoRoundMLLM
 from auto_round.utils import LazyImport
 
+
 def __getattr__(name):
-    if name == 'AutoHfQuantizer':
+    if name == "AutoHfQuantizer":
         from auto_round.inference.auto_quantizer import AutoHfQuantizer
+
         return AutoHfQuantizer
-    if name == 'AutoRoundConfig':
+    if name == "AutoRoundConfig":
         from auto_round.inference.auto_quantizer import AutoRoundConfig
+
         return AutoRoundConfig
 
     raise AttributeError(f"auto-round has no attribute '{name}'")
+
 
 from .version import __version__

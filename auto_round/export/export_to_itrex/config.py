@@ -301,4 +301,3 @@ class QuantConfig(PretrainedConfig):
         for parameter in remove_parameters:
             if hasattr(self, parameter):
                 delattr(self, parameter)
-

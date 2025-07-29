@@ -16,6 +16,8 @@ import torch
 import torch.nn as nn
 
 AWQ_REVERSE_ORDER = [0, 4, 1, 5, 2, 6, 3, 7]
+
+
 def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
     shifts = torch.arange(0, 32, bits, device="cpu")
 
@@ -53,7 +55,6 @@ def reverse_awq_order(iweights: torch.Tensor, izeros: torch.Tensor, bits: int):
     return iweights, izeros
 
 
-
 try:
     from intel_extension_for_transformers import qbits  # with QBits kernels ()
 
@@ -87,8 +88,9 @@ class QuantLinear(nn.Module):
 
     def __init__(self, w_bit, group_size, in_features, out_features, bias, zero_point, dev):
         super().__init__()
-        assert QBITS_INSTALLED, \
-            "Please install ITREX qbits package with `pip install intel-extension-for-transformers`."
+        assert (
+            QBITS_INSTALLED
+        ), "Please install ITREX qbits package with `pip install intel-extension-for-transformers`."
 
         self.use_bf16 = qbits.check_isa_supported("AMX")
 
@@ -112,7 +114,7 @@ class QuantLinear(nn.Module):
                 (in_features // self.group_size, out_features // self.pack_num),
                 dtype=torch.int8,
                 device=dev,
-            )
+            ),
         )
         self.register_buffer(
             "scales",
@@ -120,7 +122,8 @@ class QuantLinear(nn.Module):
                 (in_features // self.group_size, out_features),
                 dtype=torch.bfloat16 if self.use_bf16 else torch.float32,
                 device=dev,
-            ))
+            ),
+        )
         if bias:
             self.register_buffer(
                 "bias",
@@ -139,20 +142,24 @@ class QuantLinear(nn.Module):
 
         intweight, zeros = unpack_awq(self.qweight, self.qzeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
         intweight, zeros = reverse_awq_order(intweight, zeros, self.w_bit)  # weight: k x n zeros: k / group_size x n
-        if self.zero_point: ## asym has accuracy issue, have not root caused yet
-            intweight = torch.bitwise_and(intweight, (2 ** self.w_bit) - 1) - (2 ** (self.w_bit - 1))
-            zeros = torch.bitwise_and(zeros, (2 ** self.w_bit) - 1) - (2 ** (self.w_bit - 1))
+        if self.zero_point:  ## asym has accuracy issue, have not root caused yet
+            intweight = torch.bitwise_and(intweight, (2**self.w_bit) - 1) - (2 ** (self.w_bit - 1))
+            zeros = torch.bitwise_and(zeros, (2**self.w_bit) - 1) - (2 ** (self.w_bit - 1))
         else:
             ##symmetric, our default zp is 8
-            intweight = torch.bitwise_and(intweight, (2 ** self.w_bit) - 1) - (2 ** (self.w_bit - 1))
+            intweight = torch.bitwise_and(intweight, (2**self.w_bit) - 1) - (2 ** (self.w_bit - 1))
         g_idx = torch.empty(0, dtype=torch.int32)
-        self.qweight = qbits.repack_quantized_weight(intweight, self.scales.float(), zeros, g_idx,
-                                                     BITS_DTYPE_MAPPING[self.w_bit],
-                                                     convert_dtype_torch2str(self.scale_dtype),
-                                                     convert_dtype_torch2str(self.scales.dtype), self.zero_point,
-                                                     self.group_size)
-
-
+        self.qweight = qbits.repack_quantized_weight(
+            intweight,
+            self.scales.float(),
+            zeros,
+            g_idx,
+            BITS_DTYPE_MAPPING[self.w_bit],
+            convert_dtype_torch2str(self.scale_dtype),
+            convert_dtype_torch2str(self.scales.dtype),
+            self.zero_point,
+            self.group_size,
+        )
 
     @classmethod
     def from_linear(cls, linear, w_bit, group_size, init_only=False, scales=None, zeros=None, has_zero_points=False):
@@ -175,7 +182,8 @@ class QuantLinear(nn.Module):
         assert QBITS_INSTALLED, (
             "QBits kernels could not be loaded. "
             "Please install with `pip install intel-extension-for-transformers` and "
-            "refer to the detail https://github.com/intel/intel-extension-for-transformers/blob/main/docs/qbits.md")
+            "refer to the detail https://github.com/intel/intel-extension-for-transformers/blob/main/docs/qbits.md"
+        )
 
         input_dtype = x.dtype
         out_shape = x.shape[:-1] + (self.out_features,)
@@ -183,22 +191,33 @@ class QuantLinear(nn.Module):
         out_2d_shape = x.shape[:-1] + (self.out_features,)
 
         outputs = torch.zeros(out_2d_shape, dtype=input_dtype)
-        bias = self.bias if self.bias is not None else torch.empty(
-            0, dtype=torch.bfloat16 if self.use_bf16 else torch.float32)
+        bias = (
+            self.bias
+            if self.bias is not None
+            else torch.empty(0, dtype=torch.bfloat16 if self.use_bf16 else torch.float32)
+        )
 
-        qbits.woq_linear(x, self.qweight, bias, outputs, convert_dtype_torch2str(input_dtype),
-                         BITS_DTYPE_MAPPING[self.w_bit], convert_dtype_torch2str(self.scale_dtype), True)
+        qbits.woq_linear(
+            x,
+            self.qweight,
+            bias,
+            outputs,
+            convert_dtype_torch2str(input_dtype),
+            BITS_DTYPE_MAPPING[self.w_bit],
+            convert_dtype_torch2str(self.scale_dtype),
+            True,
+        )
 
         return outputs.view(out_shape)
 
     def extra_repr(self) -> str:
-        return ("in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
+        return "in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
             self.in_features,
             self.out_features,
             self.bias is not None,
             self.w_bit,
             self.group_size,
-        ))
+        )
 
 
 def qbits_post_init(model):
