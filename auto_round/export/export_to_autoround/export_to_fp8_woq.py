@@ -80,7 +80,7 @@ class FP8WOQLinear(torch.nn.Module):
             self.register_buffer("weight_zp", weight_zp.to(dtype))
 
         if act_scale is not None:
-            self.register_buffer('act_scale', act_scale.to(dtype))
+            self.register_buffer("act_scale", act_scale.to(dtype))
 
 
 def pack_layer(layer_name, model, data_type, packing_device=None):

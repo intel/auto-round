@@ -652,7 +652,8 @@ class AutoRound(object):
             if self.act_group_size != 0 and not self.act_dynamic and format == "auto_round:fp8":
                 logger.warning(
                     f"Please note that quantize activation with act_group_size={self.act_group_size}"
-                    " may result in failure to export or import normally.")
+                    " may result in failure to export or import normally."
+                )
         if re.search(r"q\d_k", format) and not self.data_type.endswith("_dq"):
             logger.error(
                 f"datatype<{self.data_type}> not support to export {format} format."
@@ -2155,12 +2156,13 @@ class AutoRound(object):
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
-            input,_,_ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
+            input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
             act_max = torch.max(torch.abs(input), dim=-1).values
             if not hasattr(module, "act_max"):
                 module.act_max = act_max
             else:
                 module.act_max = torch.max(act_max.to(module.act_max.device), module.act_max)
+
         hook_handles = []
 
         for n, m in model.named_modules():

@@ -87,10 +87,11 @@ class TestAutoRoundAct(unittest.TestCase):
             act_data_type="fp8",
         )
         autoround.quantize()
-    
+
     def test_wfp8afp8_static(self):
         model_name = "facebook/opt-125m"
         from auto_round.wrapper import WrapperWALayer
+
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         autoround = AutoRound(
@@ -103,7 +104,7 @@ class TestAutoRoundAct(unittest.TestCase):
             dataset=self.llm_dataloader,
             data_type="fp8",
             act_dynamic=False,
-            act_data_type="fp8"
+            act_data_type="fp8",
         )
         autoround.quantize()
 
@@ -124,13 +125,19 @@ class TestAutoRoundAct(unittest.TestCase):
             dataset=self.llm_dataloader,
             data_type="fp8",
             act_dynamic=False,
-            act_data_type="fp8"
+            act_data_type="fp8",
         )
         autoround.quantize()
         self.assertTrue(isinstance(autoround.model.model.decoder.layers[2].self_attn.k_proj, WrapperWALayer))
-        
-        self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_scale.shape[0], int(3 * 10 * 768 / 128))
-        self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_max.shape[0], int(3 * 10 * 768 / 128))
+
+        self.assertEqual(
+            autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_scale.shape[0],
+            int(3 * 10 * 768 / 128),
+        )
+        self.assertEqual(
+            autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_max.shape[0],
+            int(3 * 10 * 768 / 128),
+        )
 
 
 if __name__ == "__main__":
