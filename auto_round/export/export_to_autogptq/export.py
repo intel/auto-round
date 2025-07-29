@@ -135,12 +135,15 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
+    image_processor = kwargs.get("image_processor", None)
     if output_dir is not None and os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
     if output_dir is not None and tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     if output_dir is not None and processor is not None:
         processor.save_pretrained(output_dir)
+    if output_dir is not None and image_processor is not None:
+        image_processor.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
     quantization_config = kwargs["serialization_dict"]
     all_blocks = quant_block_list

@@ -86,6 +86,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
     to_quant_block_names = kwargs.get("to_quant_block_names", None)
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
+    image_processor = kwargs.get("image_processor", None)
     modules_to_not_convert = []
 
     if output_dir is not None and os.path.exists(output_dir):
@@ -102,6 +103,8 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
         all_block_names = all_block_names.split(",")
         to_quant_block_names = to_quant_block_names.split(",")
         modules_to_not_convert = list(set(all_block_names) - set(to_quant_block_names))
+    if image_processor is not None and output_dir is not None:
+        image_processor.save_pretrained(output_dir)
 
     if inplace:
         compressed_model = model.to("cpu")

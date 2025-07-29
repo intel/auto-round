@@ -289,6 +289,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
+    image_processor = kwargs.get("image_processor", None)
     extra_config = {}
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
     if isinstance(block_name_to_quantize, str):
@@ -354,6 +355,8 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
 
     if processor is not None:
         processor.save_pretrained(output_dir)
+    if image_processor is not None:
+        image_processor.save_pretrained(output_dir)
     if quantization_config.get("act_bits", 16) <= 8:
         dtype = torch.bfloat16
     elif "awq" in quantization_config.get("packing_format", "auto_round:auto_gptq"):

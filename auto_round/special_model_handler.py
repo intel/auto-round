@@ -20,6 +20,7 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "cogvlm2",
     "llava",
     "qwen2_vl",
+    "qwen2_5_vl",
     "deepseek_vl_v2",
     "chatglm",
     "idefics3",

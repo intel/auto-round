@@ -117,6 +117,7 @@ def _register_template(
 
 
 _register_template("qwen2_vl", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["qwen2_vl"])
+_register_template("qwen2_5_vl", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["qwen2_vl"])
 _register_template("mllama", default_dataset="liuhaotian/llava", processor=PROCESSORS["hf"])
 _register_template("deepseek_vl_v2", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["deepseek_v2"])
 _register_template("mistral3", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
@@ -157,7 +158,7 @@ _load_preset_template()
 
 
 def get_template(
-    template_or_path: str, model=None, tokenizer=None, processor=None, image_processor=None, use_rtn=False
+    template_or_path: str, model=None, tokenizer=None, processor=None, image_processor=None, use_rtn=False, quiet=False
 ):
     """Get template by template name or from a json file.
 
@@ -174,7 +175,8 @@ def get_template(
         if template_or_path in TEMPLATES:
             template = TEMPLATES[template_or_path]
         else:
-            logger.warning(f"Unable to recognize {template_or_path}, using default template instead.")
+            if not quiet:
+                logger.warning(f"Unable to recognize {template_or_path}, using default template instead.")
             template = TEMPLATES["default"]
             template.model_type = template_or_path
 

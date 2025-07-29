@@ -121,47 +121,40 @@ model architecture or kernel limitations.
 | mistralai/Mistral-Small-3.1    | pile/llava          | X                    | [Mistral-Small-3.1-24B-Instruct-2503-int4-AutoRound-gptq-sym](https://huggingface.co/OPEA/Mistral-Small-3.1-24B-Instruct-2503-int4-AutoRound-gptq-sym), [Mistral-Small-3.1-24B-Instruct-2503-int4-AutoRound-awq-sym](https://huggingface.co/OPEA/Mistral-Small-3.1-24B-Instruct-2503-int4-AutoRound-awq-sym)                                                                                                                                                     |
 | moonshotai/Kimi-VL             | pile/llava          | √                    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Qwen/Qwen2-VL                  | pile/llava          | -                    | [Qwen2-VL-7B-Instruct-int4-sym](https://huggingface.co/OPEA/Qwen2-VL-7B-Instruct-int4-sym-inc), [Qwen2-VL-72B-Instruct-int4-sym](https://huggingface.co/OPEA/Qwen2-VL-72B-Instruct-int4-sym-inc), [Qwen2-VL-72B-Instruct-int2-sym](https://huggingface.co/OPEA/Qwen2-VL-72B-Instruct-int2-sym-inc)                                                                                                                                                               |
+| Qwen/Qwen2.5-VL                  | pile/llava          | √                   |        |
 | rhymes-ai/Aria                 | pile/llava          | √                    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | THUDM/CogVLM2                  | pile/llava          | √                    | [cogvlm2-llama3-chat-19B-int4-sym](https://huggingface.co/OPEA/cogvlm2-llama3-chat-19B-int4-sym-inc), [cogvlm2-llama3-chat-19B-qvision-int4-sym](https://huggingface.co/OPEA/cogvlm2-llama3-chat-19B-qvision-int4-sym-inc)                                                                                                                                                                                                                                       |
 | THUDM/glm-4v                   | pile                | X                    | [glm-4v-9b-int4-sym](https://huggingface.co/OPEA/glm-4v-9b-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                                                         |
 
 √ means support, - means support to export but cannot infer, X means not support.
 
+<details>
+<summary style="font-size:17px;">Calibration Dataset</summary>
+
+For mllm, we used **text-only** calibration dataset (NeelNanda/pile-10k) as our default. If the model type does not
+support plain text calibration(e.g. Llama-3.2-vision), it will also automatically switch to llava dataset and adjust the
+hyperparameters.
+
+Through argument --dataset(text file), user can use other datasets such as "liuhaotian/llava_conv_58k" "
+liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path to use local file.
+
+</details>
+
+
+
+<details>
+<summary style="font-size:17px;">Nontext Module Quantization</summary>
 ### New Models Support
 
 #### Template
 
-For autoround MLLMs, using Template to customize different operations for different models. User can add a custom chat
-template through json file as below.
+For autoround MLLMs, using Template to customize different operations for different models. User can use template to support new model which not in support list.
+```python
+from auto_round.mllm.template import _register_template
 
-```json
-{
-  "model_type": "qwen2_vl",
-  "format_user": "<|im_start|>user\n{{content}}<|im_end|>\n",
-  "format_assistant": "<|im_start|>assistant\n{{content}}<|im_end|>\n",
-  "format_system": "<|im_start|>system\n{{content}}<|im_end|>\n",
-  "format_observation": "<|im_start|>tool\n{{content}}<|im_end|>\n<|im_start|>assistant\n",
-  "format_separator": "\n",
-  "default_system": "You are a helpful assistant.",
-  "replace_tokens": [
-    "<image>",
-    "<|vision_start|><|image_pad|><|vision_end|>"
-  ],
-  "extra_encode": "True",
-  "processor": "qwen2_vl"
-}
+model_type = model.config.model_type
+_register_template(model_type=model_type, default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
 ```
-
-The special token ```{{content}}``` is a placeholder to tell the preprocessor where to fill in the corresponding
-dialogue content.
-
-```format_*```: Add specific token to chat content depends on different role names.
-
-For example, the input conversations:<br>
-```[{'role': 'user', 'value': '<image>\nWhat are the colors of the bus in the image?'}, {'role': 'assistant', 'value': 'The bus in the image is white and red.'}]```
-
-Using the above template, the input will be converted to the specified format required by Qwen2-vl as below: <br>
-```'<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>\nWhat are the colors of the bus in the image?<|im_end|>\n<|im_start|>assistant\nThe bus in the image is white and red.<|im_end|>\n<|im_start|>user\nWhat feature can be seen on the back of the bus?<|im_end|>\n<|im_start|>assistant\nThe back of the bus features an advertisement.<|im_end|>\n<|im_start|>user\nIs the bus driving down the street or pulled off to the side?<|im_end|>\n<|im_start|>assistant\nThe bus is driving down the street, which is crowded with people and other vehicles.<|im_end|>\n'```.
 
 #### Processor
 

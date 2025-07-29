@@ -188,6 +188,7 @@ class AutoRoundMLLM(AutoRound):
                 processor=processor,
                 image_processor=image_processor,
                 use_rtn=iters == 0,
+                quiet=not self.quant_nontext_module,
             )
             dataset = self.template.default_dataset if dataset is None else dataset
 
