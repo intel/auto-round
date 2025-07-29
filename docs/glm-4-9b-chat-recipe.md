@@ -7,41 +7,41 @@ This  is an int4 recipe with group_size 128 of  [THUDM/glm-4-9b-chat](https://hu
 ### INT4 Inference on CPU/CUDA/HPU
 
 ```python
-from auto_round import AutoRoundConfig ## must import for auto-round format
+from auto_round import AutoRoundConfig  ## must import for auto-round format
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
 quantized_model_dir = "Intel/glm-4-9b-chat-int4-inc"
 
 backend = "auto"  ##cuda, hpu, cpu(supported in auto_round>0.3.1),cuda:marlin(supported in auto_round>0.3.1 'pip install -v gptqmodel --no-build-isolation')
-quantization_config = AutoRoundConfig(
-    backend=backend
-)
-model = AutoModelForCausalLM.from_pretrained(quantized_model_dir,
-                                             device_map=backend.split(':')[0],                                                        
-                                             torch_dtype=torch.float16,
-                                             quantization_config=quantization_config,
-                                             trust_remote_code=True
-                                            ).eval()
+quantization_config = AutoRoundConfig(backend=backend)
+model = AutoModelForCausalLM.from_pretrained(
+    quantized_model_dir,
+    device_map=backend.split(":")[0],
+    torch_dtype=torch.float16,
+    quantization_config=quantization_config,
+    trust_remote_code=True,
+).eval()
 
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_dir, trust_remote_code=True)
 query = "请介绍一下智谱华章科技有限公司"
-inputs = tokenizer.apply_chat_template([{"role": "user", "content": query}],
-                                       add_generation_prompt=True,
-                                       tokenize=True,
-                                       return_tensors="pt",
-                                       return_dict=True
-                                       )
+inputs = tokenizer.apply_chat_template(
+    [{"role": "user", "content": query}],
+    add_generation_prompt=True,
+    tokenize=True,
+    return_tensors="pt",
+    return_dict=True,
+)
 inputs = inputs.to(model.device)
 
-gen_kwargs = {"max_length": 50, "do_sample": False, "top_k": 1}##change this to follow official usage
+gen_kwargs = {"max_length": 50, "do_sample": False, "top_k": 1}  ##change this to follow official usage
 with torch.no_grad():
     outputs = model.generate(**inputs, **gen_kwargs)
-    outputs = outputs[:, inputs['input_ids'].shape[1]:]
+    outputs = outputs[:, inputs["input_ids"].shape[1] :]
     print(tokenizer.decode(outputs[0], skip_special_tokens=True))
 
 ##请介绍一下智谱华章科技有限公司
-#智谱华章科技有限公司是一家专注于人工智能、大数据、云计算等前沿技术领域的创新型企业。公司成立于2016年，总部位于中国北京，是一家集技术研发、产品开发、
+# 智谱华章科技有限公司是一家专注于人工智能、大数据、云计算等前沿技术领域的创新型企业。公司成立于2016年，总部位于中国北京，是一家集技术研发、产品开发、
 
 
 ##9.8大还是9.11大
@@ -50,7 +50,7 @@ with torch.no_grad():
 
 ##Once upon a time,
 
-#In a land where the sun kissed the horizon with a golden glow and the stars whispered secrets to the night, there was a village nestled among rolling hills and whispering forests. This was a place
+# In a land where the sun kissed the horizon with a golden glow and the stars whispered secrets to the night, there was a village nestled among rolling hills and whispering forests. This was a place
 
 
 ##There is a girl who likes adventure,

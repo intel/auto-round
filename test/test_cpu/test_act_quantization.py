@@ -47,7 +47,7 @@ class TestAutoRoundAct(unittest.TestCase):
             seqlen=2,
             dataset=self.llm_dataloader,
             act_bits=4,
-            data_type="mx_fp"
+            data_type="mx_fp",
         )
         autoround.quantize()
 
@@ -84,7 +84,7 @@ class TestAutoRoundAct(unittest.TestCase):
             act_bits=8,
             data_type="fp8_to_int_sym",
             act_dynamic=False,
-            act_data_type="fp8"
+            act_data_type="fp8",
         )
         autoround.quantize()
     
@@ -131,6 +131,7 @@ class TestAutoRoundAct(unittest.TestCase):
         
         self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_scale.shape[0], int(3 * 10 * 768 / 128))
         self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_max.shape[0], int(3 * 10 * 768 / 128))
+
 
 if __name__ == "__main__":
     unittest.main()

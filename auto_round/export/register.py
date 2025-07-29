@@ -36,8 +36,8 @@ def register_format(name):
     return register
 
 
-
 PACKING_LAYER_WITH_FORMAT = {}
+
 
 def register_layer_packing(name):
     """Class decorator to register a EXPORT subclass to the registry.

@@ -38,8 +38,8 @@ MXFP_FORMAT_CACHE = {
     "mx_fp4e2m1": (2, 3, 2, 6.0, 1.0),
     "mx_float16": (5, 12, 15, 65504.0, 6.103515625e-05),
     "mx_fp16": (5, 12, 15, 65504.0, 6.103515625e-05),
-    "mx_bfloat16": (8, 9, 127, 3.3895313892515355e+38, 1.1754943508222875e-38),
-    "mx_bf16": (8, 9, 127, 3.3895313892515355e+38, 1.1754943508222875e-38),
+    "mx_bfloat16": (8, 9, 127, 3.3895313892515355e38, 1.1754943508222875e-38),
+    "mx_bf16": (8, 9, 127, 3.3895313892515355e38, 1.1754943508222875e-38),
 }
 
 FP32_EXPONENT_BIAS = 127
@@ -56,28 +56,29 @@ def quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding="even"):
         private_exp = None
 
     # Scale up so appropriate number of mbits are in the integer portion of the number
-    tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** private_exp) * (2 ** (mbits - 2))
+    tensor = tensor * (2 ** (mbits - 2)) if private_exp is None else tensor / (2**private_exp) * (2 ** (mbits - 2))
     if mantissa_rounding == "even":
         abs_tensor = torch.abs(tensor)
         mask_tensor = ((abs_tensor - 0.5) % 2 == torch.zeros_like(abs_tensor)).type(tensor.dtype)
         tensor = torch.sign(tensor) * (floor_ste(abs_tensor + 0.5) - mask_tensor)
     elif mantissa_rounding == "nearest":
-        tensor = round_ste(tensor)
+        tensor = torch.sign(tensor) * round_ste(torch.abs(tensor))
     elif mantissa_rounding == "floor":
-        tensor = floor_ste(tensor)
+        tensor = torch.sign(tensor) * floor_ste(torch.abs(tensor))
+    elif mantissa_rounding == "stochastic":
+        tensor = torch.sign(tensor) * floor_ste(torch.abs(tensor) + torch.rand_like(tensor, requires_grad=False))
     else:
         raise ValueError("mantissa_rounding only supports even, nearest or floor.")
 
     # Undo scaling
-    tensor = tensor / (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** (mbits - 2)) * (2 ** private_exp)
+    tensor = tensor / (2 ** (mbits - 2)) if private_exp is None else tensor / (2 ** (mbits - 2)) * (2**private_exp)
 
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     return tensor
 
 
 @torch.compile()
-def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
-             mantissa_rounding="even", data_type="mx_fp", **kwargs):
+def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -128,8 +129,9 @@ def quant_mx(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
 
 
 @torch.compile()
-def quant_mx_rceil(tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
-                   mantissa_rounding="even", data_type="mx_fp", **kwargs):
+def quant_mx_rceil(
+    tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs
+):
     """Quantize the given tensor using the specified parameters.
 
     This function performs quantization on the `tensor` tensor according to the
@@ -187,8 +189,8 @@ if __name__ == "__main__":
     data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])
     data1 = quant_element(data, 2, 3, 6.0)
     gt = torch.tensor([0.0, 0.0, 0.5, 1.0, 1.0, 1.5, 2.0, 2.0, 3.0, 4.0, 4.0, 6.0])
-    assert (torch.sum(torch.abs(data1 - gt)) < 1e-6)
+    assert torch.sum(torch.abs(data1 - gt)) < 1e-6
 
     data_neg = data * -1
     data2 = quant_element(data_neg, 2, 3, 6.0)
-    assert (torch.sum(torch.abs(data2 - gt * -1)) < 1e-6)
+    assert torch.sum(torch.abs(data2 - gt * -1)) < 1e-6

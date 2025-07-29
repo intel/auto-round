@@ -36,7 +36,7 @@ class TestLocalCalibDataset(unittest.TestCase):
         with open(self.jsonl_file, "w") as jsonl_file:
             for item in jsonl_data:
                 json.dump(item, jsonl_file, ensure_ascii=False)
-                jsonl_file.write('\n')
+                jsonl_file.write("\n")
 
         model_name = "facebook/opt-125m"
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
@@ -113,5 +113,3 @@ class TestLocalCalibDataset(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
