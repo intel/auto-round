@@ -151,6 +151,7 @@ liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path 
 For autoround MLLMs, using Template to customize different operations for different models. User can use template to support new model which not in support list.
 ```python
 from auto_round.mllm.template import _register_template
+
 model_type = model.config.model_type
 _register_template(model_type=model_type, default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
 ```
