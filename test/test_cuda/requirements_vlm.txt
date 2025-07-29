@@ -1,8 +1,8 @@
-# git+https://github.com/haotian-liu/LLaVA.git@v1.2.2
-# pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git
+# git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
+# pip install git+https://github.com/deepseek-ai/DeepSeek-VL2.git --no-deps
 # pip install -v git+https://github.com/casper-hansen/AutoAWQ.git@v0.2.0 --no-build-isolation
+# pip install flash-attn==2.7.4.post1 --no-build-isolation
 accelerate
-# autoawq
 bitsandbytes
 datasets
 einops
