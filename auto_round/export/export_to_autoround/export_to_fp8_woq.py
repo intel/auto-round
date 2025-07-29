@@ -79,7 +79,7 @@ class FP8WOQLinear(torch.nn.Module):
         if weight_zp:
             self.register_buffer("weight_zp", weight_zp.to(dtype))
 
-        if act_scale:
+        if act_scale is not None:
             self.register_buffer("act_scale", act_scale.to(dtype))
 
 

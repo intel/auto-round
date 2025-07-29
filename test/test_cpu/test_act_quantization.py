@@ -88,6 +88,57 @@ class TestAutoRoundAct(unittest.TestCase):
         )
         autoround.quantize()
 
+    def test_wfp8afp8_static(self):
+        model_name = "facebook/opt-125m"
+        from auto_round.wrapper import WrapperWALayer
+
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            group_size=128,
+            act_group_size=-1,
+            iters=2,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            data_type="fp8",
+            act_dynamic=False,
+            act_data_type="fp8",
+        )
+        autoround.quantize()
+
+        self.assertTrue(isinstance(autoround.model.model.decoder.layers[2].self_attn.k_proj, WrapperWALayer))
+        self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_scale.shape[0], 30)
+        self.assertEqual(autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_max.shape[0], 30)
+
+        model_name = "facebook/opt-125m"
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            group_size=128,
+            act_group_size=128,
+            iters=0,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            data_type="fp8",
+            act_dynamic=False,
+            act_data_type="fp8",
+        )
+        autoround.quantize()
+        self.assertTrue(isinstance(autoround.model.model.decoder.layers[2].self_attn.k_proj, WrapperWALayer))
+
+        self.assertEqual(
+            autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_scale.shape[0],
+            int(3 * 10 * 768 / 128),
+        )
+        self.assertEqual(
+            autoround.model.model.decoder.layers[2].self_attn.k_proj.orig_layer.act_max.shape[0],
+            int(3 * 10 * 768 / 128),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

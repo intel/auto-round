@@ -309,10 +309,12 @@ class WrapperLinear(torch.nn.Module):
             if not self.orig_layer.act_dynamic:
                 act_max_scale = best_params.get("act_max_scale", torch.tensor(1.0)).to(self.device)
                 act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-                tmp_shape = 1
-                if self.orig_layer.act_group_size > 1:
-                    tmp_shape = (1, self.orig_layer.act_group_size)
                 if act_max is not None:
+                    tmp_shape = 1
+                    if self.orig_layer.act_group_size > 1:
+                        tmp_shape = (act_max.shape[0], self.orig_layer.act_group_size)
+                    elif self.orig_layer.act_group_size == -1:
+                        tmp_shape = (act_max.shape[0], 1)
                     _, act_scale, _ = self._qdq_act(
                         torch.zeros(tmp_shape).to(self.device), act_max_scale=self.act_max_scale, act_max=act_max
                     )
@@ -398,7 +400,7 @@ class WrapperWALayer(torch.nn.Module):
         x, _, _ = self.orig_layer.act_quant_func(
             x,
             bits=self.orig_layer.act_bits,
-            group_size=self.orig_layer.group_size,
+            group_size=self.orig_layer.act_group_size,
             scale_dtype=self.orig_layer.scale_dtype,
             q_scale_thresh=self.orig_layer.q_scale_thresh,
             data_type=self.orig_layer.act_data_type,

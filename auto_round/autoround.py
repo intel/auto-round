@@ -26,6 +26,7 @@ from tqdm import tqdm
 from transformers import set_seed
 
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG, GGUF_INNER_CONFIG, ModelType
 from auto_round.low_cpu_mem.utils import get_layers_before_block
 from auto_round.utils import (
@@ -242,7 +243,7 @@ class AutoRound(object):
         self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
 
         ##activation
-        self.act_group_size = act_group_size if act_group_size is not None else self.group_size
+        self.act_group_size = act_group_size if act_group_size is not None else group_size
         self.act_bits = act_bits if act_bits is not None else self.bits
         self.act_sym = act_sym if act_sym is not None else self.sym
         self.act_dynamic = act_dynamic
@@ -648,7 +649,11 @@ class AutoRound(object):
                         " change format to auto_round"
                     )
                     format = "auto_round"
-
+            if self.act_group_size != 0 and not self.act_dynamic and format == "auto_round:fp8":
+                logger.warning(
+                    f"Please note that quantize activation with act_group_size={self.act_group_size}"
+                    " may result in failure to export or import normally."
+                )
         if re.search(r"q\d_k", format) and not self.data_type.endswith("_dq"):
             logger.error(
                 f"datatype<{self.data_type}> not support to export {format} format."
@@ -848,7 +853,7 @@ class AutoRound(object):
         def register_act_hook(model):
             """Registers hooks to accumulate activation squared norms into `imatrix`."""
 
-            def get_act_max_hook(module, input, output):
+            def get_imatrix_hook(module, input, output):
                 input = input[0] if isinstance(input, (tuple, list)) else input
                 flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
                 squared = torch.sum(flattened**2, dim=0).to(torch.float32)
@@ -863,7 +868,7 @@ class AutoRound(object):
             hook_handles = []
             for name, module in model.named_modules():
                 if isinstance(module, self.supported_types) and check_to_quantized(module):
-                    hook = module.register_forward_hook(get_act_max_hook)
+                    hook = module.register_forward_hook(get_imatrix_hook)
                     hook_handles.append(hook)
             return hook_handles
 
@@ -2151,10 +2156,12 @@ class AutoRound(object):
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
+            input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
+            act_max = torch.max(torch.abs(input), dim=-1).values
             if not hasattr(module, "act_max"):
-                module.act_max = torch.abs(input).max().item()
+                module.act_max = act_max
             else:
-                module.act_max = max(torch.abs(input).max().item(), module.act_max)
+                module.act_max = torch.max(act_max.to(module.act_max.device), module.act_max)
 
         hook_handles = []
 

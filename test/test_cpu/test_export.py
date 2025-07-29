@@ -217,6 +217,7 @@ class TestAutoRound(unittest.TestCase):
             data_type="fp8",
             act_data_type="fp8",
             act_dynamic=False,
+            act_group_size=0,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
@@ -239,6 +240,7 @@ class TestAutoRound(unittest.TestCase):
             data_type="fp8",
             act_data_type="fp8",
             act_dynamic=False,
+            act_group_size=0,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
