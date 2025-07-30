@@ -1974,7 +1974,9 @@ def get_layer_config_by_mse(layer_config, gguf_format, model):
     target_gguf_format = next((fmt for fmt in gguf_format if fmt != "fake"), None)
 
     import gguf  # pylint: disable=E0401
+
     from auto_round.export.export_to_gguf.convert import Model
+
     model_architecture = model.config.architectures[0]
     try:
         model_class = Model.from_model_architecture(model_architecture)
@@ -2008,8 +2010,11 @@ def get_layer_config_by_mse(layer_config, gguf_format, model):
         tie_word_embeddings = model.config.tie_word_embeddings
 
     n_gqa = 1
-    if hasattr(model, "config") and hasattr(model.config, "num_attention_heads") and hasattr(model.config,
-                                                                                             "num_key_value_heads"):
+    if (
+        hasattr(model, "config")
+        and hasattr(model.config, "num_attention_heads")
+        and hasattr(model.config, "num_key_value_heads")
+    ):
         n_gqa = model.config.num_attention_heads // model.config.num_key_value_heads
     n_expert = 0
     for name in ["num_experts", "num_local_experts", "n_routed_experts"]:
@@ -2037,14 +2042,17 @@ def get_layer_config_by_mse(layer_config, gguf_format, model):
         gguf_name = tensor_map.get_name(layer_name)
         if target_bits is not None and "bits" in config and config["bits"] != target_bits:
             bits_index = 6
-            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
-            if not new_type in GGUF_INNER_CONFIG:
-                for tmp_type in (new_type[:bits_index + 1] + "_k", new_type[:bits_index + 1] + "_1",
-                                 new_type[:bits_index + 1] + "_0"):
+            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
+            if new_type not in GGUF_INNER_CONFIG:
+                for tmp_type in (
+                    new_type[: bits_index + 1] + "_k",
+                    new_type[: bits_index + 1] + "_1",
+                    new_type[: bits_index + 1] + "_0",
+                ):
                     if tmp_type in GGUF_INNER_CONFIG:
                         new_type = tmp_type
                         break
-            if not new_type in GGUF_INNER_CONFIG:
+            if new_type not in GGUF_INNER_CONFIG:
                 raise ValueError(f"invalid bit setting for {layer_name}")
         elif lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
             if gguf.MODEL_ARCH.FALCON == model_class.model_arch or input_features % block_size != 0:
@@ -2071,7 +2079,8 @@ def get_layer_config_by_mse(layer_config, gguf_format, model):
             elif target_gguf_format == "gguf:q3_k_l":
                 new_type = "gguf:q5_k"
             elif (target_gguf_format == "gguf:q4_k_m" or target_gguf_format == "gguf:q5_k_m") and _use_more_bits(
-                    i_layer, n_layer):
+                i_layer, n_layer
+            ):
                 new_type = "gguf:q6_k"
             elif target_gguf_format == "gguf:q4_k_s" and i_attention_wv < 4:
                 new_type = "gguf:q5_k"
@@ -2124,8 +2133,11 @@ def get_layer_config_by_mse(layer_config, gguf_format, model):
                         new_type = "gguf:q6_k"
             elif target_gguf_format == "gguf:q5_k_m" and _use_more_bits(i_layer, n_layer):
                 new_type = "gguf:q6_k"
-            elif (target_gguf_format == "gguf:q4_k_s" and
-                  model_class.model_arch != gguf.MODEL_ARCH.FALCON and i_layer < n_layer / 8):
+            elif (
+                target_gguf_format == "gguf:q4_k_s"
+                and model_class.model_arch != gguf.MODEL_ARCH.FALCON
+                and i_layer < n_layer / 8
+            ):
                 new_type = "gguf:q5_k"
             elif (target_gguf_format == "gguf:q4_0" or target_gguf_format == "gguf:q5_0") and i_layer < n_layer / 8:
                 if target_gguf_format == "gguf:q4_0":
@@ -2138,8 +2150,14 @@ def get_layer_config_by_mse(layer_config, gguf_format, model):
         elif "attn_output" in gguf_name:
             if gguf.MODEL_ARCH.FALCON != model_class.model_arch:
                 if n_expert == 8:
-                    if target_gguf_format in ("gguf:q2_k", "gguf:q3_k_s", "gguf:q3_k_m", "gguf:q4_k_s", "gguf:q4_k_m",
-                                              "gguf:q5_k"):
+                    if target_gguf_format in (
+                        "gguf:q2_k",
+                        "gguf:q3_k_s",
+                        "gguf:q3_k_m",
+                        "gguf:q4_k_s",
+                        "gguf:q4_k_m",
+                        "gguf:q5_k",
+                    ):
                         new_type = "gguf:q5_k"
                     elif target_gguf_format == "gguf:q2_k":
                         new_type = "gguf:q3_k"
@@ -2171,7 +2189,8 @@ def get_layer_config_by_mse(layer_config, gguf_format, model):
                 new_type = "gguf:bf16"
             logger.warning(
                 f"fallback {layer_name} to {new_type}, "
-                f"because input_features({input_features}) % block_size({block_size}) != 0")
+                f"because input_features({input_features}) % block_size({block_size}) != 0"
+            )
 
         target_config = GGUF_INNER_CONFIG[new_type]
 
@@ -2180,6 +2199,7 @@ def get_layer_config_by_mse(layer_config, gguf_format, model):
         gguf_format_config[layer_name] = new_type
 
     return layer_config, gguf_format_config
+
 
 def get_lm_head_name(model):
     block_names = get_block_names(model, True)
