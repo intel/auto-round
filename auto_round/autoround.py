@@ -1328,8 +1328,15 @@ class AutoRound(object):
                 and self.inplace
             ):
                 self.is_packing_immediate = True
-        if self.iters == 0:
-            return self.quantize_rtn()
+        # if self.iters == 0:
+        #     self.auto_mix_rtn(self.model,
+        #         inputs,
+        #         block_names,
+        #         q_input=q_inputs["input_ids"] if q_inputs is not None else None,
+        #         nblocks=self.nblocks,
+        #         device=self.device,
+        #         pbar=pbar)
+        #     return self.quantize_rtn()
 
         if bool(self.quant_block_list):
             all_blocks = self.quant_block_list
@@ -1394,6 +1401,16 @@ class AutoRound(object):
                 if total_samples < self.batch_size:
                     self.batch_size = total_samples
                     logger.warning(f"force the train batch size to {total_samples}")
+
+            if self.iters == 0:
+                self.auto_mix_rtn(self.model,
+                    inputs,
+                    block_names,
+                    q_input=q_inputs["input_ids"] if q_inputs is not None else None,
+                    nblocks=self.nblocks,
+                    device=self.device,
+                    pbar=pbar)
+                return self.quantize_rtn()
 
             self.quant_blocks(
                 self.model,
@@ -2283,6 +2300,63 @@ class AutoRound(object):
     #     return layer_config
 
     @torch.inference_mode()
+    def auto_mix_rtn(self, model: torch.nn.Module, inputs, block_names, q_input=None, nblocks=1, device="cpu", pbar=None):
+        clear_memory()
+        for n, m in model.named_parameters():
+            m.requires_grad_(False)
+        input_ids = inputs["input_ids"]
+        inputs.pop("input_ids", None)
+        input_others = inputs
+        clear_memory()
+        input_ids = to_device(input_ids, self.cache_device)
+        input_others = to_device(input_others, self.cache_device)
+        ## as in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
+        tmp_dtype = self.amp_dtype if self.amp else torch.float32
+        for i in range(len(input_ids)):
+            input_ids[i] = input_ids[i].to(tmp_dtype)
+
+        for key in input_others.keys():
+            if isinstance(input_others[key], torch.Tensor) and (
+                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
+            ):
+                input_others[key] = input_others[key].to(tmp_dtype)
+            elif isinstance(input_others[key], list):
+                for i in range(len(input_others[key])):
+                    to_dtype(input_others[key][i], tmp_dtype)
+        if self.enable_torch_compile:
+            quant_block = compile_func(self.quant_block, device)
+        else:
+            quant_block = self.quant_block
+
+        if pbar is None:
+            pbar = tqdm(range(0, len(block_names), nblocks))
+
+        for i in range(0, len(block_names), nblocks):
+            if i != 0:
+                pbar.update(1)
+            if nblocks == 1:
+                n = block_names[i]
+                pbar.set_description(f"Quantizing {n}")
+                m = get_module(model, n)
+            else:
+                names = block_names[i : min(i + nblocks, len(block_names))]
+                pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
+                modules = [get_module(model, n) for n in names]
+                m = WrapperMultiblock(modules)
+
+            if not self.model.device.type == "meta" or self.low_cpu_mem_usage:
+                m = m.to(device)
+
+            quant_block(
+                m,
+                input_ids,
+                input_others,
+                q_input=q_input,
+                device=device,
+            )
+
+
+    @torch.inference_mode()
     def check_needs_auto_gguf_mix_mse(self, block, formats, input_ids, input_others, outputs, device,cache_device):
         ## TODO Q4_K_M does not support iters==0
         ## TODO for moe model, expert use default bits
@@ -2293,7 +2367,7 @@ class AutoRound(object):
 
         target_gguf_format = None
         for format in formats:
-            if format.startswith("gguf") and 'm' in format:
+            if format.startswith("gguf"):
                 target_gguf_format = format
         if target_gguf_format is None:
             return
@@ -2302,28 +2376,27 @@ class AutoRound(object):
         bits = []  
         count=0
         quant_bits = {}
-        for n, m in block.named_modules():#[4 4 6 4 4 6 8]
-            if hasattr(m, "bits"):
-                bits.append(m.bits)
-                quant_bits[m.bits]=0
-        ori_bit = min(bits)
-        for b in bits:
-            if b != ori_bit:
-                quant_bits[b]+=1
-        bits = set(bits) #{4,6}
-        if len(bits) <= 1:
-            return
-        del quant_bits[min(bits)]
-        
         layer_names = []
  
         for n, m in block.named_modules():
             if check_to_quantized(m):
                 layer_names.append(n)
                 count+=1
-        
+                if hasattr(m, "bits"):
+                    bits.append(m.bits)
+                    quant_bits[m.bits]=0
+            
+        ori_bit = min(bits)
+        for b in bits:
+            if b != ori_bit:
+                quant_bits[b]+=1
+        bits = set(bits) #{4,6}
+        if len(bits) <= 1:
+            logger.info(f"len<=1,bits为:{bits}不进行选择")
+            return
+        del quant_bits[min(bits)]
         if count > 10:
-            logger.info("不进行选择")
+            logger.info(f"count>10,为{count}不进行选择")
             return
 
         nsamples = min(32, len(outputs))
@@ -2344,17 +2417,9 @@ class AutoRound(object):
         low_config = GGUF_CONFIG[f"gguf:q{min(bits)}_{split_list[2]}"]
 
         default_layer_config = low_config
-        
-        # for k in self.layer_config.keys():
-        #     s = re.split('\.',k)
-        #     if len(s) <2:
-        #         continue
-        #     ss = s[-2]+'.'+s[-1]
-        #     if ss in layer_names:
-        #         self.layer_config[k] = low_config
 
         if len(bits) == 2:
-            logger.info("量化单bit")
+            logger.info(f"量化单bit为:{max(bits)}")
             self.choose_one_bit(block,mix_configs,quant_bits,default_config,default_layer_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device)
         else:
             logger.info("量化多bit")
@@ -2477,6 +2542,9 @@ class AutoRound(object):
 
         self.check_needs_auto_gguf_mix_mse(
             block, self.formats, input_ids, input_others, output, device, self.cache_device)
+        
+        if self.iters == 0:
+            return
 
         if q_input is not None:
             if input_ids is not q_input:
