@@ -12,19 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import os
 import sys
-import argparse
 
 from auto_round.utils import (
-    get_fp_layer_names,
     clear_memory,
-    is_debug_mode,
     get_device_and_parallelism,
-    set_cuda_visible_devices,
+    get_fp_layer_names,
+    is_debug_mode,
     logger,
-    )
-
+    set_cuda_visible_devices,
+)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -38,9 +37,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--model_name",
             "--model_name_or_path",
             default="Qwen/Qwen2-VL-2B-Instruct",
-            help="model name or path")
+            help="model name or path",
+        )
 
-        self.add_argument('--eval', action='store_true', help="whether to use eval only mode.")
+        self.add_argument("--eval", action="store_true", help="whether to use eval only mode.")
 
         self.add_argument("--bits", default=4, type=int, help="weight bits")
 
@@ -52,70 +52,79 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default="0",
             type=str,
             help="the device to be used for tuning. "
-                 "Currently, device settings support CPU, GPU, and HPU."
-                 "The default is set to cuda:0,"
-                 "allowing for automatic detection and switch to HPU or CPU."
-                 "set --device 0,1,2 to use multiple cards.")
+            "Currently, device settings support CPU, GPU, and HPU."
+            "The default is set to cuda:0,"
+            "allowing for automatic detection and switch to HPU or CPU."
+            "set --device 0,1,2 to use multiple cards.",
+        )
 
-        self.add_argument("--asym", action='store_true', help="whether to use asym quantization")
+        self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
 
         self.add_argument(
             "--dataset",
             type=str,
             default=None,
             help="the dataset for quantization training."
-                 " current support NeelNanda/pile-10k,liuhaotian/llava_conv_58k,"
-                 "liuhaotian/llava_instruct_80k,liuhaotian/llava_instruct_150k"
-                 "It can be a custom one. Default is NeelNanda/pile-10k")
+            " current support NeelNanda/pile-10k,liuhaotian/llava_conv_58k,"
+            "liuhaotian/llava_instruct_80k,liuhaotian/llava_instruct_150k"
+            "It can be a custom one. Default is NeelNanda/pile-10k",
+        )
 
         self.add_argument(
-            "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
+            "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
+        )
 
         self.add_argument(
             "--minmax_lr",
             default=None,
             type=float,
-            help="minmax learning rate, if None,it will beset to be the same with lr")
+            help="minmax learning rate, if None,it will beset to be the same with lr",
+        )
 
         self.add_argument("--seed", default=42, type=int, help="random seed")
 
-        self.add_argument("--adam", action='store_true', help="whether to use adam optimizer instead of SignSGD")
+        self.add_argument("--adam", action="store_true", help="whether to use adam optimizer instead of SignSGD")
 
         self.add_argument("--gradient_accumulate_steps", default=1, type=int, help="gradient accumulate steps")
 
         self.add_argument("--nblocks", default=1, type=int, help="how many blocks to tune together")
 
-        self.add_argument("--low_gpu_mem_usage", action='store_true', help="offload intermediate features to cpu")
+        self.add_argument("--low_gpu_mem_usage", action="store_true", help="offload intermediate features to cpu")
 
         self.add_argument("--format", default="auto_round", type=str, help="the format to save the model")
 
-        self.add_argument("--data_type", "--dtype", default='int', help="data type for tuning, 'int', 'mx_fp' and etc")
+        self.add_argument("--data_type", "--dtype", default="int", help="data type for tuning, 'int', 'mx_fp' and etc")
 
         self.add_argument(
             "--scale_dtype",
-            default='fp16',
+            default="fp16",
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
-            help="scale data type to use for quantization")
+            help="scale data type to use for quantization",
+        )
 
         self.add_argument(
-            "--output_dir", default="./tmp_autoround", type=str, help="the directory to save quantized model")
+            "--output_dir", default="./tmp_autoround", type=str, help="the directory to save quantized model"
+        )
 
-        self.add_argument("--disable_amp", action='store_true', help="disable amp")
-
-        self.add_argument(
-            "--disable_minmax_tuning", action='store_true', help="whether disable enable weight minmax tuning")
-
-        self.add_argument("--enable_norm_bias_tuning", action='store_true', help="whether enable norm bias tuning")
+        self.add_argument("--disable_amp", action="store_true", help="disable amp")
 
         self.add_argument(
-            "--disable_trust_remote_code", action='store_true', help="whether to disable trust_remote_code")
+            "--disable_minmax_tuning", action="store_true", help="whether disable enable weight minmax tuning"
+        )
+
+        self.add_argument("--enable_norm_bias_tuning", action="store_true", help="whether enable norm bias tuning")
+
+        self.add_argument(
+            "--disable_trust_remote_code", action="store_true", help="whether to disable trust_remote_code"
+        )
 
         self.add_argument(
             "--disable_quanted_input",
-            action='store_true',
-            help="whether to disuse the output of quantized block to tune the next block")
+            action="store_true",
+            help="whether to disuse the output of quantized block to tune the next block",
+        )
 
-        self.add_argument("--quant_lm_head", action='store_true', help="whether to quant lm_head")
+        self.add_argument("--quant_lm_head", action="store_true", help="whether to quant lm_head")
 
         self.add_argument(
             "--low_cpu_mem_mode",
@@ -123,26 +132,29 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=int,
             choices=[0, 1, 2],
             help="choose which low cpu memory mode to use. "
-                 "Can significantly reduce cpu memory footprint but cost more time."
-                 "1 means choose block-wise mode, load the weights of each block"
-                 " from disk when tuning and release the memory of the block after tuning."
-                 "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
-                 " minimum memory consumption and also slowest running speed."
-                 "others means not use low cpu memory. Default to 0, not use low cpu memory.")
+            "Can significantly reduce cpu memory footprint but cost more time."
+            "1 means choose block-wise mode, load the weights of each block"
+            " from disk when tuning and release the memory of the block after tuning."
+            "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
+            " minimum memory consumption and also slowest running speed."
+            "others means not use low cpu memory. Default to 0, not use low cpu memory.",
+        )
 
         self.add_argument(
             "--low_cpu_mem_tmp_dir",
             default=None,
             type=str,
             help="temporary work space to store the temporary files "
-                 "when using low cpu memory mode. Will remove after tuning.")
+            "when using low cpu memory mode. Will remove after tuning.",
+        )
 
         self.add_argument(
             "--model_dtype",
             default=None,
             type=str,
             choices=["fp16", "float16", "bf16", "bfloat16", "fp32", "float32"],
-            help="force to convert the dtype, some backends supports fp16 dtype better")
+            help="force to convert the dtype, some backends supports fp16 dtype better",
+        )
 
         self.add_argument("--act_bits", default=16, type=int, help="activation bits")
 
@@ -150,50 +162,62 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument(
             "--not_use_best_mse",
-            action='store_true',
-            help="whether to use the iter of best mes loss in the tuning phase")
+            action="store_true",
+            help="whether to use the iter of best mes loss in the tuning phase",
+        )
 
-        self.add_argument("--enable_torch_compile", action='store_true',
-                          help="whether to enable torch compile")
+        self.add_argument("--enable_torch_compile", action="store_true", help="whether to enable torch compile")
 
-        self.add_argument("--disable_deterministic_algorithms", action='store_true',
-                          help="disable torch deterministic algorithms.")
+        self.add_argument(
+            "--disable_deterministic_algorithms", action="store_true", help="disable torch deterministic algorithms."
+        )
 
         ## ======================= VLM =======================
         self.add_argument(
             "--quant_nontext_module",
-            action='store_true',
-            help="whether to quantize non-text module, e.g. vision component")
+            action="store_true",
+            help="whether to quantize non-text module, e.g. vision component",
+        )
 
         self.add_argument(
             "--extra_data_dir",
             default=None,
             type=str,
             help="dataset dir for storing images/audio/videos. "
-                 "Can be a dir path or multiple dir path with format as "
-                 "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
-                 "By default, it will search in the relative path, "
-                 "and if not find, will automatic download.")
+            "Can be a dir path or multiple dir path with format as "
+            "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
+            "By default, it will search in the relative path, "
+            "and if not find, will automatic download.",
+        )
 
         self.add_argument(
             "--template",
             default=None,
             type=str,
-            help="the template for building training dataset. It can be a custom one.")
+            help="the template for building training dataset. It can be a custom one.",
+        )
 
         self.add_argument(
             "--truncation",
             action="store_true",
             help="whether to truncate sequences at the maximum length."
-                 " Default True for pile and False for llava dataset.")
+            " Default True for pile and False for llava dataset.",
+        )
 
         self.add_argument(
             "--to_quant_block_names",
             default=None,
             type=str,
-            help="Names of quantitative blocks, please use commas to separate them.")
+            help="Names of quantitative blocks, please use commas to separate them.",
+        )
 
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
+
+        self.add_argument(
+            "--disable_opt_rtn",
+            action="store_true",
+            help="whether to disable optimization of the RTN mode(iters=0) (default is False).",
+        )
 
 
 def setup_parser():
@@ -210,7 +234,8 @@ def setup_parser():
         "--seq_len",
         default=None,
         type=int,
-        help="sequence length, default 2048 for text-only, 512 for liuhaotian/llava")
+        help="sequence length, default 2048 for text-only, 512 for liuhaotian/llava",
+    )
 
     parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
 
@@ -227,54 +252,60 @@ def setup_lmeval_parser():
         default="0",
         type=str,
         help="the device to be used for tuning. "
-             "Currently, device settings support CPU, GPU, and HPU."
-             "The default is set to cuda:0,"
-             "allowing for automatic detection and switch to HPU or CPU."
-             "set --device 0,1,2 to use multiple cards.")
+        "Currently, device settings support CPU, GPU, and HPU."
+        "The default is set to cuda:0,"
+        "allowing for automatic detection and switch to HPU or CPU."
+        "set --device 0,1,2 to use multiple cards.",
+    )
     parser.add_argument(
         "--tasks",
         type=str,
         default="MMBench_DEV_EN_V11,ScienceQA_VAL,TextVQA_VAL,POPE",
-        help="eval tasks for VLMEvalKit.")
+        help="eval tasks for VLMEvalKit.",
+    )
     # Args that only apply to Video Dataset
     parser.add_argument(
         "--nframe",
         type=int,
         default=8,
-        help="the number of frames to sample from a video,"
-             " only applicable to the evaluation of video benchmarks.")
+        help="the number of frames to sample from a video," " only applicable to the evaluation of video benchmarks.",
+    )
     parser.add_argument(
         "--pack",
-        action='store_true',
+        action="store_true",
         help="a video may associate with multiple questions, if pack==True,"
-             " will ask all questions for a video in a single")
+        " will ask all questions for a video in a single",
+    )
     parser.add_argument("--fps", type=float, default=-1, help="set the fps for a video.")
     # Work Dir
     # Infer + Eval or Infer Only
     parser.add_argument(
         "--mode",
         type=str,
-        default='all',
-        choices=['all', 'infer'],
+        default="all",
+        choices=["all", "infer"],
         help="when mode set to 'all', will perform both inference and evaluation;"
-             " when set to 'infer' will only perform the inference.")
+        " when set to 'infer' will only perform the inference.",
+    )
     parser.add_argument(
-        '--eval_data_dir',
+        "--eval_data_dir",
         type=str,
         default=None,
-        help='path for VLMEvalKit to store the eval data. Default will store in ~/LMUData')
+        help="path for VLMEvalKit to store the eval data. Default will store in ~/LMUData",
+    )
     # API Kwargs, Apply to API VLMs and Judge API LLMs
-    parser.add_argument('--retry', type=int, default=None, help='retry numbers for API VLMs')
+    parser.add_argument("--retry", type=int, default=None, help="retry numbers for API VLMs")
     # Explicitly Set the Judge Model
-    parser.add_argument('--judge', type=str, default=None, help="whether is a judge model.")
+    parser.add_argument("--judge", type=str, default=None, help="whether is a judge model.")
     # Logging Utils
-    parser.add_argument('--verbose', action='store_true', help="whether to display verbose information.")
+    parser.add_argument("--verbose", action="store_true", help="whether to display verbose information.")
     # Configuration for Resume
     # Ignore: will not rerun failed VLM inference
-    parser.add_argument('--ignore', action='store_true', help='ignore failed indices. ')
+    parser.add_argument("--ignore", action="store_true", help="ignore failed indices. ")
     # Rerun: will remove all evaluation temp files
     parser.add_argument(
-        '--rerun', action='store_true', help="if true, will remove all evaluation temp files and rerun.")
+        "--rerun", action="store_true", help="if true, will remove all evaluation temp files and rerun."
+    )
     parser.add_argument("--output_dir", default="./eval_result", type=str, help="the directory to save quantized model")
     args = parser.parse_args()
     return args
@@ -282,32 +313,30 @@ def setup_lmeval_parser():
 
 def tune(args):
     import transformers
-
-    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoProcessor
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
     if args.format is None:
         args.format = "auto_round"
-    supported_formats = [
-        "auto_round", "auto_round:auto_gptq", "auto_round:auto_awq", "auto_awq", "gguf:q4_0", "gguf:q4_1", "fake"
-    ]
-    if not args.quant_nontext_module:
-        supported_formats.extend(["auto_gptq"])
 
-    formats = args.format.replace(' ', '').split(",")
+    formats = args.format.replace(" ", "").split(",")
+    from auto_round.utils import SUPPORTED_FORMATS
+
     for format in formats:
-        if format not in supported_formats:
-            raise ValueError(f"{format} is not supported, we only support {supported_formats}")
+        if format not in SUPPORTED_FORMATS:
+            raise ValueError(f"{format} is not supported, we only support {SUPPORTED_FORMATS}")
 
     ##must set this before import torch
     set_cuda_visible_devices(args.device)
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
 
-
     import torch
+
     if not args.disable_deterministic_algorithms:
         torch.use_deterministic_algorithms(True, warn_only=True)
-        print("'torch.use_deterministic_algorithms' is turned on by default for reproducibility, " \
-              "and can be turned off by setting the '--disable_deterministic_algorithms' parameter.")
+        print(
+            "'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "
+            "and can be turned off by setting the '--disable_deterministic_algorithms' parameter."
+        )
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -319,12 +348,14 @@ def tune(args):
 
     # load_model
     from auto_round.utils import mllm_load_model
+
     model, processor, tokenizer, image_processor = mllm_load_model(
         model_name,
         torch_dtype=torch_dtype,
         use_auto_mapping=use_auto_mapping,
         trust_remote_code=not args.disable_trust_remote_code,
-        model_dtype=args.model_dtype)
+        model_dtype=args.model_dtype,
+    )
 
     from auto_round import AutoRoundMLLM
 
@@ -335,7 +366,8 @@ def tune(args):
     if seqlen is not None and hasattr(tokenizer, "model_max_length"):
         if tokenizer.model_max_length < seqlen:
             logger.info(
-                f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length")
+                f"change sequence length to {tokenizer.model_max_length} due to the limitation of model_max_length"
+            )
             seqlen = min(seqlen, tokenizer.model_max_length)
             args.seqlen = seqlen
 
@@ -380,29 +412,31 @@ def tune(args):
                 if lm_head_layer_name in item:  ##TODO extend to encoder-decoder layer, seq classification model
                     args.quant_lm_head = False
                     print(
-                        f"warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
-                        f"supported currently")
+                        "warning, disable quant_lm_head as quantizing lm_head with tied weights has not been "
+                        "supported currently"
+                    )
                     break
     if args.quant_lm_head:
         layer_config[lm_head_layer_name] = {"bits": args.bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
-                auto_round_formats = [s for s in supported_formats if s.startswith("auto_round")]
+                auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
                 raise ValueError(
-                    f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
+                    f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}"
+                )
 
     if args.quant_lm_head and args.low_gpu_mem_usage:
-        print(
-            f"warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to "
-            f"gpu")
+        print("warning, low_gpu_mem_usage=False is strongly recommended if the whole model could be loaded to " "gpu")
 
     if "--truncation" not in sys.argv:
         args.truncation = None
 
     if "auto_awq" in args.format:
         from auto_round.utils import check_awq_gemm_compatibility
+
         awq_supported, info = check_awq_gemm_compatibility(
-            model, args.bits, args.group_size, not args.asym, layer_config)
+            model, args.bits, args.group_size, not args.asym, layer_config
+        )
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
@@ -411,7 +445,7 @@ def tune(args):
     model_kwargs = {
         "use_auto_mapping": use_auto_mapping,
         "trust_remote_code": not args.disable_trust_remote_code,
-        "model_dtype": args.model_dtype
+        "model_dtype": args.model_dtype,
     }
     autoround = round(
         model,
@@ -449,37 +483,42 @@ def tune(args):
         device_map=args.device_map,
         model_kwargs=model_kwargs,
         data_type=args.data_type,
+        disable_opt_rtn=args.disable_opt_rtn,
+    )
+
+    model_name = args.model.rstrip("/")
+
+    if model_name.split("/")[-1].strip(".") == "" and "gguf" not in args.format:
+        export_dir = os.path.join(args.output_dir, f"w{autoround.bits}g{autoround.group_size}")
+    elif model_name.split("/")[-1].strip(".") == "" and "gguf" in args.format:
+        export_dir = args.output_dir
+    elif model_name.split("./")[-1].strip("./") != "" and "gguf" in args.format:
+        export_dir = os.path.join(args.output_dir, model_name.split("/")[-1] + "-gguf")
+    else:
+        export_dir = os.path.join(
+            args.output_dir, model_name.split("/")[-1] + f"-w{autoround.bits}g{autoround.group_size}"
         )
-    model, _ = autoround.quantize()
+
+    model, folders = autoround.quantize_and_save(export_dir, format=args.format)
+
+    if args.low_cpu_mem_mode == 1 or args.low_cpu_mem_mode == 2:
+        import shutil
+
+        shutil.rmtree(args.low_cpu_mem_tmp_dir, ignore_errors=True)
 
     model.eval()
     clear_memory()
 
-    if model_name.split('/')[-1].strip('.') == "":
-        export_dir = os.path.join(args.output_dir, f"w{args.bits}g{args.group_size}")
-    else:
-        export_dir = os.path.join(args.output_dir, model_name.split('/')[-1] + f"-w{args.bits}g{args.group_size}")
 
-    format_list = args.format.replace(' ', '').split(',')
-    inplace = False if len(format_list) > 1 else True
-    for format_ in format_list:
-        save_format_ = format_.replace(":", "-").replace("_", "-")
-        eval_folder = os.path.join(export_dir, save_format_) if len(formats) > 1 else export_dir
-        safe_serialization = True
-        if hasattr(autoround.model, "config") and hasattr(autoround.model.config, "model_type"):
-            if "phi3_v" in autoround.model.config.model_type:
-                safe_serialization = False
-        autoround.save_quantized(eval_folder, format=format_, inplace=inplace, safe_serialization=safe_serialization)
-
-
-def eval(args):
+def vlmeval(args):
     set_cuda_visible_devices(args.device)
     device_str, parallelism = get_device_and_parallelism(args.device)
     if parallelism:
-        os.environ['AUTO_SPLIT'] = '1'
+        os.environ["AUTO_SPLIT"] = "1"
     if isinstance(args.tasks, str):
-        args.tasks = args.tasks.replace(' ', '').split(',')
+        args.tasks = args.tasks.replace(" ", "").split(",")
     from auto_round.mllm import mllm_eval
+
     mllm_eval(
         args.model,
         work_dir=args.output_dir,
@@ -492,7 +531,8 @@ def eval(args):
         judge=args.judge,
         verbose=args.verbose,
         mode=args.mode,
-        ignore=args.ignore)
+        ignore=args.ignore,
+    )
 
 
 def setup_lmms_parser():
@@ -532,17 +572,18 @@ def setup_lmms_parser():
         default="0",
         type=str,
         help="the device to be used for tuning. "
-             "Currently, device settings support CPU, GPU, and HPU."
-             "The default is set to cuda:0,"
-             "allowing for automatic detection and switch to HPU or CPU."
-             "set --device 0,1,2 to use multiple cards.")
+        "Currently, device settings support CPU, GPU, and HPU."
+        "The default is set to cuda:0,"
+        "allowing for automatic detection and switch to HPU or CPU."
+        "set --device 0,1,2 to use multiple cards.",
+    )
     parser.add_argument(
         "--limit",
         type=float,
         default=None,
         help="Limit the number of examples per task. "
-             "If <1, limit is a percentage of the total"
-             " number of examples.",
+        "If <1, limit is a percentage of the total"
+        " number of examples.",
     )
     args = parser.parse_args()
     return args
@@ -567,6 +608,3 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-
-
-

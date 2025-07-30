@@ -7,23 +7,19 @@ This model is an int4 model with group_size 128 and symmetric quantization of [T
 ```python
 import torch
 from PIL import Image
-from auto_round import AutoRoundConfig ##must import for auto-round format
+from auto_round import AutoRoundConfig  ##must import for auto-round format
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import requests
 
 MODEL_PATH = "Intel/cogvlm2-llama3-chat-19B-inc-private"
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-tokenizer = AutoTokenizer.from_pretrained(
-    MODEL_PATH,
-    trust_remote_code=True
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+model = (
+    AutoModelForCausalLM.from_pretrained(MODEL_PATH, torch_dtype="auto", trust_remote_code=True, device_map=DEVICE)
+    .to(DEVICE)
+    .eval()
 )
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_PATH,
-    torch_dtype="auto",
-    trust_remote_code=True,
-    device_map=DEVICE
-).to(DEVICE).eval()
 
 image_url = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"
 content = "Describe this image."
@@ -32,29 +28,24 @@ text_only_template = "A chat between a curious user and an artificial intelligen
 query = text_only_template.format(content)
 
 image = Image.open(requests.get(image_url, stream=True).raw)
-input_by_model = model.build_conversation_input_ids(
-    tokenizer,
-    query=query,
-    images=[image],
-    template_version='chat'
-)
+input_by_model = model.build_conversation_input_ids(tokenizer, query=query, images=[image], template_version="chat")
 inputs = {
-    'input_ids': input_by_model['input_ids'].unsqueeze(0).to(DEVICE),
-    'token_type_ids': input_by_model['token_type_ids'].unsqueeze(0).to(DEVICE),
-    'attention_mask': input_by_model['attention_mask'].unsqueeze(0).to(DEVICE),
-    'images': [[input_by_model['images'][0].to(DEVICE).to(model.dtype)]] if image is not None else None,
+    "input_ids": input_by_model["input_ids"].unsqueeze(0).to(DEVICE),
+    "token_type_ids": input_by_model["token_type_ids"].unsqueeze(0).to(DEVICE),
+    "attention_mask": input_by_model["attention_mask"].unsqueeze(0).to(DEVICE),
+    "images": [[input_by_model["images"][0].to(DEVICE).to(model.dtype)]] if image is not None else None,
 }
 gen_kwargs = {
     "max_new_tokens": 2048,
-    "pad_token_id": 128002,  
+    "pad_token_id": 128002,
 }
 
 with torch.no_grad():
     outputs = model.generate(**inputs, **gen_kwargs)
-    outputs = outputs[:, inputs['input_ids'].shape[1]:]
+    outputs = outputs[:, inputs["input_ids"].shape[1] :]
     response = tokenizer.decode(outputs[0])
     response = response.split("<|end_of_text|>")[0]
-    print(response)       
+    print(response)
 ##INT4:
 ## The image depicts a serene beach scene during what appears to be the golden hour, just before sunset. A woman is seated on the sandy shore, facing the vast expanse of the ocean. The waves are gently crashing on the beach, and the sky is painted with hues of orange and blue. The woman seems to be in a relaxed posture, possibly enjoying the tranquility of the moment. Beside her is a large, golden-colored dog, possibly a Labrador, wearing a colorful harness. The dog is sitting upright, looking at the woman, and they seem to share a bond of trust and affection. The overall mood of the image is peaceful, reflective, and heartwarming.
 

@@ -20,19 +20,24 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "cogvlm2",
     "llava",
     "qwen2_vl",
+    "qwen2_5_vl",
     "deepseek_vl_v2",
     "chatglm",
-    "idefics3"
+    "idefics3",
+    "llama4",
+    "internvl_chat",
 ]
 
 SPECIAL_SHARED_CACHE_KEYS = {
-    "Gemma3ForConditionalGeneration": ("position_embeddings_global", "position_embeddings_local")}
+    "Gemma3ForConditionalGeneration": ("position_embeddings_global", "position_embeddings_local")
+}
 SPECIAL_SHARED_CACHE_KEYS["MiniMaxText01ForCausalLM"] = ("slope_rate",)
 
 
 def _handle_special_model(model):
     if model.config.model_type == "deepseek_vl_v2":
         from functools import partial
+
         model.forward = partial(_deepseek_vl2_forward, model)
     return model
 
@@ -47,31 +52,26 @@ def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
     return block_names
 
 
-SPECIAL_MULTIMODAL_BLOCK = {
-    "deepseek_vl_v2": _get_deepseek_vl2_multimodal_block
-}
+SPECIAL_MULTIMODAL_BLOCK = {"deepseek_vl_v2": _get_deepseek_vl2_multimodal_block}
 
 
 def _deepseek_vl2_forward(
-        model,
-        input_ids=None,
-
-        position_ids=None,
-        attention_mask=None,
-        past_key_values=None,
-        inputs_embeds=None,
-
-        images=None,
-        images_seq_mask=None,
-        images_spatial_crop=None,
-
-        labels=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-        cache_position=None,
-        **kwargs
+    model,
+    input_ids=None,
+    position_ids=None,
+    attention_mask=None,
+    past_key_values=None,
+    inputs_embeds=None,
+    images=None,
+    images_seq_mask=None,
+    images_spatial_crop=None,
+    labels=None,
+    use_cache=None,
+    output_attentions=None,
+    output_hidden_states=None,
+    return_dict=None,
+    cache_position=None,
+    **kwargs,
 ):
     inputs_embeds = model.prepare_inputs_embeds(
         input_ids=input_ids,
@@ -90,7 +90,8 @@ def _deepseek_vl2_forward(
         output_attentions=output_attentions,
         output_hidden_states=output_hidden_states,
         return_dict=return_dict,
-        cache_position=cache_position)
+        cache_position=cache_position,
+    )
 
 
 def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
@@ -100,7 +101,9 @@ def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
     for key in mllms_with_limited_bs:
         if hasattr(model, "config") and key in model.config.model_type and batch_size != 1:
             accumulate_steps = batch_size * gradient_accumulate_steps
-            print("To avoid the tensor concat mismatch problem, modified parameters to " \
-                  f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}")
+            print(
+                "To avoid the tensor concat mismatch problem, modified parameters to "
+                f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}"
+            )
             return 1, accumulate_steps
     return batch_size, gradient_accumulate_steps

@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, "../..")
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
+from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 
@@ -51,27 +51,26 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
 
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round", inplace=False)
 
-        quantization_config = AutoRoundConfig(
-            backend="ipex"
+        quantization_config = AutoRoundConfig(backend="ipex")
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="cpu", quantization_config=quantization_config
         )
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map="cpu", quantization_config=quantization_config)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "My name is "
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
-        assert ("!!!" not in res)
+        assert "!!!" not in res
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path,
-                                                     device_map="cpu", quantization_config=quantization_config,
-                                                     torch_dtype=torch.float16)
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="cpu", quantization_config=quantization_config, torch_dtype=torch.float16
+        )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
-        assert ("!!!" not in res)
+        assert "!!!" not in res
 
     def test_autoround_sym(self):
         for bits in [4]:
@@ -92,13 +91,13 @@ class TestAutoRoundFormatGeneration(unittest.TestCase):
 
             autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
-                                                         trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(
+                quantized_model_path, device_map="auto", trust_remote_code=True
+            )
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
             print(res)
-            assert ("!!!" not in res)
+            assert "!!!" not in res
             shutil.rmtree(self.save_folder, ignore_errors=True)
-

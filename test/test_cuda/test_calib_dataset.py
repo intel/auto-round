@@ -27,15 +27,14 @@ class TestLocalCalibDataset(unittest.TestCase):
         with open(self.jsonl_file, "w") as jsonl_file:
             for item in jsonl_data:
                 json.dump(item, jsonl_file, ensure_ascii=False)
-                jsonl_file.write('\n')
+                jsonl_file.write("\n")
 
         model_name = "facebook/opt-125m"
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
     def test_combine_dataset(self):
-        dataset = (
-                    "NeelNanda/pile-10k" + ",codeparrot/github-code-clean" + ",BAAI/CCI3-HQ" + ",madao33/new-title-chinese")
+        dataset = "NeelNanda/pile-10k" + ",BAAI/CCI3-HQ" + ",madao33/new-title-chinese"
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=2, seqlen=128, dataset=dataset

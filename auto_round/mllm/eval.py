@@ -46,14 +46,15 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import json
 import os
 import time
-import json
 from functools import partial
 
-import pandas as pd
-from ..utils import logger, LazyImport
 import numpy as np
+import pandas as pd
+
+from ..utils import LazyImport, logger
 
 vlmeval = LazyImport("vlmeval")
 
@@ -72,7 +73,6 @@ MODEL_TYPE_TO_VLMEVAL_MODEL = {
     "SliME": dict(cls="SliME"),
     "Eagle": dict(cls="Eagle"),
     "Molmo": dict(cls="molmo"),
-
     # config.model_type
     "qwen2_vl": dict(cls="Qwen2VLChat", min_pixels=1280 * 28 * 28, max_pixels=16384 * 28 * 28),
     "qwen": dict(cls="QwenVL"),
@@ -86,19 +86,19 @@ MODEL_TYPE_TO_VLMEVAL_MODEL = {
 
 
 def mllm_eval(
-        pretrained_model_name_or_path: str,
-        work_dir: str,
-        dataset: list,
-        data_store_dir: None,
-        pack: bool = False,
-        use_subtitle: bool = False,
-        fps: float = -1,
-        nframe: int = 8,
-        rerun: bool = False,
-        judge: bool = False,
-        verbose: bool = False,
-        mode: str = 'all',
-        ignore: bool = False
+    pretrained_model_name_or_path: str,
+    work_dir: str,
+    dataset: list,
+    data_store_dir: None,
+    pack: bool = False,
+    use_subtitle: bool = False,
+    fps: float = -1,
+    nframe: int = 8,
+    rerun: bool = False,
+    judge: bool = False,
+    verbose: bool = False,
+    mode: str = "all",
+    ignore: bool = False,
 ):
     try:
         from auto_round import AutoRoundConfig
@@ -111,7 +111,7 @@ def mllm_eval(
             oldmask = os.umask(000)
             os.makedirs(data_store_dir, mode=0o777)
             os.umask(oldmask)
-        os.environ['LMUData'] = data_store_dir
+        os.environ["LMUData"] = data_store_dir
 
     model_name = pretrained_model_name_or_path
     if "/" in model_name:
@@ -130,6 +130,7 @@ def mllm_eval(
                 break
         if model_type is None:
             from transformers import AutoConfig
+
             config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=True)
             model_type = config.model_type
             if "chat" in model_name.lower():
@@ -147,52 +148,53 @@ def mllm_eval(
     os.makedirs(pred_root, exist_ok=True)
 
     st = time.time()
-    rt_file = open(f'{pred_root}/{model_name}_eval_cost.txt', 'w')
+    rt_file = open(f"{pred_root}/{model_name}_eval_cost.txt", "w")
     for dataset_name in dataset:
         task_st = time.time()
         try:
             dataset_kwargs = {}
-            if dataset_name in ['MMLongBench_DOC', 'DUDE', 'DUDE_MINI', 'SLIDEVQA', 'SLIDEVQA_MINI']:
-                dataset_kwargs['model'] = model_name
-            if dataset_name == 'MMBench-Video':
-                dataset_kwargs['pack'] = pack
-            if dataset_name == 'Video-MME':
-                dataset_kwargs['use_subtitle'] = use_subtitle
+            if dataset_name in ["MMLongBench_DOC", "DUDE", "DUDE_MINI", "SLIDEVQA", "SLIDEVQA_MINI"]:
+                dataset_kwargs["model"] = model_name
+            if dataset_name == "MMBench-Video":
+                dataset_kwargs["pack"] = pack
+            if dataset_name == "Video-MME":
+                dataset_kwargs["use_subtitle"] = use_subtitle
 
             dataset = vlmeval.dataset.build_dataset(dataset_name, **dataset_kwargs)
             if dataset is None:
-                logger.error(f'Dataset {dataset_name} is not valid, will be skipped. ')
+                logger.error(f"Dataset {dataset_name} is not valid, will be skipped. ")
                 continue
 
-            result_file = f'{pred_root}/{model_name}_{dataset_name}.xlsx'
+            result_file = f"{pred_root}/{model_name}_{dataset_name}.xlsx"
             if fps > 0:  # For Video Dataset, set the fps for priority
-                if dataset_name == 'MVBench':
-                    raise ValueError('MVBench does not support fps setting, please transfer to MVBench_MP4!')
+                if dataset_name == "MVBench":
+                    raise ValueError("MVBench does not support fps setting, please transfer to MVBench_MP4!")
                 nframe = 0
-            if dataset_name in ['MMBench-Video']:
-                packstr = 'pack' if pack else 'nopack'
+            if dataset_name in ["MMBench-Video"]:
+                packstr = "pack" if pack else "nopack"
                 if nframe > 0:
-                    result_file = f'{pred_root}/{model_name}_{dataset_name}_{nframe}frame_{packstr}.xlsx'
+                    result_file = f"{pred_root}/{model_name}_{dataset_name}_{nframe}frame_{packstr}.xlsx"
                 else:
-                    result_file = f'{pred_root}/{model_name}_{dataset_name}_{fps}fps_{packstr}.xlsx'
-            elif dataset.MODALITY == 'VIDEO':
+                    result_file = f"{pred_root}/{model_name}_{dataset_name}_{fps}fps_{packstr}.xlsx"
+            elif dataset.MODALITY == "VIDEO":
                 if pack:
-                    logger.info(f'{dataset_name} not support Pack Mode, directly change to unpack')
+                    logger.info(f"{dataset_name} not support Pack Mode, directly change to unpack")
                     pack = False
-                packstr = 'pack' if pack else 'nopack'
+                packstr = "pack" if pack else "nopack"
                 if nframe > 0:
-                    result_file = f'{pred_root}/{model_name}_{dataset_name}_{nframe}frame_{packstr}.xlsx'
+                    result_file = f"{pred_root}/{model_name}_{dataset_name}_{nframe}frame_{packstr}.xlsx"
                 else:
-                    result_file = f'{pred_root}/{model_name}_{dataset_name}_{fps}fps_{packstr}.xlsx'
-                if dataset_name in ['Video-MME']:
-                    subtitlestr = 'subs' if use_subtitle else 'nosubs'
-                    result_file = result_file.replace('.xlsx', f'_{subtitlestr}.xlsx')
+                    result_file = f"{pred_root}/{model_name}_{dataset_name}_{fps}fps_{packstr}.xlsx"
+                if dataset_name in ["Video-MME"]:
+                    subtitlestr = "subs" if use_subtitle else "nosubs"
+                    result_file = result_file.replace(".xlsx", f"_{subtitlestr}.xlsx")
 
-            if dataset.TYPE == 'MT':
-                result_file = result_file.replace('.xlsx', '.tsv')
+            if dataset.TYPE == "MT":
+                result_file = result_file.replace(".xlsx", ".tsv")
 
             if os.path.exists(result_file) and rerun:
                 import re
+
                 pattern = re.compile(f"{model_name}_{dataset_name}_[(openai)|(gpt)|(auxmatch)].*")
                 for file_name in os.listdir(pred_root):
                     if pattern.match(file_name):
@@ -202,7 +204,7 @@ def mllm_eval(
                 model = model_name  # which is only a name
 
             # Perform the Inference
-            if dataset.MODALITY == 'VIDEO':
+            if dataset.MODALITY == "VIDEO":
                 model = vlmeval.inference_video.infer_data_job_video(
                     model,
                     work_dir=pred_root,
@@ -212,15 +214,17 @@ def mllm_eval(
                     pack=pack,
                     verbose=verbose,
                     subtitle=use_subtitle,
-                    fps=fps)
-            elif dataset.TYPE == 'MT':
+                    fps=fps,
+                )
+            elif dataset.TYPE == "MT":
                 model = vlmeval.inference_mt.infer_data_job_mt(
                     model,
                     work_dir=pred_root,
                     model_name=model_name,
                     dataset=dataset,
                     verbose=verbose,
-                    ignore_failed=ignore)
+                    ignore_failed=ignore,
+                )
             else:
                 model = vlmeval.inference.infer_data_job(
                     model,
@@ -228,84 +232,101 @@ def mllm_eval(
                     model_name=model_name,
                     dataset=dataset,
                     verbose=verbose,
-                    ignore_failed=ignore)
+                    ignore_failed=ignore,
+                )
 
             # Set the judge kwargs first before evaluation or dumping
             judge_kwargs = {
-                'verbose': verbose,
+                "verbose": verbose,
             }
             if judge is not None:
-                judge_kwargs['model'] = judge
+                judge_kwargs["model"] = judge
             else:
-                if dataset.TYPE in ['MCQ', 'Y/N'] or vlmeval.smp.listinstr(['MathVerse'], dataset_name):
-                    judge_kwargs['model'] = 'chatgpt-0125'
-                elif vlmeval.smp.listinstr(['MMVet', 'MathVista', 'LLaVABench', 'MMBench-Video', 'MathVision'],
-                                           dataset_name):
-                    judge_kwargs['model'] = 'gpt-4-turbo'
-                elif vlmeval.smp.listinstr(['MMLongBench', 'MMDU', 'DUDE', 'DUDE_MINI', 'SLIDEVQA', 'SLIDEVQA_MINI'],
-                                           dataset_name):
-                    judge_kwargs['model'] = 'gpt-4o'
-            if 'OPENAI_API_KEY_JUDGE' in os.environ and len(os.environ['OPENAI_API_KEY_JUDGE']):
-                judge_kwargs['key'] = os.environ['OPENAI_API_KEY_JUDGE']
-            if 'OPENAI_API_BASE_JUDGE' in os.environ and len(os.environ['OPENAI_API_BASE_JUDGE']):
-                judge_kwargs['api_base'] = os.environ['OPENAI_API_BASE_JUDGE']
+                if dataset.TYPE in ["MCQ", "Y/N"] or vlmeval.smp.listinstr(["MathVerse"], dataset_name):
+                    judge_kwargs["model"] = "chatgpt-0125"
+                elif vlmeval.smp.listinstr(
+                    ["MMVet", "MathVista", "LLaVABench", "MMBench-Video", "MathVision"], dataset_name
+                ):
+                    judge_kwargs["model"] = "gpt-4-turbo"
+                elif vlmeval.smp.listinstr(
+                    ["MMLongBench", "MMDU", "DUDE", "DUDE_MINI", "SLIDEVQA", "SLIDEVQA_MINI"], dataset_name
+                ):
+                    judge_kwargs["model"] = "gpt-4o"
+            if "OPENAI_API_KEY_JUDGE" in os.environ and len(os.environ["OPENAI_API_KEY_JUDGE"]):
+                judge_kwargs["key"] = os.environ["OPENAI_API_KEY_JUDGE"]
+            if "OPENAI_API_BASE_JUDGE" in os.environ and len(os.environ["OPENAI_API_BASE_JUDGE"]):
+                judge_kwargs["api_base"] = os.environ["OPENAI_API_BASE_JUDGE"]
 
-            if dataset_name in ['MMMU_TEST']:
+            if dataset_name in ["MMMU_TEST"]:
                 result_json = vlmeval.utils.result_transfer.MMMU_result_transfer(result_file)
-                logger.info(f'Transfer MMMU_TEST result to json for official evaluation, '
-                            f'json file saved in {result_json}')  # noqa: E501
+                logger.info(
+                    f"Transfer MMMU_TEST result to json for official evaluation, " f"json file saved in {result_json}"
+                )  # noqa: E501
                 continue
-            elif 'MMT-Bench_ALL' in dataset_name:
+            elif "MMT-Bench_ALL" in dataset_name:
                 submission_file = vlmeval.utils.result_transfer.MMTBench_result_transfer(result_file, **judge_kwargs)
-                logger.info(f'Extract options from prediction of MMT-Bench FULL split for official evaluation '
-                            f'(https://eval.ai/web/challenges/challenge-page/2328/overview), '
-                            f'submission file saved in {submission_file}')  # noqa: E501
+                logger.info(
+                    f"Extract options from prediction of MMT-Bench FULL split for official evaluation "
+                    f"(https://eval.ai/web/challenges/challenge-page/2328/overview), "
+                    f"submission file saved in {submission_file}"
+                )  # noqa: E501
                 continue
-            elif 'MLLMGuard_DS' in dataset_name:
-                logger.info('The evaluation of MLLMGuard_DS is not supported yet. ')  # noqa: E501
+            elif "MLLMGuard_DS" in dataset_name:
+                logger.info("The evaluation of MLLMGuard_DS is not supported yet. ")  # noqa: E501
                 continue
-            elif 'AesBench_TEST' == dataset_name:
-                logger.info(f'The results are saved in {result_file}. '
-                            f'Please send it to the AesBench Team via huangyipo@hotmail.com.')  # noqa: E501
+            elif "AesBench_TEST" == dataset_name:
+                logger.info(
+                    f"The results are saved in {result_file}. "
+                    f"Please send it to the AesBench Team via huangyipo@hotmail.com."
+                )  # noqa: E501
                 continue
-            elif dataset_name in ['DocVQA_TEST', 'InfoVQA_TEST', 'Q-Bench1_TEST', 'A-Bench_TEST']:
-                logger.info(f'{dataset_name} is a test split without ground-truth. '
-                            'Thus only the inference part is supported for those datasets. ')  # noqa: E501
+            elif dataset_name in ["DocVQA_TEST", "InfoVQA_TEST", "Q-Bench1_TEST", "A-Bench_TEST"]:
+                logger.info(
+                    f"{dataset_name} is a test split without ground-truth. "
+                    "Thus only the inference part is supported for those datasets. "
+                )  # noqa: E501
 
             if dataset_name in [
-                'MMBench_TEST_CN', 'MMBench_TEST_EN', 'MMBench', 'MMBench_CN',
-                'MMBench_TEST_CN_V11', 'MMBench_TEST_EN_V11', 'MMBench_V11', 'MMBench_CN_V11'
+                "MMBench_TEST_CN",
+                "MMBench_TEST_EN",
+                "MMBench",
+                "MMBench_CN",
+                "MMBench_TEST_CN_V11",
+                "MMBench_TEST_EN_V11",
+                "MMBench_V11",
+                "MMBench_CN_V11",
             ]:
                 if not vlmeval.smp.MMBenchOfficialServer(dataset_name):
                     logger.error(
-                        f'Can not evaluate {dataset_name} on non-official servers, '
-                        'will skip the evaluation. '
+                        f"Can not evaluate {dataset_name} on non-official servers, " "will skip the evaluation. "
                     )
                     continue
 
-            if mode == 'all':
+            if mode == "all":
                 eval_results = dataset.evaluate(result_file, **judge_kwargs)
                 if eval_results is not None:
                     if not isinstance(eval_results, dict) and not isinstance(eval_results, pd.DataFrame):
                         raise TypeError("Unsupported eval result type")
-                    logger.info(f'The evaluation of model {model_name} x dataset {dataset_name} has finished! ')
-                    logger.info('Evaluation Results:')
+                    logger.info(f"The evaluation of model {model_name} x dataset {dataset_name} has finished! ")
+                    logger.info("Evaluation Results:")
                 if isinstance(eval_results, dict):
-                    logger.info('\n' + json.dumps(eval_results, indent=4))
+                    logger.info("\n" + json.dumps(eval_results, indent=4))
                 elif isinstance(eval_results, pd.DataFrame):
                     if len(eval_results) < len(eval_results.columns):
                         eval_results = eval_results.T
                     try:
                         import tabulate
-                        logger.info('\n' + tabulate.tabulate(eval_results))
+
+                        logger.info("\n" + tabulate.tabulate(eval_results))
                     except:
                         logger.info(eval_results.to_string())
-            rt_file.write('%s cost: %.4fs\n' % (dataset_name, time.time() - task_st))
+            rt_file.write("%s cost: %.4fs\n" % (dataset_name, time.time() - task_st))
         except Exception as e:
-            logger.exception(f'Model {model_name} x Dataset {dataset_name} combination failed: {e}, '
-                             'skipping this combination.')
+            logger.exception(
+                f"Model {model_name} x Dataset {dataset_name} combination failed: {e}, " "skipping this combination."
+            )
             continue
-    rt_file.write('%d tasks cost: %.4fs\n' % (len(dataset), time.time() - st))
+    rt_file.write("%d tasks cost: %.4fs\n" % (len(dataset), time.time() - st))
     rt_file.close()
 
 
@@ -318,7 +339,6 @@ MODEL_TYPE_TO_LMMS_MODEL = {
     "Llama-3.2": "llama_vision",
     "Phi-3-vision": "phi3v",
     "Phi-3.5-vision": "phi3v",
-
     # model_type
     "qwen2_vl": "qwen2_vl",
     "qwen": "qwen_vl",
@@ -340,21 +360,22 @@ def _handle_non_serializable(o):
 
 
 def lmms_eval(
-        model,
-        tasks,
-        output_dir=None,
-        num_fewshot=None,
-        limit=None,
-        batch_size=1,
-        max_batch_size=None,
-        device='cpu',
-        use_cache=None,
-        apply_chat_template=False
+    model,
+    tasks,
+    output_dir=None,
+    num_fewshot=None,
+    limit=None,
+    batch_size=1,
+    max_batch_size=None,
+    device="cpu",
+    use_cache=None,
+    apply_chat_template=False,
 ):
     from transformers.utils.versions import require_version
+
     require_version("lmms_eval", "lmms_eval need to be installed, `pip install lmms_eval`")
     if isinstance(tasks, str):
-        tasks = tasks.replace(' ', '').split(',')
+        tasks = tasks.replace(" ", "").split(",")
 
     model_name = model
     if model_name[-1] == "/":
@@ -370,6 +391,7 @@ def lmms_eval(
             break
     if model_type is None:
         from transformers import AutoConfig
+
         config = AutoConfig.from_pretrained(model, trust_remote_code=True)
         model_type = config.model_type
 
@@ -397,7 +419,7 @@ def lmms_eval(
         device=device,
         use_cache=use_cache,
         apply_chat_template=apply_chat_template,
-        cli_args=CliArgs()
+        cli_args=CliArgs(),
     )
 
     # print and save result
@@ -406,10 +428,9 @@ def lmms_eval(
         os.makedirs(output_dir, exist_ok=True)
 
         from datetime import datetime
+
         now = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = os.path.join(output_dir, f"{model_name}_{now}_result.json")
-        json.dump(results, open(output_file, 'w'), indent=4, default=_handle_non_serializable)
+        json.dump(results, open(output_file, "w"), indent=4, default=_handle_non_serializable)
 
     return results
-
-

@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import json
+import os
 from typing import Dict
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 from transformers import set_seed
 
-from .utils import _extract_data_dir
-from .template import Template
-from ..utils import logger
 from ..special_model_handler import check_mllm_model_batch
+from ..utils import logger
+from .template import Template
+from .utils import _extract_data_dir
 
 MLLM_DATASET: Dict[str, Dataset] = {}
 
@@ -41,16 +41,18 @@ def register_dataset(name_list):
     """
 
     def register(dataset):
-        for name in name_list.replace(' ', '').split(','):
+        for name in name_list.replace(" ", "").split(","):
             MLLM_DATASET[name] = dataset
 
     return register
 
 
 @register_dataset(
-    "liuhaotian/llava,liuhaotian/llava_conv_58k,liuhaotian/llava_instruct_80k,liuhaotian/llava_instruct_150k")
+    "liuhaotian/llava,liuhaotian/llava_conv_58k,liuhaotian/llava_instruct_80k,liuhaotian/llava_instruct_150k"
+)
 class LlavaDataset(Dataset):
     """Dataset for supervised fine-tuning."""
+
     BASE_LLAVA_URL = "https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/resolve/main/"
     LLAVA_DATASET = {
         "llava_conv_58k": BASE_LLAVA_URL + "conversation_58k.json?download=true",
@@ -61,16 +63,16 @@ class LlavaDataset(Dataset):
     IMAGE_TOKEN = "<image>"
 
     def __init__(
-            self,
-            template,
-            model,
-            tokenzier,
-            dataset_path,
-            extra_data_dir=None,
-            seqlen=512,
-            padding=True,
-            truncation=True,
-            nsamples=512
+        self,
+        template,
+        model,
+        tokenzier,
+        dataset_path,
+        extra_data_dir=None,
+        seqlen=512,
+        padding=True,
+        truncation=True,
+        nsamples=512,
     ) -> None:
         super().__init__()
         self.model = model
@@ -78,21 +80,22 @@ class LlavaDataset(Dataset):
         self.template = template
         self.tokenizer = tokenzier
         if os.path.exists(dataset_path):
-            logger.info(f'use dataset {dataset_path}, loading from disk...')
+            logger.info(f"use dataset {dataset_path}, loading from disk...")
             self.questions = json.load(open(dataset_path, "r"))
         else:
             import requests
+
             if dataset_path == "liuhaotian/llava":
                 dataset_path = "llava_conv_58k"
             else:
                 dataset_path = dataset_path.split("/")[-1]
-            dataset_name = dataset_path.split('/')[-1]
+            dataset_name = dataset_path.split("/")[-1]
             if dataset_name in self.LLAVA_DATASET:
-                logger.info(f'use dataset {dataset_name}, downloading ...')
+                logger.info(f"use dataset {dataset_name}, downloading ...")
                 self.questions = requests.get(self.LLAVA_DATASET[dataset_name], stream=True).json()
             else:
                 raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
-            
+
         self.seqlen = seqlen
         self.questions = self.check(self.questions, self.seqlen, nsamples)
         self.padding = padding
@@ -105,7 +108,7 @@ class LlavaDataset(Dataset):
         if extra_data_dir is not None:
             image_fold = _extract_data_dir(self.extra_data_dir)
             if isinstance(image_fold, dict):
-                image_fold = image_fold['image']
+                image_fold = image_fold["image"]
             self.image_fold = image_fold
 
     def check(self, questions, word_len, nsamples):
@@ -114,10 +117,10 @@ class LlavaDataset(Dataset):
             max_len = 0
             for source in questions:
                 str_len = 0
-                for text in source['conversations']:
-                    if self.IMAGE_TOKEN in text['value']:
-                        text['value'] = self.IMAGE_TOKEN + text['value'].replace(self.IMAGE_TOKEN, '')
-                    str_len += len(text['value'].split(' '))
+                for text in source["conversations"]:
+                    if self.IMAGE_TOKEN in text["value"]:
+                        text["value"] = self.IMAGE_TOKEN + text["value"].replace(self.IMAGE_TOKEN, "")
+                    str_len += len(text["value"].split(" "))
                 if str_len > max_len:
                     max_len = str_len
                 if min_word_len <= str_len < max_word_len:
@@ -125,12 +128,16 @@ class LlavaDataset(Dataset):
                 if len(new_questions) >= nsamples:
                     return new_questions
             if min_word_len > max_len:
-                logger.debug(f"seqlen={min_word_len} is greater than the max length of dataset {max_len},"
-                                f" will change seqlen to {max_len - 128}")
+                logger.debug(
+                    f"seqlen={min_word_len} is greater than the max length of dataset {max_len},"
+                    f" will change seqlen to {max_len - 128}"
+                )
                 new_min_word_len = max_len - 128
             else:
-                logger.debug(f"no enough sample for seqlen greater than {min_word_len},"
-                                f" will decrease to {min_word_len - 128}")
+                logger.debug(
+                    f"no enough sample for seqlen greater than {min_word_len},"
+                    f" will decrease to {min_word_len - 128}"
+                )
                 new_min_word_len = min_word_len - 128
             return new_questions + _check(questions, new_min_word_len, min_word_len, nsamples - len(new_questions))
 
@@ -148,12 +155,11 @@ class LlavaDataset(Dataset):
             text = self.covert_conversations(text)
 
         if self.image_fold is not None:
-            image_path = os.path.join(
-                self.image_fold, os.path.basename(self.questions[i]["image"]))
+            image_path = os.path.join(self.image_fold, os.path.basename(self.questions[i]["image"]))
         else:
             image_path = self.questions[i]["image"]
             if not os.path.exists(image_path):
-                image_path = self._COCO_DATA_URL + self.questions[i]["image"].split('/')[-1]
+                image_path = self._COCO_DATA_URL + self.questions[i]["image"].split("/")[-1]
         # image = self.template.processor.image_processor(image_path)
 
         text = self.template._encode(text)
@@ -167,7 +173,7 @@ class LlavaDataset(Dataset):
             truncation=self.truncation,
             return_tensors="pt",
             max_length=max_length,
-            truncation_strategy=truncation_strategy
+            truncation_strategy=truncation_strategy,
         )
         self.cached_data_dict[i] = ret
         return ret
@@ -179,30 +185,27 @@ class LlavaDataset(Dataset):
             if self.template.replace_tokens is not None:
                 for old, new in self.template.replace_tokens:
                     content = content.replace(old, new)
-            new_data.append({
-                "role": self.role_mapping.get(d["from"], d["from"]),
-                "content": content
-            })
+            new_data.append({"role": self.role_mapping.get(d["from"], d["from"]), "content": content})
         return new_data
 
 
 def get_mllm_dataloader(
-        template,
-        model,
-        tokenizer,
-        processor,
-        image_processor=None,
-        dataset="liuhaotian/llava_conv_58k",
-        extra_data_dir=None,
-        seqlen=512,
-        bs=1,
-        split=None,
-        apply_template=None,
-        truncation=False,
-        seed=42,
-        nsamples=512,
-        gradient_accumulate_steps=1,
-        quant_nontext_module=False
+    template,
+    model,
+    tokenizer,
+    processor,
+    image_processor=None,
+    dataset="liuhaotian/llava_conv_58k",
+    extra_data_dir=None,
+    seqlen=512,
+    bs=1,
+    split=None,
+    apply_template=None,
+    truncation=False,
+    seed=42,
+    nsamples=512,
+    gradient_accumulate_steps=1,
+    quant_nontext_module=False,
 ):
     """Generate a DataLoader for calibration using specified parameters.
 
@@ -217,41 +220,39 @@ def get_mllm_dataloader(
         bs (int, optional): The batch size. Defaults to 4.
         split (str, optional): The data split to use. Defaults to None.
         apply_template: Whether to apply chat template in tokenization.
-    
+
     Returns:
         DataLoader: The DataLoader for the calibrated datasets.
     """
     if isinstance(template, str):
         from .template import get_template
+
         template = get_template(
-            template, model=model, tokenizer=tokenizer,
-            processor=processor, image_processor=image_processor)
+            template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor
+        )
 
     if os.path.isfile(dataset) or dataset in MLLM_DATASET.keys():
-        dataset = MLLM_DATASET['liuhaotian/llava'](
-            template, model, tokenizer, dataset, extra_data_dir,
-            seqlen=seqlen, truncation=truncation, nsamples=nsamples)
+        dataset = MLLM_DATASET["liuhaotian/llava"](
+            template, model, tokenizer, dataset, extra_data_dir, seqlen=seqlen, truncation=truncation, nsamples=nsamples
+        )
 
         bs, gradient_accumulate_steps = check_mllm_model_batch(
-            model, batch_size=bs, gradient_accumulate_steps=gradient_accumulate_steps)
+            model, batch_size=bs, gradient_accumulate_steps=gradient_accumulate_steps
+        )
 
         set_seed(seed)
-        dataloader_params = {
-            "batch_size": bs,
-            "shuffle": True,
-            "collate_fn": dataset.template.processor.data_collator
-        }
+        dataloader_params = {"batch_size": bs, "shuffle": True, "collate_fn": dataset.template.processor.data_collator}
 
         return DataLoader(dataset, **dataloader_params), bs, gradient_accumulate_steps
     else:
         # try to load text calibration dataset
         from ..calib_dataset import get_dataloader
-        dataloader = get_dataloader(
-            tokenizer, seqlen, dataset, seed, bs, nsamples)
+
+        dataloader = get_dataloader(tokenizer, seqlen, dataset, seed, bs, nsamples)
         if quant_nontext_module:
             logger.error(
-                f"Text only dataset cannot be used for calibrating non-text modules,"
-                 " switching to liuhaotian/llava_conv_58k")
+                "Text only dataset cannot be used for calibrating non-text modules,"
+                " switching to liuhaotian/llava_conv_58k"
+            )
             exit(-1)
         return dataloader, bs, gradient_accumulate_steps
-

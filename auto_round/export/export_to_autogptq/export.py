@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+import inspect
+import json
+import os
+from concurrent.futures import ThreadPoolExecutor
+
+import threadpoolctl as tctl
+
 # MIT License
 #
 # Copyright (c) 2023 潘其威(William)
@@ -34,22 +42,21 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import torch
-
-import auto_round.export.export_to_autogptq.qlinear_triton
-from auto_round.utils import check_to_quantized, get_block_names, \
-    get_module, logger, set_module, SUPPORTED_LAYER_TYPES, filter_quantization_config
-import copy
-import json
-import os
-
 import torch.nn as nn
 import transformers
-
-import threadpoolctl as tctl
-import inspect
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
-from auto_round.utils import get_autogptq_packing_qlinear
+
+import auto_round.export.export_to_autogptq.qlinear_triton
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_to_quantized,
+    filter_quantization_config,
+    get_autogptq_packing_qlinear,
+    get_block_names,
+    get_module,
+    logger,
+    set_module,
+)
 
 BLOCK_PATTERNS = [  ## copy from transformers optimum
     "transformer.h",
@@ -114,31 +121,37 @@ def pack_layer(name, model, backend):
     else:
         qlayer.pack(layer, scale, zero, None)
     qlayer.to(device)
+    if hasattr(layer, "weight"):
+        layer.weight = None
+    if hasattr(layer, "bias"):
+        layer.bias = None
 
 
-def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2",
-                               **kwargs):
+def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exllamav2", **kwargs):
     """Export the model to autogptq format to easily leverage cuda kernel."""
 
     model = kwargs["model"]
-    safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
+    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
     quant_block_list = kwargs.get("quant_block_list", get_block_names(model))
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
+    image_processor = kwargs.get("image_processor", None)
     if output_dir is not None and os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
     if output_dir is not None and tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
     if output_dir is not None and processor is not None:
         processor.save_pretrained(output_dir)
+    if output_dir is not None and image_processor is not None:
+        image_processor.save_pretrained(output_dir)
     ##check module quantized in block, this may have bug for mixed precision quantization
     quantization_config = kwargs["serialization_dict"]
     all_blocks = quant_block_list
     flattened_list = [item for sublist in all_blocks for item in sublist]
-    common_prefix = os.path.commonprefix(flattened_list).rstrip('.')
+    common_prefix = os.path.commonprefix(flattened_list).rstrip(".")
     if common_prefix not in BLOCK_PATTERNS:
-        logger.error(f"auto-gptq format may not support loading this quantized model")
-        quantization_config['block_name_to_quantize'] = common_prefix
+        logger.error("auto-gptq format may not support loading this quantized model")
+        quantization_config["block_name_to_quantize"] = common_prefix
     quantization_config.pop("to_quant_block_names", None)
 
     ## as layers maybe already packed, we need to check in layer_config
@@ -170,11 +183,12 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     layer_config = kwargs["layer_config"]
     names = list(layer_config.keys())
     max_workers = 1
-    if not torch.cuda.is_available() or not torch.xpu.is_available():
+    if not torch.cuda.is_available() and not torch.xpu.is_available():
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
+
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
@@ -202,8 +216,9 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     return model
 
 
-def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True,
-         dtype=None):
+def save(
+    model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None
+):
     """Save model state dict and configs.
 
     Args:
@@ -228,15 +243,13 @@ def save(model: torch.nn.Module, save_dir: str, max_shard_size: str = "5GB", saf
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
-        with open(config_path, 'r') as file:
+        with open(config_path, "r") as file:
             data = json.load(file)
         data["torch_dtype"] = str(dtype).split(".")[-1]
-        with open(config_path, 'w') as file:
+        with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
 
     config_file = "quantize_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-

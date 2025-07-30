@@ -4,15 +4,13 @@ import sys
 import unittest
 
 sys.path.insert(0, "../..")
-from auto_round.eval.evaluation import simple_evaluate_user_model
-from auto_round.testing_utils import require_greater_than_050, require_autogptq, require_awq, require_ipex
-
 import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRound
-from auto_round import AutoRoundConfig
+from auto_round import AutoRound, AutoRoundConfig
+from auto_round.eval.evaluation import simple_evaluate_user_model
+from auto_round.testing_utils import require_autogptq, require_awq, require_greater_than_050, require_ipex
 
 
 class LLMDataLoader:
@@ -58,11 +56,9 @@ class TestAutoRound(unittest.TestCase):
             input_ids=inputs["input_ids"].to(model.device),
             attention_mask=inputs["attention_mask"].to(model.device),
             do_sample=False,  ## change this to follow official usage
-            max_new_tokens=5
+            max_new_tokens=5,
         )
-        generated_ids = [
-            output_ids[len(input_ids):] for input_ids, output_ids in zip(inputs["input_ids"], outputs)
-        ]
+        generated_ids = [output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs["input_ids"], outputs)]
 
         decoded_outputs = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
 
@@ -96,14 +92,15 @@ class TestAutoRound(unittest.TestCase):
 
             autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0",
-                                                         trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(
+                quantized_model_path, device_map="cuda:0", trust_remote_code=True
+            )
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
             print(res)
-            assert ("!!!" not in res)
+            assert "!!!" not in res
             shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @require_autogptq
@@ -113,33 +110,25 @@ class TestAutoRound(unittest.TestCase):
         layer_config = {}
 
         layer_config["model.decoder.layers.0.self_attn.k_proj"] = {"bits": 8}
-        layer_config["model.decoder.layers.2.self_attn.q_proj"] = {"bits": 3,
-                                                                   "group_size": 64}  ## 3bits when using asym will have some issue
+        layer_config["model.decoder.layers.2.self_attn.q_proj"] = {
+            "bits": 3,
+            "group_size": 64,
+        }  ## 3bits when using asym will have some issue
         layer_config["model.decoder.layers.6.self_attn.out_proj"] = {"bits": 2, "group_size": 32}
         bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(
-            model,
-            tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            layer_config=layer_config
-        )
+        autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym, layer_config=layer_config)
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            quantization_config=quantization_config
+            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         self.model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result['results']['lambada_openai']['acc,none'])
-        self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.32)
+        print(result["results"]["lambada_openai"]["acc,none"])
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.32)
 
     @require_awq
     def test_awq_backend(self):
@@ -160,24 +149,18 @@ class TestAutoRound(unittest.TestCase):
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            quantization_config=quantization_config
+            self.save_folder, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         self.model_infer(model, tokenizer)
         result = simple_evaluate_user_model(model, tokenizer, batch_size=16, tasks="lambada_openai")
-        print(result['results']['lambada_openai']['acc,none'])
-        self.assertGreater(result['results']['lambada_openai']['acc,none'], 0.18)
+        print(result["results"]["lambada_openai"]["acc,none"])
+        self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.18)
         torch.cuda.empty_cache()
 
         model = AutoModelForCausalLM.from_pretrained(
-            self.save_folder,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            quantization_config=quantization_config
+            self.save_folder, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
@@ -189,10 +172,7 @@ class TestAutoRound(unittest.TestCase):
         model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            quantization_config=quantization_config
+            model_name, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
         )
 
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -220,16 +200,18 @@ class TestAutoRound(unittest.TestCase):
         autoround.quantize_and_save(output_dir=quantized_model_path)
 
         from auto_round import AutoRoundConfig
+
         quantization_config = AutoRoundConfig(backend="ipex_gptq")
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu", trust_remote_code=True,
-                                                     quantization_config=quantization_config)
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="cpu", trust_remote_code=True, quantization_config=quantization_config
+        )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
-        assert ("!!!" not in res)
+        assert "!!!" not in res
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
@@ -237,16 +219,17 @@ class TestAutoRound(unittest.TestCase):
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
-        assert ("!!!" not in res)
+        assert "!!!" not in res
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu", trust_remote_code=True,
-                                                     quantization_config=quantization_config)
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="cpu", trust_remote_code=True, quantization_config=quantization_config
+        )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
-        assert ("!!!" not in res)
+        assert "!!!" not in res
 
         shutil.rmtree("./saved", ignore_errors=True)
 
@@ -276,16 +259,17 @@ class TestAutoRound(unittest.TestCase):
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
-        assert ("!!!" not in res)
+        assert "!!!" not in res
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cpu", trust_remote_code=True,
-                                                     torch_dtype=torch.bfloat16)
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path, device_map="cpu", trust_remote_code=True, torch_dtype=torch.bfloat16
+        )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
         print(res)
-        assert ("!!!" not in res)
+        assert "!!!" not in res
 
         shutil.rmtree("./saved", ignore_errors=True)
 
@@ -309,23 +293,28 @@ class TestAutoRound(unittest.TestCase):
 
             autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
-            model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto",
-                                                         trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(
+                quantized_model_path, device_map="auto", trust_remote_code=True
+            )
             tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
             text = "There is a girl who likes adventure,"
             inputs = tokenizer(text, return_tensors="pt").to(model.device)
             res = tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0])
             print(res)
-            assert ("!!!" not in res)
+            assert "!!!" not in res
             shutil.rmtree(self.save_folder, ignore_errors=True)
 
     @require_greater_than_050
     def test_load_gptq_model_3bits(self):
         model_name = "LucasSantiago257/gemma-2b-2bits-gptq"
         quantization_config = AutoRoundConfig()
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True,
-                                                     device_map="auto",
-                                                     quantization_config=quantization_config)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype="auto",
+            trust_remote_code=True,
+            device_map="auto",
+            quantization_config=quantization_config,
+        )
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model_infer(model, tokenizer)
 

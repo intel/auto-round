@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Test model set-up and inference for quantized HF models supported
- on the AutoRound.
+on the AutoRound.
 
- Validating the configuration and printing results for manual checking.
+Validating the configuration and printing results for manual checking.
 
- Run `pytest tests/quantization/test_auto_round.py`.
+Run `pytest test/test_cuda/test_vllm.py`.
 """
 
 import pytest
@@ -13,14 +13,14 @@ from vllm.platforms import current_platform
 
 MODELS = [
     "OPEA/Qwen2.5-0.5B-Instruct-int4-sym-inc",  ##auto_round:auto_gptq
-    "Intel/Qwen2-0.5B-Instruct-int4-sym-AutoRound"  ##auto_round:auto_awq
+    "Intel/Qwen2-0.5B-Instruct-int4-sym-AutoRound",  ##auto_round:auto_awq
 ]
 
 
-@pytest.mark.skipif(not current_platform.is_cpu()
-                    and not current_platform.is_xpu()
-                    and not current_platform.is_cuda(),
-                    reason="only supports CPU/XPU/CUDA backend.")
+@pytest.mark.skipif(
+    not current_platform.is_cpu() and not current_platform.is_xpu() and not current_platform.is_cuda(),
+    reason="only supports CPU/XPU/CUDA backend.",
+)
 @pytest.mark.parametrize("model", MODELS)
 def test_auto_round(model):
     # Sample prompts.

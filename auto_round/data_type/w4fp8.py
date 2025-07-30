@@ -15,8 +15,7 @@
 import torch
 
 from auto_round.data_type.register import register_dtype
-from auto_round.data_type.utils import get_gaudi_fp8_ste_func, float8_e4m3fn_ste
-
+from auto_round.data_type.utils import float8_e4m3fn_ste, get_gaudi_fp8_ste_func
 
 # @register_dtype("fp8_gaudi3_to_int_sym")
 # def progressive_quant_fp8_int4_gaudi3(
@@ -195,8 +194,9 @@ from auto_round.data_type.utils import get_gaudi_fp8_ste_func, float8_e4m3fn_ste
 
 
 @register_dtype("fp8_to_int_sym")
-def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0,
-                               q_scale_thresh=1e-5, **kwargs):
+def progressive_quant_fp8_int4(
+    tensor, bits=4, group_size=-1, v=0, min_scale=1.0, max_scale=1.0, q_scale_thresh=1e-5, **kwargs
+):
     """Two-stage quantization: quantize tensor to fp8 by per tensor, then quantize fp8 to w4g128
 
     This method first quantizes the input tensor into float8 format and then performs
@@ -232,12 +232,17 @@ def progressive_quant_fp8_int4(tensor, bits=4, group_size=-1, v=0, min_scale=1.0
     fp8_res_using_16bit = fp8_res.to(tensor.dtype)
     ##convert to int4
     from auto_round.data_type.int import quant_tensor_sym
-    qdq_int4_tensor, scale_fp8_to_int4, zp_fp8_to_int4 = quant_tensor_sym(fp8_res_using_16bit, bits=bits,
-                                                                          group_size=group_size, v=v,
-                                                                          min_scale=min_scale,
-                                                                          max_scale=max_scale,
-                                                                          scale_dtype=torch.bfloat16,
-                                                                          q_scale_thresh=q_scale_thresh)
+
+    qdq_int4_tensor, scale_fp8_to_int4, zp_fp8_to_int4 = quant_tensor_sym(
+        fp8_res_using_16bit,
+        bits=bits,
+        group_size=group_size,
+        v=v,
+        min_scale=min_scale,
+        max_scale=max_scale,
+        scale_dtype=torch.bfloat16,
+        q_scale_thresh=q_scale_thresh,
+    )
     qdq_tensor = qdq_int4_tensor * bf16_to_fp8_scale
 
     bf16_to_int4_scale = scale_fp8_to_int4 * bf16_to_fp8_scale

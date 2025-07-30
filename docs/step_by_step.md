@@ -1,7 +1,42 @@
 Step-by-Step
 ============
 
-This document presents step-by-step instructions for auto-round llm quantization.
+This document presents step-by-step instructions for auto-round llm quantization. For vlms quantization, please refer to [vlms user guide](../auto_round/mllm/README.md)
+
+* [1 Prerequisite](#1-prerequisite)
+* [2 Prepare Calibration Dataset](#2-prepare-calibration-dataset)
+  + [Default Dataset](#default-dataset)
+  + [Customized Dataset](#customized-dataset)
+  + [Dataset operations](#dataset-operations)
+* [3 Quantization](#3-quantization)
+  + [Supported Quantization Configurations](#supported-quantization-configurations)
+  + [Hardware Compatibility](#hardware-compatibility)
+  + [Supported Export Formats](#supported-export-formats)
+  + [Command Line Usage](#command-line-usage)
+  + [API usage](#api-usage)
+    - [AutoRound API Usage](#autoround-api-usage)
+    - [Mixed bits Usage](#mixed-bits-usage)
+    - [AutoRoundBest recipe](#autoroundbest-recipe)
+    - [AutoRoundLight recipe](#autoroundlight-recipe)
+    - [Recipe recommendation](#recipe-recommendation)
+  + [RTN mode](#rtn-mode)
+  + [GGUF format](#gguf-format)
+  + [Quantization Costs](#quantization-costs)
+  + [Device/Multi-GPU setting in Quantization](#device-multi-gpu-setting-in-quantization)
+    - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm-head-quantization)
+    - [Enable multiple gpus tuning for extremely large model](#enable-multiple-gpus-tuning-for-extremely-large-model)
+  + [Adjust Hyperparameters](#adjust-hyperparameters)
+* [4 Inference](#4-inference)
+  + [CPU](#cpu)
+  + [Intel GPU](#intel-gpu)
+  + [CUDA](#cuda)
+  + [HPU](#hpu)
+  + [Specify Inference Backend](#specify-inference-backend)
+  + [Convert GPTQ/AWQ to AutoRound](#convert-gptq-awq-to-autoround)
+* [5 Evaluation](#5-evaluation)
+  + [Combine evaluation with tuning](#combine-evaluation-with-tuning)
+  + [Eval the Quantized model](#eval-the-quantized-model)
+* [6 Known Issues](#6-known-issues)
 
 ## 1 Prerequisite
 
@@ -17,12 +52,13 @@ pip install auto-round
 
 The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in huggingface is adopted as the default
 calibration data and will be downloaded automatically from the datasets Hub. Other available datasets include:
-
 - `swift/pile-val-backup` from modelscope for addressing HF network issue
 - `BAAI/CCI3-HQ` for Chinese
 - `codeparrot/github-code-clean` for code
+- `HuggingFaceH4/ultrachat_200k` for chat data
 - `madao33/new-title-chinese` for Chinese
 - `mbpp` for code
+- `openbmb/Ultra-FineWeb`
 
 ### Customized Dataset
 
@@ -81,6 +117,25 @@ AutoRound supports several quantization configurations:
 - **Int2 Weight Only**
 - **Mixed bits Weight only**
 
+### Supported export Formats
+
+**AutoRound Format**: This format is well-suited for CPU, HPU devices, 2 bits, as well as mixed-precision
+inference. **[2,3,4,8] bits are supported**.
+
+**GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
+community. `q*_k`,`q*_0`,`q*_1` are supported.
+
+**AutoGPTQ Format**: This format is well-suited for symmetric quantization on CUDA devices and is widely adopted by the
+community, **[2,3,4,8] bits are supported**. However, **the
+asymmetric kernel has issues** that can cause considerable accuracy drops, particularly at 2-bit quantization and small
+models. Besides, recently 3 bits may have some accuracy issues in Transformers.
+
+**AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
+adopted within the community, **only 4-bits quantization is supported**.
+
+**llmcompressor Format**: This format is for reusing llmcompressor format,  **only INT8 W8A8 dynamic quantization is
+supported**.
+
 ### Hardware Compatibility
 
 CPU, Intel GPU, HPU and CUDA for both quantization and inference.
@@ -135,7 +190,7 @@ autoround = AutoRound(
 
 output_dir = "./tmp_autoround"
 # format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
-autoround.quantize_and_save(output_dir, format='auto_gptq,auto_awq,auto_round') 
+autoround.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 ```
 
 #### Mixed bits Usage
@@ -151,10 +206,10 @@ model_name = "facebook/opt-125m"
 model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 bits, group_size, sym = 4, 128, True
-layer_config = {#  Supports both full layer names and fuzzy (partial) matching
-  "model.decoder.layers.6.self_attn.out_proj": {"bits": 8, "group_size": 32}, 
-  "model.decoder.layers.*k_proj": {"bits": 2, "group_size": 32}
-  }
+layer_config = {  #  Supports both full layer names and fuzzy (partial) matching
+    "model.decoder.layers.6.self_attn.out_proj": {"bits": 8, "group_size": 32},
+    "model.decoder.layers.*k_proj": {"bits": 2, "group_size": 32},
+}
 autoround = AutoRound(
     model,
     tokenizer,
@@ -165,7 +220,7 @@ autoround = AutoRound(
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='auto_round') 
+autoround.quantize_and_save(output_dir, format="auto_round")
 ```
 
 #### AutoRoundBest recipe
@@ -179,18 +234,11 @@ model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 bits, group_size, sym = 4, 128, True
 autoround = AutoRound(
-    model,
-    tokenizer,
-    bits=bits,
-    group_size=group_size,
-    sym=sym,
-    nsamples=512,
-    iters=1000,
-    low_gpu_mem_usage=True
+    model, tokenizer, bits=bits, group_size=group_size, sym=sym, nsamples=512, iters=1000, low_gpu_mem_usage=True
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='auto_round') 
+autoround.quantize_and_save(output_dir, format="auto_round")
 ```
 #### AutoRoundLight recipe
 This setting offers the best speed (2 - 3X faster than AutoRound), but it may cause a significant accuracy drop for small models and 2-bit quantization. It is recommended for 4-bit settings and models larger than 3B.
@@ -214,12 +262,40 @@ autoround = AutoRound(
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='auto_round') 
+autoround.quantize_and_save(output_dir, format="auto_round")
 ```
+#### Recipe recommendation
+
+In conclusion, we recommend using **auto-round for INT4 and auto-round-best for INT2**. However, you may adjust the
+configuration to suit your specific requirements and available resources.
+
+W4G128 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version
+of PyTorch 2.6.0 with enable_torch_compile):
+
+| Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B      | Qwen2.5-7B-Instruct | Meta-Llama-3.1-8B-Instruct | Falcon3-10B     | Qwen2.5-72B-Instruct |
+|---------|-----------------------|-----------------|---------------------|----------------------------|-----------------|----------------------|
+| 16bits  | 0.4192                | 0.5203          | 0.6470              | 0.6212                     | 0.6151          | 0.7229               |
+| Best    | **0.4137**(7m)        | **0.5142**(23m) | 0.6426(58m)         | **0.6116**(65m)            | **0.6092**(81m) | 0.7242(575m)         |
+| Default | 0.4129(2m)            | 0.5133(6m)      | 0.6441(13m)         | 0.6106(13m)                | 0.6080(18m)     | **0.7252**(118m)     |
+| Light   | 0.4052(2m)            | 0.5108(3m)      | **0.6453**(5m)      | 0.6104(6m)                 | 0.6063(6m)      | 0.7243(37m)          |
+
+<details>
+  <summary>W2G64 results</summary>
+W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted on the Nvidia A100 80G using the version of PyTorch 2.6.0 with enable_torch_compile). We recommend using higher precision for the head, tail, and non-expert modules to alleviate the significant accuracy drop.
+
+| Model   | Qwen2.5-0.5B-Instruct | Falcon3-3B      | Qwen2.5-7B-Instruct | Falcon3-10B     | Qwen2.5-72B-Instruct |
+  |---------|-----------------------|-----------------|---------------------|-----------------|----------------------|
+| 16bits  | 0.4192                | 0.5203          | 0.6470              | 0.6151          | 0.7229               |
+| Best    | **0.2989**(6m)        | **0.4267**(24m) | **0.5343**(56m)     | **0.5207**(79m) | **0.6715**(564m)     |
+| Default | 0.2878(2m)            | 0.4219(6m)      | 0.5209(13m)         | 0.5133(18m)     | 0.6713(122m)         |
+| Light   | 0.2760(2m)            | 0.4063(3m)      | 0.4764(5m)          | 0.4810(7m)      | 0.6581(38m)          |
+
+</details>
 
 ### RTN mode
-AutoRound also supports RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. try setting iters=0 and use group_size=32 for better results.
+AutoRound also supports RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. try setting `iters=0` and use `group_size=32` for better results.
 
+For the GGUF format, we have optimized the RTN algorithm inspired by llamacpp. To use the original (pure) RTN algorithm instead, enable the `--disable_opt_rtn` option.
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
@@ -238,7 +314,7 @@ autoround = AutoRound(
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='auto_round') 
+autoround.quantize_and_save(output_dir, format="auto_round")
 ```
 
 ### GGUF format
@@ -263,8 +339,33 @@ autoround = AutoRound(
 )
 
 output_dir = "./tmp_autoround"
-autoround.quantize_and_save(output_dir, format='gguf:q4_0') # gguf:q4_1, gguf:q*_k_s
+autoround.quantize_and_save(output_dir, format="gguf:q4_k_m")  #  gguf:q*_k_s,gguf:q*_k_0,gguf:q*_k_1,
 ```
+
+
+### Quantization Costs
+
+Testing was conducted on the Nvidia A100 80G using the nightly version of PyTorch 2.6.0.dev20241029+cu124. Please note
+that data
+loading and packing costs have been excluded from the evaluation. **We recommend enabling torch.compile for PyTorch
+versions 2.6 and above.**
+
+To optimize GPU memory usage, in addition to activating `low_gpu_mem_usage`, you can set `gradient_accumulate_steps=8`
+and a
+`batch_size=1`, though this may increase tuning time.
+
+The 3B and 14B models were evaluated on Qwen 2.5, the 8X7B model is Mixtral, while the remaining models utilized LLaMA
+3.1.
+
+| Torch version/Config W4G128                                                                 | 3B            | 8B             | 14B            | 70B             | 8X7B           |
+|---------------------------------------------------------------------------------------------|---------------|----------------|----------------|-----------------|----------------|
+| 2.6  with torch compile                                                                     | 7min<br/>10GB | 12min<br/>18GB | 23min<br/>22GB | 120min<br/>42GB | 28min<br/>46GB |
+| 2.6  with torch compile <br/> low_gpu_mem_usage=True                                        | 12min<br/>6GB | 19min<br/>10GB | 33min<br/>11GB | 140min<br/>25GB | 38min<br/>36GB |
+| 2.6  with torch compile <br/> low_gpu_mem_usage=True <br/> gradient_accumulate_steps=8,bs=1 | 15min<br/>3GB | 25min<br/>6GB  | 45min<br/>7GB  | 187min<br/>19GB | 75min<br/>36GB |
+| 2.5  w/o torch compile                                                                      | 8min<br/>10GB | 16min<br/>20GB | 30min<br/>25GB | 140min<br/>49GB | 50min<br/>49GB |
+
+
+
 
 ### Device/Multi-GPU setting in Quantization
 **The tuning device is specified using the `device` argument in AutoRound API, _not_ through the `device_map` 
@@ -445,12 +546,12 @@ in [Gaudi Guide](https://docs.habana.ai/en/latest/).
 ```python
 import habana_frameworks.torch.core as htcore
 import habana_frameworks.torch.hpu as hthpu
-from transformers import AutoModelForCausalLM,AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
 model_name = "Intel/Qwen2-7B-int4-inc"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name).to('hpu').to(torch.bfloat16)
+model = AutoModelForCausalLM.from_pretrained(model_name).to("hpu").to(torch.bfloat16)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
 print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=False)[0]))
@@ -470,7 +571,9 @@ from auto_round import AutoRoundConfig
 
 model_name = "OPEA/Qwen2.5-1.5B-Instruct-int4-sym-inc"
 quantization_config = AutoRoundConfig(backend="ipex")
-model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto")
+model = AutoModelForCausalLM.from_pretrained(
+    model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto"
+)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)
@@ -500,7 +603,9 @@ from auto_round import AutoRoundConfig
 
 model_name = "ybelkada/opt-125m-gptq-4bit"
 quantization_config = AutoRoundConfig()
-model = AutoModelForCausalLM.from_pretrained(model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto")
+model = AutoModelForCausalLM.from_pretrained(
+    model_name, device_map="cpu", quantization_config=quantization_config, torch_dtype="auto"
+)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 text = "There is a girl who likes adventure,"
 inputs = tokenizer(text, return_tensors="pt").to(model.device)

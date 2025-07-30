@@ -1,0 +1,12 @@
+[38;20m2025-07-28 04:42:08 INFO llm.py L417: start to quantize /models/Qwen3-8B[0m
+Loading checkpoint shards:   0%|          | 0/5 [00:00<?, ?it/s]Loading checkpoint shards:  20%|██        | 1/5 [00:00<00:02,  1.85it/s]Loading checkpoint shards:  40%|████      | 2/5 [00:01<00:01,  1.71it/s]Loading checkpoint shards:  60%|██████    | 3/5 [00:01<00:01,  1.62it/s]Loading checkpoint shards:  80%|████████  | 4/5 [00:02<00:00,  1.71it/s]Loading checkpoint shards: 100%|██████████| 5/5 [00:02<00:00,  2.28it/s]Loading checkpoint shards: 100%|██████████| 5/5 [00:02<00:00,  1.98it/s]
+[38;20m2025-07-28 04:42:14 INFO autoround.py L280: using torch.bfloat16 for quantization tuning[0m
+[38;20m2025-07-28 04:42:14 INFO autoround.py L292: 'enable_torch_compile' is set to `False` by default. Enabling it can reduce tuning cost by 20%, but it might throw an exception.[0m
+[38;20m2025-07-28 04:42:14 INFO utils.py L1280: format gguf:q4_k_m does not support for super_group_size=None, super_bits=None, group_size=128, sym=True, data_type=int, reset to super_group_size=8, super_bits=6, group_size=32, sym=False, data_type=int_asym_dq.[0m
+[38;20m2025-07-28 04:42:14 INFO autoround.py L572: change `scale_dtype` to `torch.float32`[0m
+[33;1m2025-07-28 04:42:14 WARNING autoround.py L492: `iters=0` is recommended when exporting to GGUF format except for bits 3, as we have optimized the RTN method for this case. We are likely to release new algorithm for certain configurations in the future.[0m
+[38;20m2025-07-28 04:42:14 INFO autoround.py L1338: Starting to cache block inputs. This may be slow due to external block layers: ['lm_head'][0m
+2025-07-28 04:42:16,702 INFO config.py L54: PyTorch version 2.7.1 available.
+[38;20m2025-07-28 04:43:24 INFO autoround.py L1357: caching done[0m
+  0%|          | 0/36 [00:00<?, ?it/s]Quantizing model.layers.0:   0%|          | 0/36 [00:01<?, ?it/s]/home/shiqic/miniforge3/envs/auto_round/lib/python3.11/site-packages/torch/autograd/graph.py:824: UserWarning: Flash Attention defaults to a non-deterministic algorithm. To explicitly enable determinism call torch.use_deterministic_algorithms(True, warn_only=False). (Triggered internally at /pytorch/aten/src/ATen/native/transformers/cuda/attention_backward.cu:104.)
+  return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
