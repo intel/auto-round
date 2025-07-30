@@ -2323,6 +2323,7 @@ class AutoRound(object):
                 count+=1
         
         if count > 10:
+            logger.info("不进行选择")
             return
 
         nsamples = min(32, len(outputs))
@@ -2353,8 +2354,10 @@ class AutoRound(object):
         #         self.layer_config[k] = low_config
 
         if len(bits) == 2:
+            logger.info("量化单bit")
             self.choose_one_bit(block,mix_configs,quant_bits,default_config,default_layer_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device)
         else:
+            logger.info("量化多bit")
             self.choose_various_bit(block,mix_configs,quant_bits,default_config,default_layer_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device)
 
 
@@ -2416,9 +2419,7 @@ class AutoRound(object):
         top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=True)[:sum(quant_bits.values())]
         shift = 0
         for k,_ in top_n_loss.items():
-            for n in self.layer_config.keys():
-                if n.endswith(k):
-                    self.layer_config[n] = mix_configs[k]
+            self.layer_config[module.tmp_name] = cur_config
                 
 
 
