@@ -77,7 +77,7 @@ def infer_bits_by_data_type(data_type: str):
     for supported_dtype in SUPPORTED_DTYPES:
         if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
             ##first check the following two bits
-            suc_2str = data_type[len(supported_dtype): len(supported_dtype) + 2]
+            suc_2str = data_type[len(supported_dtype) : len(supported_dtype) + 2]
             if str.isdigit(suc_2str):
                 return int(suc_2str)
             if str.isdigit(data_type[len(supported_dtype)]):
@@ -630,11 +630,11 @@ class CpuInfo(object):
             cmd = "sysctl -n machdep.cpu.core_count"
 
         with subprocess.Popen(
-                args=cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=False,
+            args=cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=False,
         ) as proc:
             proc.wait()
             if proc.stdout:
@@ -786,7 +786,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(
-        model, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D), quant_block_list=None
+    model, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D), quant_block_list=None
 ):
     """Retrieves the names of layers within each block of the model.
 
@@ -1132,9 +1132,9 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
     layer_names = get_layer_names_in_block(model)
     for layer_name in layer_names:
         if (
-                layer_configs is not None
-                and layer_name in layer_configs.keys()
-                and layer_configs[layer_name].get("bits", bits) > 8
+            layer_configs is not None
+            and layer_name in layer_configs.keys()
+            and layer_configs[layer_name].get("bits", bits) > 8
         ):
             continue
 
@@ -1320,15 +1320,16 @@ def set_fake_cuda_device_capability(func=None):
 
 
 def llm_load_model(
-        pretrained_model_name_or_path,
-        trust_remote_code=True,
-        model_dtype=None,
-        device="cpu",
-        low_cpu_mem_mode=0,
-        low_cpu_mem_tmp_dir=None,
-        **kwargs,
+    pretrained_model_name_or_path,
+    trust_remote_code=True,
+    model_dtype=None,
+    device="cpu",
+    low_cpu_mem_mode=0,
+    low_cpu_mem_tmp_dir=None,
+    **kwargs,
 ):
     from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
+
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
     if device_str is not None and "hpu" in device_str:
@@ -1415,12 +1416,12 @@ def llm_load_model(
 
 
 def mllm_load_model(
-        pretrained_model_name_or_path,
-        torch_dtype="auto",
-        use_auto_mapping=True,
-        trust_remote_code=True,
-        model_dtype=None,
-        **kwargs,
+    pretrained_model_name_or_path,
+    torch_dtype="auto",
+    use_auto_mapping=True,
+    trust_remote_code=True,
+    model_dtype=None,
+    **kwargs,
 ):
     import json
 
@@ -1479,7 +1480,7 @@ def mllm_load_model(
             )
         else:
             if architectures.endswith("Model") and hasattr(
-                    transformers, n := architectures.replace("Model", "ForConditionalGeneration")
+                transformers, n := architectures.replace("Model", "ForConditionalGeneration")
             ):
                 cls = getattr(transformers, n)
             elif hasattr(transformers, architectures):
@@ -1784,9 +1785,9 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
 
     n_gqa = 1
     if (
-            hasattr(model, "config")
-            and hasattr(model.config, "num_attention_heads")
-            and hasattr(model.config, "num_key_value_heads")
+        hasattr(model, "config")
+        and hasattr(model.config, "num_attention_heads")
+        and hasattr(model.config, "num_key_value_heads")
     ):
         n_gqa = model.config.num_attention_heads // model.config.num_key_value_heads
     n_expert = 0
@@ -1827,14 +1828,14 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
                     f"Setting layer_config requires providing bits, {layer_name} has not bits,"
                     f" using bits={target_bits} instead."
                 )
-                new_type = new_type[:bits_index] + target_bits + new_type[bits_index + 1:]
+                new_type = new_type[:bits_index] + target_bits + new_type[bits_index + 1 :]
             else:
-                new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
+                new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
             new_type = _search_gguf_type(new_type)
             if new_type is None:
                 raise ValueError(f"invalid bit setting for {layer_name}")
         elif target_bits is not None and "bits" in config and config["bits"] != target_bits:
-            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
+            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
             new_type = _search_gguf_type(new_type)
             if new_type is None:
                 raise ValueError(f"invalid bit setting for {layer_name}")
@@ -1863,7 +1864,7 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             elif target_gguf_format == "gguf:q3_k_l":
                 new_type = "gguf:q5_k"
             elif (target_gguf_format == "gguf:q4_k_m" or target_gguf_format == "gguf:q5_k_m") and _use_more_bits(
-                    i_layer, n_layer
+                i_layer, n_layer
             ):
                 new_type = "gguf:q6_k"
             elif target_gguf_format == "gguf:q4_k_s" and i_attention_wv < 4:
@@ -1918,9 +1919,9 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             elif target_gguf_format == "gguf:q5_k_m" and _use_more_bits(i_layer, n_layer):
                 new_type = "gguf:q6_k"
             elif (
-                    target_gguf_format == "gguf:q4_k_s"
-                    and model_class.model_arch != gguf.MODEL_ARCH.FALCON
-                    and i_layer < n_layer / 8
+                target_gguf_format == "gguf:q4_k_s"
+                and model_class.model_arch != gguf.MODEL_ARCH.FALCON
+                and i_layer < n_layer / 8
             ):
                 new_type = "gguf:q5_k"
             elif (target_gguf_format == "gguf:q4_0" or target_gguf_format == "gguf:q5_0") and i_layer < n_layer / 8:
@@ -1935,12 +1936,12 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             if gguf.MODEL_ARCH.FALCON != model_class.model_arch:
                 if n_expert == 8:
                     if target_gguf_format in (
-                            "gguf:q2_k",
-                            "gguf:q3_k_s",
-                            "gguf:q3_k_m",
-                            "gguf:q4_k_s",
-                            "gguf:q4_k_m",
-                            "gguf:q5_k",
+                        "gguf:q2_k",
+                        "gguf:q3_k_s",
+                        "gguf:q3_k_m",
+                        "gguf:q4_k_s",
+                        "gguf:q4_k_m",
+                        "gguf:q5_k",
                     ):
                         new_type = "gguf:q5_k"
                     elif target_gguf_format == "gguf:q2_k":
@@ -1979,10 +1980,10 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             kv_b_shape = get_module(model, layer_name).weight.shape
 
             if (
-                    qk_nope_head_dim < QK_K
-                    or qk_nope_head_dim % QK_K != 0
-                    or kv_b_shape[-1] < QK_K
-                    or kv_b_shape[-1] % QK_K != 0
+                qk_nope_head_dim < QK_K
+                or qk_nope_head_dim % QK_K != 0
+                or kv_b_shape[-1] < QK_K
+                or kv_b_shape[-1] % QK_K != 0
             ):
                 fallback = True
             if fallback:
@@ -2103,32 +2104,28 @@ def dequant_block_fp8_weight(weight, weight_scale, block_size):
         weight_scale = weight_scale.view(weight_scale_m, 1, weight_scale_n, 1)
         weight = weight.view(weight_scale_m, block_size_m, weight_scale_n, block_size_n)
         dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
-        dequant_weight = dequant_weight.view(weight_scale_m*block_size_m, weight_scale_n*block_size_n)
+        dequant_weight = dequant_weight.view(weight_scale_m * block_size_m, weight_scale_n * block_size_n)
     elif weight_shape_len == 3:
         fd, weight_scale_m, weight_scale_n = weight_scale.shape
         weight_scale = weight_scale.view(fd, weight_scale_m, 1, weight_scale_n, 1)
         weight = weight.view(fd, weight_scale_m, block_size_m, weight_scale_n, block_size_n)
         dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
-        dequant_weight = dequant_weight.view(fd, weight_scale_m*block_size_m, weight_scale_n*block_size_n)
+        dequant_weight = dequant_weight.view(fd, weight_scale_m * block_size_m, weight_scale_n * block_size_n)
     else:
         raise ValueError("Only support original weight shape is either 2 or 3")
-
 
     return dequant_weight
 
 
 def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
-    """
-    """
-    new_layer = torch.nn.Linear(
-        layer.in_features, layer.out_features, bias=layer.bias is not None,dtype=dtype
-    )
+    """ """
+    new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
     if layer.bias:
         new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
-    keys = get_quant_keys() +["tmp_name"]
+    keys = get_quant_keys() + ["tmp_name"]
     for key in keys:
         setattr(new_layer, key, getattr(layer, key, None))
-    dq_weight = dequant_block_fp8_weight(layer.weight,layer.weight_scale_inv,layer.block_size)
+    dq_weight = dequant_block_fp8_weight(layer.weight, layer.weight_scale_inv, layer.block_size)
     new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
     return new_layer
 

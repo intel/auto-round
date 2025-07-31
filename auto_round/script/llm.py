@@ -65,10 +65,10 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default="0",
             type=str,
             help="the device to be used for tuning. "
-                 "Currently, device settings support CPU, GPU, and HPU."
-                 "The default is set to cuda:0,"
-                 "allowing for automatic detection and switch to HPU or CPU."
-                 "set --device 0,1,2 to use multiple cards.",
+            "Currently, device settings support CPU, GPU, and HPU."
+            "The default is set to cuda:0,"
+            "allowing for automatic detection and switch to HPU or CPU."
+            "set --device 0,1,2 to use multiple cards.",
         )
 
         self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
@@ -110,7 +110,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--task",
             nargs="?",
             const="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
-                  "openbookqa,boolq,arc_easy,arc_challenge",
+            "openbookqa,boolq,arc_easy,arc_challenge",
             default=None,
             help="lm-eval tasks",
         )
@@ -151,12 +151,12 @@ class BasicArgumentParser(argparse.ArgumentParser):
             type=int,
             choices=[0, 1, 2],
             help="choose which low cpu memory mode to use. "
-                 "Can significantly reduce cpu memory footprint but cost more time."
-                 "1 means choose block-wise mode, load the weights of each block"
-                 " from disk when tuning and release the memory of the block after tuning."
-                 "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
-                 " minimum memory consumption and also slowest running speed."
-                 "others means not use low cpu memory. Default to 0, not use low cpu memory.",
+            "Can significantly reduce cpu memory footprint but cost more time."
+            "1 means choose block-wise mode, load the weights of each block"
+            " from disk when tuning and release the memory of the block after tuning."
+            "2 means choose layer-wise mode, load the weights of each layer from disk when tuning,"
+            " minimum memory consumption and also slowest running speed."
+            "others means not use low cpu memory. Default to 0, not use low cpu memory.",
         )
 
         self.add_argument(
@@ -164,7 +164,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             default=None,
             type=str,
             help="temporary work space to store the temporary files "
-                 "when using low cpu memory mode. Will remove after tuning.",
+            "when using low cpu memory mode. Will remove after tuning.",
         )
 
         self.add_argument(
@@ -241,17 +241,17 @@ class EvalArgumentParser(argparse.ArgumentParser):
             default="0",
             type=str,
             help="the device to be used for tuning. "
-                 "Currently, device settings support CPU, GPU, and HPU."
-                 "The default is set to cuda:0,"
-                 "allowing for automatic detection and switch to HPU or CPU."
-                 "set --device 0,1,2 to use multiple cards.",
+            "Currently, device settings support CPU, GPU, and HPU."
+            "The default is set to cuda:0,"
+            "allowing for automatic detection and switch to HPU or CPU."
+            "set --device 0,1,2 to use multiple cards.",
         )
 
         self.add_argument(
             "--tasks",
             "--task",
             default="lambada_openai,hellaswag,winogrande,piqa,mmlu,wikitext,truthfulqa_mc1,"
-                    "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
+            "truthfulqa_mc2,openbookqa,boolq,rte,arc_easy,arc_challenge",
             help="lm-eval tasks",
         )
         self.add_argument(
@@ -753,15 +753,15 @@ def eval(args):
 
 
 def eval_task_by_task(
-        model,
-        device=None,
-        tasks=None,
-        tokenizer=None,
-        batch_size=None,
-        max_batch_size=64,
-        trust_remote_code=True,
-        eval_model_dtype=None,
-        retry_times=3,
+    model,
+    device=None,
+    tasks=None,
+    tokenizer=None,
+    batch_size=None,
+    max_batch_size=64,
+    trust_remote_code=True,
+    eval_model_dtype=None,
+    retry_times=3,
 ):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
