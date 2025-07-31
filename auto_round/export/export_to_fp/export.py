@@ -12,25 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-
-from .qlinear_fp import QuantLinear  # , get_fp_qlinear
-from auto_round.utils import check_to_quantized, get_block_names, \
-        get_module, logger, set_module, SUPPORTED_LAYER_TYPES, \
-        filter_quantization_config, check_start_with_block_name
 import copy
+import inspect
 import json
 import os
-
-import torch.nn as nn
-import transformers
+from concurrent.futures import ThreadPoolExecutor
 
 import threadpoolctl as tctl
-import inspect
+import torch
+import torch.nn as nn
+import transformers
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
+
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_start_with_block_name,
+    check_to_quantized,
+    filter_quantization_config,
+    get_block_names,
+    get_module,
+    logger,
+    set_module,
+)
 from auto_round.wrapper import WrapperWALayer
 
+from .qlinear_fp import QuantLinear  # , get_fp_qlinear
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -47,13 +53,8 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     Returns:
         list: A list of strings indicating which configuration parameters do not match.
     """
-    expected_config = {"data_type": data_type,
-                       "bits": bits,
-                       "group_size": group_size,
-                       "sym": sym
-                       }
+    expected_config = {"data_type": data_type, "bits": bits, "group_size": group_size, "sym": sym}
     return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
-
 
 
 def pack_layer(name, model, backend, data_type, **kwargs):
@@ -61,7 +62,7 @@ def pack_layer(name, model, backend, data_type, **kwargs):
         return
     layer = get_module(model, name)
 
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES): ##already packed
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
 
     bits = layer.bits
@@ -74,7 +75,8 @@ def pack_layer(name, model, backend, data_type, **kwargs):
         if not getattr(layer, "input_global_scale", None):
             assert hasattr(layer, "act_max")
             from auto_round.data_type.nvfp import calculate_gparam
-            input_global_scale = calculate_gparam(layer.act_max, layer.group_size) #, model.device
+
+            input_global_scale = calculate_gparam(layer.act_max, layer.group_size)  # , model.device
             setattr(layer, "input_global_scale", input_global_scale)
 
     group_size = layer.group_size
@@ -97,8 +99,13 @@ def pack_layer(name, model, backend, data_type, **kwargs):
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
     new_layer = QuantLinear(  ##pylint: disable=E1123
-        bits, group_size, in_features, out_features,
-        bias, weight_dtype=layer.weight.dtype, sym=sym,
+        bits,
+        group_size,
+        in_features,
+        out_features,
+        bias,
+        weight_dtype=layer.weight.dtype,
+        sym=sym,
         data_type=data_type,
         act_bits=act_bits,
         act_data_type=act_data_type,
@@ -119,8 +126,7 @@ def pack_layer(name, model, backend, data_type, **kwargs):
     qlayer.to(device)
 
 
-def save_quantized_as_fp(output_dir, inplace=True, # no gemm implements in autoround yet
-                               **kwargs):
+def save_quantized_as_fp(output_dir, inplace=True, **kwargs):  # no gemm implements in autoround yet
     """
     Saves a quantized model in the auto-round mxfp format.
 
@@ -154,10 +160,10 @@ def save_quantized_as_fp(output_dir, inplace=True, # no gemm implements in autor
     data_type = kwargs.get("data_type", None)
     act_bits = kwargs.get("act_bits", None)
     act_data_type = kwargs.get("act_data_type", None)
-    safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
+    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-    
+
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
@@ -165,11 +171,11 @@ def save_quantized_as_fp(output_dir, inplace=True, # no gemm implements in autor
     ## TODO add mxfp quant config args, should I sync with compressed-tensor
     # backend = "mx_fp4e2m1"
     quantization_config["packing_format"] = backend
-    quantization_config["scale_format"] = "e8m0",
-    quantization_config["scale_calculation_mode"] = "even",
+    quantization_config["scale_format"] = ("e8m0",)
+    quantization_config["scale_calculation_mode"] = ("even",)
     # quantization_config["weight_format"] = "e2m1",
     # quantization_config["scale_type"] = "float",
-    
+
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     extra_config = {}
@@ -189,28 +195,30 @@ def save_quantized_as_fp(output_dir, inplace=True, # no gemm implements in autor
 
         # update input_global_scale
         from auto_round.data_type.utils import update_fused_layer_global_scales
+
         modules = list(model.modules())
         for module in tqdm(modules, desc="Update input global scale for fuse modules"):
             update_fused_layer_global_scales(module, base_name="input")
-    
+
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
-    if isinstance(block_name_to_quantize, str): \
-            block_name_to_quantize = block_name_to_quantize.split(",")
+    if isinstance(block_name_to_quantize, str):
+        block_name_to_quantize = block_name_to_quantize.split(",")
     elif isinstance(block_name_to_quantize, list):
         for i in range(len(block_name_to_quantize)):
-            block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip('.')
+            block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip(".")
 
     for layer_name in layer_config:
-        if not layer_config[layer_name]["in_blocks"] and layer_config[layer_name][
-            "bits"] <= 8:  ##lm head ##TODO fix act and so on
+        if (
+            not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
+        ):  ##lm head ##TODO fix act and so on
             extra_config[layer_name] = {}
             extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
             extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
             extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
             extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
         elif layer_config[layer_name]["in_blocks"] or (
-                block_name_to_quantize is not None and 
-                check_start_with_block_name(layer_name, block_name_to_quantize)):
+            block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
+        ):
             neq_keys = check_neq_config(
                 layer_config[layer_name],
                 data_type=quantization_config["data_type"],
@@ -231,6 +239,7 @@ def save_quantized_as_fp(output_dir, inplace=True, # no gemm implements in autor
         max_workers = 2  ## 2 with cuda packing will cause hang occasionally
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         with tqdm(total=len(names), leave=True) as pbar:
+
             def wrapper(name):
                 pbar.set_description(f"packing {name}")
                 with tctl.threadpool_limits(limits=1):
@@ -262,8 +271,7 @@ def save_quantized_as_fp(output_dir, inplace=True, # no gemm implements in autor
     return model
 
 
-def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB",
-         safe_serialization: bool = True, dtype=None):
+def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None):
     """Save model state dict and configs.
 
     Args:
@@ -287,13 +295,12 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB",
     model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
-        with open(config_path, 'r') as file:
+        with open(config_path, "r") as file:
             data = json.load(file)
         data["torch_dtype"] = str(dtype).split(".")[-1]
-        with open(config_path, 'w') as file:
+        with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-

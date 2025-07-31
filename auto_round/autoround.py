@@ -635,7 +635,9 @@ class AutoRound(object):
                         f" W{self.bits}A{self.act_bits} model, but got bits={self.bits},"
                         f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
                     )
-                elif format != "fake" and "nv_fp" not in format: ## TODO, change to llm-compressor and auto-round format save
+                elif (
+                    format != "fake" and "nv_fp" not in format
+                ):  ## TODO, change to llm-compressor and auto-round format save
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
                         " with fp8 dtype activation for activation quantization."
@@ -1124,11 +1126,11 @@ class AutoRound(object):
                     )
                 else:
                     kwargs = {}
-                    if "mx"  in self.formats[0] or "nv" in self.formats[0]:
+                    if "mx" in self.formats[0] or "nv" in self.formats[0]:
                         kwargs["data_type"] = self.data_type
                         kwargs["act_bits"] = self.act_bits
                         kwargs["act_data_type"] = self.act_data_type
-                        # only pack origin layer, wrapper_layer module will be droped
+                        # only pack origin layer, wrapper_layer module will be dropped
                     PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], **kwargs)
 
                 # if self.low_gpu_mem_usage:
@@ -1154,6 +1156,7 @@ class AutoRound(object):
         if "nv_fp" in self.data_type:
             from auto_round.data_type.nvfp import calculate_gparam
             from auto_round.data_type.utils import update_fused_layer_global_scales
+
             pbar = tqdm(all_to_quantized_module_names)
             for name in pbar:
                 pbar.set_description(f"Calculate weight global scale: {name}")
@@ -1344,9 +1347,14 @@ class AutoRound(object):
             formats = self.formats
             if (
                 len(formats) == 1
-                and ("awq" in formats[0] or "gptq" in formats[0] or 
-                     "auto_round" in formats[0] or "gguf" in formats[0] or
-                     "mx" in formats[0] or "nv" in formats[0])
+                and (
+                    "awq" in formats[0]
+                    or "gptq" in formats[0]
+                    or "auto_round" in formats[0]
+                    or "gguf" in formats[0]
+                    or "mx" in formats[0]
+                    or "nv" in formats[0]
+                )
                 and self.inplace
             ):
                 self.is_packing_immediate = True
@@ -2274,8 +2282,9 @@ class AutoRound(object):
         quantized_layer_names, unquantized_layer_names = wrapper_block(
             block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device
         )
-        if "nv_fp" in self.data_type: # enable qkv and moe strcture global_scale fuse 
+        if "nv_fp" in self.data_type:  # enable qkv and moe structure global_scale fuse
             from auto_round.data_type.utils import update_fused_layer_global_scales
+
             modules = block.modules()
             for module in modules:
                 update_fused_layer_global_scales(module)
@@ -2519,11 +2528,13 @@ class AutoRound(object):
                             )
                         else:
                             kwargs = {}
-                            if "mx"  in self.formats[0] or "nv" in self.formats[0]:
+                            if "mx" in self.formats[0] or "nv" in self.formats[0]:
                                 kwargs["data_type"] = self.data_type
                                 kwargs["act_bits"] = self.act_bits
                                 kwargs["act_data_type"] = self.act_data_type
-                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0], **kwargs)
+                            PACKING_LAYER_WITH_FORMAT[target_backend](
+                                tmp_m.tmp_name, self.model, self.formats[0], **kwargs
+                            )
         pbar.set_description("Quantizing done")
         pbar.update(1)
         pbar.close()
@@ -3084,4 +3095,3 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
-

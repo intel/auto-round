@@ -48,7 +48,7 @@ class SupportedFormats:
             "itrex_xpu",
             "fake",
             "mx_fp",
-            "nv_fp"
+            "nv_fp",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -2055,4 +2055,3 @@ def check_need_act_calibration(is_act_dynamic, act_data_type=None):
     if act_data_type is not None and "static" in act_data_type:
         return True
     return False
-

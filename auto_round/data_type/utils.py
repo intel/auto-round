@@ -13,13 +13,13 @@
 # limitations under the License.
 
 from functools import lru_cache
+from typing import List
 
 import torch
+from torch.nn import Linear, Module
 
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import logger
-from torch.nn import Linear, Module
-from typing import List
 
 
 def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int):
@@ -254,11 +254,10 @@ def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weig
     base_name: op name for fuse usage, option: weight, input
     """
     global_scale_name = f"{base_name}_global_scale"
+
     def _is_attention_module(module: Module):
         return "attention" in module.__class__.__name__.lower() and (
-            hasattr(module, "k_proj")
-            or hasattr(module, "v_proj")
-            or hasattr(module, "qkv_proj")
+            hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
         )
 
     def _is_mlp_module(module: Module):
@@ -300,4 +299,3 @@ def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weig
         setattr(submodule.up_proj, global_scale_name, global_scale.clone())
 
         del global_scale
-
