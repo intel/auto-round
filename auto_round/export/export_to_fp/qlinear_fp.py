@@ -88,6 +88,7 @@ class QuantLinear(nn.Module):
         self.sym = kwargs.get("sym", True)
         self.group_size = group_size if group_size != -1 else infeatures
         self.maxq = 2**self.bits - 1
+        self.act_bits = kwargs.get("act_bits", None)
 
         weight_name = "weight" if self.bits == 8 and self.is_mx else "weight_packed"
         ## TODO check the dtype of weight_packed and weight_scale
@@ -122,6 +123,14 @@ class QuantLinear(nn.Module):
                     dtype=torch.float32,
                 ),
             )
+        if self.is_nv and self.act_bits <= 8:
+            self.register_buffer(
+                "input_global_scale",
+                torch.zeros(
+                    (1),
+                    dtype=torch.float32,
+                ),
+            )
         if bias:
             self.register_buffer(
                 "bias", torch.zeros((outfeatures), dtype=torch.float16)
@@ -136,7 +145,7 @@ class QuantLinear(nn.Module):
         pass
 
 
-    def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None):
+    def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None):
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
         device = "cpu"
@@ -175,6 +184,9 @@ class QuantLinear(nn.Module):
         
         if global_scale is not None:
             self.weight_global_scale = global_scale.to(torch.float32)
+
+        if input_global_scale is not None:
+            self.input_global_scale = input_global_scale.to(torch.float32)
         return
 
 
