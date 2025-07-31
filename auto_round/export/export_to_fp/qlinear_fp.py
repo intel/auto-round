@@ -34,17 +34,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-from auto_round.data_type.mxfp import FP32_MIN_NORMAL, FP32_EXPONENT_BIAS
+
+from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+
 # from auto_round.utils import get_weight_compress_dtype
 logger = getLogger(__name__)
 E8M0_EXPONENT_BIAS = 127
 E8M0_EXPONENT_NAN_VAL = 255
 
-__all__ = [
-    "QuantLinear"
-]
+__all__ = ["QuantLinear"]
 
 FLOAT_TO_E2M1 = [
     0.0,
@@ -56,6 +56,7 @@ FLOAT_TO_E2M1 = [
     4.0,
     6.0,
 ]
+
 
 class QuantLinear(nn.Module):
     """
@@ -72,13 +73,11 @@ class QuantLinear(nn.Module):
             raise NotImplementedError("Only 4,8 bits are supported.")
         if "mx" in data_type and group_size != 32:
             raise NotImplementedError("Only group_size 32 are supported for mxfp.")
-        if  "nv" in data_type and group_size not in [16, 32]:
+        if "nv" in data_type and group_size not in [16, 32]:
             raise NotImplementedError("Only group_size 16 are supported for nvfp.")
 
         if infeatures % 32 != 0 or outfeatures % 32 != 0:
-            raise NotImplementedError(
-                "in_feature and out_feature must be divisible by 32."
-            )
+            raise NotImplementedError("in_feature and out_feature must be divisible by 32.")
         self.is_mx = "mx" in data_type
         self.is_nv = "nv" in data_type
         self.infeatures = infeatures
@@ -111,7 +110,7 @@ class QuantLinear(nn.Module):
             "weight_scale",
             torch.zeros(
                 (math.ceil(infeatures / self.group_size), outfeatures),
-                dtype=torch.float16, ## TODO update to correct scale dtype for different bits
+                dtype=torch.float16,  ## TODO update to correct scale dtype for different bits
             ),
         )
         if self.is_nv and self.bits == 4:
@@ -123,18 +122,14 @@ class QuantLinear(nn.Module):
                 ),
             )
         if bias:
-            self.register_buffer(
-                "bias", torch.zeros((outfeatures), dtype=torch.float16)
-            )
+            self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
         else:
             self.bias = None
 
         self.trainable = trainable
 
-    
     def post_init(self):
         pass
-
 
     def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None):
         if linear.bias is not None:
@@ -145,7 +140,7 @@ class QuantLinear(nn.Module):
         elif torch.xpu.is_available():
             device = "xpu:0"
 
-        W = linear.weight.data.to(device).clone() # TODO check is nesscessory
+        W = linear.weight.data.to(device).clone()  # TODO check is nesscessory
         if isinstance(linear, nn.Conv2d):
             W = W.flatten(1)
         if isinstance(linear, transformers.pytorch_utils.Conv1D):
@@ -154,8 +149,9 @@ class QuantLinear(nn.Module):
         tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(linear.weight, self.group_size)
         if self.is_nv:
             assert global_scale is not None and global_scale.numel() == 1
-            scaled_tensor = (tensor.to(global_scale.dtype)
-                             * get_reciprocal(scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)))
+            scaled_tensor = tensor.to(global_scale.dtype) * get_reciprocal(
+                scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)
+            )
             scaled_tensor = cast_to_fp4(torch.clamp(scaled_tensor, -6.0, 6.0))
         else:
             scaled_tensor = tensor / (2 ** scales.reshape(tensor.shape[0], -1))
@@ -164,7 +160,7 @@ class QuantLinear(nn.Module):
             final_scale = (scales + E8M0_EXPONENT_BIAS).clamp(0, E8M0_EXPONENT_NAN_VAL).to(torch.uint8)
         else:
             final_scale = scales.to(torch.float8_e4m3fn)
-        self.weight_scale =  final_scale
+        self.weight_scale = final_scale
         # self.weight =  get_compressed_weight(scaled_tensor, self.bits, self.data_type) ## TODO
         if self.bits == 8:
             compress_dtype = torch.float8_e4m3fn
@@ -172,11 +168,10 @@ class QuantLinear(nn.Module):
         else:
             compress_dtype = torch.uint8
             self.weight_packed = self.pack_fp4_to_uint8(scaled_tensor)
-        
+
         if global_scale is not None:
             self.weight_global_scale = global_scale.to(torch.float32)
         return
-
 
     def pack_fp4_to_uint8(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -201,7 +196,7 @@ class QuantLinear(nn.Module):
         # Find closest valid FP4 value index for each element
         abs_x = torch.abs(x)
         abs_indices = torch.zeros_like(abs_x, dtype=torch.long)
-        for i, val in enumerate(kE2M1): # TODO any optimize?
+        for i, val in enumerate(kE2M1):  # TODO any optimize?
             abs_indices = torch.where(torch.isclose(abs_x, val), i, abs_indices)
 
         # Apply sign bit (bit 3) to get final 4-bit representation
@@ -221,7 +216,6 @@ class QuantLinear(nn.Module):
         packed = (indices[:, 0] | (indices[:, 1] << 4)).to(torch.uint8)
 
         return packed.reshape(m, n // 2)
-
 
     # def get_fp_scale(self, scale_e8m0):
     #     E8M0_EXPONENT_BIAS = 127
@@ -247,7 +241,6 @@ class QuantLinear(nn.Module):
     #     compress_dtype = None
     #     if self.is_mx:
     #         if bits == 4:
-            
-    #     if self.is_nv:
-    #         pass ## TODO 
 
+    #     if self.is_nv:
+    #         pass ## TODO
