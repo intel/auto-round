@@ -29,6 +29,8 @@ import threadpoolctl as tctl
 import inspect
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
+from auto_round.wrapper import WrapperWALayer
+
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -54,17 +56,26 @@ def check_neq_config(config, data_type, bits, group_size, sym):
 
 
 
-def pack_layer(name, model, backend, data_type):
+def pack_layer(name, model, backend, data_type, **kwargs):
     if name == "lm_head":  ##dese not support lm-head
         return
     layer = get_module(model, name)
 
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES): ##already packed
         return
 
     bits = layer.bits
+    act_bits = kwargs.get("act_bits", None)
+    act_data_type = kwargs.get("act_data_type", None)
     if bits > 8:
         return
+
+    if "nv_fp" in data_type and act_bits <= 8:
+        if not getattr(layer, "input_global_scale", None):
+            assert hasattr(layer, "act_max")
+            from auto_round.data_type.nvfp import calculate_gparam
+            input_global_scale = calculate_gparam(layer.act_max, layer.group_size) #, model.device
+            setattr(layer, "input_global_scale", input_global_scale)
 
     group_size = layer.group_size
     sym = layer.sym
@@ -88,7 +99,9 @@ def pack_layer(name, model, backend, data_type):
     new_layer = QuantLinear(  ##pylint: disable=E1123
         bits, group_size, in_features, out_features,
         bias, weight_dtype=layer.weight.dtype, sym=sym,
-        data_type=data_type
+        data_type=data_type,
+        act_bits=act_bits,
+        act_data_type=act_data_type,
     )
 
     new_layer.device = device
@@ -96,11 +109,12 @@ def pack_layer(name, model, backend, data_type):
     qlayer = new_layer
     scale = layer.scale
     global_scale = getattr(layer, "weight_global_scale", None)
+    input_global_scale = getattr(layer, "input_global_scale", None)
     # zero = layer.zp
     # so far can only pack layer on CPU
     qlayer.to("cpu")
     layer, scale = layer.to("cpu"), scale.to("cpu")
-    qlayer.pack(layer, scale, global_scale=global_scale)
+    qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale)
     ## no zeros to handle, as mxfp not support asym quantization
     qlayer.to(device)
 
@@ -138,6 +152,8 @@ def save_quantized_as_fp(output_dir, inplace=True, # no gemm implements in autor
     model = kwargs["model"]
     backend = kwargs.get("backend", None)
     data_type = kwargs.get("data_type", None)
+    act_bits = kwargs.get("act_bits", None)
+    act_data_type = kwargs.get("act_data_type", None)
     safe_serialization = True if 'safe_serialization' not in kwargs.keys() else kwargs["safe_serialization"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
@@ -153,10 +169,30 @@ def save_quantized_as_fp(output_dir, inplace=True, # no gemm implements in autor
     quantization_config["scale_calculation_mode"] = "even",
     # quantization_config["weight_format"] = "e2m1",
     # quantization_config["scale_type"] = "float",
-
+    
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     extra_config = {}
+
+    if act_bits <= 8:
+        # revert WrapperWALayer for offline usage
+        # for n, m in model.named_modules():
+        #     if isinstance(m, WrapperWALayer):
+        #         ori_layer = m.orig_layer
+        #         if getattr(orig_layer, "input_global_scale") is None:
+        #             assert hasattr(orig_layer, "act_max")
+        #             from auto_round.data_type.nvfp import calculate_gparam
+        #             input_global_scale = calculate_gparam(orig_layer.act_max, orig_layer.group_size, model.device)
+        #             setattr(orig_layer, "input_global_scale", input_global_scale)
+        #             delattr(orig_layer, "act_max")
+        #         set_module(model, n, ori_layer)
+
+        # update input_global_scale
+        from auto_round.data_type.utils import update_fused_layer_global_scales
+        modules = list(model.modules())
+        for module in tqdm(modules, desc="Update input global scale for fuse modules"):
+            update_fused_layer_global_scales(module, base_name="input")
+    
     block_name_to_quantize = quantization_config["block_name_to_quantize"]
     if isinstance(block_name_to_quantize, str): \
             block_name_to_quantize = block_name_to_quantize.split(",")
