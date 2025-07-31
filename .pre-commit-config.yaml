@@ -3,13 +3,23 @@ ci:
   autoupdate_schedule: quarterly
 
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-json
+      - id: check-yaml
+      - id: debug-statements
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
   - repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.5
     hooks:
       - id: insert-license
         files: |
           (?x)^(
-            auto_round/.*(py|yaml|yml|sh)
+            auto_round/.*(py|yaml|yml|sh)|
+            auto_round_extension/.*(py|yaml|yml|sh)
           )$
         args:
           [
@@ -19,6 +29,20 @@ repos:
             --skip-license-insertion-comment=Copyright,
           ]
 
+  - repo: https://github.com/psf/black.git
+    rev: 25.1.0
+    hooks:
+      - id: black
+        files: (.*\.py)$
+
+  - repo: https://github.com/asottile/blacken-docs
+    rev: 1.19.1
+    hooks:
+      - id: blacken-docs
+        args: [--line-length=120, --skip-errors]
+        additional_dependencies:
+          - black==25.1.0
+
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.1
     hooks:
@@ -26,7 +50,14 @@ repos:
         args: [-w]
         additional_dependencies:
           - tomli
-        exclude: |
-          (?x)^(
-              examples/.*(txt|patch)
-          )$
+
+  - repo: https://github.com/pycqa/isort
+    rev: 6.0.1
+    hooks:
+      - id: isort
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.5
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix, --no-cache]

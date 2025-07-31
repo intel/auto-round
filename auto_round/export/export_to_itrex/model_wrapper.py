@@ -19,12 +19,13 @@
 # since the model classes inherit torch.nn.Module.
 import math
 
+import numpy as np
 import torch
 from packaging.version import Version
 from torch.autograd import Function
 from torch.nn import functional as F
-import numpy as np
-from auto_round.utils import logger, can_pack_with_numba
+
+from auto_round.utils import can_pack_with_numba, logger
 
 NF4 = [
     -1.0,
@@ -96,7 +97,7 @@ class WeightOnlyLinear(torch.nn.Module):
         compression_dim=1,
         device="cpu",
         use_optimum_format=True,
-        use_legacy_pack = False,
+        use_legacy_pack=False,
     ):
         super().__init__()
         self.use_optimum_format = use_optimum_format
@@ -198,16 +199,12 @@ class WeightOnlyLinear(torch.nn.Module):
                 self.register_buffer("bias", torch.zeros(self.out_features, dtype=self.float_type).to(device))
             else:
                 self.bias = None
-        self.pack_func = (
-            self.pack_tensor_native_impl if use_legacy_pack else self.pack_tensor
-        )
+        self.pack_func = self.pack_tensor_native_impl if use_legacy_pack else self.pack_tensor
 
     def pack_tensor_native_impl(self, raw_tensor):
         mask = torch.tensor(2**self.bits - 1, dtype=self.compression_dtype).to(self.device)
         target_len = math.ceil(raw_tensor.shape[1] / self.n_pack)
-        packed_tensor = torch.zeros(
-            raw_tensor.shape[0], target_len, dtype=self.compression_dtype
-        ).to(raw_tensor.device)
+        packed_tensor = torch.zeros(raw_tensor.shape[0], target_len, dtype=self.compression_dtype).to(raw_tensor.device)
         for j in range(packed_tensor.shape[1]):
             start = self.n_pack * j
             end = self.n_pack * (j + 1)
@@ -379,12 +376,8 @@ class WeightOnlyLinear(torch.nn.Module):
             tensor: packed tensor.
         """
         target_len = math.ceil(raw_tensor.shape[1] / self.n_pack)
-        packed_tensor = torch.zeros(
-            raw_tensor.shape[0], target_len, dtype=self.compression_dtype
-        ).to(raw_tensor.device)
-        mask = torch.tensor(2**self.bits - 1, dtype=self.compression_dtype).to(
-            raw_tensor.device
-        )
+        packed_tensor = torch.zeros(raw_tensor.shape[0], target_len, dtype=self.compression_dtype).to(raw_tensor.device)
+        mask = torch.tensor(2**self.bits - 1, dtype=self.compression_dtype).to(raw_tensor.device)
         for j in range(packed_tensor.shape[1]):
             start = self.n_pack * j
             end = self.n_pack * (j + 1)
@@ -406,12 +399,8 @@ class WeightOnlyLinear(torch.nn.Module):
         """
         target_dtype = torch.int16
         target_len = packed_tensor.shape[1] * self.n_pack
-        unpacked_tensor = torch.zeros(
-            packed_tensor.shape[0], target_len, dtype=target_dtype
-        ).to(packed_tensor.device)
-        mask = torch.tensor(2**self.bits - 1, dtype=self.compression_dtype).to(
-            packed_tensor.device
-        )
+        unpacked_tensor = torch.zeros(packed_tensor.shape[0], target_len, dtype=target_dtype).to(packed_tensor.device)
+        mask = torch.tensor(2**self.bits - 1, dtype=self.compression_dtype).to(packed_tensor.device)
         for j in range(packed_tensor.shape[1]):
             for e in range(self.n_pack):
                 index = j * self.n_pack + e
@@ -459,14 +448,10 @@ class WeightOnlyLinear(torch.nn.Module):
                     "fallback to torch implementation."
                 )
             )
-            return (
-                self.pack_tensor_with_torch(torch.from_numpy(raw_array)).cpu().numpy()
-            )
+            return self.pack_tensor_with_torch(torch.from_numpy(raw_array)).cpu().numpy()
         out_features, in_features = raw_array.shape
         new_in_features = (in_features + n_pack - 1) // n_pack
-        packed_array = np.zeros(
-            (out_features, new_in_features), dtype=compression_dtype
-        )
+        packed_array = np.zeros((out_features, new_in_features), dtype=compression_dtype)
         raw_array = raw_array.astype(compression_dtype)
         pack_method = bit_packers[pack_func_name]
         return pack_method(raw_array, packed_array, n_pack, new_in_features)
@@ -509,17 +494,11 @@ class WeightOnlyLinear(torch.nn.Module):
         """Unpack the packed tensor with numpy."""
         packed_array = packed_tensor.cpu().numpy()
         target_dtype = np.int16
-        if (
-            self.bits == 8
-            and self.compression_dtype == torch.int8
-            and hasattr(self, "qzeros")
-        ):
+        if self.bits == 8 and self.compression_dtype == torch.int8 and hasattr(self, "qzeros"):
             # special case for unpacking uint8 date from int8 compression_dtype
             target_dtype = np.uint8
         target_len = packed_array.shape[1] * self.n_pack
-        unpacked_array = np.zeros(
-            (packed_array.shape[0], target_len), dtype=target_dtype
-        )
+        unpacked_array = np.zeros((packed_array.shape[0], target_len), dtype=target_dtype)
         mask = np.uint8(2**self.bits - 1)
         for j in range(packed_array.shape[1]):
             for e in range(self.n_pack):
@@ -530,9 +509,7 @@ class WeightOnlyLinear(torch.nn.Module):
                 if hasattr(self, "qzeros"):
                     tmp &= mask
                 unpacked_array[:, index] = tmp.astype(target_dtype)
-        unpacked_tensor = torch.from_numpy(unpacked_array).to(
-            device=packed_tensor.device
-        )
+        unpacked_tensor = torch.from_numpy(unpacked_array).to(device=packed_tensor.device)
         return unpacked_tensor
 
     def pack_tensor(self, raw_tensor):

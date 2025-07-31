@@ -42,7 +42,6 @@ import triton.language as tl
 
 from . import custom_autotune
 
-
 logger = getLogger(__name__)
 
 
@@ -377,6 +376,7 @@ def transpose_quant_matmul_248_kernel(
 @triton.jit
 def silu(x):
     return x * tl.sigmoid(x)
+
 
 def quant_matmul_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq):
     output = torch.empty((input.shape[0], qweight.shape[1]), device=input.device, dtype=input.dtype)

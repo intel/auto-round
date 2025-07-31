@@ -13,13 +13,23 @@
 # limitations under the License.
 
 import os
-import sys
 import shutil
-import torch
-from pathlib import Path
+import sys
 import time
+from pathlib import Path
+
+import torch
+
 from auto_round.export.export_to_gguf.convert import ModelBase, ModelType, get_model_architecture
-from auto_round.utils import logger, LazyImport, get_block_names, flatten_list, check_to_quantized, get_module
+from auto_round.utils import (
+    LazyImport,
+    check_to_quantized,
+    clear_memory,
+    flatten_list,
+    get_block_names,
+    get_module,
+    logger,
+)
 
 TMP_DIR_NAME = "tmp_dir"
 
@@ -49,7 +59,8 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
 
 
 def create_model_class(
-        output_dir, model, layer_config, backend="gguf:q4_0", low_cpu_mem_usage=False, model_type=ModelType.TEXT):
+    output_dir, model, layer_config, backend="gguf:q4_0", low_cpu_mem_usage=False, model_type=ModelType.TEXT
+):
     tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
     with torch.inference_mode():
         hparams = ModelBase.load_hparams(tmp_work_dir)
@@ -69,7 +80,7 @@ def create_model_class(
             logger.error(f"Model {model_architecture} is not supported")
             sys.exit(1)
         model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
-        model_name = model.name_or_path.split('/')
+        model_name = model.name_or_path.split("/")
         if len(model_name[-1]) == 0:
             model_name = model_name[-2]
         else:
@@ -92,21 +103,23 @@ def create_model_class(
             split_max_tensors=False,
             split_max_size=0,
             dry_run=False,
-            small_first_shard=False)
+            small_first_shard=False,
+        )
     return model_instance
 
 
 @torch.inference_mode()
 def pack_gguf_layer(
-        name,
-        model,
-        backend,
-        output_dir,
-        layer_config,
-        tokenizer,
-        processor=None,
-        image_processor=None,
-        model_type=ModelType.TEXT):
+    name,
+    model,
+    backend,
+    output_dir,
+    layer_config,
+    tokenizer,
+    processor=None,
+    image_processor=None,
+    model_type=ModelType.TEXT,
+):
     """Export the model to gguf format."""
     global gguf_model_instance_global
     tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
@@ -125,12 +138,15 @@ def pack_gguf_layer(
 
         gguf_model_instance_global = [
             create_model_class(
-                output_dir, model, layer_config, backend, low_cpu_mem_usage=True, model_type=ModelType.TEXT)
+                output_dir, model, layer_config, backend, low_cpu_mem_usage=True, model_type=ModelType.TEXT
+            )
         ]
         if model_type == ModelType.MMPROJ:
             gguf_model_instance_global.append(
                 create_model_class(
-                    output_dir, model, layer_config, backend, low_cpu_mem_usage=True, model_type=ModelType.MMPROJ))
+                    output_dir, model, layer_config, backend, low_cpu_mem_usage=True, model_type=ModelType.MMPROJ
+                )
+            )
         if not hasattr(model, "last_layer_name_to_block_name"):
             block_name_to_last_layer_name = {}
             block_names = get_block_names(model, quant_vision=True)
@@ -139,10 +155,12 @@ def pack_gguf_layer(
                 if not check_to_quantized(m):
                     continue
                 for block_name in block_names_flatten:
-                    block_name_split = block_name.split('.')
-                    name_split = n.split('.')
-                    if (len(name_split) < len(block_name_split) or
-                            name_split[:len(block_name_split)] != block_name_split):
+                    block_name_split = block_name.split(".")
+                    name_split = n.split(".")
+                    if (
+                        len(name_split) < len(block_name_split)
+                        or name_split[: len(block_name_split)] != block_name_split
+                    ):
                         continue
                     block_name_to_last_layer_name[block_name] = n
             last_layer_name_to_block_name = {v: k for k, v in block_name_to_last_layer_name.items()}
@@ -159,8 +177,7 @@ def pack_gguf_layer(
                 m.weight = None
             if hasattr(m, "bias"):
                 m.bias = None
-        import gc
-        gc.collect()
+        clear_memory()
         model.last_layer_name_to_block_name.pop(name)
         if len(model.last_layer_name_to_block_name) == 0:
             for gguf_model in gguf_model_instance_global:
@@ -191,13 +208,13 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, v
         if image_processor is not None:
             image_processor.save_pretrained(tmp_work_dir)
 
-
         gguf_model_instance_global = [
             create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.TEXT)
         ]
         if vlm:
             gguf_model_instance_global.append(
-                create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.MMPROJ))
+                create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.MMPROJ)
+            )
 
     for gguf_model in gguf_model_instance_global:
         gguf_model.write()

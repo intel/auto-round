@@ -12,24 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import unittest
 import importlib.util
+import unittest
 
 import torch
-
 from transformers.utils.versions import require_version
+
 
 def is_gguf_available():
     return importlib.util.find_spec("gguf") is not None
 
+
 def is_autogptq_available():
     return importlib.util.find_spec("auto_gptq") is not None
+
 
 def is_awq_available():
     return importlib.util.find_spec("awq") is not None
 
+
 def is_optimum_available():
     return importlib.util.find_spec("optimum") is not None
+
 
 def is_ipex_available():
     try:
@@ -38,11 +42,14 @@ def is_ipex_available():
     except ImportError:
         return False
 
+
 def is_itrex_available():
     return importlib.util.find_spec("intel_extension_for_transformers") is not None
 
+
 def is_flash_attn_avaliable():
     return importlib.util.find_spec("flash_attn") is not None
+
 
 def is_gptqmodel_available():
     try:
@@ -51,9 +58,10 @@ def is_gptqmodel_available():
     except ImportError:
         return False
 
+
 def greater_than_050():
     try:
-        require_version("auto-round>=0.5.0")    
+        require_version("auto-round>=0.5.0")
         return True
     except ImportError:
         return False
@@ -126,6 +134,7 @@ def require_itrex(test_case):
     """
     return unittest.skipUnless(is_itrex_available(), "test requires intel-extension-for-transformers")(test_case)
 
+
 def require_optimum(test_case):
     """
     Decorator marking a test that optimum.
@@ -164,7 +173,8 @@ def multi_card(test_case):
 
     """
     return unittest.skipUnless(
-        torch.cuda.is_available() and torch.cuda.device_count() > 1, "test requires multiple cards.")(test_case)
+        torch.cuda.is_available() and torch.cuda.device_count() > 1, "test requires multiple cards."
+    )(test_case)
 
 
 def require_old_version(test_case):
@@ -201,8 +211,3 @@ def require_vlm_env(test_case):
     env_check &= importlib.util.find_spec("xformers") is not None
 
     return unittest.skipUnless(env_check, "Environment is not satisfactory")(test_case)
-    
-
-    
-
-    

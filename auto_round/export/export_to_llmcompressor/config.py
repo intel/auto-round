@@ -14,43 +14,41 @@
 
 
 quantization_config = {
-"config_groups": {
-    "group_0": {
-    "input_activations": {
-        "actorder": None,
-        "block_structure": None,
-        "dynamic": True,
-        "group_size": None,
-        "num_bits": 8,
-        "observer": None,
-        "observer_kwargs": {},
-        "strategy": "token",
-        "symmetric": True,
-        "type": "int"
+    "config_groups": {
+        "group_0": {
+            "input_activations": {
+                "actorder": None,
+                "block_structure": None,
+                "dynamic": True,
+                "group_size": None,
+                "num_bits": 8,
+                "observer": None,
+                "observer_kwargs": {},
+                "strategy": "token",
+                "symmetric": True,
+                "type": "int",
+            },
+            "output_activations": None,
+            "targets": ["Linear"],
+            "weights": {
+                "actorder": None,
+                "block_structure": None,
+                "dynamic": False,
+                "group_size": None,
+                "num_bits": 8,
+                "observer": "minmax",
+                "observer_kwargs": {},
+                "strategy": "channel",
+                "symmetric": True,
+                "type": "int",
+            },
+        }
     },
-    "output_activations": None,
-    "targets": [
-        "Linear"
-    ],
-    "weights": {
-        "actorder": None,
-        "block_structure": None,
-        "dynamic": False,
-        "group_size": None,
-        "num_bits": 8,
-        "observer": "minmax",
-        "observer_kwargs": {},
-        "strategy": "channel",
-        "symmetric": True,
-        "type": "int"
-    }
-    }
-},
-"format": "int-quantized",
-"global_compression_ratio": 1.5,  # not exactly correct, but a placeholder
-"ignore": [],
-"kv_cache_scheme": None,
-"quant_method": "compressed-tensors",
-"quantization_status": "compressed",
-"provider": "auto-round"  # This is the key to indicate the model provider
+    "format": "int-quantized",
+    "global_compression_ratio": 1.5,  # not exactly correct, but a placeholder
+    "ignore": [],
+    "kv_cache_scheme": None,
+    "quant_method": "compressed-tensors",
+    "quantization_status": "compressed",
+    "provider": "auto-round",  # This is the key to indicate the model provider
 }

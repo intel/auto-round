@@ -9,14 +9,15 @@ This model is an int4 model with group_size 128 and symmetric quantization of [Q
 CPU requires auto-round version>0.3.1
 
 ```python
-from auto_round import AutoRoundConfig ##must import for auto-round format
-from transformers import AutoModelForCausalLM,AutoTokenizer
+from auto_round import AutoRoundConfig  ##must import for auto-round format
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 quantized_model_dir = "Intel/Qwen2.5-14B-Instruct-int4-inc"
 tokenizer = AutoTokenizer.from_pretrained(quantized_model_dir)
 
 model = AutoModelForCausalLM.from_pretrained(
     quantized_model_dir,
-    torch_dtype='auto',
+    torch_dtype="auto",
     device_map="auto",
     ##revision="f86a564" ##AutoGPTQ format
 )
@@ -26,26 +27,17 @@ model = AutoModelForCausalLM.from_pretrained(
 ##model = model.to(torch.bfloat16).to("hpu") ## uncommnet it for HPU
 
 prompt = "There is a girl who likes adventure,"
-messages = [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": prompt}
-]
+messages = [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": prompt}]
 
-text = tokenizer.apply_chat_template(
-    messages,
-    tokenize=False,
-    add_generation_prompt=True
-)
+text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
 generated_ids = model.generate(
     model_inputs.input_ids,
     max_new_tokens=200,  ##change this to align with the official usage
-    do_sample=False  ##change this to align with the official usage
+    do_sample=False,  ##change this to align with the official usage
 )
-generated_ids = [
-output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-]
+generated_ids = [output_ids[len(input_ids) :] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)]
 
 response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
 print(response)
@@ -76,8 +68,8 @@ The girl has a backpack that can carry up to 10 kilograms of rocks. She also has
 Given the following information:
 - Mountain: 5 unique rock types"""
 
-prompt = "9.11和9.8哪个数字大"  
-#INT4: 
+prompt = "9.11和9.8哪个数字大"
+# INT4:
 """？ 9.11 比 9.8 大。
 
 为了比较这两个数，我们可以从它们的小数部分开始：
@@ -93,7 +85,7 @@ prompt = "9.11和9.8哪个数字大"
 
 （注意：在"""
 
-##BF16: 
+##BF16:
 """？ 9.11 比 9.8 大。
 
 在比较两个小数时，我们从左到右逐位进行比较。首先比较整数部分，如果相同，则比较小数部分。对于9.11 和 9.8：
@@ -117,7 +109,7 @@ prompt = "9.11和9.8哪个数字大"
 
 
 prompt = "Once upon a time,"
-##INT4: 
+##INT4:
 """ there was a young man named John who had a passion for music. He loved playing the guitar and would spend hours every day practicing and perfecting his skills. However, he struggled to find an audience for his music and felt discouraged.
 """
 

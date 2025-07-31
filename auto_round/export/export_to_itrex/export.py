@@ -19,12 +19,12 @@ from typing import Dict, List, Optional, Union
 
 import torch
 import transformers
+
 from auto_round.export.register import register_format
-from auto_round.utils import get_module, logger, set_module, detect_device, check_to_quantized
+from auto_round.utils import check_to_quantized, detect_device, get_module, logger, set_module
 
 from .config import QuantConfig
 from .model_wrapper import WeightOnlyLinear
-
 
 
 def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
@@ -48,15 +48,15 @@ def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
     leng = weight.shape[1] // group_size
     tail_flag = False if weight.shape[1] % group_size == 0 else True
     for i in range(leng):
-        int_weight_tmp = weight[:, i * group_size: (i + 1) * group_size] / scale[:, i].unsqueeze(1)
+        int_weight_tmp = weight[:, i * group_size : (i + 1) * group_size] / scale[:, i].unsqueeze(1)
         if zp is not None:
             int_weight_tmp += zp[:, i].unsqueeze(1)
-        int_weight[:, i * group_size: (i + 1) * group_size] = torch.round(int_weight_tmp)
+        int_weight[:, i * group_size : (i + 1) * group_size] = torch.round(int_weight_tmp)
     if tail_flag:
-        int_weight_tmp = weight[:, leng * group_size:] / scale[:, -1].unsqueeze(1)
+        int_weight_tmp = weight[:, leng * group_size :] / scale[:, -1].unsqueeze(1)
         if zp is not None:
             int_weight_tmp += zp[:, -1].unsqueeze(1)
-        int_weight[:, leng * group_size:] = torch.round(int_weight_tmp)
+        int_weight[:, leng * group_size :] = torch.round(int_weight_tmp)
     return int_weight
 
 
@@ -74,7 +74,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     enable_quanted_input = kwargs["enable_quanted_input"]
     scale_dtype = kwargs["scale_dtype"]
     tokenizer = kwargs["tokenizer"]
-    safe_serialization = True if 'safe_serialization' not in kwargs.keys() else  kwargs["safe_serialization"]
+    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
 
     compressed_model = pack_model(model, layer_config, inplace=inplace)
     if output_dir is None:
@@ -104,7 +104,6 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
     except IOError as e:  # pragma: no cover
         logger.error("Fail to save configure file and weights due to {}.".format(e))
     return compressed_model
-
 
 
 def save_quantized_as_itrex_xpu(output_dir, inplace=True, **kwargs):
@@ -190,7 +189,7 @@ def pack_model(
     """
     # Due to XPU doesn't support tuning yet
     device = "cpu" if device == "xpu" else device
-    if model.device.type == 'meta':
+    if model.device.type == "meta":
         model = model.to(device)
     if inplace:
         compressed_model = model
@@ -201,7 +200,7 @@ def pack_model(
             q_config = json.load(f)
     else:
         q_config = layer_config
-    
+
     for k, v in q_config.items():
         if check_to_quantized(v) is False:
             continue
@@ -252,6 +251,3 @@ def pack_model(
         new_module.pack(int_weight, scale, zp, m.bias)
         set_module(compressed_model, k, new_module)
     return compressed_model
-
-
-

@@ -24,13 +24,13 @@ import torch
 
 
 def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
-    from gptqmodel.models._const import DEVICE, PLATFORM # pylint: disable=E0401
-    from gptqmodel.nn_modules.qlinear import BaseQuantLinear # pylint: disable=E0401
-    from gptqmodel.utils.backend import BACKEND # pylint: disable=E0401
+    from gptqmodel.models._const import DEVICE, PLATFORM  # pylint: disable=E0401
+    from gptqmodel.nn_modules.qlinear import BaseQuantLinear  # pylint: disable=E0401
+    from gptqmodel.utils.backend import BACKEND  # pylint: disable=E0401
 
     marlin_import_exception = None
     try:
-        import gptqmodel_marlin_kernels # pylint: disable=E0401
+        import gptqmodel_marlin_kernels  # pylint: disable=E0401
     except ImportError as e:
         marlin_import_exception = e
 
@@ -42,8 +42,8 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
     GPTQ_MARLIN_MAX_PARALLEL = 16
 
     def set_weight_attrs(
-            weight: torch.Tensor,
-            weight_attrs: Optional[Dict[str, Any]],
+        weight: torch.Tensor,
+        weight_attrs: Optional[Dict[str, Any]],
     ):
         """Set attributes on a weight tensor.
 
@@ -57,51 +57,40 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         if weight_attrs is None:
             return
         for key, value in weight_attrs.items():
-            assert not hasattr(
-                weight, key), (f"Overwriting existing tensor attribute: {key}")
+            assert not hasattr(weight, key), f"Overwriting existing tensor attribute: {key}"
             setattr(weight, key, value)
 
     def marlin_is_k_full(act_order: bool, is_row_parallel: bool) -> bool:
         return (not act_order) or (act_order and not is_row_parallel)
 
-    def marlin_repeat_scales_on_all_ranks(act_order: bool, group_size: int,
-                                          is_row_parallel: bool) -> bool:
+    def marlin_repeat_scales_on_all_ranks(act_order: bool, group_size: int, is_row_parallel: bool) -> bool:
         # Need to repeat scales on every rank if act_ordering or
         # channelwise and RowParallelLinear
         is_channelwise = group_size == -1
         return act_order or (is_channelwise and is_row_parallel)
 
-    def marlin_make_workspace(output_size_per_partition: int,
-                              device: torch.device) -> torch.Tensor:
-        max_workspace_size = (output_size_per_partition //
-                              GPTQ_MARLIN_MIN_THREAD_N) * GPTQ_MARLIN_MAX_PARALLEL
+    def marlin_make_workspace(output_size_per_partition: int, device: torch.device) -> torch.Tensor:
+        max_workspace_size = (output_size_per_partition // GPTQ_MARLIN_MIN_THREAD_N) * GPTQ_MARLIN_MAX_PARALLEL
 
-        return torch.zeros(max_workspace_size,
-                           dtype=torch.int,
-                           device=device,
-                           requires_grad=False)
+        return torch.zeros(max_workspace_size, dtype=torch.int, device=device, requires_grad=False)
 
-    def marlin_sort_g_idx(
-            g_idx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def marlin_sort_g_idx(g_idx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         g_idx_sort_indices = torch.argsort(g_idx).to(torch.int)
         return g_idx[g_idx_sort_indices], g_idx_sort_indices
 
     def marlin_make_empty_g_idx(device: torch.device) -> torch.Tensor:
-        return torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device),
-                                  requires_grad=False)
+        return torch.nn.Parameter(torch.empty(0, dtype=torch.int, device=device), requires_grad=False)
 
     # Newly generated tensors need to replace existing tensors that are
     # already registered as parameters by vLLM (and won't be freed)
-    def replace_tensor(layer: torch.nn.Module, name: str,
-                       new_t: torch.Tensor) -> None:
+    def replace_tensor(layer: torch.nn.Module, name: str, new_t: torch.Tensor) -> None:
         # It is important to use resize_() here since it ensures
         # the same buffer is reused
         getattr(layer, name).resize_(new_t.shape)
         getattr(layer, name).copy_(new_t)
         del new_t
 
-    def marlin_permute_scales(s: torch.Tensor, size_k: int, size_n: int,
-                              group_size: int) -> torch.Tensor:
+    def marlin_permute_scales(s: torch.Tensor, size_k: int, size_n: int, group_size: int) -> torch.Tensor:
 
         scale_perm, scale_perm_single = get_scale_perms()
         if group_size < size_k and group_size != -1:
@@ -118,24 +107,23 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
             scale_perm.extend([i + 8 * j for j in range(8)])
         scale_perm_single: List[int] = []
         for i in range(4):
-            scale_perm_single.extend(
-                [2 * i + j for j in [0, 1, 8, 9, 16, 17, 24, 25]])
+            scale_perm_single.extend([2 * i + j for j in [0, 1, 8, 9, 16, 17, 24, 25]])
         return scale_perm, scale_perm_single
 
     def apply_gptq_marlin_linear(
-            input: torch.Tensor,
-            weight: torch.Tensor,
-            weight_scale: torch.Tensor,
-            weight_zp: torch.Tensor,
-            g_idx: torch.Tensor,
-            g_idx_sort_indices: torch.Tensor,
-            workspace: torch.Tensor,
-            num_bits: int,
-            output_size_per_partition: int,
-            input_size_per_partition: int,
-            is_k_full: bool,
-            bias: torch.Tensor,
-            fp32: bool,
+        input: torch.Tensor,
+        weight: torch.Tensor,
+        weight_scale: torch.Tensor,
+        weight_zp: torch.Tensor,
+        g_idx: torch.Tensor,
+        g_idx_sort_indices: torch.Tensor,
+        workspace: torch.Tensor,
+        num_bits: int,
+        output_size_per_partition: int,
+        input_size_per_partition: int,
+        is_k_full: bool,
+        bias: torch.Tensor,
+        fp32: bool,
     ) -> torch.Tensor:
 
         reshaped_x = input.reshape(-1, input.shape[-1])
@@ -184,15 +172,17 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         QUANT_TYPE = "marlin"
 
         def __init__(
-                self, bits: int,
-                group_size: int,
-                desc_act: bool,
-                sym: bool,
-                in_features: int,
-                out_features: int,
-                bias: bool = False,
-                pack_dtype: torch.dtype = torch.int32,
-                **kwargs):
+            self,
+            bits: int,
+            group_size: int,
+            desc_act: bool,
+            sym: bool,
+            in_features: int,
+            out_features: int,
+            bias: bool = False,
+            pack_dtype: torch.dtype = torch.int32,
+            **kwargs,
+        ):
             if marlin_import_exception is not None:
                 raise ValueError(
                     f"Trying to use the marlin backend, but could not "
@@ -219,7 +209,8 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
                 backend=kwargs.pop("backend", BACKEND.MARLIN),
                 adapter=None,
                 register_buffers=False,
-                **kwargs)
+                **kwargs,
+            )
 
             # toggle fp32 mode depending on MARLIN or MARLIN_FP16 backend
             self.fp32 = True if self.backend in [BACKEND.MARLIN, BACKEND.AUTO] else False
@@ -227,12 +218,11 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
             if not self.fp32:
                 logger.warning_once(
                     "Kernel: Marlin FP16 mode is activated with reduced accuracy. "
-                    "Use default Marlin model for improved inference quality.")
+                    "Use default Marlin model for improved inference quality."
+                )
 
             # Determine sharding
-            if marlin_repeat_scales_on_all_ranks(desc_act,
-                                                 self.group_size,
-                                                 is_row_parallel=False):
+            if marlin_repeat_scales_on_all_ranks(desc_act, self.group_size, is_row_parallel=False):
                 # By setting scale_dim == None, weight_loader will
                 # repeat the scales on each GPU in TP>1 case.
                 scales_and_zp_input_dim = None
@@ -360,8 +350,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         def post_init(self):
             device = self.qweight.device
             # Allocate marlin workspace
-            self.workspace = marlin_make_workspace(
-                self.out_features, device)
+            self.workspace = marlin_make_workspace(self.out_features, device)
 
             # Handle sorting for activation reordering if needed.
 
@@ -373,20 +362,14 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
 
             # Repack weights from autogptq format to marlin format.
             marlin_qweight = gptqmodel_marlin_kernels.gptq_marlin_repack(
-                self.qweight,
-                g_idx_sort_indices,
-                self.in_features,
-                self.out_features,
-                self.bits,
-                self.pack_dtype_bits)
+                self.qweight, g_idx_sort_indices, self.in_features, self.out_features, self.bits, self.pack_dtype_bits
+            )
             replace_tensor(self, "qweight", marlin_qweight)
 
             # Permute scales from autogptq format to marlin format.
             marlin_scales = marlin_permute_scales(
-                self.scales,
-                size_k=self.in_features,
-                size_n=self.out_features,
-                group_size=self.group_size)
+                self.scales, size_k=self.in_features, size_n=self.out_features, group_size=self.group_size
+            )
             replace_tensor(self, "scales", marlin_scales)
 
             super().post_init()

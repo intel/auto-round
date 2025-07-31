@@ -1,20 +1,22 @@
 import re
+import shutil
 import sys
 import unittest
-import shutil
+
 sys.path.insert(0, "../..")
 
 
 import torch
 from lm_eval.utils import make_table  # pylint: disable=E0401
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from auto_round import AutoRound
 from auto_round.eval.evaluation import simple_evaluate
-from auto_round.testing_utils import multi_card, require_greater_than_050, require_gptqmodel
+from auto_round.testing_utils import multi_card, require_gptqmodel, require_greater_than_050
 
 
 def get_accuracy(data):
-    match = re.search(r'\|acc\s+\|[↑↓]\s+\|\s+([\d.]+)\|', data)
+    match = re.search(r"\|acc\s+\|[↑↓]\s+\|\s+([\d.]+)\|", data)
 
     if match:
         accuracy = float(match.group(1))
@@ -42,18 +44,16 @@ class TestAutoRound(unittest.TestCase):
         model_name = "/models/Qwen2-0.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        device_map = '.*q_proj:0,.*k_proj:cuda:0,v_proj:1,.*up_proj:1'
-        autoround = AutoRound(model, tokenizer,device_map=device_map)
+        device_map = ".*q_proj:0,.*k_proj:cuda:0,v_proj:1,.*up_proj:1"
+        autoround = AutoRound(model, tokenizer, device_map=device_map)
         autoround.quantize()
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=False)
         model_args = f"pretrained={self.save_dir}"
-        res = simple_evaluate(model="hf", model_args=model_args,
-                              tasks=self.tasks,
-                              batch_size="auto")
+        res = simple_evaluate(model="hf", model_args=model_args, tasks=self.tasks, batch_size="auto")
         res = make_table(res)
         accuracy = get_accuracy(res)
         print(accuracy)
-        assert accuracy > 0.45 ##0.4786
+        assert accuracy > 0.45  ##0.4786
         shutil.rmtree("./saved", ignore_errors=True)
 
     @multi_card
@@ -62,8 +62,9 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {"norm": "cuda:1"}
-        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32,
-                              enable_norm_bias_tuning=True)
+        autoround = AutoRound(
+            model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32, enable_norm_bias_tuning=True
+        )
         autoround.quantize()
 
     @multi_card
@@ -72,8 +73,9 @@ class TestAutoRound(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         device_map = {"norm": "cuda:1"}
-        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32,
-                              enable_norm_bias_tuning=True)
+        autoround = AutoRound(
+            model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32, enable_norm_bias_tuning=True
+        )
         autoround.quantize()
 
     @multi_card
@@ -81,8 +83,10 @@ class TestAutoRound(unittest.TestCase):
         model_name = "/models/Qwen2-0.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        device_map = {".*q_proj": '0', ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1"}
-        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7,seqlen=32,act_bits=4,act_dynamic=False)
+        device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1"}
+        autoround = AutoRound(
+            model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32, act_bits=4, act_dynamic=False
+        )
         autoround.quantize()
 
     @multi_card
@@ -90,10 +94,18 @@ class TestAutoRound(unittest.TestCase):
         model_name = "/models/Qwen2.5-7B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        device_map = {".*q_proj": '0', ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1","lm_head":1}
-        layer_config={"lm_head": {"bits": 4}}
-        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32,
-                              enable_norm_bias_tuning=True,layer_config=layer_config)
+        device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "1", "lm_head": 1}
+        layer_config = {"lm_head": {"bits": 4}}
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            iters=2,
+            device_map=device_map,
+            nsamples=7,
+            seqlen=32,
+            enable_norm_bias_tuning=True,
+            layer_config=layer_config,
+        )
         autoround.quantize()
 
     @multi_card
@@ -101,11 +113,10 @@ class TestAutoRound(unittest.TestCase):
         model_name = "/models/Qwen2-0.5B-Instruct"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        device_map = {".*q_proj": '0', ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "cpu"}
-        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7,seqlen=32)
+        device_map = {".*q_proj": "0", ".*k_proj": "cuda:1", "v_proj": 1, ".*up_proj": "cpu"}
+        autoround = AutoRound(model, tokenizer, iters=2, device_map=device_map, nsamples=7, seqlen=32)
         autoround.quantize()
 
-        from transformers import AutoModelForCausalLM, AutoTokenizer
         model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
 
         device_map = {}
@@ -146,14 +157,20 @@ class TestAutoRound(unittest.TestCase):
         device_map1["model.rotary_emb"] = "cuda"
         device_map1["model.embed_tokens"] = "cuda"
 
-        for tmp_device_map in [device_map1, device_map, None, 0, "balanced", "balanced_low_0", "sequential", "cpu",
-                               "cuda:0", "cuda", "auto",
-                               ]:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype="auto",
-                device_map=tmp_device_map
-            )
+        for tmp_device_map in [
+            device_map1,
+            device_map,
+            None,
+            0,
+            "balanced",
+            "balanced_low_0",
+            "sequential",
+            "cpu",
+            "cuda:0",
+            "cuda",
+            "auto",
+        ]:
+            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map=tmp_device_map)
 
             tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -166,14 +183,8 @@ class TestAutoRound(unittest.TestCase):
 
             texts = []
             for prompt in prompts:
-                messages = [
-                    {"role": "user", "content": prompt}
-                ]
-                text = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
+                messages = [{"role": "user", "content": prompt}]
+                text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                 texts.append(text)
 
             inputs = tokenizer(texts, return_tensors="pt", padding=False, truncation=True)
@@ -182,10 +193,10 @@ class TestAutoRound(unittest.TestCase):
                 input_ids=inputs["input_ids"].to(model.device),
                 attention_mask=inputs["attention_mask"].to(model.device),
                 do_sample=False,  ## change this to follow official usage
-                max_new_tokens=5
+                max_new_tokens=5,
             )
             generated_ids = [
-                output_ids[len(input_ids):] for input_ids, output_ids in zip(inputs["input_ids"], outputs)
+                output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs["input_ids"], outputs)
             ]
 
             decoded_outputs = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
@@ -202,6 +213,7 @@ class TestAutoRound(unittest.TestCase):
     @require_greater_than_050
     def test_device_map_for_triton(self):
         from transformers import AutoModelForCausalLM, AutoTokenizer
+
         model_name = "OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc"
 
         device_map = {}
@@ -242,16 +254,21 @@ class TestAutoRound(unittest.TestCase):
         device_map1["model.rotary_emb"] = "cuda"
         device_map1["model.embed_tokens"] = "cuda"
         from auto_round import AutoRoundConfig
+
         quantization_config = AutoRoundConfig(backend="tritonv2")
 
-        for tmp_device_map in [device_map1, 0, "balanced", "balanced_low_0", "sequential",
-                               "cuda:0", "cuda", "auto",
-                               ]:
+        for tmp_device_map in [
+            device_map1,
+            0,
+            "balanced",
+            "balanced_low_0",
+            "sequential",
+            "cuda:0",
+            "cuda",
+            "auto",
+        ]:
             model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype="auto",
-                device_map=tmp_device_map,
-                quantization_config=quantization_config
+                model_name, torch_dtype="auto", device_map=tmp_device_map, quantization_config=quantization_config
             )
 
             tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -265,14 +282,8 @@ class TestAutoRound(unittest.TestCase):
 
             texts = []
             for prompt in prompts:
-                messages = [
-                    {"role": "user", "content": prompt}
-                ]
-                text = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
+                messages = [{"role": "user", "content": prompt}]
+                text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                 texts.append(text)
 
             inputs = tokenizer(texts, return_tensors="pt", padding=False, truncation=True)
@@ -281,10 +292,10 @@ class TestAutoRound(unittest.TestCase):
                 input_ids=inputs["input_ids"].to(model.device),
                 attention_mask=inputs["attention_mask"].to(model.device),
                 do_sample=False,  ## change this to follow official usage
-                max_new_tokens=5
+                max_new_tokens=5,
             )
             generated_ids = [
-                output_ids[len(input_ids):] for input_ids, output_ids in zip(inputs["input_ids"], outputs)
+                output_ids[len(input_ids) :] for input_ids, output_ids in zip(inputs["input_ids"], outputs)
             ]
 
             decoded_outputs = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
@@ -296,6 +307,7 @@ class TestAutoRound(unittest.TestCase):
             model = None
             del model
             torch.cuda.empty_cache()
+
 
 if __name__ == "__main__":
     unittest.main()

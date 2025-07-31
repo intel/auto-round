@@ -40,8 +40,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
+
 try:
     import habana_frameworks.torch.core as htcore
+
     convert_from_uint4 = torch.ops.hpu.convert_from_uint4
 except Exception as e:
     hpu_import_exception = e
@@ -56,7 +58,8 @@ except Exception as e:
 
 logger = getLogger(__name__)
 
-def pack_tensor(input, bits = 4):
+
+def pack_tensor(input, bits=4):
     normal = input.to(torch.int32)
     q = torch.zeros((normal.shape[0], normal.shape[1] // 32 * bits), dtype=torch.int32)
     i = 0
@@ -68,6 +71,7 @@ def pack_tensor(input, bits = 4):
         col += 1
     q = q.to(torch.int32)
     return q
+
 
 class QuantLinear(nn.Module):
     QUANT_TYPE = "hpu"
@@ -84,7 +88,9 @@ class QuantLinear(nn.Module):
         trainable=False,
         weight_dtype=torch.float16,
     ):
-        logger.debug(f"qlinear_hpu QuantLinear::__init__ {bits=}, {group_size=}, {infeatures=}, {outfeatures=}, {bias=}, {use_cuda_fp16=}, {kernel_switch_threshold=}, {trainable=}, {weight_dtype=}")
+        logger.debug(
+            f"qlinear_hpu QuantLinear::__init__ {bits=}, {group_size=}, {infeatures=}, {outfeatures=}, {bias=}, {use_cuda_fp16=}, {kernel_switch_threshold=}, {trainable=}, {weight_dtype=}"
+        )
         super().__init__()
         if bits != 4:
             raise NotImplementedError("Only 4 bits are supported.")
@@ -133,7 +139,7 @@ class QuantLinear(nn.Module):
         self.qweight = self.qweight.cpu()
         weight = self.unpack_weight_from_cuda_old_format()
         new_qweight = pack_tensor(weight)
-        self.qweight = new_qweight.to('hpu')
+        self.qweight = new_qweight.to("hpu")
 
         # TODO: Support group indexing and remove the check
         columns = self.qweight.shape[0]
@@ -143,13 +149,13 @@ class QuantLinear(nn.Module):
 
         zeros = self.unpack_zeros_from_cuda_old_format().cpu()
         new_qzeros = pack_tensor(zeros)
-        self.qzeros = new_qzeros.to('hpu')
+        self.qzeros = new_qzeros.to("hpu")
 
     def post_init(self):
         self._preprocessing()
 
     def pack(self, linear, scales, zeros, g_idx):
-        #TODO: implement
+        # TODO: implement
         raise NotImplementedError("QuantLinear HPU currently doesn't support packing")
 
     def set_packed(self, qlinear_cls):
@@ -178,20 +184,21 @@ class QuantLinear(nn.Module):
         ).to(torch.int16 if self.bits == 8 else torch.int8)
 
         # zeros = zeros + 1 # This line is commented for auto-round format export. \
-            # It remains unchanged for gptq format in qlinear_hpu_gptq.py
-        zeros = torch.bitwise_and(
-            zeros, (2**self.bits) - 1
-        ).to(self.scales.dtype)  # NOTE: It appears that casting here after the `zeros = zeros + 1` is important.
+        # It remains unchanged for gptq format in qlinear_hpu_gptq.py
+        zeros = torch.bitwise_and(zeros, (2**self.bits) - 1).to(
+            self.scales.dtype
+        )  # NOTE: It appears that casting here after the `zeros = zeros + 1` is important.
         zeros = zeros.reshape(-1, zeros.shape[1] * zeros.shape[2])
         return zeros
 
     def unpack_weight_from_cuda_old_format(self):
         weight = torch.bitwise_right_shift(
-                torch.unsqueeze(self.qweight, 1).expand(-1, 32 // self.bits, -1),
-                self.wf.unsqueeze(-1),
-            ).to(torch.int16 if self.bits == 8 else torch.int8)
+            torch.unsqueeze(self.qweight, 1).expand(-1, 32 // self.bits, -1),
+            self.wf.unsqueeze(-1),
+        ).to(torch.int16 if self.bits == 8 else torch.int8)
         weight = torch.bitwise_and(weight, (2**self.bits) - 1)
-        weight = weight.reshape((weight.shape[0]*weight.shape[1], weight.shape[2]))
+        weight = weight.reshape((weight.shape[0] * weight.shape[1], weight.shape[2]))
         return weight
+
 
 __all__ = ["QuantLinear"]

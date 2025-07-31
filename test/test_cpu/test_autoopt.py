@@ -8,7 +8,7 @@ import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRoundOPT, AutoRoundAdam
+from auto_round import AutoRoundAdam, AutoRoundOPT
 
 
 class LLMDataLoader:
@@ -44,14 +44,14 @@ class TestAutoRound(unittest.TestCase):
             iters=2,
             seqlen=10,
             dataset=self.llm_dataloader,
-            to_quant_block_names=None
+            to_quant_block_names=None,
         )
         autoround.quantize()
-        
-        
+
     def test_Adam(self):
         bits, group_size, sym = 4, 128, False
         from auto_round.utils import get_block_names
+
         llm_block_names = get_block_names(self.model, quant_vision=True)
         bits, group_size, sym, batch_size = 4, 128, False, 20
         adamround = AutoRoundAdam(
@@ -64,12 +64,10 @@ class TestAutoRound(unittest.TestCase):
             seqlen=2,
             batch_size=batch_size,
             dataset=self.llm_dataloader,
-            to_quant_block_names=llm_block_names
+            to_quant_block_names=llm_block_names,
         )
         adamround.quantize()
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
