@@ -35,8 +35,7 @@ from auto_round.utils import (
     set_module,
 )
 from auto_round.wrapper import WrapperWALayer
-
-from .qlinear_fp import QuantLinear  # , get_fp_qlinear
+from .qlinear_fp import QuantLinear
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -53,8 +52,13 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     Returns:
         list: A list of strings indicating which configuration parameters do not match.
     """
-    expected_config = {"data_type": data_type, "bits": bits, "group_size": group_size, "sym": sym}
+    expected_config = {"data_type": data_type,
+                       "bits": bits,
+                       "group_size": group_size,
+                       "sym": sym
+                       }
     return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
+
 
 
 def pack_layer(name, model, backend, data_type, **kwargs):
@@ -62,9 +66,27 @@ def pack_layer(name, model, backend, data_type, **kwargs):
         return
     layer = get_module(model, name)
 
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES) and not isinstance(layer, WrapperWALayer): ##already packed
         return
 
+    act_bits = kwargs.get("act_bits", None)
+    act_data_type = kwargs.get("act_data_type", None)
+
+    if "nv_fp" in act_data_type and act_bits <= 8:
+        if isinstance(layer, WrapperWALayer): # revert WrapperWALayer for offline usage
+            wp_layer = layer
+            layer = wp_layer.orig_layer
+            set_module(model, name, layer)
+        if not getattr(layer, "input_global_scale", None):
+            # assert hasattr(layer, "act_max")
+            if not hasattr(layer, "act_max"): #check, few experts act_max_hook is not working
+                print(f"No valid activation maximum hooked, using weight value instead,layer: {name}")
+                layer.act_max = torch.max(torch.abs(layer.weight), dim=-1).values
+            from auto_round.data_type.nvfp import calculate_gparam
+            input_global_scale = calculate_gparam(layer.act_max, layer.group_size) #, model.device
+            setattr(layer, "input_global_scale", input_global_scale)
+            delattr(layer, "act_max")
+    
     bits = layer.bits
     act_bits = kwargs.get("act_bits", None)
     act_data_type = kwargs.get("act_data_type", None)
@@ -163,7 +185,6 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):  # no gemm impleme
     safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
-
     layer_config = kwargs["layer_config"]
     quantization_config = kwargs["serialization_dict"]
     quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
@@ -175,27 +196,28 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):  # no gemm impleme
     quantization_config["scale_calculation_mode"] = ("even",)
     # quantization_config["weight_format"] = "e2m1",
     # quantization_config["scale_type"] = "float",
-
+    
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     extra_config = {}
 
     if act_bits <= 8:
         # revert WrapperWALayer for offline usage
-        # for n, m in model.named_modules():
-        #     if isinstance(m, WrapperWALayer):
-        #         ori_layer = m.orig_layer
-        #         if getattr(orig_layer, "input_global_scale") is None:
-        #             assert hasattr(orig_layer, "act_max")
-        #             from auto_round.data_type.nvfp import calculate_gparam
-        #             input_global_scale = calculate_gparam(orig_layer.act_max, orig_layer.group_size, model.device)
-        #             setattr(orig_layer, "input_global_scale", input_global_scale)
-        #             delattr(orig_layer, "act_max")
-        #         set_module(model, n, ori_layer)
+        for n, m in model.named_modules():
+            if isinstance(m, WrapperWALayer):
+                ori_layer = m.orig_layer
+                if getattr(orig_layer, "input_global_scale") is None:
+                    if not hasattr(layer, "act_max"): # few experts act_max_hook is not working
+                        print(f"No valid activation maximum hooked, using weight value instead,layer: {name}")
+                        layer.act_max = torch.max(torch.abs(layer.weight), dim=-1).values
+                    from auto_round.data_type.nvfp import calculate_gparam
+                    input_global_scale = calculate_gparam(orig_layer.act_max, orig_layer.group_size, model.device)
+                    setattr(orig_layer, "input_global_scale", input_global_scale)
+                    delattr(orig_layer, "act_max")
+                set_module(model, n, ori_layer)
 
         # update input_global_scale
         from auto_round.data_type.utils import update_fused_layer_global_scales
-
         modules = list(model.modules())
         for module in tqdm(modules, desc="Update input global scale for fuse modules"):
             update_fused_layer_global_scales(module, base_name="input")
@@ -304,3 +326,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
