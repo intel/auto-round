@@ -80,7 +80,7 @@ def pack_layer(name, model, backend, data_type, **kwargs):
         if not getattr(layer, "input_global_scale", None):
             # assert hasattr(layer, "act_max")
             if not hasattr(layer, "act_max"): #check, few experts act_max_hook is not working
-                print(f"No valid activation maximum hooked, using weight value instead,layer: {name}")
+                logger.warning(f"No valid activation maximum hooked, using weight value instead,layer: {name}")
                 layer.act_max = torch.max(torch.abs(layer.weight), dim=-1).values
             from auto_round.data_type.nvfp import calculate_gparam
             input_global_scale = calculate_gparam(layer.act_max, layer.group_size) #, model.device
@@ -208,7 +208,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):  # no gemm impleme
                 ori_layer = m.orig_layer
                 if getattr(orig_layer, "input_global_scale") is None:
                     if not hasattr(layer, "act_max"): # few experts act_max_hook is not working
-                        print(f"No valid activation maximum hooked, using weight value instead,layer: {name}")
+                        logger.warning(f"No valid activation maximum hooked, using weight value instead,layer: {name}")
                         layer.act_max = torch.max(torch.abs(layer.weight), dim=-1).values
                     from auto_round.data_type.nvfp import calculate_gparam
                     input_global_scale = calculate_gparam(orig_layer.act_max, orig_layer.group_size, model.device)
