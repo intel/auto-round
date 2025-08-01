@@ -2066,7 +2066,7 @@ def out_of_vram(error_msg):
     # XPU
     if "UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY" in error_msg:
         return True
-    #ROCM
+    # ROCM
     if "HIP out of memory. Tried to allocate" in error_msg:
         return True
     return False
