@@ -17,8 +17,8 @@ import os
 import re
 import sys
 import time
-from typing import Any, Union
 import traceback
+from typing import Any, Union
 
 import accelerate
 import torch

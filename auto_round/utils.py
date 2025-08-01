@@ -2054,6 +2054,7 @@ def check_need_act_calibration(is_act_dynamic, act_data_type=None):
         return True
     return False
 
+
 def out_of_vram(error_msg):
     error_msg = str(error_msg)
     # CUDA
