@@ -89,6 +89,19 @@ class HFProcessor(BasicProcessor):
     def __init__(self):
         self.process_func = self._process_v1
 
+    def post_init(self, model, tokenizer, processor=None, image_processor=None, use_rtn=False, **kwargs):
+        assert tokenizer is not None, "tokenizer should not be None"
+        assert processor is not None, "processor should not be None"
+        self.model = model
+        self.tokenizer = tokenizer
+        self.processor = processor
+        if image_processor is not None:
+            self.image_processor = image_processor
+        else:
+            self.image_processor = self.default_image_processor
+        self.use_rtn = use_rtn
+        self.check_image_processor()
+
     def _process_v1(self, messages, image):
         """support models: Qwen2-VL, gemma-3, granite-vision-3.2, Aria"""
         conversation = []

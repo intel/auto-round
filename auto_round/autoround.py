@@ -1415,6 +1415,7 @@ class AutoRound(object):
                     f"Expected exactly one packing format when 'is_packing_immediate' is True, "
                     f"but got {len(self.formats)} formats."
                 )
+        pbar.close()
 
         self.quant_layers(layer_names, all_inputs)  ##TODO pack layer immediately
 
@@ -2515,7 +2516,6 @@ class AutoRound(object):
                             PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
         pbar.set_description("Quantizing done")
         pbar.update(1)
-        pbar.close()
 
         self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
         for n, m in self.model.named_modules():
