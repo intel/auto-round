@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import time
+import traceback
 from typing import Any, Union
 
 import accelerate
@@ -63,7 +64,6 @@ from auto_round.utils import (
     llm_load_model,
     logger,
     mv_module_from_gpu,
-    out_of_vram,
     reset_params,
     set_module,
     to_device,
@@ -194,7 +194,7 @@ class AutoRound(object):
         if unsupport_meta_device(model):
             raise RuntimeError(
                 "AutoRound does not support parameters on meta device. "
-                "Please use more GPUs by setting `--device 0,1,2,3` or just use one GPU."
+                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
 
         ## important tuning hype-parameters
@@ -785,7 +785,8 @@ class AutoRound(object):
                     **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
                 )
             except RuntimeError as e:
-                if out_of_vram(e):
+                cuda_error_msg = traceback.format_exc()
+                try:
                     logger.info("out of VRAM, falling back to CPU.")
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
@@ -794,7 +795,8 @@ class AutoRound(object):
                             for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
                         },
                     )
-                else:
+                except Exception as e:
+                    logger.error(cuda_error_msg)
                     raise
 
             # Overwrite the module's weights with the quantized version
@@ -922,37 +924,38 @@ class AutoRound(object):
                     cnt = 1
                 cnt += 1
         except RuntimeError as e:
-            if out_of_vram(e):
+            try:
+                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                    import accelerate
+
+                    accelerate.hooks.remove_hook_from_submodules(model)
+                # Fallback: out-of-memory → try CPU blockwise quantization
+                logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
+                model = model.to("cpu")
+                clear_memory()
+                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+            except RuntimeError as e:
+                cuda_error_msg = traceback.format_exc()
                 try:
+                    # Final fallback: warn and use CPU-only quantization
+                    logger.warning(
+                        "Fallback to CPU. "
+                        "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
+                    )
+                    model = model.to("cpu")
+                    clear_memory()
                     if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                         import accelerate
 
                         accelerate.hooks.remove_hook_from_submodules(model)
-                    # Fallback: out-of-memory → try CPU blockwise quantization
-                    logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
-                    model = model.to("cpu")
-                    clear_memory()
+
+                    orig_device = self.device
+                    self.device = "cpu"
                     self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                except RuntimeError as e:
-                    if out_of_vram(e):
-                        # Final fallback: warn and use CPU-only quantization
-                        logger.warning(
-                            "Fallback to CPU. "
-                            "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
-                        )
-                        model = model.to("cpu")
-                        clear_memory()
-                        if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                            import accelerate
-
-                            accelerate.hooks.remove_hook_from_submodules(model)
-
-                        orig_device = self.device
-                        self.device = "cpu"
-                        self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                        self.device = orig_device
-                    else:
-                        raise
+                    self.device = orig_device
+                except Exception as e:
+                    logger.error(cuda_error_msg)
+                    raise
         finally:
             # Always remove hooks
             for hook in hooks:
@@ -1086,7 +1089,8 @@ class AutoRound(object):
                 m = m.unwrapper({})
                 m.to("cpu")
             except RuntimeError as e:
-                if out_of_vram(e):
+                cuda_error_msg = traceback.format_exc()
+                try:
                     logger.warning("Out of VRAM, falling back to CPU.")
                     m.to("cpu")
                     m = WrapperLinear(
@@ -1096,7 +1100,8 @@ class AutoRound(object):
                         enable_round_tuning=False,
                     )
                     m = m.unwrapper({})
-                else:
+                except Exception as e:
+                    logger.error(cuda_error_msg)
                     raise
 
         # Step 3: Optional immediate packing/export
@@ -1790,35 +1795,48 @@ class AutoRound(object):
         """
         if layer_names is None:
             layer_names = []
-        try:
-            if not self.model.device.type == "meta":
-                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                    pass
-                else:
-                    self.model = self.model.to(self.device)
-            all_inputs = self.cache_inter_data(
-                block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
-            )
-        except RuntimeError as e:
-            if out_of_vram(e):
-                logger.info("switch to cpu to cache block inputs")
-                if self.has_qlayer_outside_block or self.__class__.__name__ == "AutoRoundMLLM":
-                    logger.warning(
-                        "we strongly recommend using more GPUs in calibration."
-                        " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy."
-                    )
-                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                    accelerate.hooks.remove_hook_from_submodules(
-                        self.model
-                    )  ##self.model.hf_device_map has not been changed
-                self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
-                clear_memory()
-                ## Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
+
+        if self.low_gpu_mem_usage or (
+            str(self.model.device == "cpu")
+            and len(block_names) == 1
+            and len(layer_names) == 0
+            and not self.has_qlayer_outside_block
+            and (last_cache_name is None or last_cache_name in block_names)
+        ):
+            ## low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
+            all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
+        else:
+            try:
+                if not self.model.device.type == "meta":
+                    if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                        pass
+                    else:
+                        self.model = self.model.to(self.device)
                 all_inputs = self.cache_inter_data(
-                    block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
+                    block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
                 )
-            else:
-                raise
+            except RuntimeError as e:
+                cuda_error_msg = traceback.format_exc()
+                try:
+                    logger.info("switch to cpu to cache block inputs")
+                    if self.has_qlayer_outside_block or self.__class__.__name__ == "AutoRoundMLLM":
+                        logger.warning(
+                            "we strongly recommend using more GPUs in calibration."
+                            " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy."
+                        )
+                    if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                        accelerate.hooks.remove_hook_from_submodules(
+                            self.model
+                        )  ##self.model.hf_device_map has not been changed
+                    self.model = mv_module_from_gpu(self.model, self.low_cpu_mem_usage)
+                    clear_memory()
+                    ## Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
+                    all_inputs = self.cache_inter_data(
+                        block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
+                    )
+                except Exception as e:
+                    logger.error(cuda_error_msg)
+                    raise
         return all_inputs
 
     @torch.no_grad()
