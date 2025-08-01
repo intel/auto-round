@@ -23,7 +23,6 @@ from auto_round.special_model_handler import SUPPORT_ONLY_TEXT_MODELS, _handle_s
 from ..autoround import AutoRound
 from ..low_cpu_mem.utils import get_layers_before_block
 from ..utils import (
-    out_of_vram,
     clear_memory,
     detect_device,
     extract_block_names_to_str,
@@ -31,6 +30,7 @@ from ..utils import (
     get_block_names,
     logger,
     mllm_load_model,
+    out_of_vram,
     to_device,
     to_dtype,
 )
@@ -199,16 +199,20 @@ class AutoRoundMLLM(AutoRound):
         from .mllm_dataset import MLLM_DATASET
 
         if isinstance(dataset, str):
-            if quant_nontext_module or (dataset in CALIB_DATASETS.keys() and
-                                        not _only_text_test(model, tokenizer, device, self.template.model_type)):
+            if quant_nontext_module or (
+                dataset in CALIB_DATASETS.keys()
+                and not _only_text_test(model, tokenizer, device, self.template.model_type)
+            ):
                 if quant_nontext_module:
                     logger.warning(
                         "Text only dataset cannot be used for calibrating non-text modules,"
-                        "switching to liuhaotian/llava_conv_58k")
+                        "switching to liuhaotian/llava_conv_58k"
+                    )
                 else:
                     logger.warning(
                         f"{model.config.model_type} not support for {dataset},"
-                        " will use liuhaotian/llava_conv_58k with default config as an alternative.")
+                        " will use liuhaotian/llava_conv_58k with default config as an alternative."
+                    )
                 dataset = "liuhaotian/llava_conv_58k"
 
             if dataset in MLLM_DATASET.keys():
@@ -219,7 +223,8 @@ class AutoRoundMLLM(AutoRound):
                         f"reset batch_size({batch_size}) to 1 and "
                         f"gradient_accumulate_steps({gradient_accumulate_steps}) "
                         f"to {batch_size * gradient_accumulate_steps}, "
-                        f"because batch_size={batch_size} cannot be used for {dataset}")
+                        f"because batch_size={batch_size} cannot be used for {dataset}"
+                    )
                     gradient_accumulate_steps = batch_size * gradient_accumulate_steps
                     batch_size = 1
         if quant_nontext_module and batch_size != 1:
@@ -227,7 +232,8 @@ class AutoRoundMLLM(AutoRound):
                 f"reset batch_size({batch_size}) to 1 and "
                 f"gradient_accumulate_steps({gradient_accumulate_steps}) "
                 f"to {batch_size * gradient_accumulate_steps}, "
-                f"because batch_size={batch_size} cannot be used for calibrating non-text modules.")
+                f"because batch_size={batch_size} cannot be used for calibrating non-text modules."
+            )
             gradient_accumulate_steps = batch_size * gradient_accumulate_steps
             batch_size = 1
         seqlen = 2048 if seqlen is None else seqlen
@@ -235,7 +241,7 @@ class AutoRoundMLLM(AutoRound):
         self.truncation = truncation
 
         if nsamples % batch_size != 0:
-            nsamples = (nsamples//batch_size + 1) * batch_size
+            nsamples = (nsamples // batch_size + 1) * batch_size
             logger.warning(f"'nsamples' is not divisible by 'batch_size', will adjusted to {nsamples}")
 
         super(AutoRoundMLLM, self).__init__(
@@ -395,16 +401,19 @@ class AutoRoundMLLM(AutoRound):
         if total_cnt == 0:
             logger.error(
                 f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
-                f"dataset or decease the sequence length")
+                f"dataset or decease the sequence length"
+            )
             exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantization. "
-                f"target samples count is {nsamples}, while valid samples count is {total_cnt}")
+                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
+            )
             if total_cnt < self.batch_size:
                 raise ValueError(
                     f"valid samples is less than batch_size({self.batch_size}),"
-                    " please adjust self.batch_size or seqlen.")
+                    " please adjust self.batch_size or seqlen."
+                )
             max_len = (total_cnt // self.batch_size) * self.batch_size
             for k, v in self.inputs.items():
                 for key in v:
@@ -432,5 +441,6 @@ class AutoRoundMLLM(AutoRound):
         if self.processor is not None and not hasattr(self.processor, "chat_template"):
             self.processor.chat_template = None
         compressed_model = super().save_quantized(
-            output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs)
+            output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs
+        )
         return compressed_model

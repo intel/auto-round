@@ -33,12 +33,12 @@ import re
 import sys
 
 from auto_round.utils import (
-    out_of_vram,
     clear_memory,
     get_device_and_parallelism,
     get_fp_layer_names,
     get_model_dtype,
     infer_bits_by_data_type,
+    out_of_vram,
     set_cuda_visible_devices,
     str2bool,
 )
@@ -51,7 +51,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument(
-            "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path")
+            "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path"
+        )
 
         self.add_argument("--eval", action="store_true", help="whether to use eval only mode")
 
@@ -74,7 +75,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--asym", action="store_true", help="whether to use asym quantization")
 
         self.add_argument(
-            "--dataset", default="NeelNanda/pile-10k", type=str, help="the dataset for quantization training")
+            "--dataset", default="NeelNanda/pile-10k", type=str, help="the dataset for quantization training"
+        )
 
         self.add_argument(
             "--minmax_lr",
@@ -115,22 +117,26 @@ class BasicArgumentParser(argparse.ArgumentParser):
         )
 
         self.add_argument(
-            "--output_dir", default="./tmp_autoround", type=str, help="the directory to save quantized model")
+            "--output_dir", default="./tmp_autoround", type=str, help="the directory to save quantized model"
+        )
 
         self.add_argument(
-            "--disable_eval", action="store_true", help="whether to disable lm-eval evaluation after tuning")
+            "--disable_eval", action="store_true", help="whether to disable lm-eval evaluation after tuning"
+        )
 
         self.add_argument("--eval_task_by_task", action="store_true", help="whether to eval task by task.")
 
         self.add_argument("--disable_amp", action="store_true", help="disable amp")
 
         self.add_argument(
-            "--disable_minmax_tuning", action="store_true", help="whether to disable enable weight minmax tuning")
+            "--disable_minmax_tuning", action="store_true", help="whether to disable enable weight minmax tuning"
+        )
 
         self.add_argument("--enable_norm_bias_tuning", action="store_true", help="whether to enable norm bias tuning")
 
         self.add_argument(
-            "--disable_trust_remote_code", action="store_true", help="whether to disable trust_remote_code")
+            "--disable_trust_remote_code", action="store_true", help="whether to disable trust_remote_code"
+        )
 
         self.add_argument(
             "--disable_quanted_input",
@@ -175,7 +181,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--act_group_size", default=0, type=int, help="activation group size")
 
         self.add_argument(
-            "--fp_layers", default="", type=str, help="list of Layer names to maintain original data type")
+            "--fp_layers", default="", type=str, help="list of Layer names to maintain original data type"
+        )
 
         self.add_argument(
             "--not_use_best_mse",
@@ -197,18 +204,22 @@ class BasicArgumentParser(argparse.ArgumentParser):
         self.add_argument("--disable_act_dynamic", action="store_true", help="activation static quantization")
 
         self.add_argument(
-            "--disable_deterministic_algorithms", action="store_true", help="disable torch deterministic algorithms.")
+            "--disable_deterministic_algorithms", action="store_true", help="disable torch deterministic algorithms."
+        )
 
         self.add_argument("--device_map", default=None, type=str, help="device_map for block in tuning phase")
 
         self.add_argument(
-            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant.")
+            "--super_group_size", default=None, type=int, help="the number of super group size when use double quant."
+        )
 
         self.add_argument(
-            "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant.")
+            "--super_bits", default=None, type=int, help="number of scale and mins quant bits for double quant."
+        )
 
         self.add_argument(
-            "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation.")
+            "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
+        )
 
         self.add_argument(
             "--disable_opt_rtn",
@@ -222,7 +233,8 @@ class EvalArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_argument(
-            "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path")
+            "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path"
+        )
         self.add_argument("--mllm", default=False, help="whether to eval multi-modal model.")
         self.add_argument(
             "--device",
@@ -244,11 +256,13 @@ class EvalArgumentParser(argparse.ArgumentParser):
             help="lm-eval tasks",
         )
         self.add_argument(
-            "--disable_trust_remote_code", action="store_true", help="whether to disable trust_remote_code")
+            "--disable_trust_remote_code", action="store_true", help="whether to disable trust_remote_code"
+        )
         self.add_argument("--eval_bs", "--bs", "--batch_size", default=None, type=int, help="batch size in evaluation")
         self.add_argument("--eval_task_by_task", action="store_true", help="whether to eval task by task.")
         self.add_argument(
-            "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation.")
+            "--eval_model_dtype", default=None, type=str, help="the torch_dytpe to load the model for evaluation."
+        )
 
 
 def setup_parser():
@@ -261,12 +275,14 @@ def setup_parser():
     parser.add_argument("--iters", "--iter", default=200, type=int, help="iteration to tune each block")
 
     parser.add_argument(
-        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples")
+        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples"
+    )
 
     parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
 
     parser.add_argument(
-        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
+        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
+    )
 
     args = parser.parse_args()
     return args
@@ -282,12 +298,14 @@ def setup_best_parser():
     parser.add_argument("--iters", "--iter", default=1000, type=int, help="iterations to tune each block")
 
     parser.add_argument(
-        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples")
+        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples"
+    )
 
     parser.add_argument("--nsamples", "--nsample", default=512, type=int, help="number of samples")
 
     parser.add_argument(
-        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
+        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
+    )
 
     args = parser.parse_args()
     args.low_gpu_mem_usage = True
@@ -305,12 +323,14 @@ def setup_light_parser():
     parser.add_argument("--iters", "--iter", default=50, type=int, help="iterations to tune each block")
 
     parser.add_argument(
-        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples")
+        "--seqlen", "--seq_len", default=2048, type=int, help="sequence length of the calibration samples"
+    )
 
     parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
 
     parser.add_argument(
-        "--lr", default=5e-3, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
+        "--lr", default=5e-3, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
+    )
 
     args = parser.parse_args()
 
@@ -327,12 +347,14 @@ def setup_fast_parser():
     parser.add_argument("--iters", default=200, type=int, help="iterations to tune each block")
 
     parser.add_argument(
-        "--seqlen", "--seq_len", default=512, type=int, help="sequence length of the calibration samples")
+        "--seqlen", "--seq_len", default=512, type=int, help="sequence length of the calibration samples"
+    )
 
     parser.add_argument("--nsamples", "--nsample", default=128, type=int, help="number of samples")
 
     parser.add_argument(
-        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically")
+        "--lr", default=None, type=float, help="learning rate, if None, it will be set to 1.0/iters automatically"
+    )
 
     args = parser.parse_args()
 
@@ -370,7 +392,8 @@ def tune(args):
     if "auto_gptq" in args.format and args.asym is True:
         logger.warning(
             "the auto_gptq kernel has issues with asymmetric quantization. "
-            "It is recommended to use sym quantization or --format='auto_round'")
+            "It is recommended to use sym quantization or --format='auto_round'"
+        )
 
     if "marlin" in args.format and args.asym is True:
         raise RuntimeError("marlin backend only supports sym quantization, please remove --asym")
@@ -389,7 +412,8 @@ def tune(args):
     if args.enable_torch_compile:
         logger.info(
             "`torch.compile` is enabled to reduce tuning costs. "
-            "If it causes issues, you can disable it by removing `--enable_torch_compile` argument.")
+            "If it causes issues, you can disable it by removing `--enable_torch_compile` argument."
+        )
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -444,7 +468,8 @@ def tune(args):
                     args.quant_lm_head = False
                     logger.warning(
                         "reset `quant_lm_head` to `False` as quantizing lm_head with tied weights has not been "
-                        "supported currently")
+                        "supported currently"
+                    )
                     break
 
     if args.quant_lm_head:
@@ -453,13 +478,15 @@ def tune(args):
             if "auto_round" not in format and "fake" not in format:
                 auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
                 raise ValueError(
-                    f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}")
+                    f"{format} is not supported for lm-head quantization, please change to {auto_round_formats}"
+                )
 
     if "auto_awq" in args.format:
         from auto_round.utils import check_awq_gemm_compatibility
 
         awq_supported, info = check_awq_gemm_compatibility(
-            model, args.bits, args.group_size, not args.asym, layer_config)
+            model, args.bits, args.group_size, not args.asym, layer_config
+        )
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
 
@@ -582,12 +609,14 @@ def tune(args):
             if eval_model_dtype == "float32" or eval_model_dtype == "auto":
                 logger.warning(
                     "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
-                    " but may affect accuracy.")
+                    " but may affect accuracy."
+                )
             if gguf_file is None:
                 logger.error("Cannot find correct gguf file for evaluation, please check.")
                 sys.exit(-1)
             model = AutoModelForCausalLM.from_pretrained(
-                eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
+                eval_folder, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype
+            )
             model.eval()
             tokenizer = AutoTokenizer.from_pretrained(eval_folder, gguf_file=gguf_file)
         else:
@@ -644,10 +673,12 @@ def tune(args):
             from auto_round.eval.evaluation import simple_evaluate
 
             tasks, model_args, device_str = _eval_init(
-                args.tasks, eval_folder, args.device, args.disable_trust_remote_code, dtype=eval_model_dtype)
+                args.tasks, eval_folder, args.device, args.disable_trust_remote_code, dtype=eval_model_dtype
+            )
             st = time.time()
             res = simple_evaluate(
-                model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs)
+                model="hf", model_args=model_args, tasks=tasks, device=device_str, batch_size=args.eval_bs
+            )
             print(make_table(res))
             print("evaluation running time=%ds" % (time.time() - st))
 
@@ -670,7 +701,8 @@ def eval(args):
     import time
 
     tasks, model_args, device_str = _eval_init(
-        args.tasks, args.model, args.device, args.disable_trust_remote_code, args.eval_model_dtype)
+        args.tasks, args.model, args.device, args.disable_trust_remote_code, args.eval_model_dtype
+    )
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
     from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
@@ -700,9 +732,11 @@ def eval(args):
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
-                " but may affect accuracy.")
+                " but may affect accuracy."
+            )
         model = AutoModelForCausalLM.from_pretrained(
-            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
+            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype
+        )
         model.eval()
         st = time.time()
         res = simple_evaluate_user_model(model, tokenizer, tasks=tasks, batch_size=batch_size, device=device_str)
@@ -772,10 +806,12 @@ def eval_task_by_task(
         if eval_model_dtype == "float32" or eval_model_dtype == "auto":
             logger.warning(
                 "set '--eval_model_dtype bf16' can significantly speed up evaluation for gguf model,"
-                " but may affect accuracy.")
+                " but may affect accuracy."
+            )
 
         model = AutoModelForCausalLM.from_pretrained(
-            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype)
+            model, gguf_file=gguf_file, device_map="auto", torch_dtype=eval_model_dtype
+        )
         model.eval()
         parallelism = False
     hflm = HFLM(
@@ -803,7 +839,8 @@ def eval_task_by_task(
         while retry_times:
             try:
                 res = lm_simple_evaluate(
-                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size)
+                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size
+                )
                 break
             except Exception as e:
                 if out_of_vram(e):
@@ -813,7 +850,8 @@ def eval_task_by_task(
                             hflm.batch_sizes[k] = max(v // 2, 1)
                         logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
                         res = lm_simple_evaluate(
-                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1)
+                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1
+                        )
                         hflm.batch_sizes = ori_batch_sizes
                     except Exception as e:
                         traceback.print_exc()

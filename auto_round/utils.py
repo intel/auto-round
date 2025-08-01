@@ -76,7 +76,7 @@ def infer_bits_by_data_type(data_type: str):
     for supported_dtype in SUPPORTED_DTYPES:
         if data_type.startswith(supported_dtype) and len(data_type) > len(supported_dtype):
             ##first check the following two bits
-            suc_2str = data_type[len(supported_dtype):len(supported_dtype) + 2]
+            suc_2str = data_type[len(supported_dtype) : len(supported_dtype) + 2]
             if str.isdigit(suc_2str):
                 return int(suc_2str)
             if str.isdigit(data_type[len(supported_dtype)]):
@@ -385,7 +385,8 @@ def find_matching_blocks(model, all_blocks, to_quant_block_names):
     if not target_blocks:
         raise ValueError(
             "No block names matched. Please check the input for to_quant_block_name,"
-            "or set to_quant_block_name to None to automatically match quantizable blocks.")
+            "or set to_quant_block_name to None to automatically match quantizable blocks."
+        )
     return target_blocks
 
 
@@ -587,17 +588,12 @@ class CpuInfo(object):
             if max_extension_support >= 7:
                 ecx = cpuid._run_asm(
                     b"\x31\xc9",  # xor ecx, ecx
-                    b"\xb8\x07\x00\x00\x00"
-                    b"\x0f\xa2"
-                    b"\x89\xc8"
-                    b"\xc3",  # mov eax, 7  # cpuid  # mov ax, cx  # ret
+                    b"\xb8\x07\x00\x00\x00" b"\x0f\xa2" b"\x89\xc8" b"\xc3",  # mov eax, 7  # cpuid  # mov ax, cx  # ret
                 )
                 self._vnni = bool(ecx & (1 << 11))
                 eax = cpuid._run_asm(
                     b"\xb9\x01\x00\x00\x00",  # mov ecx, 1
-                    b"\xb8\x07\x00\x00\x00"
-                    b"\x0f\xa2"
-                    b"\xc3",  # mov eax, 7  # cpuid  # ret
+                    b"\xb8\x07\x00\x00\x00" b"\x0f\xa2" b"\xc3",  # mov eax, 7  # cpuid  # ret
                 )
                 self._bf16 = bool(eax & (1 << 5))
         if "arch" in info and "ARM" in info["arch"]:  # pragma: no cover
@@ -631,11 +627,11 @@ class CpuInfo(object):
             cmd = "sysctl -n machdep.cpu.core_count"
 
         with subprocess.Popen(
-                args=cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=False,
+            args=cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=False,
         ) as proc:
             proc.wait()
             if proc.stdout:
@@ -769,7 +765,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     else:
         return True, org_seqlen, org_bs
 
-    free_space = free_space - weight_memory*10  # for min_max_scale & grad usage
+    free_space = free_space - weight_memory * 10  # for min_max_scale & grad usage
     seqlen = org_seqlen
     bs = org_bs
     in_feature = weight.shape[1]
@@ -787,7 +783,8 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(
-        model, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D), quant_block_list=None):
+    model, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D), quant_block_list=None
+):
     """Retrieves the names of layers within each block of the model.
 
     Returns:
@@ -1044,10 +1041,13 @@ def is_tbb_available():  # pragma: no cover
         logger.warning_once("TBB is not installed, please install it with `pip install tbb`.")
         return False
     if not _is_tbb_configured():
-        logger.warning_once((
-            "TBB is installed but not configured correctly. \n"
-            "Please add the TBB library path to `LD_LIBRARY_PATH`, "
-            "for example: `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/`."))
+        logger.warning_once(
+            (
+                "TBB is installed but not configured correctly. \n"
+                "Please add the TBB library path to `LD_LIBRARY_PATH`, "
+                "for example: `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/`."
+            )
+        )
         return False
     return True
 
@@ -1127,14 +1127,17 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 
     layer_names = get_layer_names_in_block(model)
     for layer_name in layer_names:
-        if (layer_configs is not None and layer_name in layer_configs.keys() and
-                layer_configs[layer_name].get("bits", bits) > 8):
+        if (
+            layer_configs is not None
+            and layer_name in layer_configs.keys()
+            and layer_configs[layer_name].get("bits", bits) > 8
+        ):
             continue
 
         layer = get_module(model, layer_name)
         if layer.in_features % group_size != 0:
             return False, f"Layer {layer_name} in_features is not multiple of group_size {group_size}"
-        if layer.out_features % (32//bits) != 0:
+        if layer.out_features % (32 // bits) != 0:
             return False, f"Layer {layer_name} out_features is not multiple of 32 // bits"
 
     return True, ""
@@ -1173,7 +1176,8 @@ def set_cuda_visible_devices(device):
                 raise ValueError(
                     "Invalid '--device' value: It must be smaller than the number of available devices."
                     " For example, with CUDA_VISIBLE_DEVICES=4,5, "
-                    "--device 0,1 is valid, but --device 4,5 is not supported.")
+                    "--device 0,1 is valid, but --device 4,5 is not supported."
+                )
             visible_devices = ",".join(pick_device)
             os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
         else:
@@ -1227,7 +1231,8 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
             except:
                 raise ImportError(
                     f"Please use the latest gguf-py for {format}, you can use the following command to install it:\n"
-                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install .")
+                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+                )
             if re.search(pattern, format):
                 if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
                     logger.error(f"Cannot export {pre_dq_format} and {format} at the same time.")
@@ -1254,7 +1259,8 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
                     hidden_size = hparams["hidden_size"]
                     logger.error(
                         f"Currently only support pure mode for format: {format}. "
-                        f"{model_name} is not supported, cause hidden_size({hidden_size}) % 256 !=0")
+                        f"{model_name} is not supported, cause hidden_size({hidden_size}) % 256 !=0"
+                    )
                     sys.exit(-1)
 
             unsupport_list, reset_list = [], []
@@ -1275,7 +1281,8 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
             if len(unsupport_list) > 0:
                 logger.info(
                     f"format {format} does not support for {', '.join(unsupport_list)},"
-                    f" reset to {', '.join(reset_list)}.")
+                    f" reset to {', '.join(reset_list)}."
+                )
     # Removed obsolete commented-out block for improved readability and maintainability.
     return args_or_ar
 
@@ -1360,7 +1367,8 @@ def llm_load_model(
                 )
             except OSError as e:
                 logger.warning(
-                    f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry.")
+                    f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry."
+                )
                 model = model_cls.from_pretrained(
                     pretrained_model_name_or_path,
                     torch_dtype=torch_dtype,
@@ -1438,8 +1446,9 @@ def mllm_load_model(
                 torch_dtype=torch_dtype,
             )
         else:
-            if architectures.endswith("Model") and hasattr(transformers, n := architectures.replace(
-                    "Model", "ForConditionalGeneration")):
+            if architectures.endswith("Model") and hasattr(
+                transformers, n := architectures.replace("Model", "ForConditionalGeneration")
+            ):
                 cls = getattr(transformers, n)
             elif hasattr(transformers, architectures):
                 cls = getattr(transformers, architectures)
@@ -1452,14 +1461,17 @@ def mllm_load_model(
                 device_map="auto" if use_auto_mapping else None,
             )
             tokenizer = AutoTokenizer.from_pretrained(
-                pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+                pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+            )
             processor = AutoProcessor.from_pretrained(
-                pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+                pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+            )
             try:
                 from transformers import AutoImageProcessor
 
                 image_processor = AutoImageProcessor.from_pretrained(
-                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                )
             except Exception as e:
                 pass
 
@@ -1643,15 +1655,17 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
         if hasattr(model_config, "max_position_embeddings") and input_seqlen > model_config.max_position_embeddings:
             raise ValueError(
                 f"seqlen({input_seqlen}) exceeds model.config.max_position_embeddings("
-                f"{model_config.max_position_embeddings}). Please lowering '--seqlen'")
+                f"{model_config.max_position_embeddings}). Please lowering '--seqlen'"
+            )
     if tokenizer is not None and hasattr(tokenizer, "model_max_length") and input_seqlen > tokenizer.model_max_length:
         raise ValueError(
             f"seqlen({input_seqlen}) exceeds tokenizer.model_max_length({tokenizer.model_max_length}). "
-            "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length.")
+            "Please oncider Consider lowering the '--seqlen' or increasing tokenizer.model_max_length."
+        )
 
 
 def _use_more_bits(i_layer: int, n_layer: int):
-    return (i_layer < n_layer // 8) or (i_layer >= 7 * n_layer // 8) or ((i_layer - n_layer//8) % 3 == 2)
+    return (i_layer < n_layer // 8) or (i_layer >= 7 * n_layer // 8) or ((i_layer - n_layer // 8) % 3 == 2)
 
 
 def _get_digital_in_layer_name(layer_name):
@@ -1737,8 +1751,11 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
         tie_word_embeddings = model.config.tie_word_embeddings
 
     n_gqa = 1
-    if (hasattr(model, "config") and hasattr(model.config, "num_attention_heads") and
-            hasattr(model.config, "num_key_value_heads")):
+    if (
+        hasattr(model, "config")
+        and hasattr(model.config, "num_attention_heads")
+        and hasattr(model.config, "num_key_value_heads")
+    ):
         n_gqa = model.config.num_attention_heads // model.config.num_key_value_heads
     n_expert = 0
     for name in ["num_experts", "num_local_experts", "n_routed_experts"]:
@@ -1767,7 +1784,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             target_bits = int(re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]["lm_head"]).group(1))
         if isinstance(layer, torch.nn.Embedding):
             target_bits = int(
-                re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]["embedding"]).group(1))
+                re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]["embedding"]).group(1)
+            )
 
         gguf_name = tensor_map.get_name(layer_name)
         bits_index = 6
@@ -1775,15 +1793,16 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             if "bits" not in config:
                 logger.warning(
                     f"Setting layer_config requires providing bits, {layer_name} has not bits,"
-                    f" using bits={target_bits} instead.")
-                new_type = new_type[:bits_index] + target_bits + new_type[bits_index + 1:]
+                    f" using bits={target_bits} instead."
+                )
+                new_type = new_type[:bits_index] + target_bits + new_type[bits_index + 1 :]
             else:
-                new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
+                new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
             new_type = _search_gguf_type(new_type)
             if new_type is None:
                 raise ValueError(f"invalid bit setting for {layer_name}")
         elif target_bits is not None and "bits" in config and config["bits"] != target_bits:
-            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1:]
+            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
             new_type = _search_gguf_type(new_type)
             if new_type is None:
                 raise ValueError(f"invalid bit setting for {layer_name}")
@@ -1812,7 +1831,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             elif target_gguf_format == "gguf:q3_k_l":
                 new_type = "gguf:q5_k"
             elif (target_gguf_format == "gguf:q4_k_m" or target_gguf_format == "gguf:q5_k_m") and _use_more_bits(
-                    i_layer, n_layer):
+                i_layer, n_layer
+            ):
                 new_type = "gguf:q6_k"
             elif target_gguf_format == "gguf:q4_k_s" and i_attention_wv < 4:
                 new_type = "gguf:q5_k"
@@ -1865,8 +1885,11 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
                         new_type = "gguf:q6_k"
             elif target_gguf_format == "gguf:q5_k_m" and _use_more_bits(i_layer, n_layer):
                 new_type = "gguf:q6_k"
-            elif (target_gguf_format == "gguf:q4_k_s" and model_class.model_arch != gguf.MODEL_ARCH.FALCON and
-                  i_layer < n_layer / 8):
+            elif (
+                target_gguf_format == "gguf:q4_k_s"
+                and model_class.model_arch != gguf.MODEL_ARCH.FALCON
+                and i_layer < n_layer / 8
+            ):
                 new_type = "gguf:q5_k"
             elif (target_gguf_format == "gguf:q4_0" or target_gguf_format == "gguf:q5_0") and i_layer < n_layer / 8:
                 if target_gguf_format == "gguf:q4_0":
@@ -1880,12 +1903,12 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             if gguf.MODEL_ARCH.FALCON != model_class.model_arch:
                 if n_expert == 8:
                     if target_gguf_format in (
-                            "gguf:q2_k",
-                            "gguf:q3_k_s",
-                            "gguf:q3_k_m",
-                            "gguf:q4_k_s",
-                            "gguf:q4_k_m",
-                            "gguf:q5_k",
+                        "gguf:q2_k",
+                        "gguf:q3_k_s",
+                        "gguf:q3_k_m",
+                        "gguf:q4_k_s",
+                        "gguf:q4_k_m",
+                        "gguf:q5_k",
                     ):
                         new_type = "gguf:q5_k"
                     elif target_gguf_format == "gguf:q2_k":
@@ -1913,7 +1936,8 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
                 new_type = "gguf:bf16"
             logger.warning(
                 f"fallback {layer_name} to {new_type}, "
-                f"because input_features({input_features}) % block_size({block_size}) != 0")
+                f"because input_features({input_features}) % block_size({block_size}) != 0"
+            )
         # for deepseek v2
         if layer_name.endswith("kv_b_proj") and new_type.endswith("_k") and "Deepseek" in model.config.architectures[0]:
             fallback = False
@@ -1922,13 +1946,18 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
             qk_nope_head_dim = model.config.qk_nope_head_dim
             kv_b_shape = get_module(model, layer_name).weight.shape
 
-            if (qk_nope_head_dim < QK_K or qk_nope_head_dim % QK_K != 0 or kv_b_shape[-1] < QK_K or
-                    kv_b_shape[-1] % QK_K != 0):
+            if (
+                qk_nope_head_dim < QK_K
+                or qk_nope_head_dim % QK_K != 0
+                or kv_b_shape[-1] < QK_K
+                or kv_b_shape[-1] % QK_K != 0
+            ):
                 fallback = True
             if fallback:
                 tmp_type = _gguf_type_fallback(new_type)
                 logger.warning_once(
-                    f"self_attn.kv_b_proj does not support the use of {new_type}, replace it with {tmp_type}")
+                    f"self_attn.kv_b_proj does not support the use of {new_type}, replace it with {tmp_type}"
+                )
                 new_type = tmp_type
 
         target_config = GGUF_INNER_CONFIG[new_type]
