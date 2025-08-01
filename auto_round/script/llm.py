@@ -38,7 +38,6 @@ from auto_round.utils import (
     get_fp_layer_names,
     get_model_dtype,
     infer_bits_by_data_type,
-    out_of_vram,
     set_cuda_visible_devices,
     str2bool,
 )
@@ -843,7 +842,8 @@ def eval_task_by_task(
                 )
                 break
             except Exception as e:
-                if out_of_vram(e):
+                cuda_error_msg = traceback.format_exc()
+                try:
                     ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
                     try:
                         for k, v in hflm.batch_sizes.items():
@@ -856,7 +856,8 @@ def eval_task_by_task(
                     except Exception as e:
                         traceback.print_exc()
                         pass
-                else:
+                except Exception as e:
+                    logger.error(cuda_error_msg)
                     traceback.print_exc()
                     break
             retry_times -= 1

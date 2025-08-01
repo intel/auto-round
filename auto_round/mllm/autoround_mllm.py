@@ -30,7 +30,6 @@ from ..utils import (
     get_block_names,
     logger,
     mllm_load_model,
-    out_of_vram,
     to_device,
     to_dtype,
 )
@@ -58,14 +57,13 @@ def _only_text_test(model, tokenizer, device, model_type):
         model(**inputs)
         return True
     except RuntimeError as e:
-        if out_of_vram(e):
-            model = model.to("cpu")
-            inputs = inputs.to("cpu")
-            try:
-                model(**inputs)
-            except:
-                return False
-        return False
+        model = model.to("cpu")
+        inputs = inputs.to("cpu")
+        try:
+            model(**inputs)
+        except:
+            return False
+        return True
     except Exception as e:
         return False
 

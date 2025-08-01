@@ -18,6 +18,7 @@ import re
 import sys
 import time
 from typing import Any, Union
+import traceback
 
 import accelerate
 import torch
@@ -63,7 +64,6 @@ from auto_round.utils import (
     llm_load_model,
     logger,
     mv_module_from_gpu,
-    out_of_vram,
     reset_params,
     set_module,
     to_device,
@@ -785,7 +785,8 @@ class AutoRound(object):
                     **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
                 )
             except RuntimeError as e:
-                if out_of_vram(e):
+                cuda_error_msg = traceback.format_exc()
+                try:
                     logger.info("out of VRAM, falling back to CPU.")
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
@@ -794,7 +795,8 @@ class AutoRound(object):
                             for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
                         },
                     )
-                else:
+                except Exception as e:
+                    logger.error(cuda_error_msg)
                     raise
 
             # Overwrite the module's weights with the quantized version
@@ -922,37 +924,38 @@ class AutoRound(object):
                     cnt = 1
                 cnt += 1
         except RuntimeError as e:
-            if out_of_vram(e):
+            try:
+                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
+                    import accelerate
+
+                    accelerate.hooks.remove_hook_from_submodules(model)
+                # Fallback: out-of-memory → try CPU blockwise quantization
+                logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
+                model = model.to("cpu")
+                clear_memory()
+                self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
+            except RuntimeError as e:
+                cuda_error_msg = traceback.format_exc()
                 try:
+                    # Final fallback: warn and use CPU-only quantization
+                    logger.warning(
+                        "Fallback to CPU. "
+                        "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
+                    )
+                    model = model.to("cpu")
+                    clear_memory()
                     if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                         import accelerate
 
                         accelerate.hooks.remove_hook_from_submodules(model)
-                    # Fallback: out-of-memory → try CPU blockwise quantization
-                    logger.warning("Out of VRAM, falling back to blockwise quantization. Accuracy may degrade.")
-                    model = model.to("cpu")
-                    clear_memory()
+
+                    orig_device = self.device
+                    self.device = "cpu"
                     self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                except RuntimeError as e:
-                    if out_of_vram(e):
-                        # Final fallback: warn and use CPU-only quantization
-                        logger.warning(
-                            "Fallback to CPU. "
-                            "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
-                        )
-                        model = model.to("cpu")
-                        clear_memory()
-                        if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                            import accelerate
-
-                            accelerate.hooks.remove_hook_from_submodules(model)
-
-                        orig_device = self.device
-                        self.device = "cpu"
-                        self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                        self.device = orig_device
-                    else:
-                        raise
+                    self.device = orig_device
+                except Exception as e:
+                    logger.error(cuda_error_msg)
+                    raise
         finally:
             # Always remove hooks
             for hook in hooks:
@@ -1086,7 +1089,8 @@ class AutoRound(object):
                 m = m.unwrapper({})
                 m.to("cpu")
             except RuntimeError as e:
-                if out_of_vram(e):
+                cuda_error_msg = traceback.format_exc()
+                try:
                     logger.warning("Out of VRAM, falling back to CPU.")
                     m.to("cpu")
                     m = WrapperLinear(
@@ -1096,7 +1100,8 @@ class AutoRound(object):
                         enable_round_tuning=False,
                     )
                     m = m.unwrapper({})
-                else:
+                except Exception as e:
+                    logger.error(cuda_error_msg)
                     raise
 
         # Step 3: Optional immediate packing/export
@@ -1800,7 +1805,8 @@ class AutoRound(object):
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
         except RuntimeError as e:
-            if out_of_vram(e):
+            cuda_error_msg = traceback.format_exc()
+            try:
                 logger.info("switch to cpu to cache block inputs")
                 if self.has_qlayer_outside_block or self.__class__.__name__ == "AutoRoundMLLM":
                     logger.warning(
@@ -1817,7 +1823,8 @@ class AutoRound(object):
                 all_inputs = self.cache_inter_data(
                     block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
                 )
-            else:
+            except Exception as e:
+                logger.error(cuda_error_msg)
                 raise
         return all_inputs
 
