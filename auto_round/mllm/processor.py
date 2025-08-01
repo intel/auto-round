@@ -88,7 +88,7 @@ class HFProcessor(BasicProcessor):
 
     def __init__(self):
         self.process_func = self._process_v1
-    
+
     def post_init(self, model, tokenizer, processor=None, image_processor=None, use_rtn=False, **kwargs):
         assert tokenizer is not None, "tokenizer should not be None"
         assert processor is not None, "processor should not be None"
