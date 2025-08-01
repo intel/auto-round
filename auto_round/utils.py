@@ -48,6 +48,8 @@ class SupportedFormats:
             "itrex",
             "itrex_xpu",
             "fake",
+            "mx_fp",
+            "nv_fp",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -1219,7 +1221,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     for f in formats:
         if f.startswith("gguf") and f not in GGUF_CONFIG:
             logger.error(f"{f} is not supported, please check.")
-    pattern = re.compile("q\d_k")
+    pattern = re.compile(r"q\d_k")
     pre_dq_format = ""
     unsupport_list, reset_list = [], []
     for format in GGUF_CONFIG:
@@ -1269,7 +1271,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
                 if not hasattr(args_or_ar, k):
                     continue
                 if k == "data_type":
-                    if re.search("q\d_1", format) and len(formats) > 1:
+                    if re.search(r"q\d_1", format) and len(formats) > 1:
                         v = "int"
                 if k == "sym" and isinstance(args_or_ar, argparse.Namespace):
                     k = "asym"
@@ -1669,7 +1671,7 @@ def _use_more_bits(i_layer: int, n_layer: int):
 
 
 def _get_digital_in_layer_name(layer_name):
-    pattern = re.compile("([a-zA-Z]+\.){1,}(\d+)")
+    pattern = re.compile(r"([a-zA-Z]+\.){1,}(\d+)")
     res = re.search(pattern, layer_name)
     if res:
         return int(res[2])
