@@ -166,7 +166,7 @@ class AutoRoundMLLM(AutoRound):
         model_kwargs: dict = None,
         **kwargs,
     ):
-        quant_nontext_module = self._check_quant_nontext(layer_config)
+        quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
@@ -440,10 +440,12 @@ class AutoRoundMLLM(AutoRound):
         )
         return compressed_model
 
-    def _check_quant_nontext(self, layer_config):
+    def _check_quant_nontext(self, layer_config, quant_nontext_module):
+        if not layer_config:
+            return quant_nontext_module
         from auto_round.mllm.utils import VISUAL_KEYS
         for layer_name in layer_config.keys():
             for vlm_key in VISUAL_KEYS:
                 if vlm_key in layer_name:
                     return True
-        return False
+        return quant_nontext_module
