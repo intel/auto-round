@@ -178,7 +178,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--act_bits", default=16, type=int, help="activation bits")
 
-        self.add_argument("--act_group_size", default=0, type=int, help="activation group size")
+        self.add_argument("--act_group_size", default=None, type=int, help="activation group size")
 
         self.add_argument(
             "--fp_layers", default="", type=str, help="list of Layer names to maintain original data type"
