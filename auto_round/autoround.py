@@ -38,6 +38,7 @@ from auto_round.utils import (
     block_forward,
     check_is_cpu,
     check_need_act_calibration,
+    check_oom,
     check_seqlen_compatible,
     check_skippable_keywords,
     check_to_quantized,
@@ -68,7 +69,6 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupport_meta_device,
-    check_oom
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 

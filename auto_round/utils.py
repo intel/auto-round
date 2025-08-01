@@ -2056,7 +2056,7 @@ def check_need_act_calibration(is_act_dynamic, act_data_type=None):
 
 
 def check_oom(error_msg):
-    error_msg = str(error_msg) 
+    error_msg = str(error_msg)
     # CUDA
     if "CUDA out of memory" in error_msg:
         return True

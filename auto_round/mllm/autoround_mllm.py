@@ -23,6 +23,7 @@ from auto_round.special_model_handler import SUPPORT_ONLY_TEXT_MODELS, _handle_s
 from ..autoround import AutoRound
 from ..low_cpu_mem.utils import get_layers_before_block
 from ..utils import (
+    check_oom,
     clear_memory,
     detect_device,
     extract_block_names_to_str,
@@ -32,7 +33,6 @@ from ..utils import (
     mllm_load_model,
     to_device,
     to_dtype,
-    check_oom
 )
 from .mllm_dataset import get_mllm_dataloader
 from .template import Template, get_template
