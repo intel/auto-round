@@ -202,12 +202,14 @@ class AutoRoundMLLM(AutoRound):
             if quant_nontext_module:
                 logger.warning(
                     "Text only dataset cannot be used for calibrating non-text modules,"
-                    " switching to liuhaotian/llava_conv_58k")
+                    " switching to liuhaotian/llava_conv_58k"
+                )
                 dataset = "liuhaotian/llava_conv_58k"
             elif not _only_text_test(model, tokenizer, device, self.template.model_type):
                 logger.warning(
                     f"{model.config.model_type} does not support for {dataset},"
-                    " will use liuhaotian/llava_conv_58k with default config as an alternative.")
+                    " will use liuhaotian/llava_conv_58k with default config as an alternative."
+                )
                 dataset = "liuhaotian/llava_conv_58k"
 
             if dataset in MLLM_DATASET.keys():
@@ -442,6 +444,7 @@ class AutoRoundMLLM(AutoRound):
 
     def _check_quant_nontext(self, layer_config):
         from auto_round.mllm.utils import VISUAL_KEYS
+
         for layer_name in layer_config.keys():
             for vlm_key in VISUAL_KEYS:
                 if vlm_key in layer_name:
