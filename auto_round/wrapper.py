@@ -18,7 +18,18 @@ from torch.functional import F
 
 from auto_round.data_type import get_quant_func
 
-from .utils import SUPPORTED_LAYER_TYPES, check_to_quantized, get_scale_shape, logger, set_module
+from .utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_to_quantized,
+    deepspeed_exists,
+    get_scale_shape,
+    logger,
+    set_module,
+)
+
+if deepspeed_exists:
+    from deepspeed import comm as dist
+    from deepspeed.module_inject import LinearAllreduce, LinearLayer
 
 
 def reshape_and_pad_tensor(v, group_size=-1):
@@ -87,7 +98,18 @@ class WrapperLinear(torch.nn.Module):
         else:
             self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
-        self.orig_forward = self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
+        if deepspeed_exists:
+            if isinstance(self.orig_layer, (torch.nn.Linear, LinearLayer)):
+                self.orig_forward = self.linear_forward
+            elif isinstance(self.orig_layer, LinearAllreduce):
+                self.orig_forward = self.all_reduce_linear_forward
+                self.mp_group = self.orig_layer.mp_group
+            else:
+                self.orig_forward = self.conv1d_forward
+        else:
+            self.orig_forward = (
+                self.linear_forward if isinstance(self.orig_layer, torch.nn.Linear) else self.conv1d_forward
+            )
 
     def _init_tuning_params_and_quant_func(self):
         """Initializes tuning parameters and quantization functions.
@@ -346,6 +368,24 @@ class WrapperLinear(torch.nn.Module):
         """
         return F.linear(x, weight, bias)
 
+    def all_reduce_linear_forward(self, x, weight, bias):
+        """Performs the forward pass for a linear layer.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+            weight (torch.Tensor): Weight tensor for the linear layer.
+            bias (torch.Tensor): Bias tensor for the linear layer.
+
+        Returns:
+            torch.Tensor: Output tensor after applying the linear layer.
+        """
+        output = torch.matmul(x, weight.transpose(-1, -2))
+        if self.mp_group is not None:
+            dist.inference_all_reduce(output, group=self.mp_group)
+        if bias is not None:
+            output += bias
+        return output
+
     def conv1d_forward(self, x, weight, bias):
         """Performs the forward pass for a Conv1D layer.
 
@@ -393,7 +433,10 @@ class WrapperWALayer(torch.nn.Module):
     def __init__(self, orig_layer):
         super(WrapperWALayer, self).__init__()
         self.orig_layer = orig_layer
+        self.data_type = orig_layer.data_type if hasattr(orig_layer, "data_type") else None
+        self.act_data_type = orig_layer.act_data_type if hasattr(orig_layer, "act_data_type") else None
         self.act_quant_func = self.orig_layer.act_quant_func
+        self.extra_repr_org = orig_layer.extra_repr
 
     def forward(self, x):
         act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
@@ -407,6 +450,9 @@ class WrapperWALayer(torch.nn.Module):
             tensor_max=act_max,
         )
         return self.orig_layer.forward(x)
+
+    def extra_repr(self):
+        return f"{self.extra_repr_org()}, weight_type={self.data_type}, act_data_type={self.act_data_type}"
 
 
 class WrapperLayerNorm(torch.nn.Module):
