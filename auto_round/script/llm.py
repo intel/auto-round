@@ -38,6 +38,7 @@ from auto_round.utils import (
     get_fp_layer_names,
     get_model_dtype,
     infer_bits_by_data_type,
+    out_of_vram,
     set_cuda_visible_devices,
     str2bool,
 )
@@ -842,7 +843,7 @@ def eval_task_by_task(
                 )
                 break
             except Exception as e:
-                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                if out_of_vram(e):
                     ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
                     try:
                         for k, v in hflm.batch_sizes.items():

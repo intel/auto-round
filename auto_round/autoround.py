@@ -63,6 +63,7 @@ from auto_round.utils import (
     llm_load_model,
     logger,
     mv_module_from_gpu,
+    out_of_vram,
     reset_params,
     set_module,
     to_device,
@@ -784,7 +785,7 @@ class AutoRound(object):
                     **{k: config[k] for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]},
                 )
             except RuntimeError as e:
-                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                if out_of_vram(e):
                     logger.info("out of VRAM, falling back to CPU.")
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
@@ -921,7 +922,7 @@ class AutoRound(object):
                     cnt = 1
                 cnt += 1
         except RuntimeError as e:
-            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+            if out_of_vram(e):
                 try:
                     if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                         import accelerate
@@ -933,7 +934,7 @@ class AutoRound(object):
                     clear_memory()
                     self.quantize_via_rtn_blockwise(all_to_quantized_module_names)
                 except RuntimeError as e:
-                    if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                    if out_of_vram(e):
                         # Final fallback: warn and use CPU-only quantization
                         logger.warning(
                             "Fallback to CPU. "
@@ -1085,7 +1086,7 @@ class AutoRound(object):
                 m = m.unwrapper({})
                 m.to("cpu")
             except RuntimeError as e:
-                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                if out_of_vram(e):
                     logger.warning("Out of VRAM, falling back to CPU.")
                     m.to("cpu")
                     m = WrapperLinear(
@@ -1799,7 +1800,7 @@ class AutoRound(object):
                 block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
             )
         except RuntimeError as e:
-            if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+            if out_of_vram(e):
                 logger.info("switch to cpu to cache block inputs")
                 if self.has_qlayer_outside_block or self.__class__.__name__ == "AutoRoundMLLM":
                     logger.warning(
@@ -2153,6 +2154,7 @@ class AutoRound(object):
         logger.info(dump_info)
 
     def register_act_max_hook(self, model):
+
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
