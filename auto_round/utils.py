@@ -2053,3 +2053,17 @@ def check_need_act_calibration(is_act_dynamic, act_data_type=None):
     if act_data_type is not None and "static" in act_data_type:
         return True
     return False
+
+
+def check_oom(error_msg):
+    error_msg = str(error_msg) 
+    # CUDA
+    if "CUDA out of memory" in error_msg:
+        return True
+    # gaudi
+    if "MODULE:PT_DEVMEM" in error_msg:
+        return True
+    # XPU
+    if "UR_RESULT_ERROR_OUT_OF_DEVICE_MEMORY" in error_msg:
+        return True
+    return False

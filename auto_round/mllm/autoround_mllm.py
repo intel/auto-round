@@ -32,6 +32,7 @@ from ..utils import (
     mllm_load_model,
     to_device,
     to_dtype,
+    check_oom
 )
 from .mllm_dataset import get_mllm_dataloader
 from .template import Template, get_template
@@ -57,7 +58,7 @@ def _only_text_test(model, tokenizer, device, model_type):
         model(**inputs)
         return True
     except RuntimeError as e:
-        if "CUDA out of memory" in str(e):
+        if check_oom(e):
             model = model.to("cpu")
             inputs = inputs.to("cpu")
             try:

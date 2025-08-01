@@ -40,6 +40,7 @@ from auto_round.utils import (
     infer_bits_by_data_type,
     set_cuda_visible_devices,
     str2bool,
+    check_oom
 )
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -842,7 +843,7 @@ def eval_task_by_task(
                 )
                 break
             except Exception as e:
-                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                if check_oom(e):
                     ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
                     try:
                         for k, v in hflm.batch_sizes.items():
