@@ -84,6 +84,7 @@ def nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=None, **kwargs):
     if global_scale is None:
         tensor_max = tensor.abs().max().to(torch.float32)
         global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+    global_scale = global_scale.to(tensor.device)
     qdq_res, scale = ref_nvfp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
@@ -101,6 +102,7 @@ def nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, *
         if tensor_max.numel() != 1:
             tensor_max = tensor.abs().max().to(torch.float32)
     global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+    global_scale = global_scale.to(tensor.device)
     qdq_res, scale = ref_nvfp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
@@ -184,6 +186,7 @@ def ref_fp4_quant(x, global_scale, block_size=16, v=0, max_scale=1.0):
     assert (not isinstance(global_scale, torch.Tensor)) or global_scale.dtype == torch.float32
     assert x.ndim == 2
     m, n = x.shape
+    device = x.device
     if isinstance(max_scale, torch.Tensor):
         max_scale = max_scale.unsqueeze(dim=-1).to(x.device)
     vec_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0].to(torch.float32) * max_scale
