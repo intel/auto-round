@@ -33,8 +33,15 @@ import re
 import sys
 
 from auto_round.utils import (
-    clear_memory, get_device_and_parallelism, get_fp_layer_names, get_model_dtype, infer_bits_by_data_type,
-    set_cuda_visible_devices, str2bool, out_of_vram)
+    out_of_vram,
+    clear_memory,
+    get_device_and_parallelism,
+    get_fp_layer_names,
+    get_model_dtype,
+    infer_bits_by_data_type,
+    set_cuda_visible_devices,
+    str2bool,
+)
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
