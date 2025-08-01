@@ -14,6 +14,7 @@
 
 import copy
 import gc
+import importlib
 import logging
 import os
 import re
@@ -24,7 +25,6 @@ from functools import lru_cache
 
 import cpuinfo
 import psutil
-import importlib
 import torch
 import transformers
 from packaging import version
