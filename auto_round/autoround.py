@@ -1796,12 +1796,15 @@ class AutoRound(object):
         if layer_names is None:
             layer_names = []
 
-        if self.low_gpu_mem_usage or  (str(self.model.device=="cpu") and len(block_names)==1 and len(layer_names) == 0
-                and not self.has_qlayer_outside_block and (last_cache_name is None or last_cache_name in block_names)):
+        if self.low_gpu_mem_usage or (
+            str(self.model.device == "cpu")
+            and len(block_names) == 1
+            and len(layer_names) == 0
+            and not self.has_qlayer_outside_block
+            and (last_cache_name is None or last_cache_name in block_names)
+        ):
             ## low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
-            all_inputs = self.cache_inter_data(
-                block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
-            )
+            all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
         else:
             try:
                 if not self.model.device.type == "meta":
