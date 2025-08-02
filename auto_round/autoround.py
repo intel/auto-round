@@ -2277,18 +2277,6 @@ class AutoRound(object):
         bits = []
         count = 0
         quant_bits = {}
-        for n, m in block.named_modules():  # [4 4 6 4 4 6 8]
-            if hasattr(m, "bits"):
-                bits.append(m.bits)
-                quant_bits[m.bits] = 0
-        ori_bit = min(bits)
-        for b in bits:
-            if b != ori_bit:
-                quant_bits[b] += 1
-        bits = set(bits)  # {4,6}
-        if len(bits) <= 1:
-            return
-        del quant_bits[min(bits)]
 
         layer_names = []
 
@@ -2296,9 +2284,22 @@ class AutoRound(object):
             if check_to_quantized(m):
                 layer_names.append(n)
                 count += 1
-
+                if hasattr(m, "bits"):
+                    bits.append(m.bits)
+                    quant_bits[m.bits] = 0
+            
+        ori_bit = min(bits)
+        
+        for b in bits:
+            if b != ori_bit:
+                quant_bits[b] += 1
+        bits = set(bits)  # {4,6}
+        if len(bits) <= 1:
+            logger.info(f"len<=1,bits为:{bits}不进行选择")
+            return
+        del quant_bits[min(bits)]
         if count > 10:
-            logger.info("不进行选择")
+            logger.info(f"count>10,为{count}不进行选择")
             return
 
         nsamples = min(32, len(outputs))
@@ -2320,16 +2321,8 @@ class AutoRound(object):
 
         default_layer_config = low_config
 
-        # for k in self.layer_config.keys():
-        #     s = re.split('\.',k)
-        #     if len(s) <2:
-        #         continue
-        #     ss = s[-2]+'.'+s[-1]
-        #     if ss in layer_names:
-        #         self.layer_config[k] = low_config
-
         if len(bits) == 2:
-            logger.info(f"量化单bit,模式为：{mode}")
+            logger.info(f"量化单bit：{bits},模式为：{mode}")
             self.choose_one_bit(
                 block,
                 mix_configs,
