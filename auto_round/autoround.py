@@ -1329,13 +1329,6 @@ class AutoRound(object):
             ):
                 self.is_packing_immediate = True
         # if self.iters == 0:
-        #     self.auto_mix_rtn(self.model,
-        #         inputs,
-        #         block_names,
-        #         q_input=q_inputs["input_ids"] if q_inputs is not None else None,
-        #         nblocks=self.nblocks,
-        #         device=self.device,
-        #         pbar=pbar)
         #     return self.quantize_rtn()
 
         if bool(self.quant_block_list):
@@ -2207,98 +2200,6 @@ class AutoRound(object):
                     continue
         return hook_handles
 
-    # def get_default_config(self,low_config):
-    #     layer_config = {}
-    #     # Get the names of layers in quantization blocks
-    #     layers_in_blocks = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
-    #     ##process regex in layer_config
-    #     all_supported_layer_names = []
-    #     # List of configuration keys
-    #     keys = [
-    #         "bits",
-    #         "group_size",
-    #         "sym",
-    #         "data_type",
-    #         "scale_dtype",
-    #         "act_bits",
-    #         "act_group_size",
-    #         "act_sym",
-    #         "act_dynamic",
-    #         "act_data_type",
-    #         "super_bits",
-    #         "super_group_size"
-    #     ]
-
-    #     for n, m in self.model.named_modules():
-    #         # Skip unsupported types
-    #         supported_types = self.supported_types
-
-    #         if not isinstance(m, supported_types):
-    #             continue
-    #         all_supported_layer_names.append(n)
-
-    #     names_in_layer_config = list(layer_config.keys())
-    #     for name in names_in_layer_config:
-    #         if name in all_supported_layer_names:
-    #             continue
-    #         matched_names = []
-    #         for layer_name in all_supported_layer_names:
-    #             if re.search(re.compile(name), layer_name) is not None:
-    #                 matched_names.append(layer_name)
-    #         if len(matched_names) > 0:
-    #             val = layer_config[name]
-    #             layer_config.pop(name)
-    #             for match_name in matched_names:
-    #                 layer_config[match_name] = val
-    #         else:
-    #             tmp_m = get_module(self.model, name)
-    #             if not isinstance(tmp_m, torch.nn.Embedding):  ##TODO not good code style
-    #                 raise ValueError(f"key {name} in layer_config is invalid, please have a double check")
-
-    #     has_qlayer_outside_block = False  # Flag to track if there are quantized layers outside blocks (e.g., lm-head)
-
-    #     # Iterate through all modules in the model
-    #     for n, m in self.model.named_modules():
-
-    #         # Skip unsupported types
-    #         if not isinstance(m, supported_types):
-    #             continue
-
-    #         # If the layer is not in the config and is part of a quantization block, use default configuration
-    #         if n not in layer_config.keys() and n in layers_in_blocks:
-    #             layer_config[n] = {}
-    #             for key in keys:
-    #                 layer_config[n][key] = low_config[key]
-    #         # If the layer is partially configured, fill in missing values
-    #         elif n in layer_config.keys():
-    #             for key in keys:
-    #                 if key not in layer_config[n].keys():
-    #                     layer_config[n][key] = low_config[key]
-    #             layer_config[n]["fixed_by_user"] = True
-    #         # If the layer is not in the config and not part of a quantization block,
-    #         # use default configuration and set specific values
-    #         else:
-    #             layer_config[n] = {}
-    #             for key in keys:
-    #                 layer_config[n][key] = low_config[key]
-    #             layer_config[n]["bits"] = 16
-    #             layer_config[n]["act_bits"] = 16
-
-    #         if n in layers_in_blocks:
-    #             layer_config[n]["in_blocks"] = True
-    #         else:
-    #             layer_config[n]["in_blocks"] = False
-
-    #         in_features, out_features = get_layer_features(m)
-    #         if in_features <= layer_config[n]["group_size"]:
-    #             layer_config[n]["group_size"] = -1
-
-    #         # Apply the configuration to the corresponding layer in the model
-    #         for key in keys:
-    #             setattr(m, key, low_config[key])
-    
-    #     return layer_config
-
     @torch.inference_mode()
     def auto_mix_rtn(self, model: torch.nn.Module, inputs, block_names, q_input=None, nblocks=1, device="cpu", pbar=None):
         clear_memory()
@@ -2357,46 +2258,47 @@ class AutoRound(object):
 
 
     @torch.inference_mode()
-    def check_needs_auto_gguf_mix_mse(self, block, formats, input_ids, input_others, outputs, device,cache_device):
+    def check_needs_auto_gguf_mix_mse(self, block, formats, input_ids, input_others, outputs, device, cache_device, mode="percent"):
         ## TODO Q4_K_M does not support iters==0
         ## TODO for moe model, expert use default bits
         mse_reduction = "mean"
         if self.gradient_accumulate_steps != 1:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
-
         target_gguf_format = None
         for format in formats:
             if format.startswith("gguf"):
                 target_gguf_format = format
         if target_gguf_format is None:
+            logger.info("target_gguf_format is None, return")
             return
 
         ## simple verification, if the layer_config has any mixed-bits setting, we don't apply auto mix precision
-        bits = []  
-        count=0
+        bits = []
+        count = 0
         quant_bits = {}
-        layer_names = []
- 
-        for n, m in block.named_modules():
-            if check_to_quantized(m):
-                layer_names.append(n)
-                count+=1
-                if hasattr(m, "bits"):
-                    bits.append(m.bits)
-                    quant_bits[m.bits]=0
-            
+        for n, m in block.named_modules():  # [4 4 6 4 4 6 8]
+            if hasattr(m, "bits"):
+                bits.append(m.bits)
+                quant_bits[m.bits] = 0
         ori_bit = min(bits)
         for b in bits:
             if b != ori_bit:
-                quant_bits[b]+=1
-        bits = set(bits) #{4,6}
+                quant_bits[b] += 1
+        bits = set(bits)  # {4,6}
         if len(bits) <= 1:
-            logger.info(f"len<=1,bits为:{bits}不进行选择")
             return
         del quant_bits[min(bits)]
+
+        layer_names = []
+
+        for n, m in block.named_modules():
+            if check_to_quantized(m):
+                layer_names.append(n)
+                count += 1
+
         if count > 10:
-            logger.info(f"count>10,为{count}不进行选择")
+            logger.info("不进行选择")
             return
 
         nsamples = min(32, len(outputs))
@@ -2407,86 +2309,187 @@ class AutoRound(object):
         # current_output = to_device(current_output, device)
         current_input_ids = [input_ids[i] for i in whole_indices]
         default_config = GGUF_CONFIG[target_gguf_format]
-        split_list = re.split(':|_',target_gguf_format)
+        split_list = re.split(":|_", target_gguf_format)
         mix_configs = {}
-        
-        for k,_ in quant_bits.items():
+
+        for k, _ in quant_bits.items():
             mix_configs[k] = GGUF_CONFIG[f"gguf:q{k}_{split_list[2]}"]
-        
+
         d_format = [f"gguf:q{min(bits)}_{split_list[2]}"]
         low_config = GGUF_CONFIG[f"gguf:q{min(bits)}_{split_list[2]}"]
 
         default_layer_config = low_config
 
+        # for k in self.layer_config.keys():
+        #     s = re.split('\.',k)
+        #     if len(s) <2:
+        #         continue
+        #     ss = s[-2]+'.'+s[-1]
+        #     if ss in layer_names:
+        #         self.layer_config[k] = low_config
+
         if len(bits) == 2:
-            logger.info(f"量化单bit为:{max(bits)}")
-            self.choose_one_bit(block,mix_configs,quant_bits,default_config,default_layer_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device)
+            logger.info(f"量化单bit,模式为：{mode}")
+            self.choose_one_bit(
+                block,
+                mix_configs,
+                quant_bits,
+                default_config,
+                default_layer_config,
+                layer_names,
+                current_input_ids,
+                input_others,
+                current_output,
+                mse_loss,
+                device,
+                cache_device,
+                mode = mode,
+            )
         else:
-            logger.info("量化多bit")
-            self.choose_various_bit(block,mix_configs,quant_bits,default_config,default_layer_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device)
+            logger.info(f"量化多bit,模式为：{mode}")
+            self.choose_various_bit(
+                block,
+                mix_configs,
+                quant_bits,
+                default_config,
+                default_layer_config,
+                layer_names,
+                current_input_ids,
+                input_others,
+                current_output,
+                mse_loss,
+                device,
+                cache_device,
+                mode=mode,
+            )
 
-
-    def choose_one_bit(self,block,mix_configs,quant_bits,default_config,default_layer_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device):
+    def choose_one_bit(
+        self,
+        block,
+        mix_configs,
+        quant_bits,
+        default_config,
+        default_layer_config,
+        layer_names,
+        current_input_ids,
+        input_others,
+        current_output,
+        mse_loss,
+        device,
+        cache_device,
+        mode="max",
+    ):
         each_loss = {}
         # bit = mix_configs.keys()[0]
-        [(_,cur_config)] = mix_configs.items()
-        [(_,num_bit)] = quant_bits.items()
+        [(_, cur_config)] = mix_configs.items()
+        [(_, num_bit)] = quant_bits.items()
         for layer_name in layer_names:
             module = get_module(block, layer_name)
             self.layer_config[module.tmp_name] = default_config
-            for key in cur_config:  
-                setattr(module,key,cur_config[key])
-            
-            wrapper_layer = WrapperLinear(module,enable_minmax_tuning=False,enable_round_tuning=False,enable_norm_bias_tuning=False,device=device)
+            if mode == "min" or "percent":
+                for key in cur_config:
+                    setattr(module, key, cur_config[key])
+            elif mode == "sensitive":
+                for key in default_config:
+                    setattr(module, key, default_config[key])
+
+            wrapper_layer = WrapperLinear(
+                module,
+                enable_minmax_tuning=False,
+                enable_round_tuning=False,
+                enable_norm_bias_tuning=False,
+                device=device,
+            )
             set_module(block, layer_name, wrapper_layer)
-            q_output = self.get_block_outputs(block, current_input_ids, input_others, self.batch_size * self.infer_bs_coeff,
-                                    device,
-                                    cache_device)
+            q_output = self.get_block_outputs(
+                block, current_input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, cache_device
+            )
+
+            if mode == "percent":
+                for key in default_config:
+                    setattr(module, key, default_config[key])
+                wrapper_layer = WrapperLinear(
+                    module,
+                    enable_minmax_tuning=False,
+                    enable_round_tuning=False,
+                    enable_norm_bias_tuning=False,
+                    device=device,
+                    )
+                set_module(block, layer_name, wrapper_layer)
+                q2_output = self.get_block_outputs(
+                block, current_input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, cache_device
+                )
             
-            set_module(block,layer_name,wrapper_layer.orig_layer)
+            set_module(block, layer_name, wrapper_layer.orig_layer)
             module = get_module(block, layer_name)
-            for key in default_config:  
-                setattr(module,key,default_config[key])
-            cur_loss=mse_loss(torch.stack(q_output).squeeze(1),current_output)
-            each_loss[layer_name] = cur_loss #把每一层的loss记录下来
-        
-        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=False)[:num_bit]
-        # breakpoint()
+            for key in default_config:
+                setattr(module, key, default_config[key])
+            
+            if mode == "min" or mode == "sensitive":
+                cur_loss = mse_loss(torch.stack(q_output).squeeze(1), current_output)
+            elif mode == "percent":
+                loss_high = mse_loss(torch.stack(q_output).squeeze(1), current_output)
+                loss_low = mse_loss(torch.stack(q2_output).squeeze(1), current_output)
+                cur_loss = (loss_high - loss_low)/loss_low #改善率越高，值为负且越小
+            each_loss[layer_name] = cur_loss  # 把每一层的loss记录下来
+
+        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=False)[:num_bit] #reverse=False升序
         # tmp_list.append(max_loss[1])
         flag = {}
-        for layer_name,_ in top_n_loss:
+        for layer_name, loss_item in top_n_loss:
+            if loss_item > 0 and mode == "percent":
+                logger.info(f"loss = {loss_item} > 0, it seems become worse,so we skip it")
+                break
             module = get_module(block, layer_name)
-            for key in cur_config:  
-                setattr(module,key,cur_config[key])
-            
-            self.layer_config[module.tmp_name] = cur_config
-                    # continue
+            for key in cur_config:
+                setattr(module, key, cur_config[key])
 
-        
-    
-    def choose_various_bit(self,block,mix_configs,quant_bits,cur_config,default_config,default_layer_config,layer_names,current_input_ids,input_others,current_output,mse_loss,device,cache_device):
+            self.layer_config[module.tmp_name] = cur_config
+            # continue
+
+    def choose_various_bit(
+        self,
+        block,
+        mix_configs,
+        quant_bits,
+        cur_config,
+        default_config,
+        default_layer_config,
+        layer_names,
+        current_input_ids,
+        input_others,
+        current_output,
+        mse_loss,
+        device,
+        cache_device,
+        mode,
+    ):
         each_loss = {}
         for layer_name in layer_names:
             module = get_module(block, layer_name)
-            for key in default_config:  
-                setattr(module,key,cur_config[key])
-            
-            wrapper_layer = WrapperLinear(module,enable_minmax_tuning=False,enable_round_tuning=False,enable_norm_bias_tuning=False,device=device)
-            set_module(block, layer_name, wrapper_layer)
-            q_output = self.get_block_outputs(block, current_input_ids, input_others, self.batch_size * self.infer_bs_coeff,
-                                    device,
-                                    cache_device)
-            set_module(block,layer_name,wrapper_layer.orig_layer)
-            
-            cur_loss=mse_loss(torch.stack(q_output).squeeze(1),current_output)
-            each_loss[layer_name] = cur_loss #把每一层的loss记录下来
-        
-        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=True)[:sum(quant_bits.values())]
-        shift = 0
-        for k,_ in top_n_loss.items():
-            self.layer_config[module.tmp_name] = cur_config
-                
+            for key in default_config:
+                setattr(module, key, cur_config[key])
 
+            wrapper_layer = WrapperLinear(
+                module,
+                enable_minmax_tuning=False,
+                enable_round_tuning=False,
+                enable_norm_bias_tuning=False,
+                device=device,
+            )
+            set_module(block, layer_name, wrapper_layer)
+            q_output = self.get_block_outputs(
+                block, current_input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, cache_device
+            )
+            set_module(block, layer_name, wrapper_layer.orig_layer)
+
+            cur_loss = mse_loss(torch.stack(q_output).squeeze(1), current_output)
+            each_loss[layer_name] = cur_loss  # 把每一层的loss记录下来
+
+        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=True)[: sum(quant_bits.values())]
+        shift = 0
+        for k, _ in top_n_loss.items():
+            self.layer_config[module.tmp_name] = cur_config
 
     def quant_block(self, block, input_ids, input_others, q_input=None, device=torch.device("cpu")):
         """Quantize the weights of a given block of the model.
