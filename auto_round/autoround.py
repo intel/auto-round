@@ -1396,13 +1396,15 @@ class AutoRound(object):
                     logger.warning(f"force the train batch size to {total_samples}")
 
             if self.iters == 0:
-                self.auto_mix_rtn(self.model,
+                self.auto_mix_rtn(
+                    self.model,
                     inputs,
                     block_names,
                     q_input=q_inputs["input_ids"] if q_inputs is not None else None,
                     nblocks=self.nblocks,
                     device=self.device,
-                    pbar=pbar)
+                    pbar=pbar,
+                )
                 return self.quantize_rtn()
 
             self.quant_blocks(
@@ -2201,7 +2203,9 @@ class AutoRound(object):
         return hook_handles
 
     @torch.inference_mode()
-    def auto_mix_rtn(self, model: torch.nn.Module, inputs, block_names, q_input=None, nblocks=1, device="cpu", pbar=None):
+    def auto_mix_rtn(
+        self, model: torch.nn.Module, inputs, block_names, q_input=None, nblocks=1, device="cpu", pbar=None
+    ):
         clear_memory()
         for n, m in model.named_parameters():
             m.requires_grad_(False)
@@ -2256,9 +2260,10 @@ class AutoRound(object):
                 device=device,
             )
 
-
     @torch.inference_mode()
-    def check_needs_auto_gguf_mix_mse(self, block, formats, input_ids, input_others, outputs, device, cache_device, mode="percent"):
+    def check_needs_auto_gguf_mix_mse(
+        self, block, formats, input_ids, input_others, outputs, device, cache_device, mode="percent"
+    ):
         ## TODO Q4_K_M does not support iters==0
         ## TODO for moe model, expert use default bits
         mse_reduction = "mean"
@@ -2287,9 +2292,9 @@ class AutoRound(object):
                 if hasattr(m, "bits"):
                     bits.append(m.bits)
                     quant_bits[m.bits] = 0
-            
+
         ori_bit = min(bits)
-        
+
         for b in bits:
             if b != ori_bit:
                 quant_bits[b] += 1
@@ -2336,7 +2341,7 @@ class AutoRound(object):
                 mse_loss,
                 device,
                 cache_device,
-                mode = mode,
+                mode=mode,
             )
         else:
             logger.info(f"量化多bit,模式为：{mode}")
@@ -2407,26 +2412,26 @@ class AutoRound(object):
                     enable_round_tuning=False,
                     enable_norm_bias_tuning=False,
                     device=device,
-                    )
+                )
                 set_module(block, layer_name, wrapper_layer)
                 q2_output = self.get_block_outputs(
-                block, current_input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, cache_device
+                    block, current_input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, cache_device
                 )
-            
+
             set_module(block, layer_name, wrapper_layer.orig_layer)
             module = get_module(block, layer_name)
             for key in default_config:
                 setattr(module, key, default_config[key])
-            
+
             if mode == "min" or mode == "sensitive":
                 cur_loss = mse_loss(torch.stack(q_output).squeeze(1), current_output)
             elif mode == "percent":
                 loss_high = mse_loss(torch.stack(q_output).squeeze(1), current_output)
                 loss_low = mse_loss(torch.stack(q2_output).squeeze(1), current_output)
-                cur_loss = (loss_high - loss_low)/loss_low #改善率越高，值为负且越小
+                cur_loss = (loss_high - loss_low) / loss_low  # 改善率越高，值为负且越小
             each_loss[layer_name] = cur_loss  # 把每一层的loss记录下来
 
-        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=False)[:num_bit] #reverse=False升序
+        top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=False)[:num_bit]  # reverse=False升序
         # tmp_list.append(max_loss[1])
         flag = {}
         for layer_name, loss_item in top_n_loss:
@@ -2537,8 +2542,9 @@ class AutoRound(object):
                 handle.remove()
 
         self.check_needs_auto_gguf_mix_mse(
-            block, self.formats, input_ids, input_others, output, device, self.cache_device)
-        
+            block, self.formats, input_ids, input_others, output, device, self.cache_device
+        )
+
         if self.iters == 0:
             return
 
