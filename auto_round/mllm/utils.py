@@ -21,6 +21,19 @@ from ..utils import LazyImport
 PIL = LazyImport("PIL")
 from PIL import Image  # pylint: disable=E0401
 
+VISUAL_KEYS = [
+    "thinker",
+    "visual",
+    "audio",
+    "talker",
+    "token2wav",
+    "multi_modal_projector",
+    "vision_tower",
+    "multimodal_projector",
+    "vision_model",
+    "model.connector",
+]
+
 
 def _extract_data_dir(dir_path: str):
     if os.path.isdir(dir_path):

@@ -177,7 +177,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--act_bits", default=16, type=int, help="activation bits")
 
-        self.add_argument("--act_group_size", default=0, type=int, help="activation group size")
+        self.add_argument("--act_group_size", default=None, type=int, help="activation group size")
 
         self.add_argument(
             "--fp_layers", default="", type=str, help="list of Layer names to maintain original data type"
@@ -842,7 +842,8 @@ def eval_task_by_task(
                 )
                 break
             except Exception as e:
-                if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
+                cuda_error_msg = traceback.format_exc()
+                try:
                     ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
                     try:
                         for k, v in hflm.batch_sizes.items():
@@ -855,7 +856,8 @@ def eval_task_by_task(
                     except Exception as e:
                         traceback.print_exc()
                         pass
-                else:
+                except Exception as e:
+                    logger.error(cuda_error_msg)
                     traceback.print_exc()
                     break
             retry_times -= 1
