@@ -61,7 +61,7 @@ class FP8WOQLinear(torch.nn.Module):
         weight_scale,
         bias=None,
         weight_zp=None,
-        act_scale=None,
+        input_scale=None,
         dtype=torch.bfloat16,
     ):
         super().__init__()
@@ -79,8 +79,8 @@ class FP8WOQLinear(torch.nn.Module):
         if weight_zp:
             self.register_buffer("weight_zp", weight_zp.to(dtype))
 
-        if act_scale is not None:
-            self.register_buffer("act_scale", act_scale.to(dtype))
+        if input_scale is not None:
+            self.register_buffer("input_scale", input_scale.to(dtype))
 
 
 def pack_layer(layer_name, model, data_type, packing_device=None):
@@ -148,7 +148,7 @@ def pack_layer(layer_name, model, data_type, packing_device=None):
         weight_scale=scale,
         bias=bias,
         weight_zp=zp,
-        act_scale=act_scale,
+        input_scale=act_scale,
         dtype=model.dtype,
     )
 
