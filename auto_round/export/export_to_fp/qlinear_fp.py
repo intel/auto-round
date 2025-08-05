@@ -95,7 +95,7 @@ class QuantLinear(nn.Module):
             weight_name,
             torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
         )
-        if self.sym == False:
+        if not self.sym:
             ## TODO Currently only sym quant is supported for mxfp dtype. Is weight_zero_point param necessary？
             self.register_buffer(
                 "weight_zero_point",

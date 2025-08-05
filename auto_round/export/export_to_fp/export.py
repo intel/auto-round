@@ -203,14 +203,14 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):  # no gemm impleme
         # revert WrapperWALayer for offline usage
         for n, m in model.named_modules():
             if isinstance(m, WrapperWALayer):
-                ori_layer = m.orig_layer
+                orig_layer = m.orig_layer
                 if getattr(orig_layer, "input_global_scale") is None:
-                    assert hasattr(layer, "act_max")
+                    assert hasattr(orig_layer, "act_max")
                     from auto_round.data_type.nvfp import calculate_gparam
                     input_global_scale = calculate_gparam(orig_layer.act_max, orig_layer.group_size, model.device)
                     setattr(orig_layer, "input_global_scale", input_global_scale)
                     delattr(orig_layer, "act_max")
-                set_module(model, n, ori_layer)
+                set_module(model, n, orig_layer)
 
         # update input_global_scale
         from auto_round.data_type.utils import update_fused_layer_global_scales
