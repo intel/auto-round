@@ -102,15 +102,5 @@ def run_vlmeavl():
     args = setup_lmeval_parser()
     vlmeval(args)
 
-
-def switch():
-    run()
-    # if "--mllm" in sys.argv:
-    #     sys.argv.remove("--mllm")
-    #     run_mllm()
-    # else:
-    #     run()
-
-
 if __name__ == "__main__":
-    switch()
+    run()
