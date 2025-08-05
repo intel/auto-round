@@ -199,7 +199,7 @@ class TestAutoRound(unittest.TestCase):
 
         autoround.quantize_and_save(output_dir=quantized_model_path)
 
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
 
         quantization_config = AutoRoundConfig(backend="ipex_gptq")
 
