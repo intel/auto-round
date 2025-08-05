@@ -67,6 +67,8 @@ SUPPORTED_FORMATS = SupportedFormats()
 
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
+INNER_SUPPORTED_LAYER_TYPES = (transformers.integrations.finegrained_fp8.FP8Linear,)
+
 SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 
 
@@ -571,6 +573,8 @@ def detect_device(device=None):
         return str(device)
     elif isinstance(device, torch.device):
         device = str(device)
+    elif isinstance(device, str):  ## for cuda:0
+        device = device
     return device
 
 
@@ -1146,7 +1150,12 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 def get_device_and_parallelism(device):
     from auto_round.utils import detect_device
 
-    devices = device.replace(" ", "").split(",")
+    if isinstance(device, str):
+        devices = device.replace(" ", "").split(",")
+    elif isinstance(device, int):
+        devices = str(device)
+    else:
+        devices = device
     if all(s.isdigit() for s in devices) and len(devices) > 1 and torch.cuda.is_available():
         device = "cuda"
         parallelism = True
@@ -1302,10 +1311,21 @@ def _to_model_dtype(model, model_dtype):
     return model
 
 
+def set_fake_cuda_device_capability(func=None):
+    if func is not None:
+        torch.cuda.get_device_capability = func
+        return func
+
+    def fake_cuda():
+        return 100, 1
+
+    orig_func = torch.cuda.get_device_capability
+    torch.cuda.get_device_capability = fake_cuda
+    return orig_func
+
+
 def llm_load_model(
     pretrained_model_name_or_path,
-    torch_dtype="auto",
-    use_auto_mapping=True,
     trust_remote_code=True,
     model_dtype=None,
     device="cpu",
@@ -1314,6 +1334,11 @@ def llm_load_model(
     **kwargs,
 ):
     from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
+
+    device_str, use_auto_mapping = get_device_and_parallelism(device)
+    torch_dtype = "auto"
+    if device_str is not None and "hpu" in device_str:
+        torch_dtype = torch.bfloat16
 
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
     low_cpu_mem_usage = False
@@ -1365,6 +1390,19 @@ def llm_load_model(
                     trust_remote_code=trust_remote_code,
                     device_map="auto" if use_auto_mapping else None,
                 )
+            except ValueError as e:
+                if "FP8 quantized" in str(e):
+                    orig_func = set_fake_cuda_device_capability()
+                    model = model_cls.from_pretrained(
+                        pretrained_model_name_or_path,
+                        torch_dtype=torch_dtype,
+                        trust_remote_code=trust_remote_code,
+                        device_map="auto" if use_auto_mapping else None,
+                    )
+                    torch.cuda.get_device_capability = orig_func
+                    model.is_fp8 = True  ##tricky setting
+                    logger.warning("the support for fp8 model as input is experimental, please use with caution.")
+
             except OSError as e:
                 logger.warning(
                     f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry."
@@ -2053,6 +2091,78 @@ def check_need_act_calibration(is_act_dynamic, act_data_type=None):
     if act_data_type is not None and "static" in act_data_type:
         return True
     return False
+
+
+def dequant_block_fp8_weight(weight, weight_scale, block_size):
+    dtype = torch.bfloat16
+    if weight_scale is None:
+        return weight
+    assert len(block_size) == 2
+
+    weight_shape_len = len(weight.shape)
+
+    block_size_m, block_size_n = block_size
+
+    # mul scale
+    if weight_shape_len == 2:
+        weight_scale_m, weight_scale_n = weight_scale.shape
+        weight_scale = weight_scale.view(weight_scale_m, 1, weight_scale_n, 1)
+        weight = weight.view(weight_scale_m, block_size_m, weight_scale_n, block_size_n)
+        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
+        dequant_weight = dequant_weight.view(weight_scale_m * block_size_m, weight_scale_n * block_size_n)
+    elif weight_shape_len == 3:
+        fd, weight_scale_m, weight_scale_n = weight_scale.shape
+        weight_scale = weight_scale.view(fd, weight_scale_m, 1, weight_scale_n, 1)
+        weight = weight.view(fd, weight_scale_m, block_size_m, weight_scale_n, block_size_n)
+        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
+        dequant_weight = dequant_weight.view(fd, weight_scale_m * block_size_m, weight_scale_n * block_size_n)
+    else:
+        raise ValueError("Only support original weight shape is either 2 or 3")
+
+    return dequant_weight
+
+
+def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
+    """ """
+    new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
+    if layer.bias:
+        new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
+    keys = get_quant_keys() + ["tmp_name"]
+    for key in keys:
+        setattr(new_layer, key, getattr(layer, key, None))
+    dq_weight = dequant_block_fp8_weight(layer.weight, layer.weight_scale_inv, layer.block_size)
+    new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
+    return new_layer
+
+
+def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
+    """
+    Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
+    This is useful for compatibility with other frameworks or for further processing.
+    """
+    for n, m in model.named_modules():
+        if m.__class__.__name__ == "FP8Linear":
+            new_module = convert_fp8_layer_to_linear(m, dtype=dtype)
+            set_module(model, n, new_module)
+    return model
+
+
+def get_quant_keys():
+    keys = [
+        "bits",
+        "group_size",
+        "sym",
+        "data_type",
+        "scale_dtype",
+        "act_bits",
+        "act_group_size",
+        "act_sym",
+        "act_dynamic",
+        "act_data_type",
+        "super_bits",
+        "super_group_size",
+    ]
+    return keys
 
 
 def out_of_vram(error_msg):

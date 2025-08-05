@@ -596,6 +596,16 @@ class TestAutoRound(unittest.TestCase):
             )
             autoround.quantize()
 
+    def test_fp8_model_input_rtn_generation(self):
+        model_name = "Qwen/Qwen3-0.6B-FP8"
+        ar = AutoRound(model=model_name, iters=0)
+        ar.quantize_and_save(output_dir=self.save_folder)
+        model = AutoModelForCausalLM.from_pretrained(self.save_folder, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
+        text = "There is a girl who likes adventure,"
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
+
 
 if __name__ == "__main__":
     unittest.main()
