@@ -597,7 +597,7 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 Most GPTQ/AWQ models can be converted to the AutoRound format for better compatibility and support with Intel devices. Please note that the quantization config will be changed if the model is serialized.
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer,AutoRoundConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoRoundConfig
 
 model_name = "ybelkada/opt-125m-gptq-4bit"
 quantization_config = AutoRoundConfig()
