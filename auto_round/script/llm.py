@@ -53,7 +53,7 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path"
         )
 
-        self.add_argument("--mllm",  action="store_true", help="whether to quant multi-modal model.")
+        self.add_argument("--mllm", action="store_true", help="whether to quant multi-modal model.")
 
         self.add_argument("--eval", action="store_true", help="whether to use eval only mode")
 
@@ -227,14 +227,14 @@ class BasicArgumentParser(argparse.ArgumentParser):
             action="store_true",
             help="whether to disable optimization of the RTN mode(iters=0) (default is False).",
         )
-    
+
         ## ======================= MLLM =======================
         self.add_argument(
-                "--quant_nontext_module",
-                action="store_true",
-                help="whether to quantize non-text module, e.g. vision component",
-            )
-        
+            "--quant_nontext_module",
+            action="store_true",
+            help="whether to quantize non-text module, e.g. vision component",
+        )
+
         self.add_argument(
             "--extra_data_dir",
             default=None,
@@ -453,12 +453,12 @@ def tune(args):
 
     if args.mllm:
         model, processor, tokenizer, image_processor = mllm_load_model(
-        model_name,
-        torch_dtype=torch_dtype,
-        use_auto_mapping=use_auto_mapping,
-        trust_remote_code=not args.disable_trust_remote_code,
-        model_dtype=args.model_dtype,
-    )
+            model_name,
+            torch_dtype=torch_dtype,
+            use_auto_mapping=use_auto_mapping,
+            trust_remote_code=not args.disable_trust_remote_code,
+            model_dtype=args.model_dtype,
+        )
         low_cpu_mem_usage = False
     else:
         model, tokenizer, low_cpu_mem_usage = llm_load_model(
@@ -488,7 +488,7 @@ def tune(args):
             "image_processor": image_processor,
             "extra_data_dir": args.extra_data_dir,
             "quant_nontext_module": args.quant_nontext_module,
-            "template": args.template
+            "template": args.template,
         }
 
     layer_config = {}
@@ -575,7 +575,7 @@ def tune(args):
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
         disable_opt_rtn=args.disable_opt_rtn,
-        **mllm_kwargs
+        **mllm_kwargs,
     )
 
     model_name = args.model.rstrip("/")

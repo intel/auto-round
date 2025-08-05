@@ -342,9 +342,11 @@ class DeepSeekV2Processor(BasicProcessor):
 @register_processor("mistral3_2")
 class Mistral3Processor(BasicProcessor):
     IMAGE_TOKEN = "<image>"
+
     @staticmethod
     def load_system_prompt(repo_id_or_path: str, filename: str) -> str:
         from huggingface_hub import hf_hub_download
+
         if os.path.isdir(repo_id_or_path):
             file_path = os.path.join(repo_id_or_path, filename)
         else:
@@ -386,12 +388,14 @@ class Mistral3Processor(BasicProcessor):
             )
             if self.IMAGE_TOKEN in content["content"]:
                 conversation[-1]["content"].append({"type": "image_url", "image_url": {"url": images}})
-        tokenized = self.tokenizer.encode_chat_completion(ChatCompletionRequest(messages=conversation, continue_final_message=True))
+        tokenized = self.tokenizer.encode_chat_completion(
+            ChatCompletionRequest(messages=conversation, continue_final_message=True)
+        )
         input_ids = torch.tensor([tokenized.tokens])
         attention_mask = torch.ones_like(input_ids)
         pixel_values = torch.tensor(tokenized.images[0], dtype=torch.bfloat16).unsqueeze(0)
         image_sizes = torch.tensor([pixel_values.shape[-2:]])
-        
+
         ret = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,

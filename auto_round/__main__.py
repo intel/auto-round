@@ -102,5 +102,6 @@ def run_vlmeavl():
     args = setup_lmeval_parser()
     vlmeval(args)
 
+
 if __name__ == "__main__":
     run()

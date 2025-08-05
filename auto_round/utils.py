@@ -1460,9 +1460,10 @@ def mllm_load_model(
                 torch_dtype=torch_dtype,
                 device_map="auto" if use_auto_mapping else None,
             )
-            
+
             if "Mistral-Small-3.2" in pretrained_model_name_or_path:
                 from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+
                 if os.path.isdir(pretrained_model_name_or_path):
                     tokenizer = MistralTokenizer.from_file(os.path.join(pretrained_model_name_or_path, "tekken.json"))
                 else:

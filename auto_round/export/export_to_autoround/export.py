@@ -394,7 +394,7 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     except ValueError as e:
         setattr(model.generation_config, "do_sample", True)
         model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
-        
+
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
         with open(config_path, "r") as file:

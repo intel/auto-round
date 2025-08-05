@@ -18,7 +18,11 @@ from typing import Union
 import torch
 from tqdm import tqdm
 
-from auto_round.special_model_handler import SUPPORT_ONLY_TEXT_MODELS, NOT_SUPPORT_ONLY_TEXT_MODELS, _handle_special_model
+from auto_round.special_model_handler import (
+    NOT_SUPPORT_ONLY_TEXT_MODELS,
+    SUPPORT_ONLY_TEXT_MODELS,
+    _handle_special_model,
+)
 
 from ..autoround import AutoRound
 from ..low_cpu_mem.utils import get_layers_before_block
@@ -42,10 +46,10 @@ def _only_text_test(model, tokenizer, device, model_type):
 
     if model_type in SUPPORT_ONLY_TEXT_MODELS:  # save time
         return True
-    
+
     if model_type in NOT_SUPPORT_ONLY_TEXT_MODELS:
         return False
-    
+
     new_tokenizer = deepcopy(tokenizer)
     device = detect_device(device)
     text = ["only text", "test"]
