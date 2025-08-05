@@ -2147,6 +2147,7 @@ def get_quant_keys():
     ]
     return keys
 
+
 def out_of_vram(error_msg):
     error_msg = str(error_msg)
     # CUDA
@@ -2162,4 +2163,3 @@ def out_of_vram(error_msg):
     if "HIP out of memory. Tried to allocate" in error_msg:
         return True
     return False
-
