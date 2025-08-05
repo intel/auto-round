@@ -169,7 +169,7 @@ def make_qp_quants(nmax, data, quant_weights):
 
     L = torch.round(iscale * data)
     diffs = data - scale * L
-    best_mse = torch.sum(quant_weights * diffs * diffs)
+    best_mse = torch.sum(quant_weights * diffs * diffs, dim=-1)
 
     for _is in range(-4, 5):
         if _is == 0:
@@ -179,7 +179,7 @@ def make_qp_quants(nmax, data, quant_weights):
 
         tmp_L = torch.round(iscale_is * data).clip(max=nmax)
         diffs = data - scale_is * tmp_L
-        mse = torch.sum(quant_weights * diffs * diffs)
+        mse = torch.sum(quant_weights * diffs * diffs, dim=-1)
 
         replace_idx = mse < best_mse
         best_mse[replace_idx] = mse[replace_idx]
