@@ -722,6 +722,7 @@ class ModelBase(OriModel):
         bits = layer_config[name]["bits"]
         super_bits = layer_config[name]["super_bits"]
         sym = layer_config[name]["sym"]
+        # breakpoint()
         if bits == 2:
             return gguf.GGMLQuantizationType.Q2_K
         if bits == 3:
