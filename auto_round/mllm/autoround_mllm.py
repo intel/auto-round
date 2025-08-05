@@ -57,14 +57,13 @@ def _only_text_test(model, tokenizer, device, model_type):
         model(**inputs)
         return True
     except RuntimeError as e:
-        if "CUDA out of memory" in str(e):
-            model = model.to("cpu")
-            inputs = inputs.to("cpu")
-            try:
-                model(**inputs)
-            except:
-                return False
-        return False
+        model = model.to("cpu")
+        inputs = inputs.to("cpu")
+        try:
+            model(**inputs)
+        except:
+            return False
+        return True
     except Exception as e:
         return False
 
@@ -166,6 +165,7 @@ class AutoRoundMLLM(AutoRound):
         model_kwargs: dict = None,
         **kwargs,
     ):
+        quant_nontext_module = self._check_quant_nontext(layer_config, quant_nontext_module)
         all_blocks = get_block_names(model, quant_nontext_module)
         self.quant_block_list = find_matching_blocks(model, all_blocks, to_quant_block_names)
         if to_quant_block_names is None:
@@ -197,21 +197,18 @@ class AutoRoundMLLM(AutoRound):
         from ..calib_dataset import CALIB_DATASETS
         from .mllm_dataset import MLLM_DATASET
 
-        if isinstance(dataset, str):
-            if quant_nontext_module or (
-                dataset in CALIB_DATASETS.keys()
-                and not _only_text_test(model, tokenizer, device, self.template.model_type)
-            ):
-                if quant_nontext_module:
-                    logger.warning(
-                        "Text only dataset cannot be used for calibrating non-text modules,"
-                        "switching to liuhaotian/llava_conv_58k"
-                    )
-                else:
-                    logger.warning(
-                        f"{model.config.model_type} not support for {dataset},"
-                        " will use liuhaotian/llava_conv_58k with default config as an alternative."
-                    )
+        if isinstance(dataset, str) and dataset in CALIB_DATASETS.keys():
+            if quant_nontext_module:
+                logger.warning(
+                    "Text only dataset cannot be used for calibrating non-text modules,"
+                    " switching to liuhaotian/llava_conv_58k"
+                )
+                dataset = "liuhaotian/llava_conv_58k"
+            elif not _only_text_test(model, tokenizer, device, self.template.model_type):
+                logger.warning(
+                    f"{model.config.model_type} does not support for {dataset},"
+                    " will use liuhaotian/llava_conv_58k with default config as an alternative."
+                )
                 dataset = "liuhaotian/llava_conv_58k"
 
             if dataset in MLLM_DATASET.keys():
@@ -443,3 +440,14 @@ class AutoRoundMLLM(AutoRound):
             output_dir=output_dir, format=format, inplace=inplace, processor=self.processor, **kwargs
         )
         return compressed_model
+
+    def _check_quant_nontext(self, layer_config, quant_nontext_module):
+        if not layer_config:
+            return quant_nontext_module
+        from auto_round.mllm.utils import VISUAL_KEYS
+
+        for layer_name in layer_config.keys():
+            for vlm_key in VISUAL_KEYS:
+                if vlm_key in layer_name:
+                    return True
+        return quant_nontext_module
