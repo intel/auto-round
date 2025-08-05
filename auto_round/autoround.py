@@ -48,6 +48,7 @@ from auto_round.utils import (
     compile_func,
     convert_dtype_str2torch,
     convert_fp8_layer_to_linear,
+    convert_fp8_model_to_16b_model,
     detect_device,
     find_matching_blocks,
     flatten_list,
@@ -71,7 +72,7 @@ from auto_round.utils import (
     set_module,
     to_device,
     to_dtype,
-    unsupport_meta_device, convert_fp8_model_to_16b_model,
+    unsupport_meta_device,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -152,7 +153,7 @@ class AutoRound(object):
         layer_config: dict = None,
         batch_size: int = 8,
         amp: bool = True,
-        device: Union[str,torch.device,int] = 0,
+        device: Union[str, torch.device, int] = 0,
         lr_scheduler=None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         enable_quanted_input: bool = True,
@@ -854,8 +855,9 @@ class AutoRound(object):
 
         # Load dataset
         from .calib_dataset import get_dataloader
+
         if hasattr(self.model, "is_fp8"):
-            convert_fp8_model_to_16b_model(self.model,self.amp_dtype)
+            convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
 
         if isinstance(self.dataset, str):
             dataset_name = self.dataset.replace(" ", "")
@@ -1087,7 +1089,6 @@ class AutoRound(object):
             m = convert_fp8_layer_to_linear(m, self.amp_dtype)
             set_module(self.model, name, m)
 
-
         # Step 1: Use optimized RTN data type if available
         if not self.disable_opt_rtn and not m.data_type.startswith("rtn_"):
             from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
@@ -1219,7 +1220,7 @@ class AutoRound(object):
                 cnt += 1
         ##convert remainning fp8
         if hasattr(self.model, "is_fp8"):
-            convert_fp8_model_to_16b_model(self.model,self.amp_dtype)
+            convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
         self.quantized = True
         return self.model, self.layer_config
 
@@ -1277,8 +1278,8 @@ class AutoRound(object):
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
                 block = block.to(self.device)
-                if hasattr(self.model,"is_fp8"):
-                    convert_fp8_model_to_16b_model(block,dtype=self.amp_dtype)
+                if hasattr(self.model, "is_fp8"):
+                    convert_fp8_model_to_16b_model(block, dtype=self.amp_dtype)
                 # Dispatch model if needed
                 if self.device_map is not None:
                     from accelerate import dispatch_model
@@ -1451,7 +1452,7 @@ class AutoRound(object):
         if hasattr(self.model, "is_fp8"):
             for n, m in self.model.named_modules():
                 if m.__class__.__name__ == "FP8Linear":
-                    new_layer = convert_fp8_layer_to_linear(m,self.amp_dtype).to("cpu")
+                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to("cpu")
                     set_module(self.model, n, new_layer)
 
         end_time = time.time()
@@ -1499,10 +1500,9 @@ class AutoRound(object):
 
                 layer = get_module(self.model, layer_name)
                 if layer.__class__.__name__ == "FP8Linear":
-                    new_layer = convert_fp8_layer_to_linear(layer,self.amp_dtype).to(self.device)
+                    new_layer = convert_fp8_layer_to_linear(layer, self.amp_dtype).to(self.device)
                     set_module(self.model, layer_name, new_layer)
                     layer = new_layer
-
 
                 if not self.disable_opt_rtn and "rtn_" + layer.data_type in QUANT_FUNC_WITH_DTYPE:
                     layer.data_type = "rtn_" + layer.data_type
@@ -2255,7 +2255,7 @@ class AutoRound(object):
         if hasattr(self.model, "is_fp8"):
             for n, m in block.named_modules():
                 if m.__class__.__name__ == "FP8Linear":
-                    new_layer = convert_fp8_layer_to_linear(m,self.amp_dtype).to(device)
+                    new_layer = convert_fp8_layer_to_linear(m, self.amp_dtype).to(device)
                     set_module(block, n, new_layer)
 
         if self.device_map is not None:

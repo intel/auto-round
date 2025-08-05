@@ -1149,6 +1149,7 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 
 def get_device_and_parallelism(device):
     from auto_round.utils import detect_device
+
     if isinstance(device, str):
         devices = device.replace(" ", "").split(",")
     elif isinstance(device, int):
@@ -1399,7 +1400,7 @@ def llm_load_model(
                         device_map="auto" if use_auto_mapping else None,
                     )
                     torch.cuda.get_device_capability = orig_func
-                    model.is_fp8 = True ##tricky setting
+                    model.is_fp8 = True  ##tricky setting
                     logger.warning("the support for fp8 model as input is experimental, please use with caution.")
 
             except OSError as e:
@@ -2134,13 +2135,12 @@ def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
     return new_layer
 
 
-
 def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
     """
     Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
     This is useful for compatibility with other frameworks or for further processing.
     """
-    for n,m in model.named_modules():
+    for n, m in model.named_modules():
         if m.__class__.__name__ == "FP8Linear":
             new_module = convert_fp8_layer_to_linear(m, dtype=dtype)
             set_module(model, n, new_module)
