@@ -18,7 +18,7 @@ from typing import Union
 import torch
 from tqdm import tqdm
 
-from auto_round.special_model_handler import SUPPORT_ONLY_TEXT_MODELS, _handle_special_model
+from auto_round.special_model_handler import SUPPORT_ONLY_TEXT_MODELS, NOT_SUPPORT_ONLY_TEXT_MODELS, _handle_special_model
 
 from ..autoround import AutoRound
 from ..low_cpu_mem.utils import get_layers_before_block
@@ -42,12 +42,15 @@ def _only_text_test(model, tokenizer, device, model_type):
 
     if model_type in SUPPORT_ONLY_TEXT_MODELS:  # save time
         return True
-
+    
+    if model_type in NOT_SUPPORT_ONLY_TEXT_MODELS:
+        return False
+    
     new_tokenizer = deepcopy(tokenizer)
     device = detect_device(device)
     text = ["only text", "test"]
     new_tokenizer.padding_side = "left"
-    if new_tokenizer.pad_token is None:
+    if hasattr(new_tokenizer, "pad_token") and new_tokenizer.pad_token is None:
         new_tokenizer.pad_token = new_tokenizer.eos_token
     inputs = new_tokenizer(text, return_tensors="pt", padding=True, truncation=True)
 
@@ -179,25 +182,30 @@ class AutoRoundMLLM(AutoRound):
 
         if model.config.model_type == "llava" and isinstance(model, PreTrainedModel):
             template = "default"
-        self.template = template if template is not None else model.config.model_type
-        if not isinstance(dataset, torch.utils.data.DataLoader):
-            self.template = get_template(
-                self.template,
-                model=model,
-                tokenizer=tokenizer,
-                processor=processor,
-                image_processor=image_processor,
-                use_rtn=iters == 0,
-                quiet=not self.quant_nontext_module,
-            )
-            dataset = self.template.default_dataset if dataset is None else dataset
+        if hasattr(model, "name_or_path") and "Mistral-Small-3.2" in model.name_or_path:
+            template = "mistral3_2"
+        if iters > 0:
+            self.template = template if template is not None else model.config.model_type
+            if not isinstance(dataset, torch.utils.data.DataLoader):
+                self.template = get_template(
+                    self.template,
+                    model=model,
+                    tokenizer=tokenizer,
+                    processor=processor,
+                    image_processor=image_processor,
+                    use_rtn=iters == 0,
+                    quiet=not self.quant_nontext_module,
+                )
+                dataset = self.template.default_dataset if dataset is None else dataset
+        else:
+            self.template = None
 
         model = _handle_special_model(model)
 
         from ..calib_dataset import CALIB_DATASETS
         from .mllm_dataset import MLLM_DATASET
 
-        if isinstance(dataset, str) and dataset in CALIB_DATASETS.keys():
+        if iters > 0 and isinstance(dataset, str) and dataset in CALIB_DATASETS.keys():
             if quant_nontext_module:
                 logger.warning(
                     "Text only dataset cannot be used for calibrating non-text modules,"

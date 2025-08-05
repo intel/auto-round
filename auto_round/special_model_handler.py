@@ -28,6 +28,11 @@ SUPPORT_ONLY_TEXT_MODELS = [
     "internvl_chat",
 ]
 
+NOT_SUPPORT_ONLY_TEXT_MODELS = [
+    "mllama",
+    "mistral3_2"
+]
+
 SPECIAL_SHARED_CACHE_KEYS = {
     "Gemma3ForConditionalGeneration": ("position_embeddings_global", "position_embeddings_local")
 }

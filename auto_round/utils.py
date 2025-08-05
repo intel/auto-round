@@ -1460,12 +1460,20 @@ def mllm_load_model(
                 torch_dtype=torch_dtype,
                 device_map="auto" if use_auto_mapping else None,
             )
-            tokenizer = AutoTokenizer.from_pretrained(
-                pretrained_model_name_or_path, trust_remote_code=trust_remote_code
-            )
-            processor = AutoProcessor.from_pretrained(
-                pretrained_model_name_or_path, trust_remote_code=trust_remote_code
-            )
+            
+            if "Mistral-Small-3.2" in pretrained_model_name_or_path:
+                from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+                if os.path.isdir(pretrained_model_name_or_path):
+                    tokenizer = MistralTokenizer.from_file(os.path.join(pretrained_model_name_or_path, "tekken.json"))
+                else:
+                    tokenizer = MistralTokenizer.from_hf_hub(pretrained_model_name_or_path)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                )
+                processor = AutoProcessor.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                )
             try:
                 from transformers import AutoImageProcessor
 
