@@ -204,8 +204,8 @@ class AutoRound(object):
             model, tokenizer, low_cpu_mem_usage = llm_load_model(
                 model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
             )
-        elif tokenizer is None:
-            raise ValueError("You must specify a tokenizer for the model")
+        elif tokenizer is None and iters>0:
+            raise ValueError("A tokenizer must be set for non-str model input")
         self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
         if unsupport_meta_device(model):
             raise RuntimeError(
@@ -860,6 +860,8 @@ class AutoRound(object):
             convert_fp8_model_to_16b_model(self.model, self.amp_dtype)
 
         if isinstance(self.dataset, str):
+            if self.tokenizer is None:
+                raise ValueError("A tokenizer must be set for the model when using a dataset string.")
             dataset_name = self.dataset.replace(" ", "")
             self.dataloader = get_dataloader(
                 self.tokenizer, self.seqlen, dataset_name, self.seed, self.batch_size, self.nsamples
@@ -2840,7 +2842,7 @@ class AutoRoundOPT(AutoRound):
 
     def __init__(
         self,
-        model,
+        model: Union[torch.nn.Module, str],
         tokenizer=None,
         bits: int = 4,
         group_size: int = 128,
@@ -2848,7 +2850,7 @@ class AutoRoundOPT(AutoRound):
         layer_config=None,
         batch_size: int = 8,
         amp: bool = True,
-        device=None,
+        device: Union[str, torch.device, int] = 0,
         lr_scheduler=None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         enable_quanted_input: bool = True,
@@ -2856,7 +2858,7 @@ class AutoRoundOPT(AutoRound):
         lr: float = None,
         minmax_lr: float = None,
         low_gpu_mem_usage: bool = False,
-        low_cpu_mem_usage: bool = False,
+        low_cpu_mem_usage: int = 0,
         iters: int = 200,
         seqlen: int = 2048,
         nsamples: int = 128,
@@ -3019,7 +3021,7 @@ class AutoRoundAdam(AutoRoundOPT):
 
     def __init__(
         self,
-        model,
+        model:Union[torch.nn.Module, str],
         tokenizer=None,
         bits: int = 4,
         group_size: int = 128,
@@ -3027,7 +3029,7 @@ class AutoRoundAdam(AutoRoundOPT):
         layer_config=None,
         batch_size: int = 8,
         amp: bool = True,
-        device=None,
+        device:Union[str, torch.device, int] = 0,
         lr_scheduler=None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         enable_quanted_input: bool = True,
@@ -3035,7 +3037,7 @@ class AutoRoundAdam(AutoRoundOPT):
         lr: float = None,
         minmax_lr: float = None,
         low_gpu_mem_usage: bool = False,
-        low_cpu_mem_usage: bool = False,
+        low_cpu_mem_usage: int = 0,
         iters: int = 200,
         seqlen: int = 2048,
         nsamples: int = 128,

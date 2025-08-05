@@ -820,7 +820,7 @@ def eval_task_by_task(
     if isinstance(tasks, str):
         tasks = tasks.replace(" ", "").split(",")
 
-    from lm_eval.utils import make_table  # pylint: disable=E0401
+    from lm_eval.utils import make_table  # pylint: disable=E0611
 
     res_all = {}
     res_keys = ["results", "versions", "n-shot", "higher_is_better"]
