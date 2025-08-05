@@ -1297,6 +1297,10 @@ class AutoRound(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
+                if "nv_fp" in self.act_data_type and any("nv_fp" in format_ for format_ in self.formats):
+                    from auto_round.utils import set_amax_for_all_moe_layers
+                    # enable moe experts act_max automatic generation for linears
+                    set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
                 for _, m in block.named_modules():
                     if hasattr(m, "imatrix"):
@@ -2431,6 +2435,10 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_params)
         if self.enable_quanted_input:
+            if "nv_fp" in self.act_data_type and any("nv_fp" in format_ for format_ in self.formats):
+                    from auto_round.utils import set_amax_for_all_moe_layers
+                    # enable moe experts act_max automatic generation for WrapperWALayer
+                    set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
             if self.low_cpu_mem_usage:
                 block = block.to(device)
             clear_memory()
