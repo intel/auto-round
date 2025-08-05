@@ -766,10 +766,10 @@ def eval_task_by_task(
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
-    # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
+    # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
     import traceback
 
-    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0401
+    from lm_eval import simple_evaluate as lm_simple_evaluate   # pylint: disable=E0611
     from lm_eval.models.huggingface import HFLM
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
