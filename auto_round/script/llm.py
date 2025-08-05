@@ -776,7 +776,7 @@ def eval_task_by_task(
     # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
     import traceback
 
-    from lm_eval import simple_evaluate as lm_simple_evaluate
+    from lm_eval.evaluator import simple_evaluate as lm_simple_evaluate
     from lm_eval.models.huggingface import HFLM
     from transformers import AutoModelForCausalLM, AutoTokenizer
 

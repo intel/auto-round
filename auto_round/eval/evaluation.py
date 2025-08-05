@@ -15,7 +15,7 @@
 import os
 from typing import Optional, Union
 
-from lm_eval import simple_evaluate as lm_simple_evaluate
+from lm_eval.evaluator import simple_evaluate as lm_simple_evaluate
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
