@@ -1482,7 +1482,7 @@ class AutoRound(object):
                 layer = get_module(self.model, layer_name)
                 if layer.__class__.__name__ == "FP8Linear":
                     new_layer = convert_fp8_layer_to_linear(layer).to(self.device)
-                    keys = self.get_quant_keys() + ["tmp_name"]
+                    keys = get_quant_keys() + ["tmp_name"]
 
                 if not self.disable_opt_rtn and "rtn_" + layer.data_type in QUANT_FUNC_WITH_DTYPE:
                     layer.data_type = "rtn_" + layer.data_type
