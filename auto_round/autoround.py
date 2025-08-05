@@ -204,7 +204,7 @@ class AutoRound(object):
             model, tokenizer, low_cpu_mem_usage = llm_load_model(
                 model, device=device, low_cpu_mem_mode=low_cpu_mem_usage
             )
-        elif tokenizer is None and iters>0:
+        elif tokenizer is None and iters > 0:
             raise ValueError("A tokenizer must be set for non-str model input")
         self.low_cpu_mem_usage = bool(low_cpu_mem_usage)
         if unsupport_meta_device(model):
@@ -3021,7 +3021,7 @@ class AutoRoundAdam(AutoRoundOPT):
 
     def __init__(
         self,
-        model:Union[torch.nn.Module, str],
+        model: Union[torch.nn.Module, str],
         tokenizer=None,
         bits: int = 4,
         group_size: int = 128,
@@ -3029,7 +3029,7 @@ class AutoRoundAdam(AutoRoundOPT):
         layer_config=None,
         batch_size: int = 8,
         amp: bool = True,
-        device:Union[str, torch.device, int] = 0,
+        device: Union[str, torch.device, int] = 0,
         lr_scheduler=None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         enable_quanted_input: bool = True,
