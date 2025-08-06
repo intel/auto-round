@@ -12,16 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import collections.abc
 import copy
 import gc
-import json
 import logging
 import os
 import re
 import subprocess
 import sys
 from collections import UserDict
+import collections.abc
+import json
 from functools import lru_cache
 
 import cpuinfo
@@ -1394,6 +1394,7 @@ def mllm_load_model(
     model_dtype=None,
     **kwargs,
 ):
+    import json
 
     import transformers
     from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
@@ -2106,7 +2107,8 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
         return any(name.lower() in type(module).__name__.lower() for name in name_list)
 
     if module_match_name_list(
-        module, ["Qwen2MoeSparseMoeBlock", "Qwen3MoeSparseMoeBlock", "DeepseekMoE", "DeepseekV2MoE", "DeepseekV3MoE"]
+        module, ["Qwen2MoeSparseMoeBlock", "Qwen3MoeSparseMoeBlock",
+                 "DeepseekMoE", "DeepseekV2MoE", "DeepseekV3MoE"]
     ):
         return ["gate_proj", "down_proj", "up_proj"]
     elif module_match_name_list(module, ["MixtralMoeSparseMoeBlock"]):
@@ -2138,9 +2140,7 @@ def set_nested_attr(module, attr_name: str, value):
     setattr(module, attrs[-1], value)
 
 
-def set_amax_for_uncalibrated_experts(
-    experts: torch.nn.Module, set_amax_value: float | None = None, attr_name="act_max"
-):
+def set_amax_for_uncalibrated_experts(experts: torch.nn.Module, set_amax_value: float | None = None, attr_name="act_max"):
     """Set amax of uncalibrated experts to a given value or the max of existing amax value from other experts.
 
     Args:
@@ -2155,22 +2155,29 @@ def set_amax_for_uncalibrated_experts(
     # get the max amax value from all experts
     if set_amax_value is None:
         amax_values = [
-            get_nested_attr(module, attr_name) for module in experts if get_nested_attr(module, attr_name) is not None
+            get_nested_attr(module, attr_name)
+            for module in experts
+            if get_nested_attr(module, attr_name) is not None
         ]
         if len(amax_values) == 0:
             return uncalibrated_experts
-        set_amax_value = torch.max(torch.stack(amax_values))
+        # Flatten all tensors to 1D before concatenation
+        flat_values = [t.reshape(-1) for t in amax_values]
+        all_values = torch.cat(flat_values)
+        set_amax_value = torch.max(all_values)
 
     for module in experts:
         if get_nested_attr(module, attr_name) is None:
             logger.warning_once(
-                "Missing amax value of expert layers."
-                "This typically occurs in MoE models when certain experts are not activated during calibration. "
-                "Consider increasing your calibration dataset size to ensure all experts are exercised."
+                f"Missing amax value of expert layers."
+                f"This typically occurs in MoE models when certain experts are not activated during calibration. "
+                f"Consider increasing your calibration dataset size to ensure all experts are exercised."
             )
             # Use float32 dtype explicitly to ensure we create a floating point tensor
             if not isinstance(set_amax_value, torch.Tensor):
-                set_amax_value = torch.tensor(set_amax_value, dtype=torch.float32)
+                set_amax_value = torch.tensor(
+                    set_amax_value, dtype=torch.float32
+                )
             set_nested_attr(module, attr_name, set_amax_value)
             # uncalibrated_experts.append(module)
 
@@ -2184,7 +2191,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
         idx = parts.index("experts")
         moe_name = ".".join(parts[:idx])
         model = get_module(model, moe_name)
-    # Handle input quantizers of experts that are not calibrated
+     # Handle input quantizers of experts that are not calibrated
     for name, sub_module in model.named_modules():
         if is_moe(sub_module) and hasattr(sub_module, "experts"):
             expert_linear_names = get_expert_linear_names(sub_module)
@@ -2197,7 +2204,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                         )
                     except AttributeError as e:
                         # Provide more helpful debugging information
-                        expert_types = list(set(type(expert).__name__ for expert in sub_module.experts))
+                        expert_types =  list(set(type(expert).__name__ for expert in sub_module.experts))
                         raise AttributeError(
                             f"Failed to access attribute '{linear_name}' on experts. "
                             f"MoE module type: {type(sub_module).__name__}, "
@@ -2213,3 +2220,4 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                         f"MoE model with experts type '{type(sub_module.experts).__name__}' is not supported in export."
                         f"Please file an issue or add support for this model architecture."
                     )
+

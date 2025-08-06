@@ -2211,7 +2211,7 @@ class AutoRound(object):
             if isinstance(input, (tuple, list)):
                 input = input[0]
             if input.numel() == 0:
-                pass
+                return # as no needs for act_max update
             input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
             act_max = torch.max(torch.abs(input), dim=-1).values
             if not hasattr(module, "act_max") or module.act_max.numel() == 0:

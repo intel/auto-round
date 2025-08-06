@@ -32,11 +32,10 @@ from auto_round.utils import (
     get_block_names,
     get_module,
     logger,
-    set_amax_for_all_moe_layers,
     set_module,
+    set_amax_for_all_moe_layers
 )
 from auto_round.wrapper import WrapperWALayer
-
 from .qlinear_fp import QuantLinear
 
 
@@ -54,8 +53,13 @@ def check_neq_config(config, data_type, bits, group_size, sym):
     Returns:
         list: A list of strings indicating which configuration parameters do not match.
     """
-    expected_config = {"data_type": data_type, "bits": bits, "group_size": group_size, "sym": sym}
+    expected_config = {"data_type": data_type,
+                       "bits": bits,
+                       "group_size": group_size,
+                       "sym": sym
+                       }
     return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
+
 
 
 def pack_layer(name, model, backend, data_type, **kwargs):
@@ -63,28 +67,26 @@ def pack_layer(name, model, backend, data_type, **kwargs):
         return
     layer = get_module(model, name)
 
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES) and not isinstance(layer, WrapperWALayer):  ##already packed
-        return
-
-    bits = layer.bits
-    if bits > 8:
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES) and not isinstance(layer, WrapperWALayer): ##already packed
         return
 
     act_bits = kwargs.get("act_bits", None)
     act_data_type = kwargs.get("act_data_type", None)
     if "nv_fp" in act_data_type and act_bits <= 8:
-        if isinstance(layer, WrapperWALayer):  # revert WrapperWALayer for offline usage
+        if isinstance(layer, WrapperWALayer): # revert WrapperWALayer for offline usage
             wp_layer = layer
             layer = wp_layer.orig_layer
             set_module(model, name, layer)
         if not getattr(layer, "input_global_scale", None):
             assert hasattr(layer, "act_max")
             from auto_round.data_type.nvfp import calculate_gparam
-
-            input_global_scale = calculate_gparam(layer.act_max, layer.group_size)  # , model.device
+            input_global_scale = calculate_gparam(layer.act_max, layer.group_size) #, model.device
             setattr(layer, "input_global_scale", input_global_scale)
             delattr(layer, "act_max")
 
+    bits = layer.bits
+    if bits > 8:
+        return
     group_size = layer.group_size
     sym = layer.sym
 
@@ -163,6 +165,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):  # no gemm impleme
     #     backend = backend.replace('auto_round', 'auto_round:auto_gptq')
     model = kwargs["model"]
     backend = kwargs.get("backend", None)
+    bits = kwargs.get("bits", None)
     data_type = kwargs.get("data_type", None)
     act_bits = kwargs.get("act_bits", None)
     act_data_type = kwargs.get("act_data_type", None)
@@ -180,7 +183,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):  # no gemm impleme
     quantization_config["scale_calculation_mode"] = ("even",)
     # quantization_config["weight_format"] = "e2m1",
     # quantization_config["scale_type"] = "float",
-
+    
     tokenizer = kwargs.get("tokenizer", None)
     processor = kwargs.get("processor", None)
     extra_config = {}
@@ -193,7 +196,6 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):  # no gemm impleme
                 if not getattr(orig_layer, "input_global_scale", None):
                     assert hasattr(orig_layer, "act_max")
                     from auto_round.data_type.nvfp import calculate_gparam
-
                     input_global_scale = calculate_gparam(orig_layer.act_max, orig_layer.group_size, model.device)
                     setattr(orig_layer, "input_global_scale", input_global_scale)
                     delattr(orig_layer, "act_max")
@@ -201,7 +203,6 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):  # no gemm impleme
 
         # update input_global_scale
         from auto_round.data_type.utils import update_fused_layer_global_scales
-
         modules = list(model.modules())
         for module in tqdm(modules, desc="Update input global scale for fuse modules"):
             update_fused_layer_global_scales(module, base_name="input")
@@ -256,9 +257,13 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):  # no gemm impleme
                 pass
     filter_quantization_config(quantization_config)
 
-    try:  # get llm-compressor format config
+    try: # get llm-compressor format config
         from .config import initialize_quantization
-
+        if "mx" in data_type:
+            scheme = "MXFP4" # only have MXFP4 scheme for llm-compressor yet, 
+            # for MXFP8 Please manually modify the bit settings in the config file after saving.
+        else:
+            scheme = "NVFP4"
         quantization_config = initialize_quantization(scheme="NVFP4")
         setattr(quantization_config, "format", "nvfp4-pack-quantized")
         quantization_config = quantization_config.to_dict()
@@ -320,3 +325,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+
