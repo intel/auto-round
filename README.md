@@ -25,6 +25,30 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
 </p>
 
+
+## 🆕 What's New
+
+[2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
+  all bits other than 3 bits. Example
+  models: [Intel/Qwen3-235B-A22B-q2ks-mixed-ar](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-ar)
+  and [Intel/DeepSeek-R1-0528-q2ks-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-ar). **A more advanced algorithm** tailored for specific configurations may be available in
+  v0.6.1.
+
+[2025/05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer
+  to [Intel/DeepSeek-R1-0528-int2-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int2-mixed-ar), [Intel/DeepSeek-R1-0528-int4-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-ar)
+  and [Intel/DeepSeek-R1-0528-int4-asym-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-asym-ar) for
+  more details.
+
+[2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
+  vLLM versions later than v0.85.post1.
+
+[2025/04] AutoRound has been integrated into **Transformers**. You can run models in the AutoRound format directly
+  with Transformers versions later than 4.51.3.
+
+[2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy. Check
+  out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
+
+
 ## ✨ Key Features
 
 
@@ -32,7 +56,7 @@ and [fbaldassarri](https://huggingface.co/fbaldassarri).
 Delivers strong performance even at 2–3 bits [example models](https://huggingface.co/collections/OPEA/2-3-bits-67a5f0bc6b49d73c01b4753b), with leading results at 4 bits [benchmark](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard).
 
 ✅ **Ecosystem Integration**
-Seamlessly works with Transformers, vLLM, TorchAO, sglang(on going,[pr](https://github.com/sgl-project/sglang/pull/6226)) and more.
+Seamlessly works with **Transformers, vLLM,** TorchAO, sglang(on going,[pr](https://github.com/sgl-project/sglang/pull/6226)) and more.
 
 ✅ **Multiple Formats Export**
 Support **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility. Details are shown in [export formats](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#supported-export-formats)
@@ -57,27 +81,6 @@ Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/m
 
 🟨 Beyond weight only quantization. We are actively expanding support for additional datatypes such as **MXFP**, NVFP, W8A8, and more.
 
-## 🆕 What's New
-
-[2025/07] AutoRound now offers experimental support for **GGUF** format, and recommends using optimized RTN mode (--iters 0) for
-  all bits other than 3 bits. **A more advanced algorithm** tailored for specific configurations may be available in
-  v0.6.1. Example
-  models: [Intel/Qwen3-235B-A22B-q2ks-mixed-ar](https://huggingface.co/Intel/Qwen3-235B-A22B-q2ks-ar)
-  and [Intel/DeepSeek-R1-0528-q2ks-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-q2ks-mixed-ar).
-
-[2025/05] AutoRound provides some recipes for **DeepSeek-R1-0528**, please refer
-  to [IntelDeepSeek-R1-0528-int2-mixed-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int2-mixed-ar), [Intel/DeepSeek-R1-0528-int4-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-ar)
-  and [Intel/DeepSeek-R1-0528-int4-asym-ar](https://huggingface.co/Intel/DeepSeek-R1-0528-int4-asym-ar) for
-  more details.
-
-[2025/05] AutoRound has been integrated into **vLLM**. You can now run models in the AutoRound format directly with
-  vLLM versions later than v0.85.post1.
-
-[2025/04] AutoRound has been integrated into **Transformers**. You can run models in the AutoRound format directly
-  with Transformers versions later than 4.51.3.
-
-[2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy. Check
-  out [OPEA/DeepSeek-R1-int2-mixed-sym-inc](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
 
 ## Installation
 

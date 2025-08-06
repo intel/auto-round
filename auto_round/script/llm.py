@@ -445,16 +445,13 @@ def tune(args):
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
-    torch_dtype = "auto"
-    if device_str is not None and "hpu" in device_str:
-        torch_dtype = torch.bfloat16
 
     from auto_round.utils import llm_load_model, mllm_load_model
 
     if args.mllm:
         model, processor, tokenizer, image_processor = mllm_load_model(
             model_name,
-            torch_dtype=torch_dtype,
+            device=device_str,
             use_auto_mapping=use_auto_mapping,
             trust_remote_code=not args.disable_trust_remote_code,
             model_dtype=args.model_dtype,
@@ -463,7 +460,6 @@ def tune(args):
     else:
         model, tokenizer, low_cpu_mem_usage = llm_load_model(
             model_name,
-            torch_dtype=torch_dtype,
             use_auto_mapping=use_auto_mapping,
             trust_remote_code=not args.disable_trust_remote_code,
             device=device_str,
@@ -563,7 +559,7 @@ def tune(args):
         enable_minmax_tuning=not args.disable_minmax_tuning,
         act_bits=args.act_bits,
         act_group_size=args.act_group_size,
-        low_cpu_mem_usage=low_cpu_mem_usage,
+        low_cpu_mem_usage=args.low_cpu_mem_mode,
         data_type=args.data_type,
         enable_norm_bias_tuning=args.enable_norm_bias_tuning,
         not_use_best_mse=args.not_use_best_mse,
@@ -821,10 +817,10 @@ def eval_task_by_task(
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
 
-    # load after _eval_int in order to make sure import torch after set CUDA_VISBILE_DEVICES
+    # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
     import traceback
 
-    from lm_eval import simple_evaluate as lm_simple_evaluate
+    from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0611
     from lm_eval.models.huggingface import HFLM
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -875,7 +871,7 @@ def eval_task_by_task(
     if isinstance(tasks, str):
         tasks = tasks.replace(" ", "").split(",")
 
-    from lm_eval.utils import make_table  # pylint: disable=E0401
+    from lm_eval.utils import make_table  # pylint: disable=E0611
 
     res_all = {}
     res_keys = ["results", "versions", "n-shot", "higher_is_better"]
