@@ -594,10 +594,12 @@ class CpuInfo(object):
                     b"\xb8\x07\x00\x00\x00" b"\x0f\xa2" b"\xc3",  # mov eax, 7  # cpuid  # ret
                 )
                 self._bf16 = bool(eax & (1 << 5))
+
     @property
     def bf16(self):
         """Get whether it is bf16."""
         return self._bf16
+
 
 def is_local_path(path):
     """Checks if a given path exists locally.
