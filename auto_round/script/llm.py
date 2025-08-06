@@ -773,7 +773,6 @@ def eval_task_by_task(
     from lm_eval.models.huggingface import HFLM
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    from auto_round import AutoRoundConfig  # pylint: disable=E0611
     from auto_round.utils import logger
 
     if batch_size is None:
