@@ -369,7 +369,7 @@ class Mistral3Processor(BasicProcessor):
         truncation_strategy="text",
         **kwargs
     ):
-        from mistral_common.protocol.instruct.request import ChatCompletionRequest, InstructRequest
+        from mistral_common.protocol.instruct.request import ChatCompletionRequest  # pylint: disable=E0401
 
         SYSTEM_PROMPT = self.load_system_prompt(self.model.name_or_path, "SYSTEM_PROMPT.txt")
 

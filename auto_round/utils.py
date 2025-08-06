@@ -1505,7 +1505,7 @@ def mllm_load_model(
             )
 
             if "Mistral-Small-3.2" in pretrained_model_name_or_path:
-                from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+                from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
 
                 if os.path.isdir(pretrained_model_name_or_path):
                     tokenizer = MistralTokenizer.from_file(os.path.join(pretrained_model_name_or_path, "tekken.json"))
