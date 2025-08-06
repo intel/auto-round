@@ -1299,7 +1299,6 @@ class AutoRound(object):
 
                 if "nv_fp" in self.act_data_type and any("nv_fp" in format_ for format_ in self.formats):
                     from auto_round.utils import set_amax_for_all_moe_layers
-
                     # enable moe experts act_max automatic generation for linears
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
@@ -2208,17 +2207,21 @@ class AutoRound(object):
         logger.info(dump_info)
 
     def register_act_max_hook(self, model):
-
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
+            if input.numel() == 0:
+                pass
             input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
             act_max = torch.max(torch.abs(input), dim=-1).values
-            if not hasattr(module, "act_max"):
+            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
                 module.act_max = act_max
             else:
-                module.act_max = torch.max(act_max.to(module.act_max.device), module.act_max)
-
+                act_max = act_max.to(module.act_max.device)
+                try:
+                    module.act_max = torch.max(act_max, module.act_max)
+                except RuntimeError: ## for nvfp per-tensor act max calculation usage
+                    module.act_max = torch.max(torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device))
         hook_handles = []
 
         for n, m in model.named_modules():
@@ -2438,7 +2441,6 @@ class AutoRound(object):
         if self.enable_quanted_input:
             if "nv_fp" in self.act_data_type and any("nv_fp" in format_ for format_ in self.formats):
                 from auto_round.utils import set_amax_for_all_moe_layers
-
                 # enable moe experts act_max automatic generation for WrapperWALayer
                 set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
             if self.low_cpu_mem_usage:
