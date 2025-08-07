@@ -327,17 +327,10 @@ from auto_round import AutoRound
 model_name = "facebook/opt-125m"
 model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-bits, group_size, sym = 4, 32, True
 autoround = AutoRound(
     model,
     tokenizer,
-    bits=bits,
-    group_size=group_size,
-    sym=sym,
-    iters=50,
-    lr=5e-3,
 )
-
 output_dir = "./tmp_autoround"
 autoround.quantize_and_save(output_dir, format="gguf:q4_k_m")  #  gguf:q*_k_s,gguf:q*_k_0,gguf:q*_k_1,
 ```
