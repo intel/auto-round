@@ -913,6 +913,7 @@ class AutoRound(object):
 
             # Run forward pass to accumulate imatrix
             from tqdm import tqdm
+
             pbar = tqdm(range(0, len(self.dataloader)), desc="calculate imatrix")
             for data in self.dataloader:
                 pbar.update(data["input_ids"].shape[0])
