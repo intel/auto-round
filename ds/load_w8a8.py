@@ -243,3 +243,16 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     qdq_eval(args.qmodel_path, not_patch_lin=args.not_patch_lin)
+
+
+"""
+p load_w8a8.py --qmodel_path  /data5/yliu7/HF_HOME/Qwen3-32B-w8afp8
+Running generate_until requests:  76%|███ | 97/128 [11:45<03:
+Running generate_until requests: 100%|███| 128/128 [11:45<00:00,  5.51s/it]
+|Tasks|Version|     Filter     |n-shot|  Metric   |   |Value |   |Stderr|
+|-----|------:|----------------|-----:|-----------|---|-----:|---|-----:|
+|gsm8k|      3|flexible-extract|     5|exact_match|↑  |0.7422|±  |0.0388|
+|     |       |strict-match    |     5|exact_match|↑  |0.6797|±  |0.0414|
+
+total eval time: 742.8823928833008
+"""
