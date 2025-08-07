@@ -2261,6 +2261,9 @@ class AutoRound(object):
     def check_needs_auto_gguf_mix_mse(self, block, formats, input_ids, input_others, outputs, device, cache_device, mode="percent"):
         ## TODO Q4_K_M does not support iters==0
         ## TODO for moe model, expert use default bits
+        s = block.tmp_name
+        s_l = re.split("\.",s)
+        
         mse_reduction = "mean"
         if self.gradient_accumulate_steps != 1:
             mse_reduction = "sum"
@@ -2320,9 +2323,24 @@ class AutoRound(object):
         low_config = GGUF_CONFIG[f"gguf:q{min(bits)}_{split_list[2]}"]
 
         default_layer_config = low_config
+        start_num = 10
+        end_num = 20
+        if(start_num<int(s_l[-1])<end_num):
+            logger.info(f"不混合{s_l[-1]}层")
+            for layer_name in layer_names:
+                module = get_module(block, layer_name)
+                self.layer_config[module.tmp_name] = default_layer_config
+                # logger.info(tmp_ori_layer[module.tmp_name])
+                for key in default_layer_config:
+                    setattr(module, key, default_layer_config[key])
+            return
+
+        if(int(s_l[-1])>=end_num):
+            for kx in quant_bits.keys():
+                quant_bits[kx]+=1
 
         if len(bits) == 2:
-            logger.info(f"量化单bit：{bits},模式为：{mode}")
+            logger.info(f"量化单bit：{quant_bits},模式为：{mode}")
             self.choose_one_bit(
                 block,
                 mix_configs,
@@ -2339,7 +2357,7 @@ class AutoRound(object):
                 mode = mode,
             )
         else:
-            logger.info(f"量化多bit,模式为：{mode}")
+            logger.info(f"量化多bit:{quant_bits},模式为：{mode}")
             self.choose_various_bit(
                 block,
                 mix_configs,
@@ -2373,13 +2391,15 @@ class AutoRound(object):
         mode="max",
     ):
         each_loss = {}
+        tmp_ori_layer = {}
         # bit = mix_configs.keys()[0]
         [(_, cur_config)] = mix_configs.items()
         [(_, num_bit)] = quant_bits.items()
         for layer_name in layer_names:
             module = get_module(block, layer_name)
+            tmp_ori_layer[module.tmp_name] = self.layer_config[module.tmp_name]
             self.layer_config[module.tmp_name] = default_config
-            if mode == "min" or "percent":
+            if mode in {"min", "percent", "marginal income ratio"}:
                 for key in cur_config:
                     setattr(module, key, cur_config[key])
             elif mode == "sensitive":
@@ -2398,7 +2418,7 @@ class AutoRound(object):
                 block, current_input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, cache_device
             )
 
-            if mode == "percent":
+            if mode in {"percent", "marginal income ratio", "min"}:
                 for key in default_config:
                     setattr(module, key, default_config[key])
                 wrapper_layer = WrapperLinear(
@@ -2420,20 +2440,50 @@ class AutoRound(object):
             
             if mode == "min" or mode == "sensitive":
                 cur_loss = mse_loss(torch.stack(q_output).squeeze(1), current_output)
+                # loss_high = mse_loss(torch.stack(q_output).squeeze(1), current_output)
+                # loss_low = mse_loss(torch.stack(q2_output).squeeze(1), current_output)
+                # cur_loss = (loss_low - loss_high)/loss_low #改善率越高，表现值loss越小，值为负且越小 
             elif mode == "percent":
                 loss_high = mse_loss(torch.stack(q_output).squeeze(1), current_output)
                 loss_low = mse_loss(torch.stack(q2_output).squeeze(1), current_output)
                 cur_loss = (loss_high - loss_low)/loss_low #改善率越高，值为负且越小
+                logger.info(f"low:{loss_low}")
+                logger.info(f"high:{loss_high}")
+            elif mode == "marginal income ratio":
+                loss_high = mse_loss(torch.stack(q_output).squeeze(1), current_output)
+                loss_low = mse_loss(torch.stack(q2_output).squeeze(1), current_output)
+                income = (loss_high - loss_low)/loss_low #改善率越高，值为负且越小
+                marginal = income/((cur_config["bits"]-default_config["bits"])*sum(a.numel() for a in module.parameters())) #边际收益越高值为负且越小
+                cur_loss = marginal
             each_loss[layer_name] = cur_loss  # 把每一层的loss记录下来
 
         top_n_loss = sorted(each_loss.items(), key=lambda x: x[1], reverse=False)[:num_bit] #reverse=False升序
+
         # tmp_list.append(max_loss[1])
         flag = {}
         for layer_name, loss_item in top_n_loss:
+            module = get_module(block, layer_name)
+            
+            if mode == "percent":
+                logger.info(f"增长率为:{-loss_item*100}%")
+            elif mode == "marginal income ratio":
+                logger.info(f"当前量化目标为：{module.tmp_name},边际收益为{-loss_item}")
+                if -loss_item < 1.12e-7:
+                    logger.info(f"out of acceptable threshold, disadopt it")
+                    for layer_name in layer_names:
+                        module = get_module(block, layer_name)
+                        self.layer_config[module.tmp_name] = tmp_ori_layer[module.tmp_name]
+                        # logger.info(tmp_ori_layer[module.tmp_name])
+                        for key in cur_config:
+                            setattr(module, key, self.layer_config[module.tmp_name][key])
+                    break
+            elif mode == "min":
+                logger.info(f"当前计算结果为：{loss_item}")
+
             if loss_item > 0 and mode == "percent":
                 logger.info(f"loss = {loss_item} > 0, it seems become worse,so we skip it")
                 break
-            module = get_module(block, layer_name)
+           
             for key in cur_config:
                 setattr(module, key, cur_config[key])
 
