@@ -21,6 +21,7 @@ from pathlib import Path
 import torch
 
 from auto_round.export.export_to_gguf.convert import ModelBase, ModelType, get_model_architecture
+from auto_round.export.export_to_gguf.special_handle import handle_special_model
 from auto_round.utils import (
     LazyImport,
     check_to_quantized,
@@ -30,7 +31,6 @@ from auto_round.utils import (
     get_module,
     logger,
 )
-from auto_round.export.export_to_gguf.special_handle import handle_special_model
 
 TMP_DIR_NAME = "tmp_dir"
 
