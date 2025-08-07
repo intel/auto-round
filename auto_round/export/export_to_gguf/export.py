@@ -30,6 +30,7 @@ from auto_round.utils import (
     get_module,
     logger,
 )
+from auto_round.export.export_to_gguf.special_handle import handle_special_model
 
 TMP_DIR_NAME = "tmp_dir"
 
@@ -105,6 +106,7 @@ def create_model_class(
             dry_run=False,
             small_first_shard=False,
         )
+        model_instance = handle_special_model(model_instance, model_architecture)
     return model_instance
 
 

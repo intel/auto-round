@@ -912,7 +912,10 @@ class AutoRound(object):
             cnt = 0
 
             # Run forward pass to accumulate imatrix
+            from tqdm import tqdm
+            pbar = tqdm(range(0, len(self.dataloader)), desc="calculate imatrix")
             for data in self.dataloader:
+                pbar.update(data["input_ids"].shape[0])
                 cnt += data["input_ids"].shape[0]
                 data = to_device(data, self.device)
                 model(**data)
