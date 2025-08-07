@@ -1236,7 +1236,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
             if format == "q6_k_s":
                 logger.warning("Please note that q6_k_s is q6_k.")
             try:
-                from auto_round.export.export_to_gguf.convert import ModelBase
+                ModelBase = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf.ModelBase")
             except:
                 raise ImportError(
                     f"Please use the latest gguf-py for {format}, you can use the following command to install it:\n"
@@ -1748,11 +1748,12 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
 
     import gguf  # pylint: disable=E0401
 
-    from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
+    # from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
+    convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")
 
-    model_architecture = get_model_architecture(hparams=model.config.to_dict(), model_type=model_type)
+    model_architecture = convert_hf_to_gguf.get_model_architecture(hparams=model.config.to_dict(), model_type=model_type)
     try:
-        model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
+        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(model_architecture, model_type=model_type)
     except NotImplementedError:
         return layer_config, {}
 

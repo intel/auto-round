@@ -17,11 +17,12 @@ import shutil
 import sys
 import time
 from pathlib import Path
+import requests
 
 import torch
+from auto_round.utils import LazyImport
 
-from auto_round.export.export_to_gguf.convert import ModelBase, ModelType, get_model_architecture
-from auto_round.export.export_to_gguf.special_handle import handle_special_model
+# from auto_round.export.export_to_gguf.convert_hf_to_gguf import ModelBase, ModelType, get_model_architecture
 from auto_round.utils import (
     LazyImport,
     check_to_quantized,
@@ -31,6 +32,9 @@ from auto_round.utils import (
     get_module,
     logger,
 )
+convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")
+from auto_round.export.export_to_gguf.special_handle import handle_special_model
+from auto_round.export.export_to_gguf.convert import wrapper_model_instance
 
 TMP_DIR_NAME = "tmp_dir"
 
@@ -60,12 +64,12 @@ FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
 
 
 def create_model_class(
-    output_dir, model, layer_config, backend="gguf:q4_0", low_cpu_mem_usage=False, model_type=ModelType.TEXT
+    output_dir, model, layer_config, backend="gguf:q4_0", low_cpu_mem_usage=False, model_type=convert_hf_to_gguf.ModelType.TEXT
 ):
     tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
     with torch.inference_mode():
-        hparams = ModelBase.load_hparams(tmp_work_dir)
-        model_architecture = get_model_architecture(hparams=hparams, model_type=model_type)
+        hparams = convert_hf_to_gguf.ModelBase.load_hparams(tmp_work_dir)
+        model_architecture = convert_hf_to_gguf.get_model_architecture(hparams=hparams, model_type=model_type)
         # if "architectures" in hparams:
         #     model_architecture = hparams["architectures"][0]
         # else:
@@ -76,11 +80,11 @@ def create_model_class(
         #         elif model_architecture.replace("ConditionalGeneration", "CausalLM") in ModelBase._model_classes:
         #             model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
         try:
-            model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
+            model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(model_architecture, model_type=model_type)
         except NotImplementedError:
             logger.error(f"Model {model_architecture} is not supported")
             sys.exit(1)
-        model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
+        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(model_architecture, model_type=model_type)
         model_name = model.name_or_path.split("/")
         if len(model_name[-1]) == 0:
             model_name = model_name[-2]
@@ -93,12 +97,9 @@ def create_model_class(
         output_type = FTYPE_MAP.get(output_type.lower())
 
         model_instance = model_class(
-            model,
-            layer_config,
             dir_model=tmp_work_dir,
             ftype=output_type,
             fname_out=Path(output_dir),
-            low_cpu_mem_usage=low_cpu_mem_usage,  # pylint: disable=E0401
             is_big_endian=False,
             model_name=model_name,
             split_max_tensors=False,
@@ -106,6 +107,8 @@ def create_model_class(
             dry_run=False,
             small_first_shard=False,
         )
+        model_instance = wrapper_model_instance(
+            model_instance, model=model, layer_config=layer_config, low_cpu_mem_usage=low_cpu_mem_usage)
         model_instance = handle_special_model(model_instance, model_architecture)
     return model_instance
 
@@ -120,7 +123,7 @@ def pack_gguf_layer(
     tokenizer,
     processor=None,
     image_processor=None,
-    model_type=ModelType.TEXT,
+    model_type=convert_hf_to_gguf.ModelType.TEXT,
 ):
     """Export the model to gguf format."""
     global gguf_model_instance_global
@@ -140,13 +143,13 @@ def pack_gguf_layer(
 
         gguf_model_instance_global = [
             create_model_class(
-                output_dir, model, layer_config, backend, low_cpu_mem_usage=True, model_type=ModelType.TEXT
+                output_dir, model, layer_config, backend, low_cpu_mem_usage=True, model_type=convert_hf_to_gguf.ModelType.TEXT
             )
         ]
-        if model_type == ModelType.MMPROJ:
+        if model_type == convert_hf_to_gguf.ModelType.MMPROJ:
             gguf_model_instance_global.append(
                 create_model_class(
-                    output_dir, model, layer_config, backend, low_cpu_mem_usage=True, model_type=ModelType.MMPROJ
+                    output_dir, model, layer_config, backend, low_cpu_mem_usage=True, model_type=convert_hf_to_gguf.ModelType.MMPROJ
                 )
             )
         if not hasattr(model, "last_layer_name_to_block_name"):
@@ -211,11 +214,11 @@ def save_quantized_as_gguf(output_dir, backend="gguf:q4_0", layer_config=None, v
             image_processor.save_pretrained(tmp_work_dir)
 
         gguf_model_instance_global = [
-            create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.TEXT)
+            create_model_class(output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.TEXT)
         ]
         if vlm:
             gguf_model_instance_global.append(
-                create_model_class(output_dir, model, layer_config, backend, model_type=ModelType.MMPROJ)
+                create_model_class(output_dir, model, layer_config, backend, model_type=convert_hf_to_gguf.ModelType.MMPROJ)
             )
 
     for gguf_model in gguf_model_instance_global:
