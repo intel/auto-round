@@ -34,16 +34,16 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
-import json
-import requests
+from functools import partial
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
-from functools import partial
 
 import numpy as np
+import requests
 import torch
 from transformers import AutoConfig
 
@@ -54,6 +54,7 @@ gguf = LazyImport("gguf")
 
 if TYPE_CHECKING:
     from torch import Tensor
+
 
 def download_convert_file():
     CONVERT_URL = "https://raw.githubusercontent.com/ggml-org/llama.cpp/refs/heads/master/convert_hf_to_gguf.py"
@@ -93,6 +94,7 @@ def _need_low_cpu_mem(low_cpu_mem_usage):
     #     logger.info("use low cpu memory mode.")
     return True
 
+
 def get_moe_name(cls, name, new_name):
     type_mapping = {
         "FFN_GATE_EXP": ["gate_proj", "w1", "linear"],
@@ -116,13 +118,13 @@ def get_moe_name(cls, name, new_name):
             return name
     return name
 
+
 def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
     for name, tensor in cls.model.named_parameters():
         yield name, tensor
 
-def _quant_data_with_args(
-    data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None
-):
+
+def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
     if torch.cuda.is_available():
         device = "cuda"
     elif torch.xpu.is_available():
@@ -149,6 +151,7 @@ def _quant_data_with_args(
         device=device,
     )
     return data
+
 
 def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid):
     suffix = ".weight"
@@ -214,6 +217,7 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, bid):
         data = ggml_quant(data_torch, data_qtype.name.lower(), device=device)
     return data, data_qtype
 
+
 def get_qtype_by_layer_config(layer_config, name, data_qtype):
     name = name[: -len(".weight")]
     if name not in layer_config or layer_config[name]["bits"] >= 16:
@@ -271,6 +275,7 @@ def get_qtype_by_layer_config(layer_config, name, data_qtype):
     #     raise ValueError(f"Unknown file type: {data_qtype}")
     # return data_qtype
 
+
 def _special_name_handle(cls, name):
     # for Qwen2VL
     def remove_prefix(name, key_list):
@@ -308,6 +313,7 @@ def _special_name_handle(cls, name):
 
     return name
 
+
 def prepare_tensors(cls):
     max_name_len = max(len(s) for _, s in cls.tensor_map.mapping.values()) + len(".weight,")
 
@@ -317,10 +323,7 @@ def prepare_tensors(cls):
         # we don't need these
         if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
             continue
-        if (
-            hasattr(cls, "current_packing_block")
-            and cls.current_packing_block is not None  # pylint: disable=E1101
-        ):
+        if hasattr(cls, "current_packing_block") and cls.current_packing_block is not None:  # pylint: disable=E1101
             current_packing_block_split = cls.current_packing_block.split(".")  # pylint: disable=E1101
             name_split = name.split(".")
             if (
@@ -440,13 +443,9 @@ def prepare_tensors(cls):
                     or cls.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_L
                 ):
                     data_qtype = gguf.GGMLQuantizationType.Q3_K
-                elif (
-                    cls.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S or cls.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_M
-                ):
+                elif cls.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S or cls.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_M:
                     data_qtype = gguf.GGMLQuantizationType.Q4_K
-                elif (
-                    cls.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_S or cls.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_M
-                ):
+                elif cls.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_S or cls.ftype == gguf.LlamaFileType.MOSTLY_Q5_K_M:
                     data_qtype = gguf.GGMLQuantizationType.Q5_K
                 elif cls.ftype == gguf.LlamaFileType.MOSTLY_Q6_K:
                     data_qtype = gguf.GGMLQuantizationType.Q6_K
@@ -522,17 +521,14 @@ def prepare_tensors(cls):
                 else:
                     data, data_qtype = _quant_data(cls, data_torch, data_qtype, name, modify_name, bid)
 
-            shape = (
-                gguf.quant_shape_from_byte_shape(data.shape, data_qtype) if data.dtype == np.uint8 else data.shape
-            )
+            shape = gguf.quant_shape_from_byte_shape(data.shape, data_qtype) if data.dtype == np.uint8 else data.shape
 
             # reverse shape to make it similar to the internal ggml dimension order
             shape_str = f"{{{', '.join(str(n) for n in reversed(shape))}}}"
 
             # n_dims is implicit in the shape
             logger.info(
-                f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype}"
-                f" --> {data_qtype.name}, shape = {shape_str}"
+                f"{f'%-{max_name_len}s' % f'{new_name},'} {old_dtype}" f" --> {data_qtype.name}, shape = {shape_str}"
             )
 
             cls.gguf_writer.add_tensor(new_name, data, raw_dtype=data_qtype)
@@ -549,7 +545,7 @@ def prepare_tensors(cls):
                 if cls.model_arch == gguf.MODEL_ARCH.LLAMA and "embed_tokens.weight" in weight_name:
                     continue
                 clean_module_parameter(module, weight_name.split(".")[-1])
-                
+
 
 def load_hparams(dir_model: Path):
     try:
