@@ -703,6 +703,7 @@ def eval_task_by_task(
         max_batch_size=64,
         trust_remote_code=True,
         eval_model_dtype=None,
+        limit=None,
         retry_times=3):
     set_cuda_visible_devices(device)
     device_str, parallelism = get_device_and_parallelism(device)
@@ -767,7 +768,13 @@ def eval_task_by_task(
         while retry_times:
             try:
                 res = lm_simple_evaluate(
-                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size)
+                    model=hflm,
+                    model_args=None,
+                    device=device_str,
+                    tasks=task,
+                    batch_size=batch_size,
+                    limit=limit,
+                )
                 break
             except Exception as e:
                 if "CUDA out of memory" in str(e) or "MODULE:PT_DEVMEM" in str(e):
@@ -778,7 +785,13 @@ def eval_task_by_task(
                         logger.warning(
                             f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
                         res = lm_simple_evaluate(
-                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1)
+                            model=hflm,
+                            model_args=None,
+                            device=device_str,
+                            tasks=task,
+                            batch_size=1,
+                            limit=limit,
+                        )
                         hflm.batch_sizes = ori_batch_sizes
                     except Exception as e:
                         traceback.print_exc()

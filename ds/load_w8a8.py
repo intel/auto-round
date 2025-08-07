@@ -28,27 +28,29 @@ SKIP_WEIGHT_LST = {
     "embed_tokens",
     "mlp.gate.weight",  # mlp.gate is not linear
 }
-"""
-# https://docs.habana.ai/en/latest/PyTorch/Inference_on_PyTorch/Quantization/Inference_Using_FP8.html?highlight=backoff#supported-json-config-file-options
-Similarly, the maxabs value of a weight is scaled to weight_backoff*FP8_143_FULLSCALE. The default values are input_backoff=0.25 and weight_backoff=0.5.
-"""
+
 MODEL_STATE_DICT_MAPPING_FILENAME = "model.safetensors.index.json"
 
 
 seed = 0
 import random
+
 random.seed(seed)
 import torch
+
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 import numpy as np
+
 np.random.seed(seed)
+
 
 # torch.use_deterministic_algorithms(True)
 def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+
 
 g = torch.Generator()
 g.manual_seed(0)
@@ -63,9 +65,6 @@ def get_cpu_mem_size_in_gb():
 
     mem = psutil.virtual_memory()
     return mem.available
-
-
-from quant import quant_tensor
 
 
 from torch import nn
@@ -88,6 +87,8 @@ def quant_tensor(tensor):
     cliped_qtensor = torch.clamp(qtensor, -FULL_RANGE, FULL_RANGE)
     cliped_qtensor_fp8 = cliped_qtensor.to(torch.float8_e4m3fn)
     return scale, cliped_qtensor_fp8
+
+
 def quant_tensor_with_scale(tensor, scale):
     # Note:
     #  1. Check the scale dtype
@@ -97,20 +98,29 @@ def quant_tensor_with_scale(tensor, scale):
     cliped_qtensor_fp8 = cliped_qtensor.to(torch.float8_e4m3fn)
     return scale, cliped_qtensor_fp8
 
+
 # Adapted from https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/1d044fd82b15f1cedb197a288e50cc96a2c27205/inference/model.py#L91-L108
 class FP8QDQLinear(torch.nn.Linear):
     dtype = torch.bfloat16
     fp8_dtype = torch.float8_e4m3fn
 
-    def __init__(self, in_features: int, out_features: int, bias: bool = True, device=None):
+    def __init__(
+        self, in_features: int, out_features: int, bias: bool = True, device=None
+    ):
         super().__init__(in_features, out_features, bias=bias)
         self.in_features = in_features
         self.out_features = out_features
         self.weight = nn.Parameter(
-            torch.empty(out_features, in_features, dtype=FP8QDQLinear.fp8_dtype), requires_grad=True
+            torch.empty(out_features, in_features, dtype=FP8QDQLinear.fp8_dtype),
+            requires_grad=True,
         )
-        self.weight_scale = nn.Parameter(torch.zeros((out_features, 1), dtype=FP8QDQLinear.dtype), requires_grad=False)
-        self.input_scale = nn.Parameter(torch.zeros((1,1), dtype=FP8QDQLinear.dtype), requires_grad=False)
+        self.weight_scale = nn.Parameter(
+            torch.zeros((out_features, 1), dtype=FP8QDQLinear.dtype),
+            requires_grad=False,
+        )
+        self.input_scale = nn.Parameter(
+            torch.zeros((1, 1), dtype=FP8QDQLinear.dtype), requires_grad=False
+        )
         if bias:
             self.bias = nn.Parameter(torch.empty(out_features))
         else:
@@ -123,7 +133,7 @@ class FP8QDQLinear(torch.nn.Linear):
         fp8_weight = self.weight
         qdq_weight = fp8_weight.to(FP8QDQLinear.dtype) * self.weight_scale
         return qdq_weight
-    
+
     def pre_dequantize(self):
         if self.pre_dequantized:
             return
@@ -134,7 +144,9 @@ class FP8QDQLinear(torch.nn.Linear):
         self.pre_dequantized = True
 
     def qdq_input(self, bf16_input: torch.Tensor):
-        input_scale, input_fp8 = quant_tensor_with_scale(bf16_input, self.input_scale.data)
+        input_scale, input_fp8 = quant_tensor_with_scale(
+            bf16_input, self.input_scale.data
+        )
         qdq_input_bf16 = input_fp8.to(FP8QDQLinear.dtype) * input_scale
         return qdq_input_bf16
 
@@ -151,7 +163,6 @@ class FP8QDQLinear(torch.nn.Linear):
         qdq_weight = self.dequant_weight_online()
         out = torch.nn.functional.linear(qdq_input, qdq_weight, self.bias)
         return out
-    
 
 
 def patch_lin():
@@ -170,19 +181,20 @@ def pre_dequantize(model):
         else:
             logger.debug(f"Skipping {name} as it is not FP8QDQLinear")
 
+
 def qdq_eval(model_path, not_patch_lin=False):
     import transformers
     from transformers.modeling_utils import no_init_weights
-    from patch_for_ds import patch_transformers
 
     if not not_patch_lin:
         patch_lin()
 
     def _patch__initialize_weights(self, module):
-        print(f"Skipping init_weights ")
         module._is_hf_initialized = True
 
-    transformers.modeling_utils.PreTrainedModel._initialize_weights = _patch__initialize_weights
+    transformers.modeling_utils.PreTrainedModel._initialize_weights = (
+        _patch__initialize_weights
+    )
     # patch_transformers()
     with no_init_weights():
         model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -195,6 +207,7 @@ def qdq_eval(model_path, not_patch_lin=False):
     model.eval()
     model.to("cuda")
     import torch
+
     model = torch.compile(model)
     # pre_dequantize(model)
     with torch.device("cuda"):
@@ -208,20 +221,25 @@ def qdq_eval(model_path, not_patch_lin=False):
             logger.info(f"Output: {output}")
 
     from auto_round.script.llm import eval_task_by_task
+
     eval_task_by_task(
         model=model,
         device="cuda",
         tasks="gsm8k",
         batch_size=32,
+        limit=128,
         # trust_remote_code=not args.disable_trust_remote_code,
         # eval_model_dtype=args.eval_model_dtype
-        )
+    )
+
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--qmodel_path", type=str, required=True)
-    parser.add_argument("--not_patch_lin", action="store_true", help="Measure float model")
+    parser.add_argument(
+        "--not_patch_lin", action="store_true", help="Measure float model"
+    )
     args = parser.parse_args()
     qdq_eval(args.qmodel_path, not_patch_lin=args.not_patch_lin)
