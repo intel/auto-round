@@ -251,6 +251,9 @@ class AutoRound(object):
             self.bits = tmp_bits
         self.supported_types = SUPPORTED_LAYER_TYPES
         self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+        if "hpu" in str(self.device):
+            self.inner_supported_types = tuple(x for x in INNER_SUPPORTED_LAYER_TYPES if x != "FP8Linear")
+
         self.model = model.eval()
         self.tokenizer = tokenizer
 
