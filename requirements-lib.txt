@@ -8,5 +8,6 @@ packaging
 pillow
 numba
 tbb
+triton
 transformers
 threadpoolctl
