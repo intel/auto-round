@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections.abc
 import copy
 import gc
+import json
 import logging
 import os
 import re
@@ -48,6 +50,8 @@ class SupportedFormats:
             "itrex",
             "itrex_xpu",
             "fake",
+            "mx_fp",
+            "nv_fp",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -1185,7 +1189,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     for f in formats:
         if f.startswith("gguf") and f not in GGUF_CONFIG:
             logger.error(f"{f} is not supported, please check.")
-    pattern = re.compile("q\d_k")
+    pattern = re.compile(r"q\d_k")
     pre_dq_format = ""
     unsupport_list, reset_list = [], []
     for format in GGUF_CONFIG:
@@ -1235,7 +1239,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
                 if not hasattr(args_or_ar, k):
                     continue
                 if k == "data_type":
-                    if re.search("q\d_1", format) and len(formats) > 1:
+                    if re.search(r"q\d_1", format) and len(formats) > 1:
                         v = "int"
                 if k == "sym" and isinstance(args_or_ar, argparse.Namespace):
                     k = "asym"
@@ -1385,7 +1389,6 @@ def mllm_load_model(
     model_dtype=None,
     **kwargs,
 ):
-    import json
 
     import transformers
     from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
@@ -1664,7 +1667,7 @@ def _use_more_bits(i_layer: int, n_layer: int):
 
 
 def _get_digital_in_layer_name(layer_name):
-    pattern = re.compile("([a-zA-Z]+\.){1,}(\d+)")
+    pattern = re.compile(r"([a-zA-Z]+\.){1,}(\d+)")
     res = re.search(pattern, layer_name)
     if res:
         return int(res[2])
@@ -2137,3 +2140,146 @@ def out_of_vram(error_msg):
     if "HIP out of memory. Tried to allocate" in error_msg:
         return True
     return False
+
+
+def is_moe(module: torch.nn.Module) -> bool:
+    """Returns whether the module is an MOE layer."""
+    return any(
+        key in type(module).__name__.lower()
+        for key in [
+            "MixtralSparseMoeBlock".lower(),
+            "ArcticMoE".lower(),
+            "DbrxFFN".lower(),
+            "MoELayer".lower(),
+            "PhimoeSparseMoeBlock".lower(),
+            "DeepseekMoE".lower(),
+            "DeepseekV2MoE".lower(),
+            "DeepseekV3MoE".lower(),
+            "Qwen2MoeSparseMoeBlock".lower(),
+            "Qwen3MoeSparseMoeBlock".lower(),
+        ]
+    )
+
+
+def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
+    """Get the list of linear names for the experts."""
+
+    def module_match_name_list(module, name_list):
+        """Check if the module name matches any of the names in the list.
+
+        e.g. module_match_name_list(QuantQwen3MoeSparseMoeBlock, ['Qwen3MoeSparseMoeBlock']) -> True
+
+        """
+        return any(name.lower() in type(module).__name__.lower() for name in name_list)
+
+    if module_match_name_list(
+        module, ["Qwen2MoeSparseMoeBlock", "Qwen3MoeSparseMoeBlock", "DeepseekMoE", "DeepseekV2MoE", "DeepseekV3MoE"]
+    ):
+        return ["gate_proj", "down_proj", "up_proj"]
+    elif module_match_name_list(module, ["MixtralMoeSparseMoeBlock"]):
+        return ["linear_fc1", "linear_fc2"]
+    elif module_match_name_list(module, ["DBRXMoeSparseMoeBlock"]):
+        return ["w1_linear", "w2_linear", "v1_linear"]
+    else:
+        # assuing w1, w2, w3 by default
+        return ["w1", "w2", "w3"]
+
+
+def get_nested_attr(module, attr_name: str):
+    """Recursively get nested attribute (e.g., 'orig_layer.act_max')."""
+    attrs = attr_name.split(".")
+    for attr in attrs:
+        if not hasattr(module, attr):
+            return None
+        module = getattr(module, attr)
+    return module
+
+
+def set_nested_attr(module, attr_name: str, value):
+    """Recursively set nested attribute (e.g., 'orig_layer.act_max' = value)."""
+    attrs = attr_name.split(".")
+    for attr in attrs[:-1]:
+        if not hasattr(module, attr):
+            raise AttributeError(f"{module} has no attribute '{attr}'")
+        module = getattr(module, attr)
+    setattr(module, attrs[-1], value)
+
+
+def set_amax_for_uncalibrated_experts(
+    experts: torch.nn.Module, set_amax_value: float | None = None, attr_name="act_max"
+):
+    """Set amax of uncalibrated experts to a given value or the max of existing amax value from other experts.
+
+    Args:
+        experts: a list of experts
+        set_amax_value: set amax value to the given value.
+                        If None, set amax value to the max of existing amax value from other experts.
+
+    Returns:
+        uncalibrated_experts: a list of uncalibrated experts
+    """
+    uncalibrated_experts = []
+    # get the max amax value from all experts
+    if set_amax_value is None:
+        amax_values = [
+            get_nested_attr(module, attr_name) for module in experts if get_nested_attr(module, attr_name) is not None
+        ]
+        if len(amax_values) == 0:
+            return uncalibrated_experts
+        # Flatten all tensors to 1D before concatenation
+        flat_values = [t.reshape(-1) for t in amax_values]
+        all_values = torch.cat(flat_values)
+        set_amax_value = torch.max(all_values)
+
+    for module in experts:
+        if get_nested_attr(module, attr_name) is None:
+            logger.warning_once(
+                "Missing amax value of expert layers."
+                "This typically occurs in MoE models when certain experts are not activated during calibration. "
+                "Consider increasing your calibration dataset size to ensure all experts are exercised."
+            )
+            # Use float32 dtype explicitly to ensure we create a floating point tensor
+            if not isinstance(set_amax_value, torch.Tensor):
+                set_amax_value = torch.tensor(set_amax_value, dtype=torch.float32)
+            set_nested_attr(module, attr_name, set_amax_value)
+            # uncalibrated_experts.append(module)
+
+
+def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_name="act_max"):
+    # please refer to https://github.com/NVIDIA/TensorRT-Model-Optimizer/blob/4c611e47a60084a86e1de7e48690a692a1b8170c/modelopt/torch/export/unified_export_hf.py#L195-L207
+    if layer_name is not None:
+        parts = layer_name.split(".")
+        if "experts" not in parts:
+            raise ValueError
+        idx = parts.index("experts")
+        moe_name = ".".join(parts[:idx])
+        model = get_module(model, moe_name)
+    # Handle input quantizers of experts that are not calibrated
+    for name, sub_module in model.named_modules():
+        if is_moe(sub_module) and hasattr(sub_module, "experts"):
+            expert_linear_names = get_expert_linear_names(sub_module)
+            for linear_name in expert_linear_names:
+                if isinstance(sub_module.experts, collections.abc.Iterable):
+                    # For other MoE models (like Mixtral) with iterable experts
+                    try:
+                        set_amax_for_uncalibrated_experts(
+                            [getattr(expert, linear_name) for expert in sub_module.experts], attr_name=attr_name
+                        )
+                    except AttributeError as e:
+                        # Provide more helpful debugging information
+                        expert_types = list(set(type(expert).__name__ for expert in sub_module.experts))
+                        raise AttributeError(
+                            f"Failed to access attribute '{linear_name}' on experts. "
+                            f"MoE module type: {type(sub_module).__name__}, "
+                            f"Expert types: {expert_types}, "
+                            f"Expected linear names: {expert_linear_names}. "
+                            f"This suggests the get_expert_linear_names function may need "
+                            f"to be updated for this model architecture. "
+                            f"Original error: {e}"
+                        ) from e
+                else:
+                    # Unsupported MoE model structure
+                    raise NotImplementedError(
+                        f"MoE model with experts type '{type(sub_module.experts).__name__}' is not supported in export."
+                        f"Please file an issue or add support for this model architecture."
+                    )
