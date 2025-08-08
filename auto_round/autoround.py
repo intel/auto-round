@@ -1573,8 +1573,9 @@ class AutoRound(object):
         """
         # Get the names of layers in quantization blocks
         supported_types = self.supported_types
-        layers_in_blocks = get_layer_names_in_block(self.model, supported_types,
-                                                    self.quant_block_list, self.inner_supported_types)
+        layers_in_blocks = get_layer_names_in_block(
+            self.model, supported_types, self.quant_block_list, self.inner_supported_types
+        )
         ##process regex in layer_config
         all_supported_layer_names = []
         # List of configuration keys
