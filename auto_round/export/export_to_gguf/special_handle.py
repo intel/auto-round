@@ -29,6 +29,7 @@ def handle_special_model(cls, model_architecture):
         cls.modify_tensors = partial(gptoss_modify_tensors, cls)
     return cls
 
+
 def get_tensor_from_file(dir_path, tensor_name):
     if not os.path.isdir(dir_path):
         dir_path = download_hf_model(dir_path)

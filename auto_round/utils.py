@@ -1216,8 +1216,8 @@ def get_layer_features(layer):
 def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     import argparse
 
-    from auto_round.utils import logger
     from auto_round.export.export_to_gguf.convert import download_convert_file
+    from auto_round.utils import logger
 
     if format_str is None:
         args_or_ar.format = args_or_ar.format.replace("q*_", f"q{args_or_ar.bits}_")
@@ -1230,15 +1230,19 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     for f in formats:
         if f.startswith("gguf"):
             export_gguf = True
-            
+
         if f.startswith("gguf") and f not in GGUF_CONFIG:
             logger.error(f"{f} is not supported, please check.")
 
     redownload = False
     if export_gguf:
         try:
-            from auto_round.export.export_to_gguf.convert_hf_to_gguf import (
-                ModelBase, get_model_architecture, ModelType)  # pylint: disable=E0401
+            from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
+                ModelBase,
+                ModelType,
+                get_model_architecture,
+            )
+
             if isinstance(args_or_ar.model, str):
                 model_path = args_or_ar.model
             else:
@@ -1249,8 +1253,9 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
             model_architecture = get_model_architecture(hparams=hparams, model_type=ModelType.TEXT)
             if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
                 logger.warning(
-                    f"Current verison of gguf export does not support for {model_architecture},"
-                    " will re-download dependency file.")
+                    f"Current version of gguf export does not support for {model_architecture},"
+                    " will re-download dependency file."
+                )
                 redownload = True
         except ModuleNotFoundError as e:
             if "convert_hf_to_gguf" in str(e):
@@ -1261,16 +1266,19 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
                     "Please use the latest gguf-py, you can use the following command to install it:\n"
                     "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
                 )
-        download_convert_file(redownload) 
+        download_convert_file(redownload)
 
         try:
-            from auto_round.export.export_to_gguf.convert_hf_to_gguf import (
-                ModelBase, get_model_architecture, ModelType)  # pylint: disable=E0401
+            from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
+                ModelBase,
+                ModelType,
+                get_model_architecture,
+            )
         except ImportError as e:
             raise ImportError(
-                    "Please use the latest gguf-py, you can use the following command to install it:\n"
-                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
-                )
+                "Please use the latest gguf-py, you can use the following command to install it:\n"
+                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+            )
         if isinstance(args_or_ar.model, str):
             model_path = args_or_ar.model
         else:
@@ -1282,8 +1290,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
         if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
             logger.error(f"Model {model_architecture} is not supported to export gguf format.")
             sys.exit(1)
-        
-        
+
     pattern = re.compile("q\d_k")
     pre_dq_format = ""
     unsupport_list, reset_list = [], []
@@ -1291,7 +1298,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
         if format in formats:
             if format == "q6_k_s":
                 logger.warning("Please note that q6_k_s is q6_k.")
-            
+
             if re.search(pattern, format):
                 if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
                     logger.error(f"Cannot export {pre_dq_format} and {format} at the same time.")
