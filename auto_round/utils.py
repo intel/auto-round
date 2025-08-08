@@ -67,7 +67,10 @@ SUPPORTED_FORMATS = SupportedFormats()
 
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
-INNER_SUPPORTED_LAYER_TYPES = (transformers.integrations.finegrained_fp8.FP8Linear,)
+##changed to str as it relies triton or others lib to load this
+INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
+
+# INNER_SUPPORTED_LAYER_TYPES = (transformers.integrations.finegrained_fp8.FP8Linear,)
 
 SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 
@@ -744,7 +747,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(
-    model, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D), quant_block_list=None
+    model, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D), quant_block_list=None, class_names=None
 ):
     """Retrieves the names of layers within each block of the model.
 
@@ -752,8 +755,10 @@ def get_layer_names_in_block(
         list: A list of strings, where each string is the name of a layer
               within a block of the model.
     """
+    if class_names is None:
+        class_names = []
     for n, m in model.named_modules():
-        if isinstance(m, supported_types):
+        if isinstance(m, supported_types) or (class_names is not None and m.__class__.__name__ in class_names):
             m.tmp_name = n
     layers_in_block = []
     if bool(quant_block_list):
