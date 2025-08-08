@@ -53,7 +53,7 @@ def simple_evaluate(
     **kwargs
 ):
     try:
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
     except:
         from auto_round.inference.auto_quantizer import AutoHfQuantizer
 

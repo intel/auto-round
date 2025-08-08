@@ -584,64 +584,21 @@ class CpuInfo(object):
     def __init__(self):
         """Get whether the cpu numerical format is bf16, the number of sockets, cores and cores per socket."""
         self._bf16 = False
-        self._vnni = False
         info = cpuinfo.get_cpu_info()
         if "arch" in info and "X86" in info["arch"]:
             cpuid = cpuinfo.CPUID()
             max_extension_support = cpuid.get_max_extension_support()
             if max_extension_support >= 7:
-                ecx = cpuid._run_asm(
-                    b"\x31\xc9",  # xor ecx, ecx
-                    b"\xb8\x07\x00\x00\x00" b"\x0f\xa2" b"\x89\xc8" b"\xc3",  # mov eax, 7  # cpuid  # mov ax, cx  # ret
-                )
-                self._vnni = bool(ecx & (1 << 11))
                 eax = cpuid._run_asm(
                     b"\xb9\x01\x00\x00\x00",  # mov ecx, 1
                     b"\xb8\x07\x00\x00\x00" b"\x0f\xa2" b"\xc3",  # mov eax, 7  # cpuid  # ret
                 )
                 self._bf16 = bool(eax & (1 << 5))
-        if "arch" in info and "ARM" in info["arch"]:  # pragma: no cover
-            self._sockets = 1
-        else:
-            self._sockets = self.get_number_of_sockets()
-        self._cores = psutil.cpu_count(logical=False)
-        self._cores_per_socket = int(self._cores / self._sockets)
 
     @property
     def bf16(self):
         """Get whether it is bf16."""
         return self._bf16
-
-    @property
-    def vnni(self):
-        """Get whether it is vnni."""
-        return self._vnni
-
-    @property
-    def cores_per_socket(self):
-        """Get the cores per socket."""
-        return self._cores_per_socket
-
-    def get_number_of_sockets(self) -> int:
-        """Get number of sockets in platform."""
-        cmd = "cat /proc/cpuinfo | grep 'physical id' | sort -u | wc -l"
-        if psutil.WINDOWS:
-            cmd = r'wmic cpu get DeviceID | C:\Windows\System32\find.exe /C "CPU"'
-        elif psutil.MACOS:  # pragma: no cover
-            cmd = "sysctl -n machdep.cpu.core_count"
-
-        with subprocess.Popen(
-            args=cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=False,
-        ) as proc:
-            proc.wait()
-            if proc.stdout:
-                for line in proc.stdout:
-                    return int(line.decode("utf-8", errors="ignore").strip())
-        return 0
 
 
 def is_local_path(path):
@@ -1456,6 +1413,7 @@ def llm_load_model(
 
 def mllm_load_model(
     pretrained_model_name_or_path,
+    device="cpu",
     torch_dtype="auto",
     use_auto_mapping=True,
     trust_remote_code=True,
@@ -1468,6 +1426,10 @@ def mllm_load_model(
     from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
     from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
+    device_str, use_auto_mapping = get_device_and_parallelism(device)
+    torch_dtype = "auto"
+    if device_str is not None and "hpu" in device_str:
+        torch_dtype = torch.bfloat16
     if os.path.isdir(pretrained_model_name_or_path):
         config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
     else:
@@ -1532,12 +1494,21 @@ def mllm_load_model(
                 torch_dtype=torch_dtype,
                 device_map="auto" if use_auto_mapping else None,
             )
-            tokenizer = AutoTokenizer.from_pretrained(
-                pretrained_model_name_or_path, trust_remote_code=trust_remote_code
-            )
-            processor = AutoProcessor.from_pretrained(
-                pretrained_model_name_or_path, trust_remote_code=trust_remote_code
-            )
+
+            if "Mistral-Small-3.2" in pretrained_model_name_or_path:
+                from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
+
+                if os.path.isdir(pretrained_model_name_or_path):
+                    tokenizer = MistralTokenizer.from_file(os.path.join(pretrained_model_name_or_path, "tekken.json"))
+                else:
+                    tokenizer = MistralTokenizer.from_hf_hub(pretrained_model_name_or_path)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                )
+                processor = AutoProcessor.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                )
             try:
                 from transformers import AutoImageProcessor
 

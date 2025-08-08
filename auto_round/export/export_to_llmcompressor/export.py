@@ -45,7 +45,7 @@ def save_quantized_as_llmcompressor(output_dir, model=None, **kwargs):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
 
     # save tokenizer, processor
-    if output_dir is not None and tokenizer is not None:
+    if output_dir is not None and tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
         tokenizer.save_pretrained(output_dir)
     if output_dir is not None and processor is not None:
         processor.save_pretrained(output_dir)
@@ -71,4 +71,9 @@ def save_quantized_as_llmcompressor(output_dir, model=None, **kwargs):
     # save model.config, model.state_dict()
     model.config.quantization_config = quantization_config
     model.config.save_pretrained(output_dir)
-    model.save_pretrained(output_dir, safe_serialization=safe_serialization)
+    try:
+        model.save_pretrained(output_dir, safe_serialization=safe_serialization)
+    except ValueError as e:
+        if hasattr(model, "generation_config"):
+            setattr(model.generation_config, "do_sample", True)
+        model.save_pretrained(output_dir, safe_serialization=safe_serialization)
