@@ -74,5 +74,6 @@ def save_quantized_as_llmcompressor(output_dir, model=None, **kwargs):
     try:
         model.save_pretrained(output_dir, safe_serialization=safe_serialization)
     except ValueError as e:
-        setattr(model.generation_config, "do_sample", True)
+        if hasattr(model, "generation_config"):
+            setattr(model.generation_config, "do_sample", True)
         model.save_pretrained(output_dir, safe_serialization=safe_serialization)
