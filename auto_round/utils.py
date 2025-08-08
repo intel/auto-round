@@ -1178,6 +1178,7 @@ def get_layer_features(layer):
 def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     import argparse
 
+    from auto_round.export.export_to_gguf.convert import download_convert_file
     from auto_round.utils import logger
 
     if format_str is None:
@@ -1187,9 +1188,71 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
         format_str = format_str.replace("q*_", f"q{args_or_ar.bits}_")
     formats = format_str.lower().replace(" ", "").split(",")
     formats = sorted(formats, key=lambda x: len(x))
+    export_gguf = False
     for f in formats:
+        if f.startswith("gguf"):
+            export_gguf = True
+
         if f.startswith("gguf") and f not in GGUF_CONFIG:
             logger.error(f"{f} is not supported, please check.")
+
+    redownload = False
+    if export_gguf:
+        try:
+            from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
+                ModelBase,
+                ModelType,
+                get_model_architecture,
+            )
+
+            if isinstance(args_or_ar.model, str):
+                model_path = args_or_ar.model
+            else:
+                model_path = args_or_ar.model.name_or_path
+            if not os.path.isdir(model_path):
+                model_path = download_hf_model(model_path)
+            hparams = ModelBase.load_hparams(model_path)
+            model_architecture = get_model_architecture(hparams=hparams, model_type=ModelType.TEXT)
+            if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
+                logger.warning(
+                    f"Current version of gguf export does not support for {model_architecture},"
+                    " will re-download dependency file."
+                )
+                redownload = True
+        except ModuleNotFoundError as e:
+            if "convert_hf_to_gguf" in str(e):
+                logger.warning("GGUF export dependency file is not found, download from github.")
+                redownload = True
+            else:
+                raise ImportError(
+                    "Please use the latest gguf-py, you can use the following command to install it:\n"
+                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+                )
+        download_convert_file(redownload)
+
+        try:
+            from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
+                ModelBase,
+                ModelType,
+                get_model_architecture,
+            )
+        except ImportError as e:
+            raise ImportError(
+                "Please use the latest gguf-py, you can use the following command to install it:\n"
+                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+            )
+        if isinstance(args_or_ar.model, str):
+            model_path = args_or_ar.model
+        else:
+            model_path = args_or_ar.model.name_or_path
+        if not os.path.isdir(model_path):
+            model_path = download_hf_model(model_path)
+        hparams = ModelBase.load_hparams(model_path)
+        model_architecture = get_model_architecture(hparams=hparams, model_type=ModelType.TEXT)
+        if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
+            logger.error(f"Model {model_architecture} is not supported to export gguf format.")
+            sys.exit(1)
+
     pattern = re.compile("q\d_k")
     pre_dq_format = ""
     unsupport_list, reset_list = [], []
@@ -1197,42 +1260,13 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
         if format in formats:
             if format == "q6_k_s":
                 logger.warning("Please note that q6_k_s is q6_k.")
-            try:
-                from auto_round.export.export_to_gguf.convert import ModelBase
-            except:
-                raise ImportError(
-                    f"Please use the latest gguf-py for {format}, you can use the following command to install it:\n"
-                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
-                )
+
             if re.search(pattern, format):
                 if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
                     logger.error(f"Cannot export {pre_dq_format} and {format} at the same time.")
                     sys.exit(-1)
                 else:
                     pre_dq_format = format
-
-            if isinstance(args_or_ar.model, str) and os.path.isdir(args_or_ar.model):
-                from pathlib import Path
-
-                from auto_round.export.export_to_gguf.convert import ModelBase
-
-                hparams = ModelBase.load_hparams(Path(args_or_ar.model))
-                model_architecture = hparams["architectures"][0]
-                try:
-                    model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
-                except NotImplementedError:
-                    logger.error(f"Model {model_architecture} is not supported to export GGUF format")
-                    sys.exit(1)
-
-                if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % QK_K != 0):
-                    model_name = args_or_ar.model.split("/")
-                    model_name = model_name[-1] if model_name[-1] else model_name[-2]
-                    hidden_size = hparams["hidden_size"]
-                    logger.error(
-                        f"Currently only support pure mode for format: {format}. "
-                        f"{model_name} is not supported, cause hidden_size({hidden_size}) % 256 !=0"
-                    )
-                    sys.exit(-1)
 
             unsupport_list, reset_list = [], []
             gguf_config = GGUF_CONFIG[format]
@@ -1724,11 +1758,14 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
 
     import gguf  # pylint: disable=E0401
 
-    from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
+    # from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
+    convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")
 
-    model_architecture = get_model_architecture(hparams=model.config.to_dict(), model_type=model_type)
+    model_architecture = convert_hf_to_gguf.get_model_architecture(
+        hparams=model.config.to_dict(), model_type=model_type
+    )
     try:
-        model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
+        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(model_architecture, model_type=model_type)
     except NotImplementedError:
         return layer_config, {}
 
@@ -2156,3 +2193,35 @@ def out_of_vram(error_msg):
     if "HIP out of memory. Tried to allocate" in error_msg:
         return True
     return False
+
+
+def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
+    """Download hugging face model from hf hub."""
+    from huggingface_hub.constants import DEFAULT_REVISION, HUGGINGFACE_HUB_CACHE
+    from huggingface_hub.file_download import REGEX_COMMIT_HASH, repo_folder_name
+    from huggingface_hub.utils import EntryNotFoundError
+
+    if cache_dir is None:
+        cache_dir = HUGGINGFACE_HUB_CACHE
+    if revision is None:
+        revision = DEFAULT_REVISION
+    if repo_type is None:
+        repo_type = "model"
+    storage_folder = os.path.join(cache_dir, repo_folder_name(repo_id=repo_id, repo_type=repo_type))
+    commit_hash = None
+    if REGEX_COMMIT_HASH.match(revision):
+        commit_hash = revision
+    else:
+        ref_path = os.path.join(storage_folder, "refs", revision)
+        if os.path.exists(ref_path):
+            with open(ref_path) as f:
+                commit_hash = f.read()
+    if storage_folder and commit_hash:
+        pointer_path = os.path.join(storage_folder, "snapshots", commit_hash)
+        if os.path.isdir(pointer_path):
+            return pointer_path
+    else:  # pragma: no cover
+        from huggingface_hub import snapshot_download
+
+        model_path = snapshot_download(repo_id)
+        return model_path
