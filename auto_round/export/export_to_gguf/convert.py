@@ -56,11 +56,11 @@ if TYPE_CHECKING:
     from torch import Tensor
 
 
-def download_convert_file():
+def download_convert_file(redownload=False):
     CONVERT_URL = "https://raw.githubusercontent.com/ggml-org/llama.cpp/refs/heads/master/convert_hf_to_gguf.py"
     FILE_NAME = "convert_hf_to_gguf.py"
     gguf_export_dir = os.path.dirname(__file__)
-    if FILE_NAME in os.listdir(gguf_export_dir):
+    if redownload is False and FILE_NAME in os.listdir(gguf_export_dir):
         return
     response = requests.get(CONVERT_URL)
     with open(os.path.join(gguf_export_dir, FILE_NAME), "w") as f:

@@ -582,10 +582,6 @@ class AutoRound(object):
         from auto_round.utils import SUPPORTED_FORMATS
 
         for format_ in formats:
-            if "gguf" in format_:
-                from auto_round.export.export_to_gguf.convert import download_convert_file
-
-                download_convert_file()
             if format_ not in SUPPORTED_FORMATS:
                 logger.error(f"Unsupported format {format_}, please choose from {SUPPORTED_FORMATS}")
                 exit(-1)

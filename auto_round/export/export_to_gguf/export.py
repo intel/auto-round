@@ -89,7 +89,7 @@ def create_model_class(
                 model_architecture, model_type=model_type
             )
         except NotImplementedError:
-            logger.error(f"Model {model_architecture} is not supported")
+            logger.error(f"Model {model_architecture} is not supported to export gguf format.")
             sys.exit(1)
         model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(model_architecture, model_type=model_type)
         model_name = model.name_or_path.split("/")

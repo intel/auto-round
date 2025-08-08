@@ -20,45 +20,14 @@ import torch
 from safetensors import safe_open
 from torch import Tensor
 
+from auto_round.utils import download_hf_model
+
 
 def handle_special_model(cls, model_architecture):
     if model_architecture == "GptOssForCausalLM":
         cls.generate_extra_tensors = partial(gptoss_generate_extra_tensors, cls)
         cls.modify_tensors = partial(gptoss_modify_tensors, cls)
     return cls
-
-
-def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
-    """Download hugging face model from hf hub."""
-    from huggingface_hub.constants import DEFAULT_REVISION, HUGGINGFACE_HUB_CACHE
-    from huggingface_hub.file_download import REGEX_COMMIT_HASH, repo_folder_name
-    from huggingface_hub.utils import EntryNotFoundError
-
-    if cache_dir is None:
-        cache_dir = HUGGINGFACE_HUB_CACHE
-    if revision is None:
-        revision = DEFAULT_REVISION
-    if repo_type is None:
-        repo_type = "model"
-    storage_folder = os.path.join(cache_dir, repo_folder_name(repo_id=repo_id, repo_type=repo_type))
-    commit_hash = None
-    if REGEX_COMMIT_HASH.match(revision):
-        commit_hash = revision
-    else:
-        ref_path = os.path.join(storage_folder, "refs", revision)
-        if os.path.exists(ref_path):
-            with open(ref_path) as f:
-                commit_hash = f.read()
-    if storage_folder and commit_hash:
-        pointer_path = os.path.join(storage_folder, "snapshots", commit_hash)
-        if os.path.isdir(pointer_path):
-            return pointer_path
-    else:  # pragma: no cover
-        from huggingface_hub import snapshot_download
-
-        model_path = snapshot_download(repo_id)
-        return model_path
-
 
 def get_tensor_from_file(dir_path, tensor_name):
     if not os.path.isdir(dir_path):
