@@ -129,7 +129,7 @@ def pack_gguf_layer(
     if "gguf_model_instance_global" not in globals():
         config = model.config
         config.save_pretrained(tmp_work_dir)
-        if tokenizer is not None:
+        if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
             tokenizer.save_pretrained(tmp_work_dir)
         if processor is not None:
             processor.save_pretrained(tmp_work_dir)

@@ -98,7 +98,7 @@ def save_quantized_as_itrex(output_dir, inplace=True, **kwargs):
         quantize_config.save_pretrained(output_dir)
     try:
         compressed_model.save_pretrained(output_dir, safe_serialization=safe_serialization)
-        if tokenizer is not None:
+        if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
             tokenizer.save_pretrained(output_dir)
         logger.info("Saved config file and weights of quantized model to {}.".format(output_dir))
     except IOError as e:  # pragma: no cover

@@ -27,6 +27,9 @@ Support Matrix
 
 ✔ means support, - means support but cannot infer or not test infert yet, X means not support.
 """
+import os
+from datetime import datetime, timedelta
+
 import torch
 from transformers.data.data_collator import default_data_collator
 
@@ -334,3 +337,71 @@ class DeepSeekV2Processor(BasicProcessor):
         prepare_inputs = prepare_inputs.to(self.model.device)
         prepare_inputs = self.squeeze_result(dict(prepare_inputs))
         return prepare_inputs
+
+
+@register_processor("mistral3_2")
+class Mistral3Processor(BasicProcessor):
+    IMAGE_TOKEN = "<image>"
+
+    @staticmethod
+    def load_system_prompt(repo_id_or_path: str, filename: str) -> str:
+        from huggingface_hub import hf_hub_download
+
+        if os.path.isdir(repo_id_or_path):
+            file_path = os.path.join(repo_id_or_path, filename)
+        else:
+            file_path = hf_hub_download(repo_id=repo_id_or_path, filename=filename)
+        with open(file_path, "r") as file:
+            system_prompt = file.read()
+        today = datetime.today().strftime("%Y-%m-%d")
+        yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        model_name = repo_id_or_path.split("/")[-1]
+        return system_prompt.format(name=model_name, today=today, yesterday=yesterday)
+
+    def get_input(
+        self,
+        text,
+        images,
+        return_tensors="pt",
+        squeeze=True,
+        max_length=None,
+        truncation=False,
+        truncation_strategy="text",
+        **kwargs
+    ):
+        from mistral_common.protocol.instruct.request import ChatCompletionRequest  # pylint: disable=E0401
+
+        SYSTEM_PROMPT = self.load_system_prompt(self.model.name_or_path, "SYSTEM_PROMPT.txt")
+
+        conversation = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for content in text:
+            conversation.append(
+                {
+                    "role": content["role"],
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": content["content"].replace(self.IMAGE_TOKEN, ""),
+                        },
+                    ],
+                },
+            )
+            if self.IMAGE_TOKEN in content["content"]:
+                conversation[-1]["content"].append({"type": "image_url", "image_url": {"url": images}})
+        tokenized = self.tokenizer.encode_chat_completion(
+            ChatCompletionRequest(messages=conversation, continue_final_message=True)
+        )
+        input_ids = torch.tensor([tokenized.tokens])
+        attention_mask = torch.ones_like(input_ids)
+        pixel_values = torch.tensor(tokenized.images[0], dtype=torch.bfloat16).unsqueeze(0)
+        image_sizes = torch.tensor([pixel_values.shape[-2:]])
+
+        ret = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "pixel_values": pixel_values,
+            "image_sizes": image_sizes,
+        }
+        if squeeze:
+            ret = self.squeeze_result(ret)
+        return ret

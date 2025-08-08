@@ -53,6 +53,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
             "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path"
         )
 
+        self.add_argument("--mllm", action="store_true", help="whether to quant multi-modal model.")
+
         self.add_argument("--eval", action="store_true", help="whether to use eval only mode")
 
         self.add_argument("--bits", default=4, type=int, help="number of weight bits")
@@ -226,6 +228,31 @@ class BasicArgumentParser(argparse.ArgumentParser):
             help="whether to disable optimization of the RTN mode(iters=0) (default is False).",
         )
 
+        ## ======================= MLLM =======================
+        self.add_argument(
+            "--quant_nontext_module",
+            action="store_true",
+            help="whether to quantize non-text module, e.g. vision component",
+        )
+
+        self.add_argument(
+            "--extra_data_dir",
+            default=None,
+            type=str,
+            help="dataset dir for storing images/audio/videos. "
+            "Can be a dir path or multiple dir path with format as "
+            "'image=path_to_image,video=path_to_video,audio=path_to_audio'"
+            "By default, it will search in the relative path, "
+            "and if not find, will automatic download.",
+        )
+
+        self.add_argument(
+            "--template",
+            default=None,
+            type=str,
+            help="the template for building training dataset. It can be a custom one.",
+        )
+
 
 class EvalArgumentParser(argparse.ArgumentParser):
 
@@ -234,7 +261,7 @@ class EvalArgumentParser(argparse.ArgumentParser):
         self.add_argument(
             "--model", "--model_name", "--model_name_or_path", default="facebook/opt-125m", help="model name or path"
         )
-        self.add_argument("--mllm", default=False, help="whether to eval multi-modal model.")
+        self.add_argument("--mllm", action="store_true", help="whether to eval multi-modal model.")
         self.add_argument(
             "--device",
             "--devices",
@@ -419,23 +446,46 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-    from auto_round.utils import llm_load_model
+    from auto_round.utils import llm_load_model, mllm_load_model
 
-    model, tokenizer, low_cpu_mem_usage = llm_load_model(
-        model_name,
-        trust_remote_code=not args.disable_trust_remote_code,
-        device=args.device,
-        low_cpu_mem_mode=args.low_cpu_mem_mode,
-        low_cpu_mem_tmp_dir=args.low_cpu_mem_tmp_dir,
-        model_dtype=args.model_dtype,
-    )
+    if args.mllm:
+        model, processor, tokenizer, image_processor = mllm_load_model(
+            model_name,
+            device=device_str,
+            use_auto_mapping=use_auto_mapping,
+            trust_remote_code=not args.disable_trust_remote_code,
+            model_dtype=args.model_dtype,
+        )
+        low_cpu_mem_usage = False
+    else:
+        model, tokenizer, low_cpu_mem_usage = llm_load_model(
+            model_name,
+            use_auto_mapping=use_auto_mapping,
+            trust_remote_code=not args.disable_trust_remote_code,
+            device=device_str,
+            low_cpu_mem_mode=args.low_cpu_mem_mode,
+            low_cpu_mem_tmp_dir=args.low_cpu_mem_tmp_dir,
+            model_dtype=args.model_dtype,
+        )
 
-    from auto_round import AutoRound, AutoRoundAdam
+    from auto_round import AutoRound, AutoRoundAdam, AutoRoundMLLM
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
 
-    round = AutoRound if not args.adam else AutoRoundAdam
+    round = AutoRound
+    mllm_kwargs = {}
+    if args.adam:
+        round = AutoRoundAdam
+    if args.mllm:
+        round = AutoRoundMLLM
+        mllm_kwargs = {
+            "processor": processor,
+            "image_processor": image_processor,
+            "extra_data_dir": args.extra_data_dir,
+            "quant_nontext_module": args.quant_nontext_module,
+            "template": args.template,
+        }
 
     layer_config = {}
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
@@ -485,10 +535,10 @@ def tune(args):
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
 
     autoround = round(
-        model,
-        tokenizer,
-        args.bits,
-        args.group_size,
+        model=model,
+        tokenizer=tokenizer,
+        bits=args.bits,
+        group_size=args.group_size,
         sym=not args.asym,
         batch_size=args.batch_size,
         dataset=args.dataset,
@@ -521,6 +571,7 @@ def tune(args):
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
         disable_opt_rtn=args.disable_opt_rtn,
+        **mllm_kwargs,
     )
 
     model_name = args.model.rstrip("/")

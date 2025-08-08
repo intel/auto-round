@@ -1379,6 +1379,7 @@ def llm_load_model(
 
 def mllm_load_model(
     pretrained_model_name_or_path,
+    device="cpu",
     torch_dtype="auto",
     use_auto_mapping=True,
     trust_remote_code=True,
@@ -1391,6 +1392,10 @@ def mllm_load_model(
     from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
     from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
+    device_str, use_auto_mapping = get_device_and_parallelism(device)
+    torch_dtype = "auto"
+    if device_str is not None and "hpu" in device_str:
+        torch_dtype = torch.bfloat16
     if os.path.isdir(pretrained_model_name_or_path):
         config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
     else:
@@ -1455,12 +1460,21 @@ def mllm_load_model(
                 torch_dtype=torch_dtype,
                 device_map="auto" if use_auto_mapping else None,
             )
-            tokenizer = AutoTokenizer.from_pretrained(
-                pretrained_model_name_or_path, trust_remote_code=trust_remote_code
-            )
-            processor = AutoProcessor.from_pretrained(
-                pretrained_model_name_or_path, trust_remote_code=trust_remote_code
-            )
+
+            if "Mistral-Small-3.2" in pretrained_model_name_or_path:
+                from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
+
+                if os.path.isdir(pretrained_model_name_or_path):
+                    tokenizer = MistralTokenizer.from_file(os.path.join(pretrained_model_name_or_path, "tekken.json"))
+                else:
+                    tokenizer = MistralTokenizer.from_hf_hub(pretrained_model_name_or_path)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                )
+                processor = AutoProcessor.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                )
             try:
                 from transformers import AutoImageProcessor
 
