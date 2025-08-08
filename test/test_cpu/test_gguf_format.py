@@ -204,6 +204,7 @@ class TestGGUF(unittest.TestCase):
         print(self.tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
         shutil.rmtree("./saved", ignore_errors=True)
 
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
             model,
             self.tokenizer,
