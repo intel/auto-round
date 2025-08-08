@@ -1572,8 +1572,9 @@ class AutoRound(object):
                   otherwise returns False.
         """
         # Get the names of layers in quantization blocks
-        supported_types = self.supported_types + self.inner_supported_types
-        layers_in_blocks = get_layer_names_in_block(self.model, supported_types, self.quant_block_list)
+        supported_types = self.supported_types
+        layers_in_blocks = get_layer_names_in_block(self.model, supported_types,
+                                                    self.quant_block_list, self.inner_supported_types)
         ##process regex in layer_config
         all_supported_layer_names = []
         # List of configuration keys
@@ -1585,7 +1586,7 @@ class AutoRound(object):
                 if hasattr(m, key):
                     delattr(m, key)
 
-            if not isinstance(m, supported_types):
+            if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
                 continue
             all_supported_layer_names.append(n)
 
@@ -1613,7 +1614,7 @@ class AutoRound(object):
         for n, m in self.model.named_modules():
 
             # Skip unsupported types
-            if not isinstance(m, supported_types):
+            if not isinstance(m, supported_types) and m.__class__.__name__ not in self.inner_supported_types:
                 continue
 
             # If the layer is not in the config and is part of a quantization block, use default configuration
