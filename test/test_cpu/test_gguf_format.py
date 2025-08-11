@@ -54,7 +54,7 @@ class TestGGUF(unittest.TestCase):
     def test_q4_0(self):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
-            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int"
+            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int", nsamples=1
         )
         quantized_model_path = "./saved"
 
@@ -74,7 +74,7 @@ class TestGGUF(unittest.TestCase):
     def test_q4_1(self):
         bits, group_size, sym = 4, 32, False
         autoround = AutoRound(
-            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int"
+            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int", nsamples=1
         )
         quantized_model_path = "./saved"
 
@@ -100,6 +100,7 @@ class TestGGUF(unittest.TestCase):
             # group_size=group_size,
             # sym=sym,
             iters=1,
+            nsamples=1,
             # data_type="int"
         )
         quantized_model_path = "./saved"
@@ -122,6 +123,7 @@ class TestGGUF(unittest.TestCase):
             group_size=16,
             sym=True,
             iters=1,
+            nsamples=1,
             data_type="int_sym_dq",
             super_group_size=16,
             super_bits=6,
@@ -145,6 +147,7 @@ class TestGGUF(unittest.TestCase):
             group_size=32,
             sym=False,
             iters=1,
+            nsamples=1,
             data_type="int_asym_dq",
             super_group_size=8,
             super_bits=6,
@@ -168,6 +171,7 @@ class TestGGUF(unittest.TestCase):
             group_size=16,
             sym=True,
             iters=1,
+            nsamples=1,
             data_type="int_sym_dq",
             super_group_size=16,
             super_bits=8,
@@ -191,6 +195,7 @@ class TestGGUF(unittest.TestCase):
             group_size=16,
             sym=True,
             iters=0,
+            nsamples=8,
             data_type="rtn_int_sym_dq",
             super_group_size=16,
             super_bits=6,
@@ -212,6 +217,7 @@ class TestGGUF(unittest.TestCase):
             group_size=32,
             sym=True,
             iters=0,
+            nsamples=8,
             data_type="int_asym_dq",
             super_group_size=8,
             super_bits=6,
@@ -250,6 +256,7 @@ class TestGGUF(unittest.TestCase):
             layer_config=layer_config,
             iters=0,
             seqlen=1,
+            nsamples=8,
             dataset=self.llm_dataloader,
             disable_opt_rtn=True,
         )
@@ -305,6 +312,7 @@ class TestGGUF(unittest.TestCase):
             processor=processor,
             image_processor=image_processor,
             iters=0,
+            nsamples=8,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")

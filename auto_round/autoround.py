@@ -154,40 +154,45 @@ class AutoRound(object):
         batch_size: int = 8,
         amp: bool = True,
         device: Union[str, torch.device, int] = 0,
-        lr_scheduler=None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        enable_quanted_input: bool = True,
         enable_minmax_tuning: bool = True,
         lr: float = None,
         minmax_lr: float = None,
         low_gpu_mem_usage: bool = False,
-        low_cpu_mem_usage: int = 0,
         iters: int = 200,
         seqlen: int = 2048,
         nsamples: int = 128,
-        sampler: str = "rand",
         seed: int = 42,
-        nblocks: int = 1,
         gradient_accumulate_steps: int = 1,
-        not_use_best_mse: bool = False,
-        dynamic_max_gap: int = -1,
         data_type: str = "int",
-        scale_dtype: Union[str, torch.dtype] = "fp16",
         act_bits: int = 16,
         act_group_size: int = None,
         act_sym: bool = None,
         act_data_type: str = None,
         act_dynamic: bool = True,
-        to_quant_block_names: Union[str, list] = None,
-        enable_norm_bias_tuning: bool = False,
         enable_torch_compile: bool = False,
         device_map: Union[str, dict] = None,
-        super_bits: int = None,
-        super_group_size: int = None,
         disable_opt_rtn: bool = False,
-        model_kwargs: dict = None,
         **kwargs,
     ):
+        ## to ensure backward compatibility, move infrequently used arguments to kwargs arguments.
+        ## major version releases may be pack them  with extra configuration options
+        lr_scheduler = kwargs.pop("lr_scheduler", None)
+        sampler = kwargs.pop("sampler", "rand")
+        not_use_best_mse = kwargs.pop("not_use_best_mse", False)
+        dynamic_max_gap = kwargs.pop("dynamic_max_gap", -1)
+        super_group_size = kwargs.pop("super_group_size", None)
+        super_bits = kwargs.pop("super_bits", None)
+        scale_dtype = kwargs.pop("scale_dtype", "fp16")
+        nblocks = kwargs.pop("nblocks", 1)
+        low_cpu_mem_usage = kwargs.pop("low_cpu_mem_usage", False)
+        to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
+        enable_norm_bias_tuning: bool = kwargs.pop("enable_norm_bias_tuning", False)
+        enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
+        disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
+        if not disable_deterministic_algorithms:
+            torch.use_deterministic_algorithms(True, warn_only=False)
+
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
         if kwargs:
             logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
