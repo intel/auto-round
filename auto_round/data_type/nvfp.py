@@ -19,19 +19,19 @@ from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import logger, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 
 
-# taken from
-# https://github.com/vllm-project/vllm/blob/ebb554cdb7cd9cc54b2feec20c45ab9cd9067d52/tests/kernels/test_nvfp4_quant.py
+# taken from https://github.com/Anonymous1252022/fp4-all-the-way/blob/d2f9274206c20d829b18c9665ff93694b5a266f5/experimental/fp4.py
 def cast_to_fp4(x):
     sign = torch.sign(x)
     x = torch.abs(x)
-    x[(x >= 0.0) & (x <= 0.25)] = 0.0
-    x[(x > 0.25) & (x < 0.75)] = 0.5
-    x[(x >= 0.75) & (x <= 1.25)] = 1.0
-    x[(x > 1.25) & (x < 1.75)] = 1.5
-    x[(x >= 1.75) & (x <= 2.5)] = 2.0
-    x[(x > 2.5) & (x < 3.5)] = 3.0
-    x[(x >= 3.5) & (x <= 5.0)] = 4.0
-    x[x > 5.0] = 6.0
+
+    step1 = torch.round(2.0 * x) / 2.0
+    step2 = torch.round(x)
+    step3 = 2.0 * torch.round(x / 2.0)
+
+    mask1 = x < 2.0
+    mask2 = x < 4.0
+    x = step1 * mask1 + step2 * (~mask1) * mask2 + step3 * (~mask1) * (~mask2)
+
     return x * sign
 
 
