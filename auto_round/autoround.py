@@ -76,6 +76,7 @@ from auto_round.utils import (
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
+
 class AutoRound(object):
     """For more information, please refer to Cheng, Wenhua, et al. "Optimize weight rounding via signed gradient descent
      for the quantization of llms." arXiv preprint arXiv:2309.05516 (2023).
@@ -141,6 +142,7 @@ class AutoRound(object):
     Returns:
         The quantized model.
     """
+
     def __init__(
         self,
         model: Union[torch.nn.Module, str],
@@ -175,7 +177,7 @@ class AutoRound(object):
     ):
         ## to ensure backward compatibility, move infrequently used arguments to kwargs arguments.
         ## major version releases may be pack them  with extra configuration options
-        lr_scheduler = kwargs.pop("lr_scheduler",None)
+        lr_scheduler = kwargs.pop("lr_scheduler", None)
         sampler = kwargs.pop("sampler", "rand")
         not_use_best_mse = kwargs.pop("not_use_best_mse", False)
         dynamic_max_gap = kwargs.pop("dynamic_max_gap", 1)
@@ -183,7 +185,7 @@ class AutoRound(object):
         super_bits = kwargs.pop("super_bits", None)
         scale_dtype = kwargs.pop("scale_dtype", "fp16")
         nblocks = kwargs.pop("nblocks", 1)
-        low_cpu_mem_usage= kwargs.pop("low_cpu_mem_usage", False)
+        low_cpu_mem_usage = kwargs.pop("low_cpu_mem_usage", False)
         to_quant_block_names: Union[str, list] = kwargs.pop("to_quant_block_names", None)
         enable_norm_bias_tuning: bool = kwargs.pop("enable_norm_bias_tuning", False)
         enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
