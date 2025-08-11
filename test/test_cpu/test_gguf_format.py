@@ -54,7 +54,7 @@ class TestGGUF(unittest.TestCase):
     def test_q4_0(self):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
-            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int",nsamples=1
+            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int", nsamples=1
         )
         quantized_model_path = "./saved"
 
@@ -74,7 +74,7 @@ class TestGGUF(unittest.TestCase):
     def test_q4_1(self):
         bits, group_size, sym = 4, 32, False
         autoround = AutoRound(
-            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int",nsamples=1
+            self.model, self.tokenizer, bits=bits, group_size=group_size, sym=sym, iters=1, data_type="int", nsamples=1
         )
         quantized_model_path = "./saved"
 
