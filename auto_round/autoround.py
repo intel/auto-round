@@ -173,7 +173,7 @@ class AutoRound(object):
         disable_opt_rtn: bool = False,
         **kwargs,
     ):
-        ## to ensure backward compatibility, move args rarely used to kwwargs
+        ## to ensure backward compatibility, move infrequently used arguments to kwargs arguments.
         ## major version releases may be pack them  with extra configuration options
         lr_scheduler = kwargs.pop("lr_scheduler",None)
         sampler = kwargs.pop("sampler", "rand")
