@@ -34,9 +34,9 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
-import json
 import sys
 from functools import partial
 from itertools import chain
