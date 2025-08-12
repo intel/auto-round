@@ -1174,11 +1174,13 @@ def get_layer_features(layer):
         return layer.num_embeddings, layer.embedding_dim
     return None, None  # Unsupported layer type
 
+
 def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
     from auto_round.export.export_to_gguf.convert_hf_to_gguf import (
         ModelBase,
         get_model_architecture,
     )
+
     is_mistral_format = False
 
     hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
@@ -1406,7 +1408,7 @@ def llm_load_model(
             )
         else:
             try:
-                
+
                 model = model_cls.from_pretrained(
                     pretrained_model_name_or_path,
                     torch_dtype=torch_dtype,

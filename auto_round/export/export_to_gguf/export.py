@@ -28,9 +28,9 @@ from auto_round.utils import (
     clear_memory,
     flatten_list,
     get_block_names,
+    get_gguf_architecture,
     get_module,
     logger,
-    get_gguf_architecture
 )
 
 convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")
