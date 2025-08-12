@@ -671,9 +671,9 @@ class AutoRound(object):
                     )
                     format = "fake"
             else:
-                if not (format == "auto_round" or format == "auto_round:fp8"):
+                if not (format == "auto_round" or format == "auto_round:fp8" or format == "fake"):
                     logger.warning(
-                        f"Currently only support to export auto_round format for static W{self.bits}AFP8 model,"
+                        f"Currently only support to export auto_round or fake format for static W{self.bits}AFP8 model,"
                         " change format to auto_round"
                     )
                     format = "auto_round"
