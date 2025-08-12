@@ -27,6 +27,7 @@ from auto_round.inference.backend import (
     find_backend,
     get_highest_priority_backend,
     get_layer_backend,
+    is_weight_fp8_activation_static_fp8,
     process_requirement,
 )
 from auto_round.utils import (
@@ -61,7 +62,7 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
     try:  # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
     except:
-        modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert)
+        modules_to_not_convert = _get_modules_to_not_convert(model, modules_to_not_convert)
     if modules_to_not_convert:
         for layer_name in layer_names:
             if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
@@ -219,6 +220,7 @@ def get_layer_config(model, quantization_config):
             - group_size (int): Group size for weight quantization.
             - data_type (str, optional): Data type for quantization (default: "int").
             - sym (bool): Whether to use symmetric quantization.
+            - act_dynamic (bool, optional): Whether to use dynamic activation quantization (default: False).
             - quant_block_list (list, optional): Predefined list of blocks to quantize.
             - to_quant_block_names (list or str, optional): Blocks to quantize (if quant_block_list is None).
             - extra_config (dict, optional): Per-layer overrides for quantization settings.
@@ -231,13 +233,14 @@ def get_layer_config(model, quantization_config):
             - "group_size" (int): Group size for quantization.
             - "data_type" (str): Data type used for quantization.
             - "sym" (bool): Whether symmetric quantization is applied.
+            - "act_dynamic" (bool): Whether dynamic activation quantization is used.
             - "clip" (bool): Whether weight clipping is enabled.
     """
     bits = quantization_config.bits
     group_size = quantization_config.group_size
     data_type = getattr(quantization_config, "data_type", "int")  # Default to "int" if not specified
     sym = quantization_config.sym
-
+    act_dynamic = getattr(quantization_config, "act_dynamic", False)
     # Determine the quantization block list
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
     if quant_block_list is None:
@@ -290,11 +293,11 @@ def get_layer_config(model, quantization_config):
             "group_size": extra_config.get(layer_name, {}).get("group_size", group_size),
             "data_type": extra_config.get(layer_name, {}).get("data_type", data_type),
             "sym": extra_config.get(layer_name, {}).get("sym", sym),
+            "act_dynamic": extra_config.get(layer_name, {}).get("act_dynamic", act_dynamic),
             "clip": extra_config.get(layer_name, {}).get("clip", False),
         }
         for layer_name in layer_names
     }
-
     return layer_configs
 
 
@@ -415,7 +418,7 @@ def _import_exllamav2_kernels():
 
 def _create_quant_layer(layer, layer_backend, config, in_features, out_features):
     """Creates a quantized layer using the appropriate class."""
-    QuantLinear = dynamic_import_inference_linear(layer_backend, config["bits"], config["group_size"], config["sym"])
+    QuantLinear = dynamic_import_inference_linear(layer_backend, config)
     bias = layer.bias is not None
 
     # Special handling for AWQ layers
@@ -437,6 +440,8 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             out_features=out_features,
             bias=bias,
         )
+    elif is_weight_fp8_activation_static_fp8(config):
+        return QuantLinear.from_original(config, layer)
     # Default quantized layer creation
     try:
         return QuantLinear(
@@ -528,108 +533,6 @@ def post_init(model, used_backends):
             logger.warning("force model to bfloat16")
 
 
-
-def quant_tensor_with_scale(tensor, scale):
-    FULL_RANGE = torch.finfo(torch.float8_e4m3fn).max
-    qtensor = tensor / scale
-    cliped_qtensor = torch.clamp(qtensor, -FULL_RANGE, FULL_RANGE)
-    cliped_qtensor_fp8 = cliped_qtensor.to(torch.float8_e4m3fn)
-    return scale, cliped_qtensor_fp8
-
-
-class FP8QDQLinear(torch.nn.Module):
-    dtype = torch.bfloat16
-    fp8_dtype = torch.float8_e4m3fn
-
-    def __init__(
-        self, in_features: int, out_features: int, bias: bool = True, device=None
-    ):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.weight = nn.Parameter(
-            torch.empty(out_features, in_features, dtype=FP8QDQLinear.fp8_dtype),
-            requires_grad=True,
-        )
-        self.weight_scale = nn.Parameter(
-            torch.empty((out_features, 1), dtype=FP8QDQLinear.dtype),
-            requires_grad=False,
-        )
-        self.input_scale = nn.Parameter(
-            torch.empty((1, 1), dtype=FP8QDQLinear.dtype), requires_grad=False
-        )
-        if bias:
-            self.bias = nn.Parameter(torch.empty(out_features))
-        else:
-            self.register_parameter("bias", None)
-        self.pre_dequantized = False
-
-    def dequant_weight_online(self):
-        if self.pre_dequantized:
-            return self.weight
-        fp8_weight = self.weight
-        qdq_weight = fp8_weight.to(FP8QDQLinear.dtype) * self.weight_scale
-        return qdq_weight
-
-    def pre_dequantize(self):
-        if self.pre_dequantized:
-            return
-        dequant_weight = self.dequant_weight_online()
-        del self.weight
-        del self.weight_scale
-        self.weight = nn.Parameter(dequant_weight, requires_grad=False)
-        self.pre_dequantized = True
-
-    def qdq_input(self, bf16_input: torch.Tensor):
-        input_scale, input_fp8 = quant_tensor_with_scale(
-            bf16_input, self.input_scale.data
-        )
-        qdq_input_bf16 = input_fp8.to(FP8QDQLinear.dtype) * input_scale
-        return qdq_input_bf16
-
-    def forward(self, bf16_input: torch.Tensor) -> torch.Tensor:
-        qdq_input = self.qdq_input(bf16_input)
-        qdq_weight = self.dequant_weight_online()
-        out = torch.nn.functional.linear(qdq_input, qdq_weight, self.bias)
-        return out
-
-    @classmethod
-    def from_original(cls, config, original_layer):
-        """
-        Create an FP8QDQLinear layer from an original linear layer.
-        """
-        device = original_layer.weight.device
-        with torch.device(device):
-            qdq_linear = cls(
-                in_features=original_layer.in_features,
-                out_features=original_layer.out_features,
-                bias=original_layer.bias is not None,
-            )
-            return qdq_linear
-
-
-def _patching_mod(
-    mod, config, src_cls, dst_cls
-):
-    named_children_list = list(mod.named_children())
-    for name, layer in named_children_list:
-        if isinstance(layer, src_cls):
-            new_layer = dst_cls.from_original(config, layer)
-            setattr(mod, name, new_layer)
-            print(f"Patched {name} with {new_layer.__class__.__name__}")
-        elif isinstance(layer, nn.Module):
-            _patching_mod(layer, config, src_cls, dst_cls)
-    return mod
-
-
-def patching_model(model):
-    model = _patching_mod(model, None, torch.nn.Linear, FP8QDQLinear)
-    return model
-
-
-def is_weight_fp8_activation_static_fp8(quant_config):
-    return True
-
 def convert_hf_model(model: nn.Module, target_device="cpu"):
     """Converts the given model to an AutoRound model by replacing its layers with quantized layers.
 
@@ -651,9 +554,7 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
     """
 
     quantization_config = model.config.quantization_config
-    if is_weight_fp8_activation_static_fp8(quantization_config):
-        model = patching_model(model)
-        
+
     if hasattr(quantization_config, "desc_act") and quantization_config.desc_act:
         ##check static_group
         if (hasattr(quantization_config, "static_groups") and not quantization_config.static_groups) or (
@@ -694,7 +595,6 @@ def convert_hf_model(model: nn.Module, target_device="cpu"):
         backend = backend[len("auto_round:") :]
 
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, orig_backend)
-
     if backend == "auto" or backend == "":
         best_backend = get_highest_priority_backend(
             quantization_config.bits,

@@ -1,12 +1,13 @@
+import json
+import logging
 import os
+
+import safetensors
 import torch
 import tqdm
 from loguru import logger
-import logging
-import safetensors
 from safetensors import safe_open
 from safetensors.torch import save_file
-import json
 
 logging.basicConfig(level=logging.DEBUG)
 torch.set_grad_enabled(False)
@@ -42,20 +43,18 @@ torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 import numpy as np
 
-np.random.seed(seed)
+np.random.Generator(seed)
 
 
 # torch.use_deterministic_algorithms(True)
 def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
-    np.random.seed(worker_seed)
+    np.random.Generator(worker_seed)
     random.seed(worker_seed)
 
 
 g = torch.Generator()
 g.manual_seed(0)
-
-
 
 
 def pre_dequantize(model):
@@ -70,10 +69,15 @@ def pre_dequantize(model):
             logger.debug(f"Skipping {name} as it is not FP8QDQLinear")
 
 
-def qdq_eval(model_path, not_patch_lin=False):
-    import transformers
-    from transformers.modeling_utils import no_init_weights
+import torch
 
+
+@torch.no_grad()
+def qdq_eval(model_path, not_patch_lin=False):
+
+    import transformers
+
+    # from transformers.modeling_utils import no_init_weights
 
     model = transformers.AutoModelForCausalLM.from_pretrained(
         model_path,
@@ -86,14 +90,19 @@ def qdq_eval(model_path, not_patch_lin=False):
     model.to("cuda")
     import torch
 
-    model = torch.compile(model)
-    # pre_dequantize(model)
     with torch.device("cuda"):
+        from transformers import GenerationConfig
+
+        gen_config = GenerationConfig(use_cache=True, cache_implementation="static")
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
         prompt = "Hi, who"
         encode = tokenizer.encode(prompt, return_tensors="pt")
         with torch.no_grad():
-            output_tokens = model.generate(encode, max_length=100)
+            output_tokens = model.generate(
+                encode,
+                max_length=10,
+                #    generation_config=gen_config
+            )
             output = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
             logger.info(f"Prompt: {prompt}")
             logger.info(f"Output: {output}")
@@ -115,10 +124,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-m', "--qmodel_path", type=str, required=True)
-    parser.add_argument(
-        "--not_patch_lin", action="store_true", help="Measure float model"
-    )
+    parser.add_argument("-m", "--qmodel_path", type=str, required=True)
+    parser.add_argument("--not_patch_lin", action="store_true", help="Measure float model")
     args = parser.parse_args()
     qdq_eval(args.qmodel_path, not_patch_lin=args.not_patch_lin)
 
