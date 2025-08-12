@@ -4,8 +4,58 @@ from collections import UserDict, defaultdict
 import torch 
 from tqdm import tqdm
 
-from auto_round.utils import logger, get_module
+from auto_round.utils import logger
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+
+def get_module(model, key):
+    """Get module from model by key name.
+
+    Args:
+        model (torch.nn.Module): original model
+        key (str): module name to be replaced
+    """
+    module = model
+    name_list = key.split(".")
+    for name in name_list:
+        if hasattr(module, name):
+            module = getattr(module, name)
+        elif hasattr(module, "sq_linear"):  # for peft models
+            module = getattr(module, "sq_linear")
+            module = getattr(module, name)
+        elif hasattr(module, "orig_layer"):  # for peft models and auto alpha
+            module = getattr(module, "orig_layer")
+            module = getattr(module, name)
+        else:
+            module = module
+    return module
+
+def set_module(model, key, new_module):
+    """Set new module into model by key name.
+
+    Args:
+        model (torch.nn.Module): original model
+        key (str): module name to be replaced
+        new_module (torch.nn.Module): new module to be inserted
+    """
+    module = model
+    name_list = key.split(".")
+    for name in name_list[:-1]:
+        if hasattr(module, name):
+            module = getattr(module, name)
+        elif hasattr(module, ("sq_linear")):  # for peft models that Linears are contained in Linear
+            module = getattr(module, "sq_linear")
+            module = getattr(module, name)
+        elif hasattr(module, ("orig_layer")):  # for peft models and auto alpha
+            module = getattr(module, "orig_layer")
+            module = getattr(module, name)
+        else:
+            module = module
+
+    if hasattr(module, "sq_linear") and name_list[-1] != "sq_linear":  # for peft models
+        module = getattr(module, "sq_linear")
+    if hasattr(module, "orig_layer") and name_list[-1] != "orig_layer":  # for peft models and auto alpha
+        module = getattr(module, "orig_layer")
+    setattr(module, name_list[-1], new_module)
 
 def mul_scale(tensor, scale, group_size=-1):
     ori_shape = tensor.shape

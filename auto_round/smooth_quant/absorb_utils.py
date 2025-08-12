@@ -1,7 +1,7 @@
 #
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2023 Intel Corporation
+# Copyright (c) 2025 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 # limitations under the License.
 import torch
 
-from auto_round.utils import get_module
+from auto_round.smooth_quant.utils import get_module
 
 SUPPORTED_TORCH_MODULE = [
     "Linear",
@@ -36,11 +36,14 @@ SUPPORTED_TORCH_MODULE = [
 
 GET_ABSORB_LAYERS = {}
 
-def register_get_func(name):
-    """Class decorator to register a get_absorb_layers func
-    """
+def register_absorb_func(model_type):
     def register(func):
-        GET_ABSORB_LAYERS[name] = func 
+        if isinstance(model_type, list):
+            model_types = model_type
+        else:
+            model_types = [model_type]
+        for name in model_types:
+            GET_ABSORB_LAYERS[name] = func 
         return func
     return register
 
@@ -79,7 +82,7 @@ def remove_unsupported_layers(model, absorb_to_layer, no_absorb_layers):
             res[key] = absorb_to_layer[key]
     return res
 
-@register_get_func("opt")
+@register_absorb_func("opt")
 def get_opt_absorb_layers(model):
     model_layer_name = "model.decoder.layers"
     absorb_to_layer = {}
@@ -112,49 +115,49 @@ def get_opt_absorb_layers(model):
 
     return absorb_to_layer
 
-@register_get_func('llama')
-def get_llama_absorb_layers(model):
-    model_layer_name = "model.layers"
-    absorb_to_layer = {}
+# @register_absorb_func('llama')
+# def get_llama_absorb_layers(model):
+#     model_layer_name = "model.layers"
+#     absorb_to_layer = {}
 
-    for idx in range(len(model.model.layers)):
-        # attention input
-        absorb_to_layer[f"{model_layer_name}.{idx}.input_layernorm"] = [
-            f"{model_layer_name}.{idx}.self_attn.q_proj",
-            f"{model_layer_name}.{idx}.self_attn.k_proj",
-            f"{model_layer_name}.{idx}.self_attn.v_proj",
-        ]
+#     for idx in range(len(model.model.layers)):
+#         # attention input
+#         absorb_to_layer[f"{model_layer_name}.{idx}.input_layernorm"] = [
+#             f"{model_layer_name}.{idx}.self_attn.q_proj",
+#             f"{model_layer_name}.{idx}.self_attn.k_proj",
+#             f"{model_layer_name}.{idx}.self_attn.v_proj",
+#         ]
 
-        # attention out
-        module = model.model.layers[idx]
-        if hasattr(module.self_attn.v_proj, "orig_layer"):
-            v_proj_shape = module.self_attn.v_proj.orig_layer.weight.shape
-            o_proj_shape = module.self_attn.o_proj.orig_layer.weight.shape
-        else:
-            v_proj_shape = module.self_attn.v_proj.weight.shape
-            o_proj_shape = module.self_attn.o_proj.weight.shape
-        if v_proj_shape == o_proj_shape:
-            absorb_to_layer[f"{model_layer_name}.{idx}.v_proj"] = [
-                f"{model_layer_name}.{idx}.self_attn.o_proj",
-            ]
+#         # attention out
+#         module = model.model.layers[idx]
+#         if hasattr(module.self_attn.v_proj, "orig_layer"):
+#             v_proj_shape = module.self_attn.v_proj.orig_layer.weight.shape
+#             o_proj_shape = module.self_attn.o_proj.orig_layer.weight.shape
+#         else:
+#             v_proj_shape = module.self_attn.v_proj.weight.shape
+#             o_proj_shape = module.self_attn.o_proj.weight.shape
+#         if v_proj_shape == o_proj_shape:
+#             absorb_to_layer[f"{model_layer_name}.{idx}.v_proj"] = [
+#                 f"{model_layer_name}.{idx}.self_attn.o_proj",
+#             ]
         
-        # linear 1
-        absorb_to_layer[f"{model_layer_name}.{idx}.post_attention_layernorm"] = [
-            f"{model_layer_name}.{idx}.mlp.gate_proj",
-            f"{model_layer_name}.{idx}.mlp.up_proj",
-        ]
+#         # linear 1
+#         absorb_to_layer[f"{model_layer_name}.{idx}.post_attention_layernorm"] = [
+#             f"{model_layer_name}.{idx}.mlp.gate_proj",
+#             f"{model_layer_name}.{idx}.mlp.up_proj",
+#         ]
 
-        # linear 2
-        absorb_to_layer[f"{model_layer_name}.{idx}.mlp.up_proj"] = [
-            f"{model_layer_name}.{idx}.mlp.down_proj",
-        ]
+#         # linear 2
+#         absorb_to_layer[f"{model_layer_name}.{idx}.mlp.up_proj"] = [
+#             f"{model_layer_name}.{idx}.mlp.down_proj",
+#         ]
     
-    # final layer
-    # absorb_to_layer["model.norm"] = ['lm_head']
+#     # final layer
+#     # absorb_to_layer["model.norm"] = ['lm_head']
     
-    return absorb_to_layer
+#     return absorb_to_layer
 
-@register_get_func('mistral')
+@register_absorb_func('mistral')
 def get_mistral_absorb_layers(model):
     model_layer_name = "model.layers"
     absorb_to_layer = {}
@@ -189,7 +192,7 @@ def get_mistral_absorb_layers(model):
     
     return absorb_to_layer
 
-@register_get_func('mixtral')
+@register_absorb_func('mixtral')
 def get_mixtral_absorb_layers(model):
     model_layer_name = "model.layers"
     absorb_to_layer = {}
@@ -231,7 +234,7 @@ def get_mixtral_absorb_layers(model):
     return absorb_to_layer
 
 
-@register_get_func('bloom')
+@register_absorb_func('bloom')
 def get_bloom_absorb_layers(model):
     model_layer_name = "transformer.h"
     absorb_to_layer = {}
@@ -257,7 +260,7 @@ def get_bloom_absorb_layers(model):
     return absorb_to_layer
 
 
-@register_get_func('gptj')
+@register_absorb_func('gptj')
 def get_gptj_absorb_layers(model):
     model_layer_name = "transformer.h"
     absorb_to_layer = {}
@@ -285,7 +288,7 @@ def get_gptj_absorb_layers(model):
     
     return absorb_to_layer
 
-@register_get_func('phi3')
+@register_absorb_func('phi3')
 def get_phi3_absorb_layers(model):
     model_layer_name = "model.layers"
     absorb_to_layer = {}
@@ -316,7 +319,7 @@ def get_phi3_absorb_layers(model):
     return absorb_to_layer
 
 
-@register_get_func('qwen')
+@register_absorb_func('qwen')
 def get_qwen_absorb_layers(model):
     model_layer_name = "transformer.h"
     absorb_to_layer = {}
@@ -343,11 +346,12 @@ def get_qwen_absorb_layers(model):
     return absorb_to_layer
 
 
-@register_get_func('qwen2')
-@register_get_func('qwen3')
-def get_qwen2_absorb_layers(model):
+@register_absorb_func(["qwen2", "qwen3"])
+@register_absorb_func('llama')
+def get_defualt_absorb_layers(model):
     model_layer_name = "model.layers"
     absorb_to_layer = {}
+
     for idx in range(len(model.model.layers)):
         # attention input
         absorb_to_layer[f"{model_layer_name}.{idx}.input_layernorm"] = [
@@ -380,7 +384,7 @@ def get_qwen2_absorb_layers(model):
     return absorb_to_layer
 
 
-@register_get_func('qwen3_moe')
+@register_absorb_func('qwen3_moe')
 def get_qwen3_moe_absorb_layers(model):
     model_layer_name = "model.layers"
     absorb_to_layer = {}

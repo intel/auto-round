@@ -1,7 +1,8 @@
 import torch
 import numpy
 
-from auto_round.utils import logger, get_module, set_module
+from auto_round.utils import logger
+from auto_round.smooth_quant.utils import get_module, set_module
 from auto_round.smooth_quant.calibration import Calibration
 from auto_round.smooth_quant.utils import (
     model_forward_per_sample, reshape_in_channel_to_last, cal_scale, mul_scale, reshape_scale_as_weight)

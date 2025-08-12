@@ -28,7 +28,7 @@ import numpy
 from tqdm import tqdm
 
 from auto_round.smooth_quant.calibration import Calibration
-from auto_round.utils import set_module, get_module
+from auto_round.smooth_quant.utils import set_module, get_module
 from auto_round.smooth_quant.utils import (
     WrapperLayer, enough_memo_store_scale, reshape_scale_as_input, reshape_scale_as_weight, reshape_in_channel_to_last,
     cal_scale, forward_wrapper, mul_scale, quant_dequant)
@@ -505,7 +505,14 @@ class AutoAlpha:
                     position_ids = torch.arange(self.block_inputs[block_name].size()[1])
                     position_ids = position_ids.view(self.block_inputs[block_name].size()[0], -1)
                     position_ids = position_ids.to(self.device)
-                    output = block_copy(self.block_inputs[block_name], position_ids=position_ids)[0]
+                    if hasattr(self.model, "rotary_emb"):
+                        position_embeddings = self.model.rotary_emb(self.block_inputs[block_name], position_ids)
+                    else:
+                        position_embeddings = None
+                    output = block_copy(
+                        self.block_inputs[block_name],
+                        position_ids=position_ids,
+                        position_embeddings=position_embeddings)[0]
                 loss = self._get_auto_loss(fp32_output[block_name], output)
                 loss_alphas[block_name][str(alpha)] = loss
                 del block_copy  # release memory
@@ -626,7 +633,7 @@ class AutoAlpha:
                 self._update_scales_for_auto(absorb_input_scales, weight_scales)
                 # does not need to reset the weight_scale_dict, because use the weight of ori_layer, no change
                 # self.weight_scale_dict = {}
-            
+
             if total_cnt >= self.calib_sample_num:
                 break
 

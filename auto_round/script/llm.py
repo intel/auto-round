@@ -55,6 +55,8 @@ class BasicArgumentParser(argparse.ArgumentParser):
 
         self.add_argument("--eval", action="store_true", help="whether to use eval only mode")
 
+        self.add_argument("--sq", action="store_true", help="whether to use smoothquant")
+
         self.add_argument("--bits", default=4, type=int, help="number of weight bits")
 
         self.add_argument("--eval_bs", default=None, type=int, help="batch size in evaluation")
@@ -491,6 +493,30 @@ def tune(args):
 
     enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
 
+    # sq
+    if args.sq:
+        from auto_round.calib_dataset import get_dataloader
+        dataloader = get_dataloader(tokenizer, args.seqlen, bs=8, nsamples=args.nsamples)
+        auto_alpha_args={
+                    "init_alpha": 0.5,
+                    "alpha_min": 0.1,
+                    "alpha_max": 1.0,
+                    "alpha_step": 0.1,
+                    "shared_criterion": "mean",
+                    "n_samples": 512,  ##512 for cuda, 128 for cpu?
+                    # "do_blockwise": True
+                }
+        from auto_round.smooth_quant import SmoothQuant
+        model = model.to(device_str)
+        sq = SmoothQuant(model, dataloader, device=model.device, group_size=-1)
+        model = sq.transform_model(
+            alpha=0.5,
+            # alpha="auto",
+            auto_alpha_args=auto_alpha_args,
+            folding=True,
+            op_types=[torch.nn.Linear, torch.nn.Conv2d],
+            calib_iter=100)
+
     autoround = round(
         model,
         tokenizer,
@@ -719,6 +745,7 @@ def eval(args):
             if file.endswith(".gguf"):
                 is_gguf_file = True
                 gguf_file = file
+        model = os.path.dirname(args.model)
     eval_model_dtype = get_model_dtype(args.eval_model_dtype)
     if is_gguf_file:
         import torch
