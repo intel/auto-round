@@ -41,14 +41,16 @@ if TYPE_CHECKING:
 
 if "NO_LOCAL_GGUF" not in os.environ:
     sys.path.insert(1, str(Path(__file__).parent / "gguf-py"))
-import gguf
-from gguf.vocab import MistralTokenizerType, MistralVocab
-from mistral_common.tokens.tokenizers.base import TokenizerVersion
-from mistral_common.tokens.tokenizers.multimodal import DATASET_MEAN, DATASET_STD
+from auto_round.utils import LazyImport
+gguf = LazyImport("gguf")
+MistralTokenizerType = LazyImport("gguf.vocab.MistralTokenizerType")
+MistralVocab = LazyImport("gguf.vocab.MistralVocab")
+from mistral_common.tokens.tokenizers.base import TokenizerVersion  # pylint: disable=E0401
+from mistral_common.tokens.tokenizers.multimodal import DATASET_MEAN, DATASET_STD  # pylint: disable=E0401
 from mistral_common.tokens.tokenizers.sentencepiece import (
     SentencePieceTokenizer,
-)
-from mistral_common.tokens.tokenizers.tekken import Tekkenizer
+)  # pylint: disable=E0401
+from mistral_common.tokens.tokenizers.tekken import Tekkenizer  # pylint: disable=E0401
 
 logger = logging.getLogger("hf-to-gguf")
 
@@ -193,7 +195,7 @@ class ModelBase:
             return None
         raise KeyError(f"could not find any of: {keys}")
 
-    def get_tensors(self) -> Iterator[tuple[str, Tensor]]:
+    def get_tensors(self) -> Iterator[tuple[str, Tensor]]:  # pylint: disable=E0202
         tensor_names_from_parts: set[str] = set()
 
         if not self.is_mistral_format:
@@ -723,7 +725,8 @@ class TextModel(ModelBase):
                         token = tokenizer.decode(tokenizer.encode(token, add_special_tokens=False))
                         if previous_token != token:
                             logger.info(
-                                f"{repr(previous_token)} is encoded and decoded back to {repr(token)} using AutoTokenizer"
+                                f"{repr(previous_token)} is encoded and decoded back to "
+                                f"{repr(token)} using AutoTokenizer"
                             )
 
                     if added_tokens_decoder[i].special or self.does_token_look_special(token):
@@ -749,7 +752,7 @@ class TextModel(ModelBase):
         # we will use this unique identifier to write a "tokenizer.ggml.pre" entry in the GGUF file which we can
         # use in llama.cpp to implement the same pre-tokenizer
 
-        chktxt = "\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български ''''''```````\"\"\"\"......!!!!!!?????? I've been 'told he's there, 'RE you sure? 'M not sure I'll make it, 'D you like some tea? We'Ve a'lL"
+        chktxt = "\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български ''''''```````\"\"\"\"......!!!!!!?????? I've been 'told he's there, 'RE you sure? 'M not sure I'll make it, 'D you like some tea? We'Ve a'lL" # pylint: disable=C0301
 
         chktok = tokenizer.encode(chktxt)
         chkhsh = sha256(str(chktok).encode()).hexdigest()
@@ -1442,9 +1445,6 @@ class GPTNeoXModel(TextModel):
         tensors: list[tuple[str, Tensor]] = []
 
         if re.match(r"gpt_neox\.layers\.\d+\.attention\.query_key_value\.weight", name):
-            # Map bloom-style qkv_linear to gpt-style qkv_linear
-            # bloom: https://github.com/huggingface/transformers/blob/main/src/transformers/models/bloom/modeling_bloom.py#L238-L252  # noqa
-            # gpt-2: https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py#L312  # noqa
             qkv_weights = data_torch.reshape((n_head, 3, n_embed // n_head, n_embed))
             data_torch = torch.cat(
                 (
@@ -1600,8 +1600,6 @@ class OrionModel(TextModel):
         self.gguf_writer.add_feed_forward_length(self.hparams["intermediate_size"])
         self.gguf_writer.add_head_count(head_count)
         self.gguf_writer.add_head_count_kv(head_count_kv)
-        # note: config provides rms norm but it is actually layer norm
-        # ref:  https://huggingface.co/OrionStarAI/Orion-14B-Chat/blob/276a17221ce42beb45f66fac657a41540e71f4f5/modeling_orion.py#L570-L571
         self.gguf_writer.add_layer_norm_eps(self.hparams["rms_norm_eps"])
 
 
@@ -2074,7 +2072,8 @@ class LlamaModel(TextModel):
             self.gguf_writer.add_token_merges(vocab.extract_vocab_merges_from_model())
 
         logger.info(
-            f"Setting bos, eos, unk and pad token IDs to {vocab.bos_id}, {vocab.eos_id}, {vocab.unk_id}, {vocab.pad_id}."
+            f"Setting bos, eos, unk and pad token IDs to {vocab.bos_id}, {vocab.eos_id}, "
+            f"{vocab.unk_id}, {vocab.pad_id}."
         )
 
         self.gguf_writer.add_bos_token_id(vocab.bos_id)
@@ -2692,9 +2691,6 @@ class BitnetModel(TextModel):
         weight = weight.float()
         scale = weight.abs().mean().clamp(min=1e-5)
         iscale = 1 / scale
-        # TODO: multiply by the scale directly instead of inverting it twice
-        # (this is also unnecessarily doubly inverted upstream)
-        # ref: https://huggingface.co/1bitLLM/bitnet_b1_58-3B/blob/af89e318d78a70802061246bf037199d2fb97020/utils_quant.py#L10
         result = (weight * iscale).round().clamp(-1, 1) / iscale
         return result.type(dtype)
 
@@ -3793,7 +3789,8 @@ class Qwen3MoeModel(Qwen2MoeModel):
                         token = tokenizer.decode(tokenizer.encode(token, add_special_tokens=False))
                         if previous_token != token:
                             logger.info(
-                                f"{repr(previous_token)} is encoded and decoded back to {repr(token)} using AutoTokenizer"
+                                f"{repr(previous_token)} is encoded and decoded back to {repr(token)} "
+                                "using AutoTokenizer"
                             )
 
                     if added_tokens_decoder[i].special or self.does_token_look_special(token):
@@ -3982,7 +3979,8 @@ class Phi3MiniModel(TextModel):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} '
+                                f'-> {token.decode("utf-8")!r}'
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -4064,7 +4062,8 @@ class Phi3MiniModel(TextModel):
 
         if len(long_factors) != len(short_factors) or len(long_factors) != rope_dims / 2:
             raise ValueError(
-                f"The length of rope long and short factors must be {rope_dims / 2}. long_factors = {len(long_factors)}, short_factors = {len(short_factors)}."
+                f"The length of rope long and short factors must be {rope_dims / 2}. "
+                f"long_factors = {len(long_factors)}, short_factors = {len(short_factors)}."
             )
 
         yield (
@@ -4477,7 +4476,8 @@ class InternLM2Model(TextModel):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} '
+                                f'-> {token.decode("utf-8")!r}'
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -4499,7 +4499,8 @@ class InternLM2Model(TextModel):
                     if toktypes[token_id] != SentencePieceTokenTypes.UNUSED:
                         if tokens[token_id] != token:
                             logger.warning(
-                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r} -> {token.decode("utf-8")!r}'
+                                f'replacing token {token_id}: {tokens[token_id].decode("utf-8")!r}'
+                                f' -> {token.decode("utf-8")!r}'
                             )
                     tokens[token_id] = token
                     scores[token_id] = -1000.0
@@ -5147,7 +5148,6 @@ class Gemma2Model(TextModel):
             logger.debug(f"Skipping get tensor {name!r} in safetensors so that convert can end normally.")
             return []
 
-        # ref: https://github.com/huggingface/transformers/blob/fc37f38915372c15992b540dfcbbe00a916d4fc6/src/transformers/models/gemma/modeling_gemma.py#L89
         if name.endswith("norm.weight"):
             data_torch = data_torch + 1
 
@@ -5931,9 +5931,6 @@ class JambaModel(TextModel):
         d_conv = self.find_hparam(["mamba_d_conv"], optional=True) or 4
         d_inner = self.hparams["mamba_expand"] * d_model
         d_state = self.find_hparam(["mamba_d_state"], optional=True) or 16
-        # ceiling division
-        # ref: https://stackoverflow.com/a/17511341/22827863
-        # ref: https://github.com/state-spaces/mamba/blob/ce59daea3a090d011d6476c6e5b97f6d58ddad8b/mamba_ssm/modules/mamba_simple.py#L58
         dt_rank = self.find_hparam(["mamba_dt_rank"], optional=True) or -(d_model // -16)
         rms_norm_eps = self.find_hparam(["layer_norm_epsilon", "rms_norm_eps"], optional=True) or 1e-6
         n_kv_head = self.hparams["num_key_value_heads"]
@@ -6319,7 +6316,8 @@ class ArcticModel(TextModel):
                             token_score = 0.0
 
                         logger.info(
-                            f"Setting added token {token_id} to '{token_content}' (type: {token_type}, score: {token_score:.2f})"
+                            f"Setting added token {token_id} to '{token_content}' "
+                            "(type: {token_type}, score: {token_score:.2f})"
                         )
                         tokens[token_id] = token_content.encode("utf-8")
                         toktypes[token_id] = token_type
@@ -6849,10 +6847,6 @@ class T5Model(TextModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
 
-        # T5 based models contain shared token embeddings tensors saved randomly as either "encoder.embed_tokens.weight",
-        # "decoder.embed_tokens.weight" or "shared.weight" tensor. In some models there are even multiple of them stored
-        # in the safetensors files. We use the first tensor from these three as the token embeddings for both encoder
-        # and decoder and ignore the remaining ones.
         if name in ["decoder.embed_tokens.weight", "encoder.embed_tokens.weight", "shared.weight"]:
             if not self.shared_token_embeddings_found:
                 name = "shared.weight"
@@ -6985,10 +6979,6 @@ class T5EncoderModel(TextModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         del bid  # unused
 
-        # T5 based models contain shared token embeddings tensors saved randomly as either "encoder.embed_tokens.weight",
-        # "decoder.embed_tokens.weight" or "shared.weight" tensor. In some models there are even multiple of them stored
-        # in the safetensors files. We use the first tensor from these three as the token embeddings for both encoder
-        # and decoder and ignore the remaining ones.
         if name in ["decoder.embed_tokens.weight", "encoder.embed_tokens.weight", "shared.weight"]:
             if not self.shared_token_embeddings_found:
                 name = "shared.weight"
@@ -8213,7 +8203,6 @@ class HunYuanMoEModel(TextModel):
             self.gguf_writer.add_rope_scaling_orig_ctx_len(256 * 1024)  # 256k context length
             self.gguf_writer.add_context_length(256 * 1024)  # 256k context length
 
-            # if any of our assumptions about the values are wrong, something has changed and this may need to be updated
             assert (
                 alpha == 1000
                 and base == 10000.0
@@ -8346,7 +8335,6 @@ class HunYuanModel(TextModel):
             self.gguf_writer.add_rope_scaling_orig_ctx_len(256 * 1024)  # 256k context length
             self.gguf_writer.add_context_length(256 * 1024)  # 256k context length
 
-            # if any of our assumptions about the values are wrong, something has changed and this may need to be updated
             assert base == 10000.0 and self.hparams["max_position_embeddings"] in [
                 32 * 1024,
                 256 * 1024,

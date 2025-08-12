@@ -1248,12 +1248,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
             if "convert_hf_to_gguf" in str(e):
                 logger.warning("GGUF export dependency file is not found, download from github.")
                 redownload = True
-            else:
-                raise ImportError(
-                    "Please use the latest gguf-py, you can use the following command to install it:\n"
-                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
-                )
-        except:
+        except AttributeError as e:
             raise ImportError(
                 "Please use the latest gguf-py, you can use the following command to install it:\n"
                 "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
