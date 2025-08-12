@@ -477,8 +477,6 @@ def infer_target_device(device_map=None):
 
 
 def post_init(model, used_backends):
-    if is_weight_fp8_activation_static_fp8(model.config.quantization_config):
-        return
     need_autogptq_init = False
     need_gptqmodel_init = False
     need_ipex_itrex_init = False
