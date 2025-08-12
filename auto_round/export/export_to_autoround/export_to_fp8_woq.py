@@ -133,7 +133,7 @@ class WeightFP8ActFP8StaticQuantLinear(torch.nn.Module):
     @classmethod
     def from_original(cls, config, original_layer):
         """
-        Create an FP8WOQLinear layer from an original linear layer.
+        Create an WeightFP8ActFP8StaticQuantLinear layer from an original linear layer.
         """
         device = original_layer.weight.device
         with torch.device(device):
@@ -165,6 +165,7 @@ class WeightFP8ActFP8StaticQuantLinear(torch.nn.Module):
         qdq_input_bf16 = input_fp8.to(self.dtype) * input_scale
         return qdq_input_bf16
 
+    @torch.no_grad()
     def forward(self, bf16_input: torch.Tensor) -> torch.Tensor:
         qdq_input = self.qdq_input(bf16_input)
         qdq_weight = self.dequant_weight_online()
