@@ -74,7 +74,6 @@ def wrapper_model_instance(model_instance, model, layer_config, low_cpu_mem_usag
     model_instance.layer_config = layer_config
     model_instance.low_cpu_mem_usage = _need_low_cpu_mem(low_cpu_mem_usage)
 
-    model_instance.load_hparams = load_hparams
     model_instance.get_tensors = partial(get_tensors, model_instance)
     model_instance.prepare_tensors = partial(prepare_tensors, model_instance)
 
@@ -545,22 +544,3 @@ def prepare_tensors(cls):
                 if cls.model_arch == gguf.MODEL_ARCH.LLAMA and "embed_tokens.weight" in weight_name:
                     continue
                 clean_module_parameter(module, weight_name.split(".")[-1])
-
-
-def load_hparams(dir_model: Path):
-    try:
-        # for security reason, we don't allow loading remote code by default
-        # if a model need remote code, we will fallback to config.json
-        config = AutoConfig.from_pretrained(dir_model, trust_remote_code=False).to_dict()
-    except Exception as e:
-        logger.warning(f"Failed to load model config from {dir_model}: {e}")
-        logger.warning("Trying to load config.json instead")
-        with open(dir_model / "config.json", "r", encoding="utf-8") as f:
-            config = json.load(f)
-    if "llm_config" in config:
-        # rename for InternVL
-        config["text_config"] = config["llm_config"]
-    if "thinker_config" in config:
-        # rename for Qwen2.5-Omni
-        config["text_config"] = config["thinker_config"]["text_config"]
-    return config

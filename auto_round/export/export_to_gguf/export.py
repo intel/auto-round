@@ -30,6 +30,7 @@ from auto_round.utils import (
     get_block_names,
     get_module,
     logger,
+    get_gguf_architecture
 )
 
 convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")
@@ -73,17 +74,7 @@ def create_model_class(
 ):
     tmp_work_dir = Path(os.path.join(output_dir, TMP_DIR_NAME))
     with torch.inference_mode():
-        hparams = convert_hf_to_gguf.ModelBase.load_hparams(tmp_work_dir)
-        model_architecture = convert_hf_to_gguf.get_model_architecture(hparams=hparams, model_type=model_type)
-        # if "architectures" in hparams:
-        #     model_architecture = hparams["architectures"][0]
-        # else:
-        #     model_architecture = type(model).__name__
-        #     if model_architecture not in ModelBase._model_classes:
-        #         if model_architecture.replace("CausalLM", "ConditionalGeneration") in ModelBase._model_classes:
-        #             model_architecture = model_architecture.replace("CausalLM", "ConditionalGeneration")
-        #         elif model_architecture.replace("ConditionalGeneration", "CausalLM") in ModelBase._model_classes:
-        #             model_architecture = model_architecture.replace("ConditionalGeneration", "CausalLM")
+        model_architecture = get_gguf_architecture(tmp_work_dir, model_type=model_type)
         try:
             model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(
                 model_architecture, model_type=model_type
@@ -91,7 +82,6 @@ def create_model_class(
         except NotImplementedError:
             logger.error(f"Model {model_architecture} is not supported to export gguf format.")
             sys.exit(1)
-        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(model_architecture, model_type=model_type)
         model_name = model.name_or_path.split("/")
         if len(model_name[-1]) == 0:
             model_name = model_name[-2]
