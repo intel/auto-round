@@ -460,11 +460,24 @@ def initialize_quantized_kv_cache(module: Module):
     logger.trace(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
 
 
-def is_attention_module(module: Module):
+def is_stand_attention_module(module: Module):
     # FIXME: Handle this better.
     return "attention" in module.__class__.__name__.lower() and (
         hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
     )
+
+
+def is_ds_attention_module(module: Module):
+    # FIXME: Handle this better.
+    return "attention" in module.__class__.__name__.lower() and (
+        hasattr(module, "kv_a_proj_with_mqa")
+        or hasattr(module, "kv_b_proj")
+        or hasattr(module, "q_a_proj ")
+    )
+
+
+def is_attention_module(module: Module):
+    return any([is_stand_attention_module(module), is_ds_attention_module(module)])
 
 
 def calibrate_kv_cache_input_hook(
@@ -493,7 +506,9 @@ def update_parameter_data(module, new_val, name: str):
         if isinstance(param, torch.nn.Parameter):
             param.data = new_val
         else:
-            module.register_parameter(name, torch.nn.Parameter(new_val))
+            module.register_parameter(
+                name, torch.nn.Parameter(new_val, requires_grad=False)
+            )
     else:
         logger.warning(
             "Parameter %s not found in module %s, creating new parameter."

@@ -24,7 +24,7 @@ SKIP_WEIGHT_LST = {
     "model.norm",
     "layernorm",
     "e_score_correction_bias",
-    # "lm_head.weight",
+    "lm_head.weight",
     "embed_tokens",
     "mlp.gate.weight",  # mlp.gate is not linear
 }
@@ -100,14 +100,14 @@ def quant_tensor_with_scale(tensor, scale):
 
 
 # Adapted from https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/1d044fd82b15f1cedb197a288e50cc96a2c27205/inference/model.py#L91-L108
-class FP8QDQLinear(torch.nn.Linear):
+class FP8QDQLinear(torch.nn.Module):
     dtype = torch.bfloat16
     fp8_dtype = torch.float8_e4m3fn
 
     def __init__(
         self, in_features: int, out_features: int, bias: bool = True, device=None
     ):
-        super().__init__(in_features, out_features, bias=bias)
+        super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.weight = nn.Parameter(
@@ -164,6 +164,17 @@ class FP8QDQLinear(torch.nn.Linear):
         out = torch.nn.functional.linear(qdq_input, qdq_weight, self.bias)
         return out
 
+    @classmethod
+    def from_original(cls, config, linear: nn.Linear):
+        """
+        """
+        qdq_linear = cls(linear.in_features, linear.out_features, bias=True if linear.bias is not None else False)
+        qdq_linear.to(torch.bfloat16)
+        # qdq_linear.weight.data = qdq_linear.weight.data.to(linear.weight.dtype)
+        qdq_linear.weight.data = linear.weight.data
+        if linear.bias is not None:
+            qdq_linear.bias = linear.bias
+        return qdq_linear
 
 def patch_lin():
     logger.warning("Patching torch.nn.Linear to FP8QDQLinear")
@@ -182,12 +193,52 @@ def pre_dequantize(model):
             logger.debug(f"Skipping {name} as it is not FP8QDQLinear")
 
 
+def _replace_mod(
+    mod, config, src_cls, dst_cls
+):
+    named_children_list = list(mod.named_children())
+    for name, layer in named_children_list:
+        if "lm_head" in name or layer.__class__.__name__ == "FP8QDQLinear":
+            continue
+        if isinstance(layer, src_cls):
+            # logger.debug(f"Replacing {name} with {dst_cls.__name__}")
+            new_layer = dst_cls.from_original(config, layer)
+            setattr(mod, name, new_layer)
+            # logger.trace(f"Patched {name} with {new_layer.__class__.__name__}")
+        elif isinstance(layer, nn.Module):
+            _replace_mod(layer, config, src_cls, dst_cls)
+    return mod
+
+
+def load_state_dict(model_path):
+    # get all safetensors files in the model path
+    state_dict = {}
+    for root, _, files in os.walk(model_path):
+        for file in files:
+            if file.endswith(".safetensors"):
+                file_path = os.path.join(root, file)
+                with safe_open(file_path, framework="pt") as f:
+                    for key in f.keys():
+                        state_dict[key] = f.get_tensor(key)
+    return state_dict
+
+
+
+def patching_mod(mod):
+    config = mod.config
+    # mod = _replace_mod(
+    #     mod, config, GptOssTopKRouter, PatchedGptOssTopKRouter
+    # )
+    mod = _replace_mod(mod, config, torch.nn.Linear, FP8QDQLinear)
+    return mod
+
 def qdq_eval(model_path, not_patch_lin=False):
     import transformers
     from transformers.modeling_utils import no_init_weights
 
-    if not not_patch_lin:
-        patch_lin()
+    # if not not_patch_lin:
+    #     patch_lin()
+    
 
     def _patch__initialize_weights(self, module):
         module._is_hf_initialized = True
@@ -203,12 +254,16 @@ def qdq_eval(model_path, not_patch_lin=False):
             low_cpu_mem_usage=True,
             trust_remote_code=True,
         )
+        model = patching_mod(model)
+    state_dict = load_state_dict(model_path)
+    # assign state_dict to model
+    model.load_state_dict(state_dict, strict=True)
     logger.info(f"Patched model: {model}")
     model.eval()
     model.to("cuda")
     import torch
 
-    model = torch.compile(model)
+    # model = torch.compile(model)
     # pre_dequantize(model)
     with torch.device("cuda"):
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
@@ -226,8 +281,8 @@ def qdq_eval(model_path, not_patch_lin=False):
         model=model,
         device="cuda",
         tasks="gsm8k",
-        batch_size=32,
-        limit=128,
+        batch_size=4,
+        limit=32,
         # trust_remote_code=not args.disable_trust_remote_code,
         # eval_model_dtype=args.eval_model_dtype
     )

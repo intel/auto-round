@@ -34,8 +34,10 @@ MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"
 MODEL_ID = "/data5/yliu7/HF_HOME/meta-llama/Llama-3.2-1B-Instruct/"
-model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype="auto")
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+# MODEL_ID = "/data0/deepseek-ai/DeepSeek-V2-Lite"
+# MODEL_ID = "/data5/yliu7/HF_HOME/DeepSeek-R1-bf16/DeepSeek-R1-bf16"
+model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype="auto", trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
 
 model.eval()
 
@@ -65,10 +67,15 @@ assert model is not None, f"Expected q_model to be not None"
 
 model.apply(freeze_module_quantization_)
 
+save_path = MODEL_ID.rstrip("/").split("/")[-1] + f"-fp8_kv"
+# model.cpu()
+autoround.save_quantized(save_path, format="autoround")
+breakpoint()
 for name, param in model.named_parameters():
     if "k_scale" in name or "v_scale" in name:
         print(f"{name}: {param.shape}, {param.dtype}, {param.item()}")
 
+# load saved 
 
 ###################
 

@@ -613,7 +613,10 @@ class AutoRound(object):
             sys.exit(-1)
 
         return format
-    def quantize_and_save(self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace=True, **kwargs):
+    def quantize_and_save(self, 
+                          output_dir: str = "tmp_autoround",
+    
+     format: str = "auto_round", inplace=True, **kwargs):
         """Quantizes the model and saves it in the specified format(s).
 
         This function checks the validity of the requested format(s), quantizes

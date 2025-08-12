@@ -229,13 +229,14 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round", 
         return model
     if os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
+
     if tokenizer is not None:
         tokenizer.save_pretrained(output_dir)
 
     if processor is not None:
         processor.save_pretrained(output_dir)
     if quantization_config.get("act_bits", 16) <= 8:
-        dtype = torch.bfloat16
+        dtype: torch.dtype = torch.bfloat16
     elif "awq" in quantization_config.get("packing_format", "auto_round:auto_gptq"):
         dtype = torch.float16  ## awq kernel only supports float16 on cuda
     else:

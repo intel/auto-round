@@ -774,6 +774,7 @@ def eval_task_by_task(
                     tasks=task,
                     batch_size=batch_size,
                     limit=limit,
+                    gen_kwargs="max_length=8192,max_gen_toks=2048"
                 )
                 break
             except Exception as e:
