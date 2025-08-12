@@ -93,7 +93,7 @@ def save_quantized_as_autoawq(output_dir, inplace=True, **kwargs):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
 
     logger.info("Saving quantized model to auto_awq format")
-    if tokenizer is not None and output_dir is not None:
+    if tokenizer is not None and hasattr(tokenizer, "save_pretrained") and output_dir is not None:
         tokenizer.save_pretrained(output_dir)
     if processor is not None and output_dir is not None:
         processor.save_pretrained(output_dir)
@@ -178,7 +178,12 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
     os.makedirs(save_dir, exist_ok=True)
-    model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    try:
+        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    except ValueError as e:
+        if hasattr(model, "generation_config"):
+            setattr(model.generation_config, "do_sample", True)
+        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
         with open(config_path, "r") as file:

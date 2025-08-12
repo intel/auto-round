@@ -15,7 +15,7 @@
 import os
 from typing import Optional, Union
 
-from lm_eval import simple_evaluate as lm_simple_evaluate
+from lm_eval import simple_evaluate as lm_simple_evaluate  # pylint: disable=E0611
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -53,7 +53,7 @@ def simple_evaluate(
     **kwargs
 ):
     try:
-        from auto_round import AutoRoundConfig
+        from transformers import AutoRoundConfig
     except:
         from auto_round.inference.auto_quantizer import AutoHfQuantizer
 
