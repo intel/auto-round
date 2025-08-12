@@ -42,14 +42,15 @@ if TYPE_CHECKING:
 if "NO_LOCAL_GGUF" not in os.environ:
     sys.path.insert(1, str(Path(__file__).parent / "gguf-py"))
 from auto_round.utils import LazyImport
+
 gguf = LazyImport("gguf")
 MistralTokenizerType = LazyImport("gguf.vocab.MistralTokenizerType")
 MistralVocab = LazyImport("gguf.vocab.MistralVocab")
 from mistral_common.tokens.tokenizers.base import TokenizerVersion  # pylint: disable=E0401
 from mistral_common.tokens.tokenizers.multimodal import DATASET_MEAN, DATASET_STD  # pylint: disable=E0401
-from mistral_common.tokens.tokenizers.sentencepiece import (
+from mistral_common.tokens.tokenizers.sentencepiece import (  # pylint: disable=E0401
     SentencePieceTokenizer,
-)  # pylint: disable=E0401
+)
 from mistral_common.tokens.tokenizers.tekken import Tekkenizer  # pylint: disable=E0401
 
 logger = logging.getLogger("hf-to-gguf")
@@ -752,7 +753,7 @@ class TextModel(ModelBase):
         # we will use this unique identifier to write a "tokenizer.ggml.pre" entry in the GGUF file which we can
         # use in llama.cpp to implement the same pre-tokenizer
 
-        chktxt = "\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български ''''''```````\"\"\"\"......!!!!!!?????? I've been 'told he's there, 'RE you sure? 'M not sure I'll make it, 'D you like some tea? We'Ve a'lL" # pylint: disable=C0301
+        chktxt = "\n \n\n \n\n\n \t \t\t \t\n  \n   \n    \n     \n🚀 (normal) 😶\u200d🌫️ (multiple emojis concatenated) ✅ 🦙🦙 3 33 333 3333 33333 333333 3333333 33333333 3.3 3..3 3...3 កាន់តែពិសេសអាច😁 ?我想在apple工作1314151天～ ------======= нещо на Български ''''''```````\"\"\"\"......!!!!!!?????? I've been 'told he's there, 'RE you sure? 'M not sure I'll make it, 'D you like some tea? We'Ve a'lL"  # pylint: disable=C0301
 
         chktok = tokenizer.encode(chktxt)
         chkhsh = sha256(str(chktok).encode()).hexdigest()
