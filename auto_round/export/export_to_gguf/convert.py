@@ -34,9 +34,10 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
+import json
+import sys
 from functools import partial
 from itertools import chain
 from pathlib import Path
@@ -62,7 +63,14 @@ def download_convert_file(redownload=False):
     gguf_export_dir = os.path.dirname(__file__)
     if redownload is False and FILE_NAME in os.listdir(gguf_export_dir):
         return
-    response = requests.get(CONVERT_URL)
+    try:
+        response = requests.get(CONVERT_URL)
+    except:
+        logger.error(
+            f"Fail to download the dependency file, please try downloading the convert_hf_to_gguf.py"
+            f" from https://github.com/ggml-org/llama.cpp manually and move it to {gguf_export_dir}."
+        )
+        sys.exit(-1)
     with open(os.path.join(gguf_export_dir, FILE_NAME), "w") as f:
         f.write(response.text)
 
