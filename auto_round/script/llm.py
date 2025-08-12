@@ -431,7 +431,7 @@ def tune(args):
     import torch
 
     if not args.disable_deterministic_algorithms:
-        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.use_deterministic_algorithms(True, warn_only=False)
         # logger.info("`torch.use_deterministic_algorithms` is enabled by default for reproducibility "
         #             "and can be disabled using the `--disable_deterministic_algorithms` argument.")
 
