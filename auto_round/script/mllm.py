@@ -328,6 +328,7 @@ def tune(args):
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
 
     import torch
+
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
@@ -599,4 +600,3 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-
