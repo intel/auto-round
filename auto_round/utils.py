@@ -1175,6 +1175,32 @@ def get_layer_features(layer):
     return None, None  # Unsupported layer type
 
 
+def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
+    from auto_round.export.export_to_gguf.convert_hf_to_gguf import (
+        ModelBase,
+        get_model_architecture,
+    )
+
+    is_mistral_format = False
+
+    hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+    if isinstance(hparams, dict):
+        tmp_model_type = hparams["model_type"]
+    else:
+        tmp_model_type = hparams.model_type
+    if "mistral" == tmp_model_type:
+        is_mistral_format = True
+        hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+    if not is_mistral_format:
+        model_class = get_model_architecture(hparams, model_type)
+    elif model_type == ModelType.MMPROJ:
+        assert hparams.get("vision_encoder") is not None, "This model does not support multimodal"
+        model_class = "PixtralModel"
+    else:
+        model_class = "MistralModel"
+    return model_class
+
+
 def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     import argparse
 
@@ -1211,8 +1237,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
                 model_path = args_or_ar.model.name_or_path
             if not os.path.isdir(model_path):
                 model_path = download_hf_model(model_path)
-            hparams = ModelBase.load_hparams(model_path)
-            model_architecture = get_model_architecture(hparams=hparams, model_type=ModelType.TEXT)
+            model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
             if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
                 logger.warning(
                     f"Current version of gguf export does not support for {model_architecture},"
@@ -1223,18 +1248,17 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
             if "convert_hf_to_gguf" in str(e):
                 logger.warning("GGUF export dependency file is not found, download from github.")
                 redownload = True
-            else:
-                raise ImportError(
-                    "Please use the latest gguf-py, you can use the following command to install it:\n"
-                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
-                )
+        except AttributeError as e:
+            raise ImportError(
+                "Please use the latest gguf-py, you can use the following command to install it:\n"
+                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+            )
         download_convert_file(redownload)
 
         try:
             from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
                 ModelBase,
                 ModelType,
-                get_model_architecture,
             )
         except ImportError as e:
             raise ImportError(
@@ -1247,13 +1271,12 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
             model_path = args_or_ar.model.name_or_path
         if not os.path.isdir(model_path):
             model_path = download_hf_model(model_path)
-        hparams = ModelBase.load_hparams(model_path)
-        model_architecture = get_model_architecture(hparams=hparams, model_type=ModelType.TEXT)
+        model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
         if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
             logger.error(f"Model {model_architecture} is not supported to export gguf format.")
             sys.exit(1)
 
-    pattern = re.compile("q\d_k")
+    pattern = re.compile(r"q\d_k")
     pre_dq_format = ""
     unsupport_list, reset_list = [], []
     for format in GGUF_CONFIG:
@@ -1274,7 +1297,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
                 if not hasattr(args_or_ar, k):
                     continue
                 if k == "data_type":
-                    if re.search("q\d_1", format) and len(formats) > 1:
+                    if re.search(r"q\d_1", format) and len(formats) > 1:
                         v = "int"
                 if k == "sym" and isinstance(args_or_ar, argparse.Namespace):
                     k = "asym"
@@ -1380,6 +1403,7 @@ def llm_load_model(
             )
         else:
             try:
+
                 model = model_cls.from_pretrained(
                     pretrained_model_name_or_path,
                     torch_dtype=torch_dtype,
@@ -1717,7 +1741,7 @@ def _use_more_bits(i_layer: int, n_layer: int):
 
 
 def _get_digital_in_layer_name(layer_name):
-    pattern = re.compile("([a-zA-Z]+\.){1,}(\d+)")
+    pattern = re.compile(r"([a-zA-Z]+\.){1,}(\d+)")
     res = re.search(pattern, layer_name)
     if res:
         return int(res[2])
