@@ -42,6 +42,7 @@ from auto_round.utils import (
     str2bool,
 )
 
+
 class BasicArgumentParser(argparse.ArgumentParser):
 
     def __init__(self, *args, **kwargs):
@@ -426,6 +427,7 @@ def tune(args):
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
 
     import torch
+
     if args.enable_torch_compile:
         logger.info(
             "`torch.compile` is enabled to reduce tuning costs. "
@@ -905,4 +907,3 @@ def eval_task_by_task(
         print(make_table(res_all))
 
     print("total eval time:", time.time() - st)
-

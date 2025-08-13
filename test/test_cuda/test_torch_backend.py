@@ -68,8 +68,15 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
         bits, group_size, sym = 4, 128, False
         autoround = AutoRound(
-            model, tokenizer, bits=bits, group_size=group_size, sym=sym,
-            iters=1, seqlen=2, dataset=self.llm_dataloader, disable_deterministic_algorithms=True
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=1,
+            seqlen=2,
+            dataset=self.llm_dataloader,
+            disable_deterministic_algorithms=True,
         )
         quantized_model_path = self.save_folder
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round:gptqmodel")
@@ -97,7 +104,6 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
         self.assertGreater(result["results"]["lambada_openai"]["acc,none"], 0.35)
         torch.cuda.empty_cache()
         shutil.rmtree("./saved", ignore_errors=True)
-
 
     def test_torch_4bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -133,4 +139,3 @@ class TestAutoRoundTorchBackend(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
