@@ -646,6 +646,8 @@ class AutoRound(object):
         Returns:
             bool: True if the format is supported, False otherwise.
         """
+        if format == "fake":
+            return format
         format = format.replace("q*_", f"q{self.bits}_")
         # only support to export afp8
         if self.act_bits <= 8:
@@ -671,7 +673,7 @@ class AutoRound(object):
                     )
                     format = "fake"
             else:
-                if not (format == "auto_round" or format == "auto_round:fp8" or format == "fake"):
+                if not (format == "auto_round" or format == "auto_round:fp8"):
                     logger.warning(
                         f"Currently only support to export auto_round or fake format for static W{self.bits}AFP8 model,"
                         " change format to auto_round"
