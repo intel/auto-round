@@ -332,7 +332,7 @@ def tune(args):
     import torch
 
     if not args.disable_deterministic_algorithms:
-        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.use_deterministic_algorithms(True, warn_only=False)
         print(
             "'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "
             "and can be turned off by setting the '--disable_deterministic_algorithms' parameter."

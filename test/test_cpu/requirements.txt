@@ -1,4 +1,5 @@
 addict
 modelscope
 gguf
+mistral_common
 torchvision

@@ -138,7 +138,7 @@ def save_quantized_as_autogptq(output_dir, inplace=True, backend="auto_gptq:exll
     image_processor = kwargs.get("image_processor", None)
     if output_dir is not None and os.path.exists(output_dir):
         logger.warning(f"{output_dir} already exists, this may cause model conflict")
-    if output_dir is not None and tokenizer is not None:
+    if output_dir is not None and tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
         tokenizer.save_pretrained(output_dir)
     if output_dir is not None and processor is not None:
         processor.save_pretrained(output_dir)
@@ -240,7 +240,12 @@ def save(
     """
     ##max_shard_size = "10000GB"  ## API of auto-gptq with marlin does not support shard size
     os.makedirs(save_dir, exist_ok=True)
-    model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    try:
+        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    except ValueError as e:
+        if hasattr(model, "generation_config"):
+            setattr(model.generation_config, "do_sample", True)
+        model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
         with open(config_path, "r") as file:

@@ -71,6 +71,11 @@ SUPPORTED_FORMATS = SupportedFormats()
 
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
 
+##changed to str as it relies triton or others lib to load this
+INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear",)
+
+# INNER_SUPPORTED_LAYER_TYPES = (transformers.integrations.finegrained_fp8.FP8Linear,)
+
 SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp")
 
 
@@ -575,6 +580,8 @@ def detect_device(device=None):
         return str(device)
     elif isinstance(device, torch.device):
         device = str(device)
+    elif isinstance(device, str):  ## for cuda:0
+        device = device
     return device
 
 
@@ -584,64 +591,21 @@ class CpuInfo(object):
     def __init__(self):
         """Get whether the cpu numerical format is bf16, the number of sockets, cores and cores per socket."""
         self._bf16 = False
-        self._vnni = False
         info = cpuinfo.get_cpu_info()
         if "arch" in info and "X86" in info["arch"]:
             cpuid = cpuinfo.CPUID()
             max_extension_support = cpuid.get_max_extension_support()
             if max_extension_support >= 7:
-                ecx = cpuid._run_asm(
-                    b"\x31\xc9",  # xor ecx, ecx
-                    b"\xb8\x07\x00\x00\x00" b"\x0f\xa2" b"\x89\xc8" b"\xc3",  # mov eax, 7  # cpuid  # mov ax, cx  # ret
-                )
-                self._vnni = bool(ecx & (1 << 11))
                 eax = cpuid._run_asm(
                     b"\xb9\x01\x00\x00\x00",  # mov ecx, 1
                     b"\xb8\x07\x00\x00\x00" b"\x0f\xa2" b"\xc3",  # mov eax, 7  # cpuid  # ret
                 )
                 self._bf16 = bool(eax & (1 << 5))
-        if "arch" in info and "ARM" in info["arch"]:  # pragma: no cover
-            self._sockets = 1
-        else:
-            self._sockets = self.get_number_of_sockets()
-        self._cores = psutil.cpu_count(logical=False)
-        self._cores_per_socket = int(self._cores / self._sockets)
 
     @property
     def bf16(self):
         """Get whether it is bf16."""
         return self._bf16
-
-    @property
-    def vnni(self):
-        """Get whether it is vnni."""
-        return self._vnni
-
-    @property
-    def cores_per_socket(self):
-        """Get the cores per socket."""
-        return self._cores_per_socket
-
-    def get_number_of_sockets(self) -> int:
-        """Get number of sockets in platform."""
-        cmd = "cat /proc/cpuinfo | grep 'physical id' | sort -u | wc -l"
-        if psutil.WINDOWS:
-            cmd = r'wmic cpu get DeviceID | C:\Windows\System32\find.exe /C "CPU"'
-        elif psutil.MACOS:  # pragma: no cover
-            cmd = "sysctl -n machdep.cpu.core_count"
-
-        with subprocess.Popen(
-            args=cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=False,
-        ) as proc:
-            proc.wait()
-            if proc.stdout:
-                for line in proc.stdout:
-                    return int(line.decode("utf-8", errors="ignore").strip())
-        return 0
 
 
 def is_local_path(path):
@@ -787,7 +751,7 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
 
 
 def get_layer_names_in_block(
-    model, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D), quant_block_list=None
+    model, supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D), quant_block_list=None, class_names=None
 ):
     """Retrieves the names of layers within each block of the model.
 
@@ -795,8 +759,10 @@ def get_layer_names_in_block(
         list: A list of strings, where each string is the name of a layer
               within a block of the model.
     """
+    if class_names is None:
+        class_names = []
     for n, m in model.named_modules():
-        if isinstance(m, supported_types):
+        if isinstance(m, supported_types) or (class_names is not None and m.__class__.__name__ in class_names):
             m.tmp_name = n
     layers_in_block = []
     if bool(quant_block_list):
@@ -1150,7 +1116,12 @@ def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=Non
 def get_device_and_parallelism(device):
     from auto_round.utils import detect_device
 
-    devices = device.replace(" ", "").split(",")
+    if isinstance(device, str):
+        devices = device.replace(" ", "").split(",")
+    elif isinstance(device, int):
+        devices = str(device)
+    else:
+        devices = device
     if all(s.isdigit() for s in devices) and len(devices) > 1 and torch.cuda.is_available():
         device = "cuda"
         parallelism = True
@@ -1208,9 +1179,36 @@ def get_layer_features(layer):
     return None, None  # Unsupported layer type
 
 
+def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
+    from auto_round.export.export_to_gguf.convert_hf_to_gguf import (
+        ModelBase,
+        get_model_architecture,
+    )
+
+    is_mistral_format = False
+
+    hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+    if isinstance(hparams, dict):
+        tmp_model_type = hparams["model_type"]
+    else:
+        tmp_model_type = hparams.model_type
+    if "mistral" == tmp_model_type:
+        is_mistral_format = True
+        hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+    if not is_mistral_format:
+        model_class = get_model_architecture(hparams, model_type)
+    elif model_type == ModelType.MMPROJ:
+        assert hparams.get("vision_encoder") is not None, "This model does not support multimodal"
+        model_class = "PixtralModel"
+    else:
+        model_class = "MistralModel"
+    return model_class
+
+
 def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
     import argparse
 
+    from auto_round.export.export_to_gguf.convert import download_convert_file
     from auto_round.utils import logger
 
     if format_str is None:
@@ -1220,9 +1218,68 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
         format_str = format_str.replace("q*_", f"q{args_or_ar.bits}_")
     formats = format_str.lower().replace(" ", "").split(",")
     formats = sorted(formats, key=lambda x: len(x))
+    export_gguf = False
     for f in formats:
+        if f.startswith("gguf"):
+            export_gguf = True
+
         if f.startswith("gguf") and f not in GGUF_CONFIG:
             logger.error(f"{f} is not supported, please check.")
+
+    redownload = False
+    if export_gguf:
+        try:
+            from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
+                ModelBase,
+                ModelType,
+                get_model_architecture,
+            )
+
+            if isinstance(args_or_ar.model, str):
+                model_path = args_or_ar.model
+            else:
+                model_path = args_or_ar.model.name_or_path
+            if not os.path.isdir(model_path):
+                model_path = download_hf_model(model_path)
+            model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
+            if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
+                logger.warning(
+                    f"Current version of gguf export does not support for {model_architecture},"
+                    " will re-download dependency file."
+                )
+                redownload = True
+        except ModuleNotFoundError as e:
+            if "convert_hf_to_gguf" in str(e):
+                logger.warning("GGUF export dependency file is not found, download from github.")
+                redownload = True
+        except AttributeError as e:
+            raise ImportError(
+                "Please use the latest gguf-py, you can use the following command to install it:\n"
+                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+            )
+        download_convert_file(redownload)
+
+        try:
+            from auto_round.export.export_to_gguf.convert_hf_to_gguf import (  # pylint: disable=E0401
+                ModelBase,
+                ModelType,
+            )
+        except ImportError as e:
+            raise ImportError(
+                "Please use the latest gguf-py, you can use the following command to install it:\n"
+                "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
+            )
+        if isinstance(args_or_ar.model, str):
+            model_path = args_or_ar.model
+        else:
+            model_path = args_or_ar.model.name_or_path
+        if not os.path.isdir(model_path):
+            model_path = download_hf_model(model_path)
+        model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
+        if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
+            logger.error(f"Model {model_architecture} is not supported to export gguf format.")
+            sys.exit(1)
+            
     pattern = re.compile(r"q\d_k")
     pre_dq_format = ""
     unsupport_list, reset_list = [], []
@@ -1230,42 +1287,13 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
         if format in formats:
             if format == "q6_k_s":
                 logger.warning("Please note that q6_k_s is q6_k.")
-            try:
-                from auto_round.export.export_to_gguf.convert import ModelBase
-            except:
-                raise ImportError(
-                    f"Please use the latest gguf-py for {format}, you can use the following command to install it:\n"
-                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && pip install ."
-                )
+
             if re.search(pattern, format):
                 if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
                     logger.error(f"Cannot export {pre_dq_format} and {format} at the same time.")
                     sys.exit(-1)
                 else:
                     pre_dq_format = format
-
-            if isinstance(args_or_ar.model, str) and os.path.isdir(args_or_ar.model):
-                from pathlib import Path
-
-                from auto_round.export.export_to_gguf.convert import ModelBase
-
-                hparams = ModelBase.load_hparams(Path(args_or_ar.model))
-                model_architecture = hparams["architectures"][0]
-                try:
-                    model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
-                except NotImplementedError:
-                    logger.error(f"Model {model_architecture} is not supported to export GGUF format")
-                    sys.exit(1)
-
-                if re.search(pattern, format) and ("hidden_size" in hparams and hparams["hidden_size"] % QK_K != 0):
-                    model_name = args_or_ar.model.split("/")
-                    model_name = model_name[-1] if model_name[-1] else model_name[-2]
-                    hidden_size = hparams["hidden_size"]
-                    logger.error(
-                        f"Currently only support pure mode for format: {format}. "
-                        f"{model_name} is not supported, cause hidden_size({hidden_size}) % 256 !=0"
-                    )
-                    sys.exit(-1)
 
             unsupport_list, reset_list = [], []
             gguf_config = GGUF_CONFIG[format]
@@ -1306,10 +1334,21 @@ def _to_model_dtype(model, model_dtype):
     return model
 
 
+def set_fake_cuda_device_capability(func=None):
+    if func is not None:
+        torch.cuda.get_device_capability = func
+        return func
+
+    def fake_cuda():
+        return 100, 1
+
+    orig_func = torch.cuda.get_device_capability
+    torch.cuda.get_device_capability = fake_cuda
+    return orig_func
+
+
 def llm_load_model(
     pretrained_model_name_or_path,
-    torch_dtype="auto",
-    use_auto_mapping=True,
     trust_remote_code=True,
     model_dtype=None,
     device="cpu",
@@ -1318,6 +1357,11 @@ def llm_load_model(
     **kwargs,
 ):
     from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
+
+    device_str, use_auto_mapping = get_device_and_parallelism(device)
+    torch_dtype = "auto"
+    if device_str is not None and "hpu" in device_str:
+        torch_dtype = torch.bfloat16
 
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
     low_cpu_mem_usage = False
@@ -1363,12 +1407,26 @@ def llm_load_model(
             )
         else:
             try:
+
                 model = model_cls.from_pretrained(
                     pretrained_model_name_or_path,
                     torch_dtype=torch_dtype,
                     trust_remote_code=trust_remote_code,
                     device_map="auto" if use_auto_mapping else None,
                 )
+            except ValueError as e:
+                if "FP8 quantized" in str(e):
+                    orig_func = set_fake_cuda_device_capability()
+                    model = model_cls.from_pretrained(
+                        pretrained_model_name_or_path,
+                        torch_dtype=torch_dtype,
+                        trust_remote_code=trust_remote_code,
+                        device_map="auto" if use_auto_mapping else None,
+                    )
+                    torch.cuda.get_device_capability = orig_func
+                    model.is_fp8 = True  ##tricky setting
+                    logger.warning("the support for fp8 model as input is experimental, please use with caution.")
+
             except OSError as e:
                 logger.warning(
                     f"fail to load {pretrained_model_name_or_path}, set trust_remote_code to False and retry."
@@ -1388,6 +1446,7 @@ def llm_load_model(
 
 def mllm_load_model(
     pretrained_model_name_or_path,
+    device="cpu",
     torch_dtype="auto",
     use_auto_mapping=True,
     trust_remote_code=True,
@@ -1399,6 +1458,10 @@ def mllm_load_model(
     from huggingface_hub import HfApi, HfFileSystem, hf_hub_download
     from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
+    device_str, use_auto_mapping = get_device_and_parallelism(device)
+    torch_dtype = "auto"
+    if device_str is not None and "hpu" in device_str:
+        torch_dtype = torch.bfloat16
     if os.path.isdir(pretrained_model_name_or_path):
         config = json.load(open(os.path.join(pretrained_model_name_or_path, "config.json")))
     else:
@@ -1463,12 +1526,21 @@ def mllm_load_model(
                 torch_dtype=torch_dtype,
                 device_map="auto" if use_auto_mapping else None,
             )
-            tokenizer = AutoTokenizer.from_pretrained(
-                pretrained_model_name_or_path, trust_remote_code=trust_remote_code
-            )
-            processor = AutoProcessor.from_pretrained(
-                pretrained_model_name_or_path, trust_remote_code=trust_remote_code
-            )
+
+            if "Mistral-Small-3.2" in pretrained_model_name_or_path:
+                from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
+
+                if os.path.isdir(pretrained_model_name_or_path):
+                    tokenizer = MistralTokenizer.from_file(os.path.join(pretrained_model_name_or_path, "tekken.json"))
+                else:
+                    tokenizer = MistralTokenizer.from_hf_hub(pretrained_model_name_or_path)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                )
+                processor = AutoProcessor.from_pretrained(
+                    pretrained_model_name_or_path, trust_remote_code=trust_remote_code
+                )
             try:
                 from transformers import AutoImageProcessor
 
@@ -1713,11 +1785,14 @@ def get_layer_config_by_gguf_format(layer_config, gguf_format, model, model_type
 
     import gguf  # pylint: disable=E0401
 
-    from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
+    # from auto_round.export.export_to_gguf.convert import ModelBase, get_model_architecture
+    convert_hf_to_gguf = LazyImport("auto_round.export.export_to_gguf.convert_hf_to_gguf")
 
-    model_architecture = get_model_architecture(hparams=model.config.to_dict(), model_type=model_type)
+    model_architecture = convert_hf_to_gguf.get_model_architecture(
+        hparams=model.config.to_dict(), model_type=model_type
+    )
     try:
-        model_class = ModelBase.from_model_architecture(model_architecture, model_type=model_type)
+        model_class = convert_hf_to_gguf.ModelBase.from_model_architecture(model_architecture, model_type=model_type)
     except NotImplementedError:
         return layer_config, {}
 
@@ -2058,6 +2133,78 @@ def check_need_act_calibration(is_act_dynamic, act_data_type=None):
     return False
 
 
+def dequant_block_fp8_weight(weight, weight_scale, block_size):
+    dtype = torch.bfloat16
+    if weight_scale is None:
+        return weight
+    assert len(block_size) == 2
+
+    weight_shape_len = len(weight.shape)
+
+    block_size_m, block_size_n = block_size
+
+    # mul scale
+    if weight_shape_len == 2:
+        weight_scale_m, weight_scale_n = weight_scale.shape
+        weight_scale = weight_scale.view(weight_scale_m, 1, weight_scale_n, 1)
+        weight = weight.view(weight_scale_m, block_size_m, weight_scale_n, block_size_n)
+        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
+        dequant_weight = dequant_weight.view(weight_scale_m * block_size_m, weight_scale_n * block_size_n)
+    elif weight_shape_len == 3:
+        fd, weight_scale_m, weight_scale_n = weight_scale.shape
+        weight_scale = weight_scale.view(fd, weight_scale_m, 1, weight_scale_n, 1)
+        weight = weight.view(fd, weight_scale_m, block_size_m, weight_scale_n, block_size_n)
+        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
+        dequant_weight = dequant_weight.view(fd, weight_scale_m * block_size_m, weight_scale_n * block_size_n)
+    else:
+        raise ValueError("Only support original weight shape is either 2 or 3")
+
+    return dequant_weight
+
+
+def convert_fp8_layer_to_linear(layer, dtype=torch.bfloat16):
+    """ """
+    new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
+    if layer.bias:
+        new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
+    keys = get_quant_keys() + ["tmp_name"]
+    for key in keys:
+        setattr(new_layer, key, getattr(layer, key, None))
+    dq_weight = dequant_block_fp8_weight(layer.weight, layer.weight_scale_inv, layer.block_size)
+    new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
+    return new_layer
+
+
+def convert_fp8_model_to_16b_model(model, dtype=torch.bfloat16):
+    """
+    Convert a model with FP8 quantized layers to a model with 16-bit linear layers.
+    This is useful for compatibility with other frameworks or for further processing.
+    """
+    for n, m in model.named_modules():
+        if m.__class__.__name__ == "FP8Linear":
+            new_module = convert_fp8_layer_to_linear(m, dtype=dtype)
+            set_module(model, n, new_module)
+    return model
+
+
+def get_quant_keys():
+    keys = [
+        "bits",
+        "group_size",
+        "sym",
+        "data_type",
+        "scale_dtype",
+        "act_bits",
+        "act_group_size",
+        "act_sym",
+        "act_dynamic",
+        "act_data_type",
+        "super_bits",
+        "super_group_size",
+    ]
+    return keys
+
+  
 def out_of_vram(error_msg):
     error_msg = str(error_msg)
     # CUDA
@@ -2075,6 +2222,36 @@ def out_of_vram(error_msg):
     return False
 
 
+def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
+    """Download hugging face model from hf hub."""
+    from huggingface_hub.constants import DEFAULT_REVISION, HUGGINGFACE_HUB_CACHE
+    from huggingface_hub.file_download import REGEX_COMMIT_HASH, repo_folder_name
+    from huggingface_hub.utils import EntryNotFoundError
+
+    if cache_dir is None:
+        cache_dir = HUGGINGFACE_HUB_CACHE
+    if revision is None:
+        revision = DEFAULT_REVISION
+    if repo_type is None:
+        repo_type = "model"
+    storage_folder = os.path.join(cache_dir, repo_folder_name(repo_id=repo_id, repo_type=repo_type))
+    commit_hash = None
+    if REGEX_COMMIT_HASH.match(revision):
+        commit_hash = revision
+    else:
+        ref_path = os.path.join(storage_folder, "refs", revision)
+        if os.path.exists(ref_path):
+            with open(ref_path) as f:
+                commit_hash = f.read()
+    if storage_folder and commit_hash:
+        pointer_path = os.path.join(storage_folder, "snapshots", commit_hash)
+        if os.path.isdir(pointer_path):
+            return pointer_path
+    else:  # pragma: no cover
+        from huggingface_hub import snapshot_download
+
+        model_path = snapshot_download(repo_id)
+        return model_path
 def is_moe(module: torch.nn.Module) -> bool:
     """Returns whether the module is an MOE layer."""
     return any(
