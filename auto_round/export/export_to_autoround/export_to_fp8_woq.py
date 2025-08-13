@@ -87,8 +87,6 @@ class FP8WOQLinear(torch.nn.Module):
 def quant_tensor_with_scale(tensor, scale):
     FULL_RANGE = torch.finfo(torch.float8_e4m3fn).max
     qtensor = tensor / scale
-    cliped_qtensor = torch.clamp(qtensor, -FULL_RANGE, FULL_RANGE)
-    cliped_qtensor_fp8 = cliped_qtensor.to(torch.float8_e4m3fn)
     clipped_qtensor = torch.clamp(qtensor, -FULL_RANGE, FULL_RANGE)
     clipped_qtensor_fp8 = clipped_qtensor.to(torch.float8_e4m3fn)
     return scale, clipped_qtensor_fp8
