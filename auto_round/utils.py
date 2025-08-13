@@ -1279,7 +1279,7 @@ def _gguf_args_check(args_or_ar, format_str=None, model_type=ModelType.TEXT):
         if model_architecture not in ModelBase._model_classes[ModelType.TEXT]:
             logger.error(f"Model {model_architecture} is not supported to export gguf format.")
             sys.exit(1)
-            
+
     pattern = re.compile(r"q\d_k")
     pre_dq_format = ""
     unsupport_list, reset_list = [], []
@@ -2204,7 +2204,7 @@ def get_quant_keys():
     ]
     return keys
 
-  
+
 def out_of_vram(error_msg):
     error_msg = str(error_msg)
     # CUDA
@@ -2252,6 +2252,8 @@ def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
 
         model_path = snapshot_download(repo_id)
         return model_path
+
+
 def is_moe(module: torch.nn.Module) -> bool:
     """Returns whether the module is an MOE layer."""
     return any(
