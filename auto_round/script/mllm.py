@@ -608,4 +608,3 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
-

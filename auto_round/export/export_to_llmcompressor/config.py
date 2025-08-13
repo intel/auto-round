@@ -68,74 +68,72 @@ quantization_config = {
 # limitations under the License.
 
 from auto_round.utils import logger
-    
+
+
 def check_compressed_tensors_supported():  # pragma: no cover
     try:
         import compressed_tensors  # noqa: F401
+
         return True
     except ImportError:
         logger.warning(
-        "Please install compressed-tensors via 'pip install compressed-tensors'" \
-        " to save as llm-compressor format"
+            "Please install compressed-tensors via 'pip install compressed-tensors'" " to save as llm-compressor format"
         )
         return False
 
+
 if check_compressed_tensors_supported():
-    from compressed_tensors.quantization import (
+    from compressed_tensors.quantization import (  # pylint: disable=E0401
         QuantizationConfig,
         QuantizationScheme,
         QuantizationStatus,
         is_preset_scheme,
         preset_name_to_scheme,
-    ) # pylint: disable=E0401
+    )
 
 
-def initialize_quantization(scheme, targets=["Linear"], config_groups=None,
-        kv_cache_scheme=None, ignore=['lm_head']):
-        """
-        Attach quantization schemes and observers to modules in the model according to
-        the quantization config specified on this modifier
+def initialize_quantization(scheme, targets=["Linear"], config_groups=None, kv_cache_scheme=None, ignore=["lm_head"]):
+    """
+    Attach quantization schemes and observers to modules in the model according to
+    the quantization config specified on this modifier
 
-        :param model: model to attach schemes and observers to
-        """
-        
-        # apply scheme and status to model
-        scheme = scheme
-        targets = targets
-        config_groups = config_groups
-        kv_cache_scheme = kv_cache_scheme
-        ignore = ignore
-        check_compressed_tensors_supported()
-        if scheme is not None and config_groups is not None:
-            raise ValueError("Please specify either `scheme` or `config_groups`")
+    :param model: model to attach schemes and observers to
+    """
 
-        if scheme is not None:
-            # takes precedence over config_groups
+    # apply scheme and status to model
+    scheme = scheme
+    targets = targets
+    config_groups = config_groups
+    kv_cache_scheme = kv_cache_scheme
+    ignore = ignore
+    check_compressed_tensors_supported()
+    if scheme is not None and config_groups is not None:
+        raise ValueError("Please specify either `scheme` or `config_groups`")
 
-            if isinstance(scheme, str) and is_preset_scheme(scheme):
-                # attach targets to scheme
-                scheme = {scheme: targets}
+    if scheme is not None:
+        # takes precedence over config_groups
 
-            config_groups = {}
-            for idx, key in enumerate(scheme.keys()):
-                if is_preset_scheme(key):
-                    scheme = preset_name_to_scheme(key, scheme[key])
-                else:
-                    scheme = QuantizationScheme.model_validate(
-                        {"targets": scheme[key], **scheme}
-                    )
+        if isinstance(scheme, str) and is_preset_scheme(scheme):
+            # attach targets to scheme
+            scheme = {scheme: targets}
 
-                group_name = f"group_{idx}"
-                config_groups[group_name] = scheme
+        config_groups = {}
+        for idx, key in enumerate(scheme.keys()):
+            if is_preset_scheme(key):
+                scheme = preset_name_to_scheme(key, scheme[key])
+            else:
+                scheme = QuantizationScheme.model_validate({"targets": scheme[key], **scheme})
 
-        if config_groups is None or len(config_groups) == 0:
-            default_quant_scheme = QuantizationScheme(targets=targets)
-            config_groups = {"group_0": default_quant_scheme}
+            group_name = f"group_{idx}"
+            config_groups[group_name] = scheme
 
-        return QuantizationConfig(
-            config_groups=config_groups,
-            kv_cache_scheme=kv_cache_scheme,
-            quantization_status=QuantizationStatus.COMPRESSED,
-            ignore=ignore,
-        )
+    if config_groups is None or len(config_groups) == 0:
+        default_quant_scheme = QuantizationScheme(targets=targets)
+        config_groups = {"group_0": default_quant_scheme}
 
+    return QuantizationConfig(
+        config_groups=config_groups,
+        kv_cache_scheme=kv_cache_scheme,
+        quantization_status=QuantizationStatus.COMPRESSED,
+        ignore=ignore,
+    )

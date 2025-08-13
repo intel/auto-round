@@ -33,11 +33,11 @@ from auto_round.utils import (
     filter_quantization_config,
     get_autogptq_packing_qlinear,
     get_module,
-    logger,
-    set_module,
-    is_standard_fp,
     is_mx_fp,
     is_nv_fp,
+    is_standard_fp,
+    logger,
+    set_module,
 )
 
 
@@ -113,7 +113,7 @@ def pack_qact_layer(name, model):
     bits = layer.bits
     group_size = layer.group_size
     act_bits = layer.act_bits
-    
+
     act_scale = layer.act_scale if hasattr(layer, "act_scale") else None
     w_bf16_to_fp8_scale = layer.w_bf16_to_fp8_scale if hasattr(layer, "w_bf16_to_fp8_scale") else None
     scale = layer.scale
@@ -165,12 +165,14 @@ def pack_layer(layer_name, model, backend):
     """
     if is_nv_fp(backend) or is_mx_fp(backend):
         from auto_round.export.export_to_autoround.export_to_fp import pack_layer
+
         return pack_layer(layer_name, model, backend)
-    
+
     if is_standard_fp(backend):
         from auto_round.export.export_to_autoround.export_to_fp8_woq import pack_layer
+
         return pack_layer(layer_name, model, backend)
-    
+
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
@@ -276,6 +278,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     data_type = kwargs.get("data_type", None)
     if is_nv_fp(data_type) or is_mx_fp(data_type):  ## detect nvfp & mxfp first
         from auto_round.export.export_to_autoround.export_to_fp import save_quantized_as_fp
+
         return save_quantized_as_fp(output_dir, inplace=inplace, backend="auto_round", **kwargs)
 
     if is_standard_fp(data_type) and kwargs.get("act_bits", 16) >= 16:
@@ -418,4 +421,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-

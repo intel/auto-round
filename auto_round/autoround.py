@@ -35,6 +35,7 @@ from auto_round.utils import (
     SUPPORTED_DTYPES,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
+    BackendDataType,
     CpuInfo,
     _gguf_args_check,
     block_forward,
@@ -64,7 +65,10 @@ from auto_round.utils import (
     infer_bits_by_data_type,
     init_cache,
     is_debug_mode,
+    is_mx_fp,
+    is_nv_fp,
     is_optimum_habana_available,
+    is_standard_fp,
     llm_load_model,
     logger,
     mv_module_from_gpu,
@@ -73,10 +77,6 @@ from auto_round.utils import (
     to_device,
     to_dtype,
     unsupport_meta_device,
-    is_mx_fp,
-    is_nv_fp,
-    is_standard_fp,
-    BackendDataType,
 )
 from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
 
@@ -619,11 +619,13 @@ class AutoRound(object):
                 if is_nv_fp(self.data_type) or is_mx_fp(self.data_type) or is_standard_fp(self.data_type):
                     format = format.replace("auto_round", f"auto_round:{self.data_type}")
                     formats[index] = format
-            elif format=="llmcompressor":
+            elif format == "llmcompressor":
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+
                 if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
                     format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
                     formats[index] = format
+
         # Remove duplicates from formats list
         def remove_duplicates(lst):
             seen = set()
@@ -669,9 +671,7 @@ class AutoRound(object):
                         f" W{self.bits}A{self.act_bits} model, but got bits={self.bits},"
                         f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
                     )
-                elif (
-                    format != "fake" and not is_nv_fp(format)
-                ):
+                elif format != "fake" and not is_nv_fp(format):
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
                         " with fp8 or nv_fp4 dtype activation for activation quantization."
@@ -1339,8 +1339,11 @@ class AutoRound(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
-                if is_nv_fp(self.act_data_type) and any(BackendDataType.NV_FP.value in format_ for format_ in self.formats):
+                if is_nv_fp(self.act_data_type) and any(
+                    BackendDataType.NV_FP.value in format_ for format_ in self.formats
+                ):
                     from auto_round.utils import set_amax_for_all_moe_layers
+
                     # enable moe experts act_max automatic generation for linears
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
@@ -2252,7 +2255,7 @@ class AutoRound(object):
             if isinstance(input, (tuple, list)):
                 input = input[0]
             if input.numel() == 0:
-                return # as no needs for act_max update
+                return  # as no needs for act_max update
             input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
             act_max = torch.max(torch.abs(input), dim=-1).values
             if not hasattr(module, "act_max") or module.act_max.numel() == 0:
@@ -2260,12 +2263,15 @@ class AutoRound(object):
             else:
                 act_max = act_max.to(module.act_max.device)
                 try:
-                    if is_nv_fp(self.data_type): ## for nvfp per-tensor input_global_scale calculation usage
-                        module.act_max = torch.max(torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device))
+                    if is_nv_fp(self.data_type):  ## for nvfp per-tensor input_global_scale calculation usage
+                        module.act_max = torch.max(
+                            torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
+                        )
                     else:
                         module.act_max = torch.max(act_max, module.act_max)
                 except RuntimeError as error:
                     raise str(error)
+
         hook_handles = []
 
         for n, m in model.named_modules():
@@ -2491,6 +2497,7 @@ class AutoRound(object):
         if self.enable_quanted_input:
             if is_nv_fp(self.act_data_type) and any(BackendDataType.NV_FP.value in format_ for format_ in self.formats):
                 from auto_round.utils import set_amax_for_all_moe_layers
+
                 # enable moe experts act_max automatic generation for WrapperWALayer
                 set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
             if self.low_cpu_mem_usage:
