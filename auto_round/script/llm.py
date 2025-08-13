@@ -42,9 +42,6 @@ from auto_round.utils import (
     str2bool,
 )
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
-
 class BasicArgumentParser(argparse.ArgumentParser):
 
     def __init__(self, *args, **kwargs):
@@ -429,12 +426,6 @@ def tune(args):
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
 
     import torch
-
-    if not args.disable_deterministic_algorithms:
-        torch.use_deterministic_algorithms(True, warn_only=False)
-        # logger.info("`torch.use_deterministic_algorithms` is enabled by default for reproducibility "
-        #             "and can be disabled using the `--disable_deterministic_algorithms` argument.")
-
     if args.enable_torch_compile:
         logger.info(
             "`torch.compile` is enabled to reduce tuning costs. "
@@ -571,6 +562,7 @@ def tune(args):
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
         disable_opt_rtn=args.disable_opt_rtn,
+        disable_deterministic_algorithms=args.disable_deterministic_algorithms,
         **mllm_kwargs,
     )
 
@@ -913,3 +905,4 @@ def eval_task_by_task(
         print(make_table(res_all))
 
     print("total eval time:", time.time() - st)
+

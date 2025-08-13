@@ -204,7 +204,7 @@ class QuantLinear(nn.Module):
         out_shape = x.shape[:-1] + (self.outfeatures,)
         x = x.reshape(-1, x.shape[-1])
         x_dtype = x.dtype
-        self.qzeros = self.qzeros + 1
+
         if self.bits in [2, 4, 8]:
             if self.wf.device != self.qzeros.device:
                 self.wf = self.wf.to(self.qzeros.device)
@@ -244,7 +244,7 @@ class QuantLinear(nn.Module):
             weight[:, 1, 11] = (weight[:, 1, 11] & 0x1) | ((weight[:, 2, 0] << 1) & 0x6)
             weight = weight & 0x7
             weight = torch.cat([weight[:, 0, :11], weight[:, 1, 1:12], weight[:, 2, 1:11]], dim=1)
-
+        zeros += 1
         weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
         if hasattr(self, "g_idx"):
             num_itr = self.g_idx.shape[0] // x.shape[-1]
@@ -271,3 +271,4 @@ class QuantLinear(nn.Module):
 
 
 __all__ = ["QuantLinear"]
+

@@ -25,8 +25,6 @@ from auto_round.utils import (
     set_cuda_visible_devices,
 )
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
 
 class BasicArgumentParser(argparse.ArgumentParser):
 
@@ -330,14 +328,6 @@ def tune(args):
     device_str, use_auto_mapping = get_device_and_parallelism(args.device)
 
     import torch
-
-    if not args.disable_deterministic_algorithms:
-        torch.use_deterministic_algorithms(True, warn_only=False)
-        print(
-            "'torch.use_deterministic_algorithms' is turned on by default for reproducibility, "
-            "and can be turned off by setting the '--disable_deterministic_algorithms' parameter."
-        )
-
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
@@ -484,6 +474,7 @@ def tune(args):
         model_kwargs=model_kwargs,
         data_type=args.data_type,
         disable_opt_rtn=args.disable_opt_rtn,
+        disable_deterministic_algorithms=args.disable_deterministic_algorithms,
     )
 
     model_name = args.model.rstrip("/")
@@ -608,3 +599,4 @@ def lmms_eval(args):
         apply_chat_template=False,
     )
     return results
+
