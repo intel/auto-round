@@ -204,7 +204,7 @@ class QuantLinear(nn.Module):
         out_shape = x.shape[:-1] + (self.outfeatures,)
         x = x.reshape(-1, x.shape[-1])
         x_dtype = x.dtype
-
+        self.qzeros = self.qzeros + 1
         if self.bits in [2, 4, 8]:
             if self.wf.device != self.qzeros.device:
                 self.wf = self.wf.to(self.qzeros.device)
