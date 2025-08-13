@@ -85,29 +85,12 @@ def _save_quantized_as_llmcompressor(*args, **kwargs):
     return save_quantized_as_llmcompressor(*args, **kwargs)
 
 
-@register_format("mx_fp")
-def _save_quantized_as_mxfp(*args, **kwargs):
-    from auto_round.export.export_to_fp.export import save_quantized_as_fp
-
-    return save_quantized_as_fp(*args, **kwargs)
-
-
-@register_format("nv_fp")
-def _save_quantized_as_nvfp(*args, **kwargs):
-    from auto_round.export.export_to_fp.export import save_quantized_as_fp
-
-    return save_quantized_as_fp(*args, **kwargs)
-
-
-@register_layer_packing("mx_fp")
-def _packing_layer_with_mxfp(*args, **kwargs):
-    from auto_round.export.export_to_fp.export import pack_layer
+@register_layer_packing("llmcompressor")
+def _packing_layer_with_llmcompressor(*args, **kwargs):
+    from auto_round.export.export_to_llmcompressor.export import pack_layer
 
     return pack_layer(*args, **kwargs)
 
 
-@register_layer_packing("nv_fp")
-def _packing_layer_with_nvfp(*args, **kwargs):
-    from auto_round.export.export_to_fp.export import pack_layer
 
-    return pack_layer(*args, **kwargs)
+

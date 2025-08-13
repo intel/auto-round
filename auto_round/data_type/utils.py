@@ -14,7 +14,7 @@
 
 from functools import lru_cache
 from typing import List
-
+import math
 import torch
 from torch.nn import Linear, Module
 
@@ -113,19 +113,11 @@ def get_quant_func(dtype, bits, sym):
     if key in QUANT_FUNC_WITH_DTYPE.keys():
         return QUANT_FUNC_WITH_DTYPE[key], key
 
-    ##need to add bits
+    ##need to add bits and sym infos
     if sym:
         key = dtype + str(bits) + "_sym"
     else:
         key = dtype + str(bits) + "_asym"
-
-    if key in QUANT_FUNC_WITH_DTYPE.keys():
-        return QUANT_FUNC_WITH_DTYPE[key], key
-
-    if sym:
-        key = dtype + "_sym"
-    else:
-        key = dtype + "_asym"
 
     if key in QUANT_FUNC_WITH_DTYPE.keys():
         return QUANT_FUNC_WITH_DTYPE[key], key
@@ -254,6 +246,7 @@ def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weig
     base_name: op name for fuse usage, option: weight, input
     """
     global_scale_name = f"{base_name}_global_scale"
+    max_value_tensor = torch.ones(1, device="cpu", dtype=torch.float32) * torch.finfo(torch.float32).max
 
     def _is_attention_module(module: Module):
         return "attention" in module.__class__.__name__.lower() and (
@@ -266,22 +259,27 @@ def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weig
         )
 
     if _is_attention_module(submodule):
-        # already fused/treated as one layerR
+        # already fused/treated as one layer
         if hasattr(submodule, "qkv_proj"):
             return
         global_scale = torch.min(
             torch.cat(
                 (
-                    getattr(submodule.q_proj, global_scale_name).reshape(1),
-                    getattr(submodule.k_proj, global_scale_name).reshape(1),
-                    getattr(submodule.v_proj, global_scale_name).reshape(1),
+                    getattr(submodule.q_proj, global_scale_name, max_value_tensor).reshape(1),
+                    getattr(submodule.k_proj, global_scale_name, max_value_tensor).reshape(1),
+                    getattr(submodule.v_proj, global_scale_name, max_value_tensor).reshape(1),
                 )
             )
         ).reshape([1])
 
-        setattr(submodule.q_proj, global_scale_name, global_scale.clone())
-        setattr(submodule.k_proj, global_scale_name, global_scale.clone())
-        setattr(submodule.v_proj, global_scale_name, global_scale.clone())
+        if math.isclose(global_scale.data, max_value_tensor.data, rel_tol=1e-9):
+            return
+        if hasattr(submodule.q_proj, global_scale_name):
+            setattr(submodule.q_proj, global_scale_name, global_scale.clone())
+        if hasattr(submodule.k_proj, global_scale_name):
+            setattr(submodule.k_proj, global_scale_name, global_scale.clone())
+        if hasattr(submodule.v_proj, global_scale_name):
+            setattr(submodule.v_proj, global_scale_name, global_scale.clone())
 
         del global_scale
 
@@ -289,13 +287,16 @@ def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weig
         global_scale = torch.min(
             torch.cat(
                 (
-                    getattr(submodule.gate_proj, global_scale_name).reshape(1),
-                    getattr(submodule.up_proj, global_scale_name).reshape(1),
+                    getattr(submodule.gate_proj, global_scale_name, max_value_tensor).reshape(1),
+                    getattr(submodule.up_proj, global_scale_name, max_value_tensor).reshape(1),
                 )
             )
         ).reshape([1])
-
-        setattr(submodule.gate_proj, global_scale_name, global_scale.clone())
-        setattr(submodule.up_proj, global_scale_name, global_scale.clone())
+        if math.isclose(global_scale.data, max_value_tensor.data, rel_tol=1e-9):
+            return
+        if hasattr(submodule.gate_proj, global_scale_name):
+            setattr(submodule.gate_proj, global_scale_name, global_scale.clone())
+        if hasattr(submodule.up_proj, global_scale_name):
+            setattr(submodule.up_proj, global_scale_name, global_scale.clone())
 
         del global_scale

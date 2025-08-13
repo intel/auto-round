@@ -51,7 +51,6 @@ def get_reciprocal(x):
     else:
         raise TypeError("Input must be a float, int, or a torch.Tensor.")
 
-
 FLOAT4_E2M1_MAX = 6.0
 FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max if hasattr(torch, "float8_e4m3fn") else 448
 FLOAT8_E4M3_MIN = torch.finfo(torch.float8_e4m3fn).min if hasattr(torch, "float8_e4m3fn") else -448
@@ -112,7 +111,6 @@ def nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, *
     qdq_res, scale = ref_nvfp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
-
 
 FLOAT8_UE5M3_MAX = 114688
 
@@ -277,3 +275,4 @@ if __name__ == "__main__":
             f"{test[i].item():.6g} -> {encoded[i].item():3d} -> {decoded[i].item():.6g} "
             f"(error={abs(test[i] - decoded[i]).item():.3g})"
         )
+

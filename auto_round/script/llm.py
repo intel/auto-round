@@ -490,7 +490,7 @@ def tune(args):
     layer_config = {}
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
-        layer_config[name] = {"bits": 16}
+        layer_config[name] = {"bits": 16, "act_bits": 16}
     if len(not_quantize_layer_names) > 0:
         logger.info(f"{not_quantize_layer_names} will not be quantized.")
         for format in formats:
@@ -515,7 +515,7 @@ def tune(args):
                     break
 
     if args.quant_lm_head:
-        layer_config[lm_head_layer_name] = {"bits": args.bits}
+        layer_config[lm_head_layer_name] = {"bits": args.bits, "act_bits": args.act_bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
                 auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
@@ -913,3 +913,4 @@ def eval_task_by_task(
         print(make_table(res_all))
 
     print("total eval time:", time.time() - st)
+
