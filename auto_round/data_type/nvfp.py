@@ -124,7 +124,7 @@ def float_to_e5m3_frexp(x: torch.Tensor) -> torch.Tensor:
     mask = x > 0
     x_masked = x[mask]
 
-    # 正常数：x >= 2^-14
+    # nomal number: x >= 2^-14
     normal_mask = x_masked >= 2**-14
     x_normal = x_masked[normal_mask]
     mantissa, exponent = torch.frexp(x_normal)
@@ -277,3 +277,4 @@ if __name__ == "__main__":
             f"{test[i].item():.6g} -> {encoded[i].item():3d} -> {decoded[i].item():.6g} "
             f"(error={abs(test[i] - decoded[i]).item():.3g})"
         )
+

@@ -234,6 +234,8 @@ def get_gaudi_fp8_ste_func():
     return fn
 
 
+# please refer from https://github.com/vllm-project/llm-compressor/blob/
+# 29f4d5644b48e9c8ebb7e36d5be9f7c92747ceb7/src/llmcompressor/modifiers/utils/helpers.py#L11
 def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weight"):
     """
     When running NVFP4 quantization, update the global scale
@@ -301,3 +303,4 @@ def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weig
             setattr(submodule.up_proj, global_scale_name, global_scale.clone())
 
         del global_scale
+

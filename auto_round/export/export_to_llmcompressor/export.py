@@ -40,7 +40,7 @@ def recover_qweight(qdq_weight, scale):
 
 def pack_layer(layer_name, model, backend):
     """
-     Packs a model layer for quantization based on its type and configuration.
+    Packs a model layer for quantization based on its type and configuration.
 
     This function retrieves the specified layer from the model, checks its
     compatibility for quantization, and replaces it with a quantized version
@@ -70,6 +70,7 @@ def save_quantized_as_llmcompressor(output_dir, **kwargs):
     backend = kwargs.get("backend", None)
     if is_nv_fp(backend) or is_mx_fp(backend):
         return save_quantized_as_fp(output_dir, **kwargs)
+
     model = kwargs.get("model", None)
     safe_serialization = kwargs.get("safe_serialization", True)
     tokenizer = kwargs.get("tokenizer", None)
@@ -110,3 +111,4 @@ def save_quantized_as_llmcompressor(output_dir, **kwargs):
         if hasattr(model, "generation_config"):
             setattr(model.generation_config, "do_sample", True)
         model.save_pretrained(output_dir, safe_serialization=safe_serialization)
+

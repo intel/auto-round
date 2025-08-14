@@ -2273,6 +2273,8 @@ def is_moe(module: torch.nn.Module) -> bool:
     )
 
 
+# please refer to https://github.com/NVIDIA/TensorRT-Model-Optimizer
+# /blob/4c611e47a60084a86e1de7e48690a692a1b8170c/modelopt/torch/export/layer_utils.py#L976
 def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
     """Get the list of linear names for the experts."""
 
@@ -2357,8 +2359,9 @@ def set_amax_for_uncalibrated_experts(
             # uncalibrated_experts.append(module)
 
 
+# Please refer to: https://github.com/NVIDIA/TensorRT-Model-Optimizer/blob/
+# 4c611e47a60084a86e1de7e48690a692a1b8170c/modelopt/torch/export/unified_export_hf.py#L195-L207
 def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_name="act_max"):
-    # please refer to https://github.com/NVIDIA/TensorRT-Model-Optimizer/blob/4c611e47a60084a86e1de7e48690a692a1b8170c/modelopt/torch/export/unified_export_hf.py#L195-L207
     if layer_name is not None:
         parts = layer_name.split(".")
         if "experts" not in parts:
@@ -2413,3 +2416,4 @@ def is_mx_fp(backend):
 
 def is_nv_fp(backend):
     return BackendDataType.NV_FP in backend
+

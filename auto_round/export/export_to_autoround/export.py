@@ -40,23 +40,7 @@ from auto_round.utils import (
     set_module,
 )
 
-
-def check_neq_config(config, data_type, bits, group_size, sym):
-    """
-    Checks if the provided configuration parameters are not equal to the values in the config dictionary.
-
-    Args:
-        config (dict): A dictionary containing the configuration parameters.
-        data_type (str): The expected data type.
-        bits (int): The expected number of bits.
-        group_size (int): The expected group size.
-        sym (bool): The expected symmetry flag.
-
-    Returns:
-        list: A list of strings indicating which configuration parameters do not match.
-    """
-    expected_config = {"data_type": data_type, "bits": bits, "group_size": group_size, "sym": sym}
-    return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
+from .utils import check_neq_config
 
 
 def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):
@@ -328,6 +312,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
                 layer_config[layer_name],
                 data_type=quantization_config["data_type"],
                 bits=quantization_config["bits"],
+                act_bits=quantization_config["act_bits"],
                 group_size=quantization_config["group_size"],
                 sym=quantization_config["sym"],
             )
@@ -421,3 +406,4 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
+

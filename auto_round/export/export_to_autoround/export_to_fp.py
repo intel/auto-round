@@ -12,247 +12,279 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+import inspect
+import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 
-# Copyright (c) 2021 - present / Neuralmagic, Inc. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-import math
-from logging import getLogger
-
-import numpy as np
+import threadpoolctl as tctl
 import torch
 import torch.nn as nn
 import transformers
+from tqdm import tqdm
 
-from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
-from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
-from auto_round.utils import is_mx_fp, is_nv_fp, is_standard_fp
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_start_with_block_name,
+    check_to_quantized,
+    filter_quantization_config,
+    get_block_names,
+    get_module,
+    logger,
+    set_module,
+    set_amax_for_all_moe_layers,
+    is_nv_fp,
+    is_mx_fp,
+)
+from auto_round.wrapper import WrapperWALayer
+from .qlinear_fp import QuantLinear
+from .utils import check_neq_config
 
-# from auto_round.utils import get_weight_compress_dtype
-logger = getLogger(__name__)
-E8M0_EXPONENT_BIAS = 127
-E8M0_EXPONENT_NAN_VAL = 255
+__all__ = [
+    "pack_layer",
+    "save_quantized_as_fp",
+    ]
 
-__all__ = ["QuantLinear"]
-
-FLOAT_TO_E2M1 = [
-    0.0,
-    0.5,
-    1.0,
-    1.5,
-    2.0,
-    3.0,
-    4.0,
-    6.0,
-]
-
-
-class QuantLinear(nn.Module):
-    """
-    MXFP quantized linear layer.
-    """
-
-    QUANT_TYPE = "MXFP"
-
-    def __init__(
-        self, bits, group_size, infeatures, outfeatures, bias, trainable=False, data_type="mx_fp8e4m3", **kwargs
-    ):
-        super().__init__()
-        if bits not in [4, 8]:
-            raise NotImplementedError("Only 4,8 bits are supported.")
-        if infeatures % 32 != 0 or outfeatures % 32 != 0:
-            raise NotImplementedError("in_feature and out_feature must be divisible by 32.")
-        self.is_mx = is_mx_fp(data_type)
-        self.is_nv = is_nv_fp(data_type)
-        if self.is_mx and group_size != 32:
-            raise NotImplementedError("Only group_size 32 are supported for mxfp.")
-        if self.is_nv and group_size not in [16, 32]:
-            raise NotImplementedError("Only group_size 16 are supported for nvfp.")
-        self.infeatures = infeatures
-        self.outfeatures = outfeatures
-        self.bits = bits
-        self.data_type = data_type
-        self.sym = kwargs.get("sym", True)
-        self.group_size = group_size if group_size != -1 else infeatures
-        self.maxq = 2**self.bits - 1
-        self.act_bits = kwargs.get("act_bits", None)
-
-        weight_name = "weight" if self.bits == 8 and self.is_mx else "weight_packed"
-        ## TODO check the dtype of weight_packed and weight_scale
-        self.register_buffer(
-            weight_name,
-            torch.zeros((infeatures // 32 * self.bits, outfeatures), dtype=torch.int32),
-        )
-        if not self.sym:
-            ## TODO Currently only sym quant is supported for mxfp dtype. Is weight_zero_point param necessary？
-            self.register_buffer(
-                "weight_zero_point",
-                torch.zeros(
-                    (
-                        math.ceil(infeatures / self.group_size),
-                        outfeatures // 32 * self.bits,
-                    ),
-                    dtype=torch.int32,
-                ),
-            )
-        self.register_buffer(
-            "weight_scale",
-            torch.zeros(
-                (math.ceil(infeatures / self.group_size), outfeatures),
-                dtype=torch.float16,  ## TODO update to correct scale dtype for different bits
-            ),
-        )
-        if self.is_nv and self.bits == 4:
-            self.register_buffer(
-                "weight_global_scale",
-                torch.zeros(
-                    (1),
-                    dtype=torch.float32,
-                ),
-            )
-        if self.is_nv and self.act_bits <= 8:
-            self.register_buffer(
-                "input_global_scale",
-                torch.zeros(
-                    (1),
-                    dtype=torch.float32,
-                ),
-            )
-        if bias:
-            self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
-        else:
-            self.bias = None
-
-        self.trainable = trainable
-
-    def post_init(self):
-        pass
-
-    def pack(self, linear, scales, zeros=None, g_idx=None, global_scale=None, input_global_scale=None):
-        if linear.bias is not None:
-            self.bias = linear.bias.clone().half()
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda:0"
-        elif torch.xpu.is_available():
-            device = "xpu:0"
-
-        W = linear.weight.data.to(device).clone()  # TODO check is nesscessory
-        if isinstance(linear, nn.Conv2d):
-            W = W.flatten(1)
-        if isinstance(linear, transformers.pytorch_utils.Conv1D):
-            W = W.t()
-
-        tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(linear.weight, self.group_size)
-        if self.is_nv:
-            assert global_scale is not None and global_scale.numel() == 1
-            scaled_tensor = tensor.to(global_scale.dtype) * get_reciprocal(
-                scales.reshape(tensor.shape[0], -1) * get_reciprocal(global_scale)
-            )
-            scaled_tensor = cast_to_fp4(torch.clamp(scaled_tensor, -6.0, 6.0))
-        else:
-            scaled_tensor = tensor / (2 ** scales.reshape(tensor.shape[0], -1))
-        scaled_tensor = revert_tensor_by_pad(scaled_tensor, orig_shape=orig_shape, pad_len=pad_len)
-        if self.is_mx:
-            final_scale = (scales + E8M0_EXPONENT_BIAS).clamp(0, E8M0_EXPONENT_NAN_VAL).to(torch.uint8)
-        else:
-            final_scale = scales.to(torch.float8_e4m3fn)
-        self.weight_scale = final_scale
-        # self.weight =  get_compressed_weight(scaled_tensor, self.bits, self.data_type) ## TODO
-        if self.bits == 8:
-            compress_dtype = torch.float8_e4m3fn
-            self.weight = scaled_tensor.to(compress_dtype)
-        else:
-            compress_dtype = torch.uint8
-            self.weight_packed = self.pack_fp4_to_uint8(scaled_tensor)
-
-        if global_scale is not None:
-            self.weight_global_scale = global_scale.to(torch.float32).to(device)
-
-        if input_global_scale is not None:
-            self.input_global_scale = input_global_scale.to(torch.float32).to(device)
+def pack_layer(name, model, backend):
+    if name == "lm_head":  # TODO: Check vLLM inference status to determine whether to enable this feature
         return
+    layer = get_module(model, name)
 
-    def pack_fp4_to_uint8(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Packs a tensor with values in the fp4 range into uint8.
-        As there are 16 valid fp4 values, two fp4 values can be
-        packed into one uint8. Each fp4 value is mapped to its
-        particular index (e.g. 0.5 is mapped to index 1, 6.0 is mapped
-        to index 7) which is then represented using 4 bits. Consecutive
-        pairs of 4 bits are then packed into an uint8.
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES) and not isinstance(layer, WrapperWALayer): ##already packed
+        return
+    
+    if isinstance(layer, WrapperWALayer): # revert WrapperWALayer for offline usage
+        wp_layer = layer
+        layer = wp_layer.orig_layer
+        set_module(model, name, layer)
+    
+    data_type = layer.data_type
+    act_bits = layer.act_bits
+    act_data_type = layer.act_data_type
+    bits = layer.bits
+    if bits > 8:
+        return
+    group_size = layer.group_size
+    sym = layer.sym
+    device = layer.weight.device
 
-        :param x: tensor to pack
-        returns: a packed tensor in uint8
-        """
+    if is_nv_fp(act_data_type) and act_bits <= 8:
+        if not getattr(layer, "input_global_scale", None):
+            assert hasattr(layer, "act_max")
+            from auto_round.data_type.nvfp import calculate_gparam
+            input_global_scale = calculate_gparam(layer.act_max, layer.group_size, "cpu") #, model.device
+            setattr(layer, "input_global_scale", input_global_scale)
+            delattr(layer, "act_max")
 
-        m, n = x.shape
-        device = x.device
+    # QuantLinear = get_fp_qlinear(backend, bits, group_size, sym)
 
-        # Create lookup table for FP4 values to indices
-        # Map the absolute values to 0-7 indices
-        kE2M1 = torch.tensor(FLOAT_TO_E2M1, device=device, dtype=x.dtype)
+    if isinstance(layer, nn.Linear):
+        in_features = layer.in_features
+        out_features = layer.out_features
+    elif isinstance(layer, nn.Conv2d):
+        in_features = layer.in_channels
+        out_features = layer.out_channels
+    elif isinstance(layer, transformers.pytorch_utils.Conv1D):
+        in_features = layer.weight.shape[0]
+        out_features = layer.weight.shape[1]
 
-        # Find closest valid FP4 value index for each element
-        abs_x = torch.abs(x)
-        abs_indices = torch.zeros_like(abs_x, dtype=torch.long)
-        for i, val in enumerate(kE2M1):  # TODO any optimize?
-            abs_indices = torch.where(torch.isclose(abs_x, val), i, abs_indices)
+    bias = layer.bias is not None
+    ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
+    new_layer = QuantLinear(  ##pylint: disable=E1123
+        bits,
+        group_size,
+        in_features,
+        out_features,
+        bias,
+        weight_dtype=layer.weight.dtype,
+        sym=sym,
+        data_type=data_type,
+        act_bits=act_bits,
+        act_data_type=act_data_type,
+    )
 
-        # Apply sign bit (bit 3) to get final 4-bit representation
-        indices = abs_indices + (torch.signbit(x) << 3).to(torch.long)
+    new_layer.device = device
+    set_module(model, name, new_layer)
+    qlayer = new_layer
+    scale = layer.scale
+    global_scale = getattr(layer, "weight_global_scale", None)
+    input_global_scale = getattr(layer, "input_global_scale", None)
+    # zero = layer.zp
+    # so far can only pack layer on CPU
+    qlayer.to("cpu")
+    layer, scale = layer.to("cpu"), scale.to("cpu")
+    qlayer.pack(layer, scale, global_scale=global_scale, input_global_scale=input_global_scale)
+    ## no zeros to handle, as mxfp not support asym quantization
+    qlayer.to(device)
 
-        # Reshape to prepare for packing pairs of values
-        indices = indices.reshape(-1)
 
-        # Handle odd length by padding if necessary
-        if indices.numel() % 2 != 0:
-            indices = torch.cat([indices, torch.zeros(1, dtype=torch.long, device=device)])
+def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
+    """
+    Saves a quantized model of mxfp/nvfp data_type in the auto-round format.
 
-        # Reshape to pair consecutive elements
-        indices = indices.reshape(-1, 2)
+    Args:
+        output_dir (str): The directory where the quantized model will be saved.
+        inplace (bool, optional): If True, modifies the model in place. Otherwise, creates a deepcopy of the model.
+                                Default is True.
+        backend (str, optional): The backend to be used for quantization.
+                                  Default is "autoround:exllamav2".
+        **kwargs: Additional keyword arguments including:
+            - model (nn.Module): The model to be quantized.
+            - layer_config (dict): The layer configuration for each layer.
+            - serialization_dict (dict): The serialization configuration.
+            - tokenizer (Tokenizer, optional): The tokenizer to be saved.
 
-        # Pack pairs of 4-bit values into 8-bit values
-        packed = (indices[:, 0] | (indices[:, 1] << 4)).to(torch.uint8)
+    Returns:
+        None
 
-        return packed.reshape(m, n // 2)
+    Raises:
+        ValueError: If the backend is not supported.
+    """
+    model = kwargs["model"]
+    backend = kwargs.get("backend", None)
+    bits = kwargs.get("bits", None)
+    data_type = kwargs.get("data_type", None)
+    act_bits = kwargs.get("act_bits", None)
+    act_data_type = kwargs.get("act_data_type", None)
+    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
+    if not inplace:
+        model = copy.deepcopy(model.to("cpu"))
+    layer_config = kwargs["layer_config"]
+    quantization_config = kwargs["serialization_dict"]
+    quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
+    quantization_config["quant_method"] = "auto-round"
+    quantization_config["packing_format"] = backend
+    quantization_config["scale_format"] = ("e8m0",)
+    quantization_config["scale_calculation_mode"] = ("even",)
+    
+    tokenizer = kwargs.get("tokenizer", None)
+    processor = kwargs.get("processor", None)
+    extra_config = {}
 
-    # def get_fp_scale(self, scale_e8m0):
-    #     E8M0_EXPONENT_BIAS = 127
-    #     E8M0_EXPONENT_NAN_VAL = 255
+    if act_bits <= 8:
+        # revert WrapperWALayer for offline usage
+        for n, m in model.named_modules():
+            if isinstance(m, WrapperWALayer):
+                orig_layer = m.orig_layer
+                if not getattr(orig_layer, "input_global_scale", None):
+                    assert hasattr(orig_layer, "act_max")
+                    from auto_round.data_type.nvfp import calculate_gparam
+                    input_global_scale = calculate_gparam(orig_layer.act_max, orig_layer.group_size, model.device)
+                    setattr(orig_layer, "input_global_scale", input_global_scale)
+                    delattr(orig_layer, "act_max")
+                set_module(model, n, orig_layer)
 
-    #     scale_e8m0 = scale_e8m0.view(torch.uint8)
-    #     s_offset = scale_e8m0.to(torch.int16) - E8M0_EXPONENT_BIAS
-    #     # TODO(later): it would be nice if there was a way to do the 2^x operation
-    #     # in PyTorch without creating a tensor of twos
-    #     two = torch.full(s_offset.size(), 2.0, device=scale_e8m0.device)
-    #     # pow(two, s_offset) can be out of range of floating point formats.
-    #     # TODO(later): handle this for float16 if we decide to support float16
-    #     # scales.
-    #     s_fp = torch.pow(two, s_offset)
+        # update input_global_scale
+        from auto_round.data_type.utils import update_fused_layer_global_scales
+        modules = list(model.modules())
+        for module in tqdm(modules, desc="Update input global scale for fuse modules"):
+            update_fused_layer_global_scales(module, base_name="input")
 
-    #     # If a block exponent was 255, set values of that block to NaN
-    #     s_fp = torch.where(scale_e8m0 != E8M0_EXPONENT_NAN_VAL, s_fp, float("nan"))
+    block_name_to_quantize = quantization_config["block_name_to_quantize"]
+    if isinstance(block_name_to_quantize, str):
+        block_name_to_quantize = block_name_to_quantize.split(",")
+    elif isinstance(block_name_to_quantize, list):
+        for i in range(len(block_name_to_quantize)):
+            block_name_to_quantize[i] = os.path.commonprefix(block_name_to_quantize[i]).rstrip(".")
 
-    #     return s_fp
+    for layer_name in layer_config:
+        if (
+            not layer_config[layer_name]["in_blocks"] and layer_config[layer_name]["bits"] <= 8
+        ):  ##lm head ##TODO fix act and so on
+            extra_config[layer_name] = {}
+            extra_config[layer_name]["bits"] = layer_config[layer_name]["bits"]
+            extra_config[layer_name]["data_type"] = layer_config[layer_name]["data_type"]
+            extra_config[layer_name]["group_size"] = layer_config[layer_name]["group_size"]
+            extra_config[layer_name]["sym"] = layer_config[layer_name]["sym"]
+        elif layer_config[layer_name]["in_blocks"] or (
+            block_name_to_quantize is not None and check_start_with_block_name(layer_name, block_name_to_quantize)
+        ):
+            neq_keys = check_neq_config(
+                layer_config[layer_name],
+                data_type=quantization_config["data_type"],
+                bits=quantization_config["bits"],
+                act_bits=quantization_config["act_bits"],
+                group_size=quantization_config["group_size"],
+                sym=quantization_config["sym"],
+            )
+            if len(neq_keys) > 0:
+                extra_config[layer_name] = {}
+            for key in neq_keys:
+                if layer_config[layer_name][key] is not None:
+                    extra_config[layer_name][key] = layer_config[layer_name][key]
+    if len(extra_config) > 0:
+        quantization_config["extra_config"] = extra_config
+    names = list(layer_config.keys())
+    max_workers = 1
+    if not torch.cuda.is_available() or not torch.xpu.is_available():
+        max_workers = 2  ## 2 with cuda packing will cause hang occasionally
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with tqdm(total=len(names), leave=True) as pbar:
 
-    # def get_compressed_weight(self, tensor, bits, data_type):
-    #     data_type = str(data_type)
-    #     compress_dtype = None
-    #     if self.is_mx:
-    #         if bits == 4:
+            def wrapper(name):
+                pbar.set_description(f"packing {name}")
+                with tctl.threadpool_limits(limits=1):
+                    pack_layer(name, model, backend)
+                pbar.update(1)
 
-    #     if self.is_nv:
-    #         pass ## TODO
+            for _ in executor.map(wrapper, names):
+                pass
+    filter_quantization_config(quantization_config)
+
+    if hasattr(model, "config"):
+        model.config.quantization_config = quantization_config
+    if output_dir is None:
+        return model
+
+    if output_dir is None:
+        model.tokenizer = tokenizer
+        return model
+    if os.path.exists(output_dir):
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
+    if tokenizer is not None:
+        tokenizer.save_pretrained(output_dir)
+
+    if processor is not None:
+        processor.save_pretrained(output_dir)
+
+    dtype = None
+    save(model, output_dir, safe_serialization=safe_serialization, dtype=dtype)
+
+    return model
+
+
+def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_serialization: bool = True, dtype=None):
+    """Save model state dict and configs.
+
+    Args:
+        model (`nn.Module`):
+            Model to be saved. The model can be wrapped or unwrapped.
+        save_dir (`str`):
+            Directory to which to save. Will be created if it doesn't exist.
+        max_shard_size (`str`, defaults to `"10GB"`):
+            The maximum size for a checkpoint before being sharded. Checkpoints shard will then be each of size
+            lower than this size. If expressed as a string, needs to be digits followed by a unit (like `"5MB"`).
+            <Tip warning={true}>
+
+            If a single weight of the model is bigger than `max_shard_size`, it will be in its own checkpoint shard
+            which will be bigger than `max_shard_size`.
+
+            </Tip>
+        safe_serialization (`bool`, defaults to `True`):
+            Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    config_path = os.path.join(save_dir, "config.json")
+    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
+        with open(config_path, "r") as file:
+            data = json.load(file)
+        data["torch_dtype"] = str(dtype).split(".")[-1]
+        with open(config_path, "w") as file:
+            json.dump(data, file, indent=2)
+    config_file = "quantization_config.json"
+    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
+            json.dump(model.config.quantization_config, f, indent=2)
+

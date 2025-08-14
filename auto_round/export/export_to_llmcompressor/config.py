@@ -92,12 +92,11 @@ if check_compressed_tensors_supported():
     )
 
 
+# please refer to https://github.com/vllm-project/llm-compressor/blob/
+# 29f4d5644b48e9c8ebb7e36d5be9f7c92747ceb7/src/llmcompressor/modifiers/quantization/quantization/mixin.py#L168
 def initialize_quantization(scheme, targets=["Linear"], config_groups=None, kv_cache_scheme=None, ignore=["lm_head"]):
     """
-    Attach quantization schemes and observers to modules in the model according to
-    the quantization config specified on this modifier
-
-    :param model: model to attach schemes and observers to
+    Attach quantization schemes to modules in the model and initialize the quantization config
     """
 
     # apply scheme and status to model
@@ -137,3 +136,4 @@ def initialize_quantization(scheme, targets=["Linear"], config_groups=None, kv_c
         quantization_status=QuantizationStatus.COMPRESSED,
         ignore=ignore,
     )
+

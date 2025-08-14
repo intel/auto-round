@@ -35,7 +35,6 @@ from auto_round.utils import (
     SUPPORTED_DTYPES,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
-    BackendDataType,
     CpuInfo,
     _gguf_args_check,
     block_forward,
@@ -195,6 +194,8 @@ class AutoRound(object):
         enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
         if not disable_deterministic_algorithms:
+            if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
+                os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
             torch.use_deterministic_algorithms(True, warn_only=False)
 
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
@@ -625,6 +626,10 @@ class AutoRound(object):
                 if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
                     format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
                     formats[index] = format
+                elif not is_standard_fp(self.data_type):
+                    logger.error(
+                        "Currently, the llmcompressor format only supports MXFP/NVFP/StandardFP8. Please change format to fake or auto_round etc."
+                    )
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
@@ -1339,9 +1344,7 @@ class AutoRound(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
-                if is_nv_fp(self.act_data_type) and any(
-                    BackendDataType.NV_FP.value in format_ for format_ in self.formats
-                ):
+                if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
                     from auto_round.utils import set_amax_for_all_moe_layers
 
                     # enable moe experts act_max automatic generation for linears
@@ -2262,15 +2265,12 @@ class AutoRound(object):
                 module.act_max = act_max
             else:
                 act_max = act_max.to(module.act_max.device)
-                try:
-                    if is_nv_fp(self.data_type):  ## for nvfp per-tensor input_global_scale calculation usage
-                        module.act_max = torch.max(
-                            torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
-                        )
-                    else:
-                        module.act_max = torch.max(act_max, module.act_max)
-                except RuntimeError as error:
-                    raise str(error)
+                if is_nv_fp(self.data_type):  ## for nvfp per-tensor input_global_scale calculation usage
+                    module.act_max = torch.max(
+                        torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
+                    )
+                else:
+                    module.act_max = torch.max(act_max, module.act_max)
 
         hook_handles = []
 
@@ -2495,7 +2495,7 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_params)
         if self.enable_quanted_input:
-            if is_nv_fp(self.act_data_type) and any(BackendDataType.NV_FP.value in format_ for format_ in self.formats):
+            if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
                 from auto_round.utils import set_amax_for_all_moe_layers
 
                 # enable moe experts act_max automatic generation for WrapperWALayer
@@ -2670,6 +2670,8 @@ class AutoRound(object):
                 "Support for exporting activation quantization is limited. "
                 "Please ensure that your configuration is supported."
             )
+        if format == "llmcompressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+            format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
 
         from auto_round.export import EXPORT_FORMAT
 
@@ -3180,3 +3182,4 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+
