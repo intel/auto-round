@@ -127,7 +127,8 @@ def get_moe_name(cls, name, new_name):
 
 
 def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
-    for name, tensor in cls.model.named_parameters():
+    # for name, tensor in cls.model.named_parameters():
+    for name, tensor in cls.model._fix_state_dict_keys_on_save(cls.model.state_dict()).items():
         yield name, tensor
 
 
