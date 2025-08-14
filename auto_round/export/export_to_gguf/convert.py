@@ -50,6 +50,7 @@ from transformers import AutoConfig
 
 from auto_round.export.export_to_gguf.packing import ggml_quant
 from auto_round.utils import LazyImport, clean_module_parameter, get_module, logger
+from auto_round.export.export_to_gguf.config import ModelType
 
 gguf = LazyImport("gguf")
 
@@ -108,7 +109,7 @@ def get_moe_name(cls, name, new_name):
         "FFN_DOWN_EXP": ["down_proj", "w2", "linear_1"],
         "FFN_UP_EXP": ["up_proj", "w3", "linear_v"],
     }
-    nums = re.findall("\d+", name)
+    nums = re.findall(r"\d+", name)
     if len(nums) != 2:
         return name
     name_tmp = name[: -len(".weight")].replace(f".{nums[1]}", "")
@@ -127,12 +128,20 @@ def get_moe_name(cls, name, new_name):
 
 
 def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
-    # for name, tensor in cls.model.named_parameters():
-    if not hasattr(cls, "tensor_name_list"):
-        cls.tensor_name_list = []
-    for name, tensor in cls.model._fix_state_dict_keys_on_save(cls.model.state_dict()).items():
-        if name not in cls.tensor_name_list:
-            cls.tensor_name_list.append(name)
+    if not hasattr(cls.model, "tensor_name_list"):
+        cls.model.tensor_name_list = []
+    
+    reverse_key_mapping = {v: k for k, v in cls.model._checkpoint_conversion_mapping.items()}
+    for name, tensor in cls.model.named_parameters():
+        if name not in cls.model.tensor_name_list:
+            cls.model.tensor_name_list.append(name)
+            for pattern, replacement in reverse_key_mapping.items():
+                replacement = replacement.lstrip("^")  # strip off un-needed chars and patterns
+                replacement = re.sub(r"\(.*\)", "", replacement)
+                key, n_replace = re.subn(pattern, replacement, name)
+                cls.model.tensor_name_list.append(key)
+                if n_replace > 0:
+                    break
         yield name, tensor
     
     extra_tensor = {}
@@ -145,18 +154,19 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
             dir_path = download_hf_model(dir_path)
         INDEX_FILE = "model.safetensors.index.json"
         if INDEX_FILE in os.listdir(dir_path):
-            tensor_index = json.load(open(os.path.join(dir_path, INDEX_FILE)))
+            with open(os.path.join(dir_path, INDEX_FILE)) as f:
+                tensor_index = json.load(f)
             for tensor_name in tensor_index["weight_map"]:
-                if tensor_name not in cls.tensor_name_list:
+                if tensor_name not in cls.model.tensor_name_list:
                     extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
         else:
             f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
             for tensor_name in f.keys():
-                if tensor_name not in cls.tensor_name_list:
+                if tensor_name not in cls.model.tensor_name_list:
                     extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
-        
+    
     for name, tensor in extra_tensor.items():
-        yield name, tensor     
+        yield name, tensor   
 
 
 def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
@@ -541,7 +551,7 @@ def prepare_tensors(cls):
                     data = _quant_data_with_args(data_torch, data_qtype, **attr_list)
 
                 # for MOE model
-                elif len(data_torch.shape) == 3 and len(re.findall("\d+", name)) == 2:
+                elif len(data_torch.shape) == 3 and len(re.findall(r"\d+", name)) == 2:
                     new_data = []
                     for idx, arr in enumerate(data_torch):
                         arr_name = name.split(".")

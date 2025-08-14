@@ -36,8 +36,9 @@ def get_tensor_from_file(dir_path, tensor_name):
     INDEX_FILE = "model.safetensors.index.json"
     # get filename
     if INDEX_FILE in os.listdir(dir_path):
-        tensor_index = json.load(open(os.path.join(dir_path, INDEX_FILE)))
-        filename = tensor_index["weight_map"][tensor_name]
+        with open(os.path.join(dir_path, INDEX_FILE)) as f:
+            tensor_index = json.load(f)
+            filename = tensor_index["weight_map"][tensor_name]
     else:
         filename = "model.safetensors"
 
