@@ -134,12 +134,14 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
         if name not in cls.tensor_name_list:
             cls.tensor_name_list.append(name)
         yield name, tensor
-    
+
     extra_tensor = {}
     if hasattr(cls.model, "name_or_path"):
         from safetensors import safe_open
-        from auto_round.utils import download_hf_model
+
         from auto_round.export.export_to_gguf.special_handle import get_tensor_from_file
+        from auto_round.utils import download_hf_model
+
         dir_path = cls.model.name_or_path
         if not os.path.isdir(dir_path):
             dir_path = download_hf_model(dir_path)
@@ -154,9 +156,9 @@ def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
             for tensor_name in f.keys():
                 if tensor_name not in cls.tensor_name_list:
                     extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
-        
+
     for name, tensor in extra_tensor.items():
-        yield name, tensor     
+        yield name, tensor
 
 
 def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
