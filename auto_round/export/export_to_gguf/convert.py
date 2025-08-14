@@ -128,8 +128,35 @@ def get_moe_name(cls, name, new_name):
 
 def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
     # for name, tensor in cls.model.named_parameters():
+    if not hasattr(cls, "tensor_name_list"):
+        cls.tensor_name_list = []
     for name, tensor in cls.model._fix_state_dict_keys_on_save(cls.model.state_dict()).items():
+        if name not in cls.tensor_name_list:
+            cls.tensor_name_list.append(name)
         yield name, tensor
+    
+    extra_tensor = {}
+    if hasattr(cls.model, "name_or_path"):
+        from safetensors import safe_open
+        from auto_round.utils import download_hf_model
+        from auto_round.export.export_to_gguf.special_handle import get_tensor_from_file
+        dir_path = cls.model.name_or_path
+        if not os.path.isdir(dir_path):
+            dir_path = download_hf_model(dir_path)
+        INDEX_FILE = "model.safetensors.index.json"
+        if INDEX_FILE in os.listdir(dir_path):
+            tensor_index = json.load(open(os.path.join(dir_path, INDEX_FILE)))
+            for tensor_name in tensor_index["weight_map"]:
+                if tensor_name not in cls.tensor_name_list:
+                    extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
+        else:
+            f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
+            for tensor_name in f.keys():
+                if tensor_name not in cls.tensor_name_list:
+                    extra_tensor[tensor_name] = get_tensor_from_file(dir_path, tensor_name)
+        
+    for name, tensor in extra_tensor.items():
+        yield name, tensor     
 
 
 def _quant_data_with_args(data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None):
