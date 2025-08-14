@@ -46,13 +46,8 @@ from auto_round.utils import LazyImport
 gguf = LazyImport("gguf")
 MistralTokenizerType = LazyImport("gguf.vocab.MistralTokenizerType")
 MistralVocab = LazyImport("gguf.vocab.MistralVocab")
-from mistral_common.tokens.tokenizers.base import TokenizerVersion  # pylint: disable=E0401
-from mistral_common.tokens.tokenizers.multimodal import DATASET_MEAN, DATASET_STD  # pylint: disable=E0401
-from mistral_common.tokens.tokenizers.sentencepiece import (  # pylint: disable=E0401
-    SentencePieceTokenizer,
-)
-from mistral_common.tokens.tokenizers.tekken import Tekkenizer  # pylint: disable=E0401
-
+DATASET_MEAN = LazyImport("mistral_common.tokens.tokenizers.multimodal.DATASET_MEAN")
+DATASET_STD = LazyImport("mistral_common.tokens.tokenizers.multimodal.DATASET_STD")
 logger = logging.getLogger("hf-to-gguf")
 
 ###### MODEL DEFINITIONS ######
@@ -1365,6 +1360,7 @@ class MmprojModel(ModelBase):
         self.gguf_writer.add_type(gguf.GGUFType.MMPROJ)
 
     def set_gguf_parameters(self):
+
         self.gguf_writer.add_file_type(self.ftype)
 
         if self.has_vision_encoder:
@@ -8628,7 +8624,11 @@ class MistralModel(LlamaModel):
     undo_permute = False
 
     @staticmethod
-    def get_community_chat_template(vocab: MistralVocab, templates_dir: Path):
+    def get_community_chat_template(vocab, templates_dir: Path):
+        from mistral_common.tokens.tokenizers.base import TokenizerVersion  # pylint: disable=E0401
+        from mistral_common.tokens.tokenizers.sentencepiece import SentencePieceTokenizer  # pylint: disable=E0401
+        from mistral_common.tokens.tokenizers.tekken import Tekkenizer  # pylint: disable=E0401
+
         assert TokenizerVersion is not None, "mistral_common is not installed"
         assert isinstance(
             vocab.tokenizer, (Tekkenizer, SentencePieceTokenizer)
