@@ -1,6 +1,5 @@
 addict
 modelscope
 gguf
-mistral_common
 torchvision
 compressed-tensors

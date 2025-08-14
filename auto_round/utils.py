@@ -2416,4 +2416,3 @@ def is_mx_fp(backend):
 
 def is_nv_fp(backend):
     return BackendDataType.NV_FP in backend
-

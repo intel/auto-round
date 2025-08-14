@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 def check_neq_config(config, data_type, bits, act_bits, group_size, sym):
     """
     Checks if the provided configuration parameters are not equal to the values in the config dictionary.
@@ -26,10 +27,11 @@ def check_neq_config(config, data_type, bits, act_bits, group_size, sym):
     Returns:
         list: A list of strings indicating which configuration parameters do not match.
     """
-    expected_config = {"data_type": data_type,
-                       "bits": bits,
-                       "group_size": group_size,
-                       "sym": sym,
-                       "act_bits": act_bits,
-                       }
+    expected_config = {
+        "data_type": data_type,
+        "bits": bits,
+        "group_size": group_size,
+        "sym": sym,
+        "act_bits": act_bits,
+    }
     return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]

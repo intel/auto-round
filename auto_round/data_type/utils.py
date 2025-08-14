@@ -303,4 +303,3 @@ def update_fused_layer_global_scales(submodule: torch.nn.Module, base_name="weig
             setattr(submodule.up_proj, global_scale_name, global_scale.clone())
 
         del global_scale
-

@@ -90,4 +90,3 @@ def _packing_layer_with_llmcompressor(*args, **kwargs):
     from auto_round.export.export_to_llmcompressor.export import pack_layer
 
     return pack_layer(*args, **kwargs)
-
