@@ -252,11 +252,11 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-
     def test_mxfp4_llmcompressor_format(self):
         model_name = "facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
+
         bits = 4
         data_type = "mx_fp4e2m1"
         group_size = 32
@@ -283,7 +283,7 @@ class TestAutoRound(unittest.TestCase):
             and hasattr(tmp_layer, "weight_packed")
             and tmp_layer.weight_scale.dtype is torch.uint8
             and tmp_layer.weight_scale.shape[0] == 768
-        ), f"Illegal MXFP4 packing name or data_type or shape"
+        ), "Illegal MXFP4 packing name or data_type or shape"
         quantization_config = AutoConfig.from_pretrained(
             quantized_model_path, trust_remote_code=True
         ).quantization_config
@@ -298,6 +298,7 @@ class TestAutoRound(unittest.TestCase):
         model_name = "facebook/opt-125m"
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         from transformers import AutoConfig
+
         bits = 8
         data_type = "mx_fp8e4m3_rceil"
         group_size = 32
@@ -314,9 +315,7 @@ class TestAutoRound(unittest.TestCase):
             dataset=self.llm_dataloader,
         )
         quantized_model_path = self.save_dir
-        compressed_model,_ = autoround.quantize_and_save(
-            output_dir=quantized_model_path, format="llmcompressor"
-        )
+        compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="llmcompressor")
         tmp_layer = compressed_model.model.decoder.layers[3].self_attn.q_proj
         assert (
             hasattr(tmp_layer, "weight_scale")
@@ -324,7 +323,7 @@ class TestAutoRound(unittest.TestCase):
             and tmp_layer.weight.dtype is torch.float8_e4m3fn
             and tmp_layer.weight_scale.dtype is torch.uint8
             and tmp_layer.weight_scale.shape[0] == 768
-        ), f"Illegal MXFP8 packing name or data_type or shape"
+        ), "Illegal MXFP8 packing name or data_type or shape"
         quantization_config = AutoConfig.from_pretrained(
             quantized_model_path, trust_remote_code=True
         ).quantization_config
@@ -419,4 +418,3 @@ class TestAutoRound(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

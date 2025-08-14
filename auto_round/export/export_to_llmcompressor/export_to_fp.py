@@ -24,6 +24,7 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
+from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -31,34 +32,35 @@ from auto_round.utils import (
     filter_quantization_config,
     get_block_names,
     get_module,
-    logger,
-    set_module,
-    set_amax_for_all_moe_layers,
-    is_nv_fp,
     is_mx_fp,
+    is_nv_fp,
+    logger,
+    set_amax_for_all_moe_layers,
+    set_module,
 )
 from auto_round.wrapper import WrapperWALayer
-from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+
 from .config import check_compressed_tensors_supported
 
 __all__ = [
     "pack_layer",
     "save_quantized_as_fp",
-    ]
+]
+
 
 def pack_layer(name, model, backend):
-    if name == "lm_head": # TODO: Check vLLM inference status to determine whether to enable this feature
+    if name == "lm_head":  # TODO: Check vLLM inference status to determine whether to enable this feature
         return
     layer = get_module(model, name)
 
-    if not isinstance(layer, SUPPORTED_LAYER_TYPES) and not isinstance(layer, WrapperWALayer): ##already packed
+    if not isinstance(layer, SUPPORTED_LAYER_TYPES) and not isinstance(layer, WrapperWALayer):  ##already packed
         return
-    
-    if isinstance(layer, WrapperWALayer): # revert WrapperWALayer for offline usage
+
+    if isinstance(layer, WrapperWALayer):  # revert WrapperWALayer for offline usage
         wp_layer = layer
         layer = wp_layer.orig_layer
         set_module(model, name, layer)
-    
+
     data_type = layer.data_type
     act_bits = layer.act_bits
     act_data_type = layer.act_data_type
@@ -73,7 +75,8 @@ def pack_layer(name, model, backend):
         if not getattr(layer, "input_global_scale", None):
             assert hasattr(layer, "act_max")
             from auto_round.data_type.nvfp import calculate_gparam
-            input_global_scale = calculate_gparam(layer.act_max, layer.group_size) #, model.device
+
+            input_global_scale = calculate_gparam(layer.act_max, layer.group_size)  # , model.device
             setattr(layer, "input_global_scale", input_global_scale)
             delattr(layer, "act_max")
 
@@ -163,6 +166,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
                 if not getattr(orig_layer, "input_global_scale", None):
                     assert hasattr(orig_layer, "act_max")
                     from auto_round.data_type.nvfp import calculate_gparam
+
                     input_global_scale = calculate_gparam(orig_layer.act_max, orig_layer.group_size, model.device)
                     setattr(orig_layer, "input_global_scale", input_global_scale)
                     delattr(orig_layer, "act_max")
@@ -170,6 +174,7 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
 
         # update input_global_scale
         from auto_round.data_type.utils import update_fused_layer_global_scales
+
         modules = list(model.modules())
         for module in tqdm(modules, desc="Update input global scale for fuse modules"):
             update_fused_layer_global_scales(module, base_name="input")
@@ -193,25 +198,28 @@ def save_quantized_as_fp(output_dir, inplace=True, **kwargs):
     # TODO fix the ignore re match issue, compile with fp8 & int8 config
     ignore = ["lm_head"]
     for layer_name in layer_config:
-        if layer_config[layer_name]["bits"] > 8: ## find ignore layers
+        if layer_config[layer_name]["bits"] > 8:  ## find ignore layers
             ignore.append(layer_name)
         ignore = list(set(ignore))
-           
+
     # get llm-compressor format config
     check_compressed_tensors_supported()
     from .config import initialize_quantization
+
     scheme = "NVFP4"
     quantization_config = initialize_quantization(scheme=scheme)
     setattr(quantization_config, "format", "nvfp4-pack-quantized")
     setattr(quantization_config, "ignore", ignore)
     quantization_config = quantization_config.to_dict()
-    if is_mx_fp(data_type): # Manually replace some parameters, as compressed-tensor is not support MXFP scheme yet
-        quantization_config['config_groups']['group_0']['weights']['num_bits'] = bits
-        quantization_config['config_groups']['group_0']['input_activations']['num_bits'] = act_bits if act_bits <= 8 else bits
-        quantization_config['config_groups']['group_0']['weights']['is_mx'] = True
-        quantization_config['config_groups']['group_0']['input_activations']['is_mx'] = True
-        quantization_config['config_groups']['group_0']['weights']['group_size'] = 32
-        quantization_config['config_groups']['group_0']['input_activations']['group_size'] = 32
+    if is_mx_fp(data_type):  # Manually replace some parameters, as compressed-tensor is not support MXFP scheme yet
+        quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] = bits
+        quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"] = (
+            act_bits if act_bits <= 8 else bits
+        )
+        quantization_config["config_groups"]["group_0"]["weights"]["is_mx"] = True
+        quantization_config["config_groups"]["group_0"]["input_activations"]["is_mx"] = True
+        quantization_config["config_groups"]["group_0"]["weights"]["group_size"] = 32
+        quantization_config["config_groups"]["group_0"]["input_activations"]["group_size"] = 32
         quantization_config["format"] = "float-quantized"
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
@@ -268,4 +276,3 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "5GB", safe_seri
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
