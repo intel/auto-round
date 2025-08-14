@@ -628,7 +628,8 @@ class AutoRound(object):
                     formats[index] = format
                 elif not is_standard_fp(self.data_type):
                     logger.error(
-                        "Currently, the llmcompressor format only supports MXFP/NVFP/StandardFP8. Please change format to fake or auto_round etc."
+                        "Currently, the llmcompressor format only supports MXFP/NVFP/StandardFP8. "
+                        "Please change format to fake or auto_round etc."
                     )
 
         # Remove duplicates from formats list
@@ -1179,8 +1180,7 @@ class AutoRound(object):
                         model_type=model_type,
                     )
                 else:
-                    kwargs = {}
-                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0], **kwargs)
+                    PACKING_LAYER_WITH_FORMAT[target_backend](name, self.model, self.formats[0])
 
                 # if self.low_gpu_mem_usage:
                 #     clear_memory()
@@ -2617,10 +2617,7 @@ class AutoRound(object):
                                 model_type=model_type,
                             )
                         else:
-                            kwargs = {}
-                            PACKING_LAYER_WITH_FORMAT[target_backend](
-                                tmp_m.tmp_name, self.model, self.formats[0], **kwargs
-                            )
+                            PACKING_LAYER_WITH_FORMAT[target_backend](tmp_m.tmp_name, self.model, self.formats[0])
         pbar.set_description("Quantizing done")
         pbar.update(1)
 
@@ -3182,3 +3179,4 @@ class AutoRoundAdam(AutoRoundOPT):
             super_group_size=super_group_size,
             **kwargs,
         )
+
