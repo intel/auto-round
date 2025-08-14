@@ -52,6 +52,7 @@ logger = logging.getLogger("hf-to-gguf")
 
 ###### MODEL DEFINITIONS ######
 
+
 class SentencePieceTokenTypes(IntEnum):
     NORMAL = 1
     UNKNOWN = 2
@@ -8627,6 +8628,7 @@ class MistralModel(LlamaModel):
         from mistral_common.tokens.tokenizers.base import TokenizerVersion  # pylint: disable=E0401
         from mistral_common.tokens.tokenizers.sentencepiece import SentencePieceTokenizer  # pylint: disable=E0401
         from mistral_common.tokens.tokenizers.tekken import Tekkenizer  # pylint: disable=E0401
+
         assert TokenizerVersion is not None, "mistral_common is not installed"
         assert isinstance(
             vocab.tokenizer, (Tekkenizer, SentencePieceTokenizer)
