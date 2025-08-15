@@ -59,7 +59,7 @@ class TestGGUF(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q4_0")
-        gguf_file = os.listdir(quantized_model_path)[0]
+        gguf_file = "Qwen2.5-0.5B-Instruct-494M-Q4_0.gguf"
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
@@ -79,7 +79,7 @@ class TestGGUF(unittest.TestCase):
         quantized_model_path = "./saved"
 
         autoround.quantize_and_save(output_dir=quantized_model_path, inplace=False, format="gguf:q4_1")
-        gguf_file = os.listdir(quantized_model_path)[0]
+        gguf_file = "Qwen2.5-0.5B-Instruct-494M-Q4_1.gguf"
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         text = "There is a girl who likes adventure,"
         inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
@@ -317,9 +317,13 @@ class TestGGUF(unittest.TestCase):
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="gguf:q4_0")
         self.assertTrue("mmproj-model.gguf" in os.listdir("./saved"))
-        file_name = os.listdir(quantized_model_path)[0]
-        file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
-        self.assertAlmostEqual(file_size, 892, delta=1.0)
+        for file_name in os.listdir(quantized_model_path):
+            file_name = os.listdir(quantized_model_path)[0]
+            file_size = os.path.getsize(os.path.join(quantized_model_path, file_name)) / 1024**2
+            if file_name == "mmproj-model.gguf":
+                self.assertAlmostEqual(file_size, 2535, delta=1.0)
+            else:
+                self.assertAlmostEqual(file_size, 892, delta=1.0)
         shutil.rmtree("./saved", ignore_errors=True)
 
 
