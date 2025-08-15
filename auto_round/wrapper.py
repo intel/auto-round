@@ -89,8 +89,9 @@ class WrapperLinear(torch.nn.Module):
             weight_global_scale = calculate_gparam(self.orig_layer.weight, self.orig_layer.group_size)
             setattr(self, "weight_global_scale", weight_global_scale)
             self.weight_global_scale = self.weight_global_scale.to(self.orig_layer.weight.device)
-        if hasattr(self.orig_layer, "scale_dtype") and self.orig_layer.scale_dtype == torch.float32:
-            self.q_scale_thresh = 1e-8
+        if hasattr(self.orig_layer, "scale_dtype") and (
+                self.orig_layer.scale_dtype == torch.float32 or self.orig_layer.scale_dtype == torch.bfloat16):
+            self.q_scale_thresh = 1e-30
         else:
             self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()

@@ -30,7 +30,7 @@ class QuantLinear(nn.Module):
 
     QUANT_TYPE = "torch"
 
-    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, **kwargs):
+    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False,  weight_dtype=torch.bfloat16, **kwargs):
         super().__init__()
         if bits not in [2, 3, 4, 8]:
             raise NotImplementedError("Only 2,3,4,8 bits are supported.")
@@ -62,7 +62,7 @@ class QuantLinear(nn.Module):
             ),
         )
         if bias:
-            self.register_buffer("bias", torch.zeros((outfeatures), dtype=torch.float16))
+            self.register_buffer("bias", torch.zeros((outfeatures), dtype=weight_dtype))
         else:
             self.bias = None
 
@@ -89,8 +89,8 @@ class QuantLinear(nn.Module):
     def pack(self, linear, scales, zeros, g_idx=None):
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
-            self.bias = linear.bias.clone().half()
-        self.scales = scales_t.clone().half()
+            self.bias = linear.bias.clone().to(self.bias.dtype)
+        self.scales = scales_t.clone().to(self.scales.dtype)
         device = "cpu"
         if torch.cuda.is_available():
             device = "cuda:0"
@@ -160,7 +160,7 @@ class QuantLinear(nn.Module):
 
         if isinstance(zeros, torch.Tensor):
             zeros = zeros.t().contiguous()
-            zeros = zeros.numpy().astype(np.uint32)
+            zeros = zeros.to(torch.float16).numpy().astype(np.uint32)
             qzeros = torch.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), dtype=torch.int32)
             i = 0
             col = 0
