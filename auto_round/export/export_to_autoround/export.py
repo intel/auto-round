@@ -33,27 +33,14 @@ from auto_round.utils import (
     filter_quantization_config,
     get_autogptq_packing_qlinear,
     get_module,
+    is_mx_fp,
+    is_nv_fp,
+    is_standard_fp,
     logger,
     set_module,
 )
 
-
-def check_neq_config(config, data_type, bits, group_size, sym):
-    """
-    Checks if the provided configuration parameters are not equal to the values in the config dictionary.
-
-    Args:
-        config (dict): A dictionary containing the configuration parameters.
-        data_type (str): The expected data type.
-        bits (int): The expected number of bits.
-        group_size (int): The expected group size.
-        sym (bool): The expected symmetry flag.
-
-    Returns:
-        list: A list of strings indicating which configuration parameters do not match.
-    """
-    expected_config = {"data_type": data_type, "bits": bits, "group_size": group_size, "sym": sym}
-    return [key for key, expected_value in expected_config.items() if config.get(key) != expected_value]
+from .utils import check_neq_config
 
 
 def dynamic_import_quant_linear_for_packing(backend, bits, group_size, sym, act_bits=16):
@@ -160,17 +147,22 @@ def pack_layer(layer_name, model, backend):
     Returns:
         None: The function modifies the model in place.
     """
+    if is_nv_fp(backend) or is_mx_fp(backend):
+        from auto_round.export.export_to_autoround.export_to_fp import pack_layer
+
+        return pack_layer(layer_name, model, backend)
+
+    if is_standard_fp(backend):
+        from auto_round.export.export_to_autoround.export_to_fp8_woq import pack_layer
+
+        return pack_layer(layer_name, model, backend)
+
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
 
     if not isinstance(layer, SUPPORTED_LAYER_TYPES):  ##already packed
         return
-
-    if "fp8" in backend:
-        from auto_round.export.export_to_autoround.export_to_fp8_woq import pack_layer
-
-        return pack_layer(layer_name, model, backend)
 
     if int(layer.act_bits) <= 8:
         return pack_qact_layer(layer_name, model)
@@ -267,7 +259,13 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
     Raises:
         ValueError: If the backend is not supported.
     """
-    if "fp8" in kwargs.get("data_type", None) and kwargs.get("act_bits", 16) >= 16:
+    data_type = kwargs.get("data_type", None)
+    if is_nv_fp(data_type) or is_mx_fp(data_type):  ## detect nvfp & mxfp first
+        from auto_round.export.export_to_autoround.export_to_fp import save_quantized_as_fp
+
+        return save_quantized_as_fp(output_dir, inplace=inplace, backend="auto_round", **kwargs)
+
+    if is_standard_fp(data_type) and kwargs.get("act_bits", 16) >= 16:
         from auto_round.export.export_to_autoround.export_to_fp8_woq import save_quantized_as_autoround
 
         return save_quantized_as_autoround(output_dir, inplace=inplace, backend="auto_round", **kwargs)
@@ -314,6 +312,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="auto_round:ex
                 layer_config[layer_name],
                 data_type=quantization_config["data_type"],
                 bits=quantization_config["bits"],
+                act_bits=quantization_config["act_bits"],
                 group_size=quantization_config["group_size"],
                 sym=quantization_config["sym"],
             )

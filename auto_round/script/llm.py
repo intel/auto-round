@@ -42,8 +42,6 @@ from auto_round.utils import (
     str2bool,
 )
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
 
 class BasicArgumentParser(argparse.ArgumentParser):
 
@@ -430,11 +428,6 @@ def tune(args):
 
     import torch
 
-    if not args.disable_deterministic_algorithms:
-        torch.use_deterministic_algorithms(True, warn_only=False)
-        # logger.info("`torch.use_deterministic_algorithms` is enabled by default for reproducibility "
-        #             "and can be disabled using the `--disable_deterministic_algorithms` argument.")
-
     if args.enable_torch_compile:
         logger.info(
             "`torch.compile` is enabled to reduce tuning costs. "
@@ -490,7 +483,7 @@ def tune(args):
     layer_config = {}
     not_quantize_layer_names = get_fp_layer_names(model, args.fp_layers)
     for name in not_quantize_layer_names:
-        layer_config[name] = {"bits": 16}
+        layer_config[name] = {"bits": 16, "act_bits": 16}
     if len(not_quantize_layer_names) > 0:
         logger.info(f"{not_quantize_layer_names} will not be quantized.")
         for format in formats:
@@ -515,7 +508,7 @@ def tune(args):
                     break
 
     if args.quant_lm_head:
-        layer_config[lm_head_layer_name] = {"bits": args.bits}
+        layer_config[lm_head_layer_name] = {"bits": args.bits, "act_bits": args.act_bits}
         for format in formats:
             if "auto_round" not in format and "fake" not in format:
                 auto_round_formats = [s for s in SUPPORTED_FORMATS if s.startswith("auto_round")]
@@ -571,6 +564,7 @@ def tune(args):
         super_group_size=args.super_group_size,
         super_bits=args.super_bits,
         disable_opt_rtn=args.disable_opt_rtn,
+        disable_deterministic_algorithms=args.disable_deterministic_algorithms,
         **mllm_kwargs,
     )
 

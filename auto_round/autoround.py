@@ -64,7 +64,10 @@ from auto_round.utils import (
     infer_bits_by_data_type,
     init_cache,
     is_debug_mode,
+    is_mx_fp,
+    is_nv_fp,
     is_optimum_habana_available,
+    is_standard_fp,
     llm_load_model,
     logger,
     mv_module_from_gpu,
@@ -191,6 +194,8 @@ class AutoRound(object):
         enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
         disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", False)
         if not disable_deterministic_algorithms:
+            if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
+                os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
             torch.use_deterministic_algorithms(True, warn_only=False)
 
         self.vlm = kwargs.pop("vlm") if "vlm" in kwargs else False
@@ -478,16 +483,10 @@ class AutoRound(object):
                 "And please save the quantized model to fake format as real deployment is not supported currently"
             )
 
-        if "mx_fp" in self.data_type or "nv_fp" in self.data_type:
-            logger.warning(
-                "please save the quantized model to fake format "
-                "as real deployment is not supported for mx_fp/nv_fp datatype currently"
-            )
-
-        if "mx_fp" in self.data_type and self.group_size != 32:
+        if is_mx_fp(self.data_type) and self.group_size != 32:
             logger.warning("mx_fp should only support group_size of 32 in real deployment")
 
-        if "nv_fp" in self.data_type and (self.group_size != 16):
+        if is_nv_fp(self.data_type) and (self.group_size != 16):
             logger.warning("nv_fp should only support group_size of 16 in real deployment")
 
         if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
@@ -618,9 +617,20 @@ class AutoRound(object):
                     )
                     if enable_awq:
                         formats[index] = format.replace("auto_round", "auto_round:auto_awq")
-                if "fp8" in self.data_type:
+                if is_nv_fp(self.data_type) or is_mx_fp(self.data_type) or is_standard_fp(self.data_type):
                     format = format.replace("auto_round", f"auto_round:{self.data_type}")
                     formats[index] = format
+            elif format == "llmcompressor":
+                from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+
+                if check_compressed_tensors_supported() and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+                    format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
+                    formats[index] = format
+                elif not is_standard_fp(self.data_type):
+                    logger.error(
+                        "Currently, the llmcompressor format only supports MXFP/NVFP/StandardFP8. "
+                        "Please change format to fake or auto_round etc."
+                    )
 
         # Remove duplicates from formats list
         def remove_duplicates(lst):
@@ -649,10 +659,12 @@ class AutoRound(object):
         if format == "fake":
             return format
         format = format.replace("q*_", f"q{self.bits}_")
-        # only support to export afp8
+        # only support to export afp8/nv_fp
         if self.act_bits <= 8:
-            if "fp8" not in self.act_data_type or self.act_dynamic:
+            if not is_standard_fp(self.act_data_type) or self.act_dynamic:
                 if format == "llmcompressor":
+                    if is_nv_fp(self.act_data_type):
+                        return format
                     bits, group_size, sym, act_bits = 8, -1, True, 8
                     assert (
                         self.bits == bits
@@ -665,10 +677,10 @@ class AutoRound(object):
                         f" W{self.bits}A{self.act_bits} model, but got bits={self.bits},"
                         f" group_size={self.group_size}, sym={self.sym}, act_bits={self.act_bits}"
                     )
-                elif format != "fake":
+                elif format != "fake" and not is_nv_fp(format):
                     logger.warning(
                         "Currently only support to export auto_round format quantized model"
-                        " with fp8 dtype activation for activation quantization."
+                        " with fp8 or nv_fp4 dtype activation for activation quantization."
                         " Change format to fake and save."
                     )
                     format = "fake"
@@ -1128,6 +1140,7 @@ class AutoRound(object):
                 m.to("cpu")
             except RuntimeError as e:
                 cuda_error_msg = traceback.format_exc()
+                m = m.orig_layer if hasattr(m, "orig_layer") else m
                 try:
                     logger.warning("Out of VRAM, falling back to CPU.")
                     m.to("cpu")
@@ -1188,6 +1201,21 @@ class AutoRound(object):
             self.model.to(self.amp_dtype)
 
         all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
+
+        if is_nv_fp(self.data_type):
+            from auto_round.data_type.nvfp import calculate_gparam
+            from auto_round.data_type.utils import update_fused_layer_global_scales
+
+            pbar = tqdm(all_to_quantized_module_names)
+            for name in pbar:
+                pbar.set_description(f"Calculate weight global scale: {name}")
+                m = get_module(self.model, name)
+                weight_global_scale = calculate_gparam(m.weight, self.group_size)
+                setattr(m, "weight_global_scale", weight_global_scale)
+
+            modules = list(self.model.modules())
+            for module in tqdm(modules, desc="Update weight global scale for fuse module"):
+                update_fused_layer_global_scales(module)
 
         has_gguf_k = any("gguf" in fmt and "k" in fmt for fmt in getattr(self, "formats", []))
 
@@ -1316,6 +1344,11 @@ class AutoRound(object):
                 if self.device_map is not None:
                     accelerate.hooks.remove_hook_from_submodules(block)
 
+                if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
+                    from auto_round.utils import set_amax_for_all_moe_layers
+
+                    # enable moe experts act_max automatic generation for linears
+                    set_amax_for_all_moe_layers(block, attr_name="act_max")
                 # Normalize imatrix and quantize layers
                 for _, m in block.named_modules():
                     if hasattr(m, "imatrix"):
@@ -1372,7 +1405,13 @@ class AutoRound(object):
             formats = self.formats
             if (
                 len(formats) == 1
-                and ("awq" in formats[0] or "gptq" in formats[0] or "auto_round" in formats[0] or "gguf" in formats[0])
+                and (
+                    "awq" in formats[0]
+                    or "gptq" in formats[0]
+                    or "auto_round" in formats[0]
+                    or "gguf" in formats[0]
+                    or "llmcompressor" in formats[0]
+                )
                 and self.inplace
             ):
                 self.is_packing_immediate = True
@@ -2215,16 +2254,23 @@ class AutoRound(object):
         logger.info(dump_info)
 
     def register_act_max_hook(self, model):
-
         def get_act_max_hook(module, input, output):
             if isinstance(input, (tuple, list)):
                 input = input[0]
+            if input.numel() == 0:
+                return  # as no needs for act_max update
             input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
             act_max = torch.max(torch.abs(input), dim=-1).values
-            if not hasattr(module, "act_max"):
+            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
                 module.act_max = act_max
             else:
-                module.act_max = torch.max(act_max.to(module.act_max.device), module.act_max)
+                act_max = act_max.to(module.act_max.device)
+                if is_nv_fp(self.data_type):  ## for nvfp per-tensor input_global_scale calculation usage
+                    module.act_max = torch.max(
+                        torch.tensor([act_max.max(), module.act_max.max()], device=act_max.device)
+                    )
+                else:
+                    module.act_max = torch.max(act_max, module.act_max)
 
         hook_handles = []
 
@@ -2321,7 +2367,12 @@ class AutoRound(object):
         quantized_layer_names, unquantized_layer_names = wrapper_block(
             block, self.enable_minmax_tuning, self.enable_norm_bias_tuning, device=self.device
         )
+        if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse
+            from auto_round.data_type.utils import update_fused_layer_global_scales
 
+            modules = block.modules()
+            for module in modules:
+                update_fused_layer_global_scales(module)
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():
@@ -2444,6 +2495,11 @@ class AutoRound(object):
         with torch.no_grad():
             unwrapper_block(block, best_params)
         if self.enable_quanted_input:
+            if is_nv_fp(self.act_data_type) and any("nv_fp" in format_ for format_ in self.formats):
+                from auto_round.utils import set_amax_for_all_moe_layers
+
+                # enable moe experts act_max automatic generation for WrapperWALayer
+                set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
             if self.low_cpu_mem_usage:
                 block = block.to(device)
             clear_memory()
@@ -2611,6 +2667,8 @@ class AutoRound(object):
                 "Support for exporting activation quantization is limited. "
                 "Please ensure that your configuration is supported."
             )
+        if format == "llmcompressor" and (is_nv_fp(self.data_type) or is_mx_fp(self.data_type)):
+            format = format.replace("llmcompressor", f"llmcompressor:{self.data_type}")
 
         from auto_round.export import EXPORT_FORMAT
 
@@ -2647,6 +2705,7 @@ class AutoRound(object):
             layer_config=self.layer_config,
             inplace=inplace,
             bits=self.bits,
+            act_bits=self.act_bits,
             group_size=self.group_size,
             sym=self.sym,
             iters=self.iters,
@@ -2658,6 +2717,7 @@ class AutoRound(object):
             tokenizer=self.tokenizer,
             supported_types=self.supported_types,
             data_type=self.data_type,
+            act_data_type=self.act_data_type,
             serialization_dict=serialization_dict,
             backend=backend,
             to_quant_block_names=self.to_quant_block_names,
