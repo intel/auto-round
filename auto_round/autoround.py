@@ -1306,7 +1306,6 @@ class AutoRound(object):
                         add_hook_to_module(m, hook, True)
                 else:
                     block = block.to(self.device)
-
                 input_ids = self.get_block_outputs(
                     block,
                     input_ids,
