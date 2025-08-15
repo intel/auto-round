@@ -41,6 +41,75 @@ def _handle_special_model(model):
         from functools import partial
 
         model.forward = partial(_deepseek_vl2_forward, model)
+
+    # https://github.com/vllm-project/llm-compressor/blob/main/src/llmcompressor/modeling/llama4.py
+    elif model.config.model_type == "llama4":
+        import torch
+        from transformers.modeling_utils import no_init_weights
+        from transformers.models.llama4.configuration_llama4 import (
+            Llama4TextConfig,
+        )
+        from transformers.models.llama4.modeling_llama4 import (
+            Llama4TextExperts,
+            Llama4TextMLP,
+            Llama4TextMoe,
+        )
+        from auto_round.utils import clear_memory
+        from tqdm import tqdm
+
+        class SequentialLlama4TextMoe(torch.nn.Module):
+            def __init__(self, config: Llama4TextConfig, original: Llama4TextMoe):
+                super().__init__()
+                self.top_k = config.num_experts_per_tok
+                self.hidden_dim = config.hidden_size
+                self.num_experts = config.num_local_experts
+                self.experts = SequentialLlama4TextExperts(config, original.experts)
+                self.router = original.router
+                self.shared_expert = original.shared_expert
+
+            def forward(self, hidden_states: torch.Tensor):
+                hidden_states = hidden_states.reshape(-1, self.hidden_dim)
+                router_logits = self.router(hidden_states)
+                router_top_value, router_indices = torch.topk(router_logits, self.top_k, dim=1)
+                router_scores = (
+                    torch.full_like(router_logits, float("-inf"))
+                    .scatter_(1, router_indices, router_top_value)
+                    .transpose(0, 1)
+                )
+                router_scores = torch.sigmoid(router_scores.float()).to(hidden_states.dtype)
+                out = self.shared_expert(hidden_states)
+                for i in range(self.num_experts):
+                    out += self.experts[i](hidden_states) * router_scores[i].reshape(-1, 1)
+                return out, router_scores
+
+        class SequentialLlama4TextExperts(torch.nn.ModuleList):
+            def __init__(self, config: Llama4TextConfig, original: Llama4TextExperts):
+                self.num_experts = original.gate_up_proj.shape[0]
+                with no_init_weights():
+                    super().__init__([Llama4TextMLP(config) for _ in range(self.num_experts)])
+                intermediate_size = original.down_proj.shape[1]
+
+                for i in range(self.num_experts):
+                    gate_up = original.gate_up_proj[i]
+                    down = original.down_proj[i]
+                    gate_proj = gate_up[:, :intermediate_size]
+                    up_proj = gate_up[:, intermediate_size:]
+
+                    self[i].gate_proj.weight.data = gate_proj.t().contiguous()
+                    self[i].up_proj.weight.data = up_proj.t().contiguous()
+                    self[i].down_proj.weight.data = down.t().contiguous()
+
+        model = model.to("cpu")
+        clear_memory()
+
+        for name, module in tqdm(model.named_modules(), desc="Converting model"):
+            cls_name = module.__class__.__name__
+            if cls_name == "Llama4TextMoe":
+                new_module = SequentialLlama4TextMoe(config=model.config.get_text_config(), original=module)
+                parent, child = name.rsplit(".", maxsplit=1)
+                parent = model.get_submodule(parent)
+                setattr(parent, child, new_module)
+
     return model
 
 

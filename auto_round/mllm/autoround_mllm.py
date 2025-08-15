@@ -460,6 +460,6 @@ class AutoRoundMLLM(AutoRound):
 
         for layer_name in layer_config.keys():
             for vlm_key in VISUAL_KEYS:
-                if vlm_key in layer_name:
+                if vlm_key in layer_name and layer_config[layer_name].get("bits", 16) < 16:
                     return True
         return quant_nontext_module
