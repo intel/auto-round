@@ -410,7 +410,18 @@ def check_compatible(
     return True
 
 
-def dynamic_import_inference_linear(backend, bits, group_size, sym):
+def is_weight_fp8_activation_static_fp8(config):
+    bits, group_size, sym, data_type, act_dynamic = (
+        config["bits"],
+        config["group_size"],
+        config["sym"],
+        config["data_type"],
+        config["act_dynamic"],
+    )
+    return bits == 8 and group_size == -1 and sym and data_type == "fp8" and not act_dynamic
+
+
+def dynamic_import_inference_linear(backend, config):
     """Dynamically imports and returns the appropriate QuantLinear class based on the given backend.
 
     This function dynamically loads the correct `QuantLinear` class based on the backend and quantization
@@ -435,6 +446,13 @@ def dynamic_import_inference_linear(backend, bits, group_size, sym):
         ImportError:
             If required modules are missing for a backend (e.g., Intel Extension, GPTQ, auto_awq).
     """
+    bits, group_size, sym = config["bits"], config["group_size"], config["sym"]
+
+    if is_weight_fp8_activation_static_fp8(config):
+        from auto_round.export.export_to_autoround.export_to_fp8_woq import WeightFP8ActFP8StaticQuantLinear
+
+        return WeightFP8ActFP8StaticQuantLinear
+
     if "qbits" in backend:
         try:
             from intel_extension_for_transformers import qbits  # pylint: disable=E0401

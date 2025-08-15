@@ -199,7 +199,7 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_static_afp8_export(self):
+    def test_static_afp8_export_and_load(self):
         import os
 
         from safetensors import safe_open
@@ -226,6 +226,32 @@ class TestAutoRound(unittest.TestCase):
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1, 1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
+        with torch.no_grad():
+            import transformers
+
+            model = transformers.AutoModelForCausalLM.from_pretrained(
+                quantized_model_path,
+                torch_dtype="auto",
+                low_cpu_mem_usage=True,
+                trust_remote_code=True,
+            )
+            model.eval()
+            assert (
+                model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__ == "WeightFP8ActFP8StaticQuantLinear"
+            ), f"Expected WeightFP8ActFP8StaticQuantLinear, got {model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__}"
+            tokenizer = transformers.AutoTokenizer.from_pretrained(quantized_model_path)
+            prompt = "AI is "
+            encode = tokenizer.encode(prompt, return_tensors="pt")
+            with torch.no_grad():
+                output_tokens = model.generate(
+                    encode,
+                    max_length=10,
+                )
+                output = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
+                print(f"Prompt: {prompt}")
+                print(f"Output: {output}")
+                assert output is not None, "Output should not be None"
+
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
