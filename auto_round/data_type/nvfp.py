@@ -275,4 +275,3 @@ if __name__ == "__main__":
             f"{test[i].item():.6g} -> {encoded[i].item():3d} -> {decoded[i].item():.6g} "
             f"(error={abs(test[i] - decoded[i]).item():.3g})"
         )
-
