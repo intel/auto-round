@@ -911,7 +911,7 @@ class AutoRound(object):
                     module.imatrix = squared
                     module.imatrix_cnt = input.shape[0]
                 else:
-                    module.imatrix += squared
+                    module.imatrix += squared.to(module.imatrix.device)
                     module.imatrix_cnt += input.shape[0]
 
             hook_handles = []
