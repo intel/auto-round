@@ -48,9 +48,9 @@ import requests
 import torch
 from transformers import AutoConfig
 
+from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.packing import ggml_quant
 from auto_round.utils import LazyImport, clean_module_parameter, get_module, logger
-from auto_round.export.export_to_gguf.config import ModelType
 
 gguf = LazyImport("gguf")
 
@@ -130,7 +130,7 @@ def get_moe_name(cls, name, new_name):
 def get_tensors(cls) -> Iterator[tuple[str, Tensor]]:
     if not hasattr(cls.model, "tensor_name_list"):
         cls.model.tensor_name_list = []
-    
+
     reverse_key_mapping = {v: k for k, v in cls.model._checkpoint_conversion_mapping.items()}
     for name, tensor in cls.model.named_parameters():
         if name not in cls.model.tensor_name_list:
