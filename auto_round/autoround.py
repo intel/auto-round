@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import copy
 import os
 import re
@@ -170,6 +171,7 @@ class AutoRound(object):
         act_sym: bool = None,
         act_data_type: str = None,
         act_dynamic: bool = True,
+        enable_fp8_kv: bool = False,
         enable_torch_compile: bool = False,
         device_map: Union[str, dict] = None,
         disable_opt_rtn: bool = False,
@@ -292,6 +294,10 @@ class AutoRound(object):
                 f"act_bits set in 'act_data_type' do not"
                 f" match the specified 'act_bits' setting. Resetting 'act_bits' to {tmp_act_bits}."
             )
+
+        # kv cache
+        self.enable_fp8_kv = enable_fp8_kv
+        logger.warning("The `enable_fp8_kv` feature is experimental and currently has limited support.")
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
@@ -732,7 +738,15 @@ class AutoRound(object):
         kwargs.pop("inplace", None)
 
         # Perform model quantization
-        model, _ = self.quantize()
+        if self.enable_fp8_kv:
+            from auto_round.experimental.fp8_kv_cache import fp8_kv_context
+
+            quant_ctx = fp8_kv_context
+        else:
+            quant_ctx = contextlib.nullcontext
+
+        with quant_ctx(self.model):
+            model, _ = self.quantize()
 
         # Save the quantized model in the specified format_list
         folders = []

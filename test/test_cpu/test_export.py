@@ -2,6 +2,8 @@ import shutil
 import sys
 import unittest
 
+from parameterized import parameterized
+
 sys.path.insert(0, "../..")
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
@@ -199,7 +201,8 @@ class TestAutoRound(unittest.TestCase):
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    def test_static_afp8_export(self):
+    @parameterized.expand([(True,), (False,)])
+    def test_static_afp8_export(self, enable_fp8_kv):
         import os
 
         from safetensors import safe_open
@@ -218,6 +221,7 @@ class TestAutoRound(unittest.TestCase):
             act_data_type="fp8",
             act_dynamic=False,
             act_group_size=0,
+            enable_fp8_kv=enable_fp8_kv,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
@@ -226,6 +230,13 @@ class TestAutoRound(unittest.TestCase):
         self.assertIn("model.decoder.layers.8.self_attn.k_proj.weight_scale", f.keys())
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1, 1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
+
+        if enable_fp8_kv:
+            self.assertIn("model.decoder.layers.8.self_attn.k_scale", f.keys())
+            self.assertIn("model.decoder.layers.8.self_attn.v_scale", f.keys())
+            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape, torch.Size([1, 1]))
+            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape, torch.Size([1, 1]))
+            self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype, torch.float32)
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
