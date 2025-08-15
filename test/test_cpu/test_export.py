@@ -202,7 +202,7 @@ class TestAutoRound(unittest.TestCase):
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @parameterized.expand([(True,), (False,)])
-    def test_static_afp8_export(self, enable_fp8_kv):
+    def test_static_afp8_export(self, enable_static_fp8_kv):
         import os
 
         from safetensors import safe_open
@@ -221,7 +221,7 @@ class TestAutoRound(unittest.TestCase):
             act_data_type="fp8",
             act_dynamic=False,
             act_group_size=0,
-            enable_fp8_kv=enable_fp8_kv,
+            enable_static_fp8_kv=enable_static_fp8_kv,
         )
         quantized_model_path = "./saved"
         autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
@@ -231,7 +231,7 @@ class TestAutoRound(unittest.TestCase):
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape, torch.Size([1, 1]))
         self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype, torch.float8_e4m3fn)
 
-        if enable_fp8_kv:
+        if enable_static_fp8_kv:
             self.assertIn("model.decoder.layers.8.self_attn.k_scale", f.keys())
             self.assertIn("model.decoder.layers.8.self_attn.v_scale", f.keys())
             self.assertEqual(f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape, torch.Size([1, 1]))

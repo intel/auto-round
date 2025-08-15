@@ -171,7 +171,7 @@ class AutoRound(object):
         act_sym: bool = None,
         act_data_type: str = None,
         act_dynamic: bool = True,
-        enable_fp8_kv: bool = False,
+        enable_static_fp8_kv: bool = False,
         enable_torch_compile: bool = False,
         device_map: Union[str, dict] = None,
         disable_opt_rtn: bool = False,
@@ -296,8 +296,8 @@ class AutoRound(object):
             )
 
         # kv cache
-        self.enable_fp8_kv = enable_fp8_kv
-        logger.warning("The `enable_fp8_kv` feature is experimental and currently has limited support.")
+        self.enable_static_fp8_kv = enable_static_fp8_kv
+        logger.warning("The `enable_static_fp8_kv` feature is experimental and currently has limited support.")
 
         self.sampler = sampler
         self.not_use_best_mse = not_use_best_mse
@@ -738,7 +738,7 @@ class AutoRound(object):
         kwargs.pop("inplace", None)
 
         # Perform model quantization
-        if self.enable_fp8_kv:
+        if self.enable_static_fp8_kv:
             from auto_round.experimental.fp8_kv_cache import fp8_kv_context
 
             quant_ctx = fp8_kv_context
