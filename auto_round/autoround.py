@@ -604,7 +604,7 @@ class AutoRound(object):
                 self.scale_dtype = torch.float32
                 logger.info("change `scale_dtype` to `torch.float32`")
 
-        if self.model.dtype!=torch.float16 and self.scale_dtype==torch.float16:
+        if self.model.dtype != torch.float16 and self.scale_dtype == torch.float16:
             only_auto_round = True
             for format_ in formats:
                 if not ("auto_round" in format_ or "fake" in format_):
@@ -613,7 +613,6 @@ class AutoRound(object):
                 if only_auto_round:
                     self.scale_dtype = torch.bfloat16
                     logger.info("change `scale_dtype` to `torch.bfloat16`")
-
 
         # Adjust format settings based on compatibility
         for index in range(len(formats)):

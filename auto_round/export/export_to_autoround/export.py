@@ -223,12 +223,7 @@ def pack_layer(layer_name, model, backend):
             logger.error("AutoAWQ format only supports 4-bits quantization.")
 
         qlayer = QuantLinear.from_linear(
-            linear=layer,
-            w_bit=bits,
-            group_size=group_size,
-            init_only=False,
-            scales=scale,
-            zeros=zp
+            linear=layer, w_bit=bits, group_size=group_size, init_only=False, scales=scale, zeros=zp
         )
         qlayer.to(device)
         set_module(model, layer_name, qlayer)
