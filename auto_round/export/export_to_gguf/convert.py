@@ -396,6 +396,14 @@ def prepare_tensors(cls):
 
         modify_name = _special_name_handle(cls, name)
         for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
+            skip = False
+            for tensor_info in cls.gguf_writer.tensors:
+                if new_name in tensor_info:
+                    print("new_name already add to gguf_writer, skip")
+                    skip = True
+                    break
+            if skip:
+                continue
             data = data_torch.squeeze().cpu().numpy()
 
             # if data ends up empty, it means data_torch was a scalar tensor -> restore
